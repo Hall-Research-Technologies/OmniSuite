@@ -1,0 +1,1003 @@
+[
+  {
+    "ip": "192.168.100.143",
+    "type": "Encoder",
+    "role": "encoder",
+    "model": "hw-omni-e4521",
+    "version": "2.1.0_RC05",
+    "hostname": "hw-omni-e4521-856c",
+    "serialnumber": "3452000000000850612",
+    "mac": "b8:98:b0:07:85:6c",
+    "details": {
+      "systeminfo": {
+        "config": {
+          "board": {
+            "revision": "",
+            "serialnumber": "3452000000000850612"
+          },
+          "buttons": {
+            "enabled": true,
+            "menuenabled": false
+          },
+          "cpufanspeed": 0,
+          "datetime": "2026-01-29T22:04:25.000UTC",
+          "description": "",
+          "detailedfirmwareversion": "SW: 2.1.0_RC05.AUTOINC+a55ae4e16a, FPGA: 2.0 (e72ad28), MCU: 0.2.48",
+          "dietemperature": 64.965527343552,
+          "eps": {
+            "present": true
+          },
+          "firmwareversion": "2.1.0_RC05",
+          "fpga": "xc7z035-ffg676",
+          "hostname": "hw-omni-e4521-856c",
+          "lcd": {
+            "brightness": 10
+          },
+          "leds": {
+            "enabled": true
+          },
+          "location": "",
+          "model": "hw-omni-e4521",
+          "ntpserver": "pool.ntp.org",
+          "supported_system_modes": [
+            "Colibri"
+          ],
+          "sysfanspeed": 0,
+          "system_mode": "Colibri",
+          "temperature": 47.375,
+          "type": "Encoder",
+          "uptime": 8157
+        },
+        "error": false,
+        "id": "systeminfo-get"
+      },
+      "license": {
+        "config": {
+          "device_id": "b898b007856c",
+          "features": {
+            "4k": {
+              "installed": true,
+              "key": "4K:d1e2cc9d361ea3edb84ce4a965bffac4c74b4660d1170e326c6a0c18a84fbfa42c0d02623ac77989daac322758a5e865dd31f521eb9862acc033e56116b6310d",
+              "request": "4K:b898b007856c"
+            },
+            "fec": {
+              "installed": true,
+              "key": "FEC:8958e8ddac90b818e4065d42f7d84f7c83bbcb92e87c01c4d377583f8e65c795b3b35a07cd039ac6a61b0f3feaa2d22435c1c5faea5fe7bb7894daa86d190100",
+              "request": "FEC:b898b007856c"
+            },
+            "scrambling": {
+              "installed": true,
+              "key": "SCRAMBLING:3eb688eba98e6129f18deb406ca829fe2c44719c7a4993137c97a3e4571a2ba5feade09f5f6ba3a6c12b7833aa2a3fdbfae618f192d07ec2ef6c7d154d586f02",
+              "request": "SCRAMBLING:b898b007856c"
+            }
+          }
+        },
+        "error": false,
+        "id": "license-get"
+      }
+    },
+    "v_mcast": "239.70.133.108",
+    "v_port": 1000,
+    "a_mcast": "239.80.133.108",
+    "a_port": 1000
+  },
+  {
+    "ip": "192.168.100.146",
+    "type": "Encoder",
+    "role": "encoder",
+    "model": "hw-omni-e4111-wp",
+    "version": "2.1.0_RC05",
+    "hostname": "hw-omni-e4111-wp-12345",
+    "serialnumber": "0000000202501100001",
+    "mac": "b8:98:b0:06:3e:03",
+    "details": {
+      "systeminfo": {
+        "config": {
+          "board": {
+            "revision": "",
+            "serialnumber": "0000000202501100001"
+          },
+          "datetime": "2026-01-29T22:04:25.000UTC",
+          "description": "",
+          "detailedfirmwareversion": "SW: 2.1.0_RC05.AUTOINC+a55ae4e16a, FPGA: 2.0 (e72ad28)",
+          "dietemperature": 54.384020995928005,
+          "firmwareversion": "2.1.0_RC05",
+          "fpga": "xc7z035-fbg676",
+          "hostname": "hw-omni-e4111-wp-12345",
+          "leds": {
+            "enabled": true
+          },
+          "location": "",
+          "model": "hw-omni-e4111-wp",
+          "ntpserver": "pool.ntp.org",
+          "supported_system_modes": [
+            "Colibri"
+          ],
+          "sysfanspeed": 2352,
+          "system_mode": "Colibri",
+          "temperature": 46.5,
+          "type": "Encoder",
+          "uptime": 29037
+        },
+        "error": false,
+        "id": "systeminfo-get"
+      },
+      "license": {
+        "config": {
+          "device_id": "b898b0063e03",
+          "features": {
+            "4k": {
+              "installed": true,
+              "key": "4K:1e3e6d2393eb4b8c44b0f50ea13df7093c9e0c4d1224ab727cf5ddd911b0aa2d6e08a62be870a0498a633e289102d8c73f5461ec16c7b942dff1bf554c3dea07",
+              "request": "4K:b898b0063e03"
+            },
+            "fec": {
+              "installed": true,
+              "key": "FEC:c11ad72d6a47cd007eb3d57eb4a5a7f5c1d0e7bcdf1f44f9412f0e91d988b538936906d4ea74cc705a6996174e0e2d78c88167c5b05b9f543de2a2455818ba00",
+              "request": "FEC:b898b0063e03"
+            },
+            "scrambling": {
+              "installed": true,
+              "key": "SCRAMBLING:8d7e70df8635bf2273b1b959ae2817d061e9c84b28c3c802a1d690546b305d1010f34e872ebaa3769dafc58412119714e2f739173f4024ef88bf31867ad36d02",
+              "request": "SCRAMBLING:b898b0063e03"
+            }
+          }
+        },
+        "error": false,
+        "id": "license-get"
+      }
+    },
+    "v_mcast": "239.70.62.3",
+    "v_port": 1000,
+    "a_mcast": "239.80.62.3",
+    "a_port": 1000
+  },
+  {
+    "ip": "192.168.100.147",
+    "type": "Encoder",
+    "role": "encoder",
+    "model": "hw-omni-e4111-wp",
+    "version": "2.1.0_RC05",
+    "hostname": "hw-omni-e4111-wp-000002",
+    "serialnumber": "0000000202501100002",
+    "mac": "b8:98:b0:06:3e:04",
+    "details": {
+      "systeminfo": {
+        "config": {
+          "board": {
+            "revision": "",
+            "serialnumber": "0000000202501100002"
+          },
+          "datetime": "2026-01-29T22:04:25.000UTC",
+          "description": "",
+          "detailedfirmwareversion": "SW: 2.1.0_RC05.AUTOINC+a55ae4e16a, FPGA: 2.0 (e72ad28)",
+          "dietemperature": 64.47336425761601,
+          "firmwareversion": "2.1.0_RC05",
+          "fpga": "xc7z035-fbg676",
+          "hostname": "hw-omni-e4111-wp-000002",
+          "leds": {
+            "enabled": true
+          },
+          "location": "",
+          "model": "hw-omni-e4111-wp",
+          "ntpserver": "pool.ntp.org",
+          "supported_system_modes": [
+            "Colibri"
+          ],
+          "sysfanspeed": 2553,
+          "system_mode": "Colibri",
+          "temperature": 52,
+          "type": "Encoder",
+          "uptime": 29036
+        },
+        "error": false,
+        "id": "systeminfo-get"
+      },
+      "license": {
+        "config": {
+          "device_id": "b898b0063e04",
+          "features": {
+            "4k": {
+              "installed": true,
+              "key": "4K:a74ed071209286c5838ff35006f1947cd8fe5dcce8dffe57db029b0eae51c4b040743a600cba0def20eb29ad7c366f2298e0508d4f858098e46c14c637cbc600",
+              "request": "4K:b898b0063e04"
+            },
+            "fec": {
+              "installed": true,
+              "key": "FEC:5f91d27b2918aa916b4f9b4793f1156f175ca71fa648bfaf1eb1ce775fcddd84102640a1a1549afb796095e7cf87c555459f6016899c664b54eb9830ef86840a",
+              "request": "FEC:b898b0063e04"
+            },
+            "scrambling": {
+              "installed": true,
+              "key": "SCRAMBLING:d0d1fd6c7716ef217f94c2a7e60a9022bb1d7545f1198ba800a1f6b614f42de8f55e15780dffb96bf198db535cf741a35ee4c7aee7dd10697956b24c96d3020c",
+              "request": "SCRAMBLING:b898b0063e04"
+            }
+          }
+        },
+        "error": false,
+        "id": "license-get"
+      }
+    },
+    "v_mcast": "239.70.62.4",
+    "v_port": 1000,
+    "a_mcast": "239.80.62.4",
+    "a_port": 1000
+  },
+  {
+    "ip": "192.168.100.127",
+    "type": "Decoder",
+    "role": "decoder",
+    "model": "hw-omni-d4511",
+    "version": "2.1.0_RC05",
+    "hostname": "hw-omni-d4511-085c6",
+    "serialnumber": "3452000000000851206",
+    "mac": "b8:98:b0:07:85:c6",
+    "details": {
+      "systeminfo": {
+        "config": {
+          "board": {
+            "revision": "",
+            "serialnumber": "3452000000000851206"
+          },
+          "buttons": {
+            "enabled": true,
+            "infoenabled": false,
+            "updownenabled": false
+          },
+          "cpufanspeed": 3161,
+          "datetime": "2026-01-29T22:04:25.000UTC",
+          "description": "",
+          "detailedfirmwareversion": "SW: 2.1.0_RC05.AUTOINC+a55ae4e16a, FPGA: 2.0 (e72ad28), MCU: 0.2.46",
+          "dietemperature": 72.717095947044,
+          "firmwareversion": "2.1.0_RC05",
+          "fpga": "xc7z035-ffg676",
+          "hostname": "hw-omni-d4511-085c6",
+          "leds": {
+            "enabled": true
+          },
+          "location": "",
+          "model": "hw-omni-d4511",
+          "ntpserver": "pool.ntp.org",
+          "supported_system_modes": [
+            "Colibri"
+          ],
+          "sysfanspeed": 3214,
+          "system_mode": "Colibri",
+          "temperature": 57.625,
+          "type": "Decoder",
+          "uptime": 527458
+        },
+        "error": false,
+        "id": "systeminfo-get"
+      },
+      "license": {
+        "config": {
+          "device_id": "b898b00785c6",
+          "features": {
+            "4k": {
+              "installed": true,
+              "key": "4K:8b796717413e962e2e4af2be0176f976df96cce3d34b09fd774dec3f1e0ea7422b34fca494d79a1ea7e0662dbadd2bfb9ef26d0825661ac27f6a4fbb80781d04",
+              "request": "4K:b898b00785c6"
+            },
+            "redundancy": {
+              "installed": true,
+              "key": "REDUNDANCY:5fde03306ee3e7be25449fa9489b2dc8fa754e324ee2fbc4a5f86100a254427c8758c7122598194482b1f5fcf80ab39a1c3ec87d0eb0a13f54dbd9b05613b40d",
+              "request": "REDUNDANCY:b898b00785c6"
+            },
+            "scrambling": {
+              "installed": true,
+              "key": "SCRAMBLING:7020055878b4a3f87ad3e19178a84dcedb8f5922fa3a1ed9ee1b3f8dac2a93ee716c06d038833ba99a6033ba6d138bd20e17c0f614c750f5e7a78da0bda79708",
+              "request": "SCRAMBLING:b898b00785c6"
+            }
+          }
+        },
+        "error": false,
+        "id": "license-get"
+      }
+    },
+    "ip1_addr": "239.70.62.4",
+    "ip1_port": 1000,
+    "ip3_addr": "239.80.62.4",
+    "ip3_port": 1000
+  },
+  {
+    "ip": "192.168.200.153",
+    "type": "Decoder",
+    "role": "decoder",
+    "model": "hw-omni-d4511",
+    "version": "2.1.0_RC05",
+    "hostname": "hw-omni-d4511-085c4",
+    "serialnumber": "3452000000000851204",
+    "mac": "b8:98:b0:07:85:c4",
+    "details": {
+      "systeminfo": {
+        "config": {
+          "board": {
+            "revision": "",
+            "serialnumber": "3452000000000851204"
+          },
+          "buttons": {
+            "enabled": true,
+            "infoenabled": false,
+            "updownenabled": false
+          },
+          "cpufanspeed": 3139,
+          "datetime": "2026-01-29T22:04:45.000UTC",
+          "description": "",
+          "detailedfirmwareversion": "SW: 2.1.0_RC05.AUTOINC+a55ae4e16a, FPGA: 2.0 (e72ad28), MCU: 0.2.46",
+          "dietemperature": 74.43966674782,
+          "firmwareversion": "2.1.0_RC05",
+          "fpga": "xc7z035-ffg676",
+          "hostname": "hw-omni-d4511-085c4",
+          "leds": {
+            "enabled": true
+          },
+          "location": "",
+          "model": "hw-omni-d4511",
+          "ntpserver": "pool.ntp.org",
+          "supported_system_modes": [
+            "Colibri"
+          ],
+          "sysfanspeed": 2896,
+          "system_mode": "Colibri",
+          "temperature": 60.75,
+          "type": "Decoder",
+          "uptime": 29055
+        },
+        "error": false,
+        "id": "systeminfo-get"
+      },
+      "license": {
+        "config": {
+          "device_id": "b898b00785c4",
+          "features": {
+            "4k": {
+              "installed": true,
+              "key": "4K:e2c6a54653763ae8e2b1dab8550bdb585955761675a3f32a5d548d7fc43b5833a6c5b90890a046c4521cf70d5fe0cd78c11478aedadf2a4f6d8c4d77bfaf9807",
+              "request": "4K:b898b00785c4"
+            },
+            "redundancy": {
+              "installed": true,
+              "key": "REDUNDANCY:5a6b8667d80c9f0b5d214a45cb4fc7adadfe6dbdcbe57a143e105bce09564cd77b3bff30277e2b78be3dff09a006f76e08c56e2d6906143a5bcb2caaea1c5504",
+              "request": "REDUNDANCY:b898b00785c4"
+            },
+            "scrambling": {
+              "installed": true,
+              "key": "SCRAMBLING:3adcd7b9bf8de146a9a0057a97f5accbeade491a012bf885ce3a5e192b9715190fee68067eca1664f5e1dfdf972e73e71f553a9638385b2173590d4c81302306",
+              "request": "SCRAMBLING:b898b00785c4"
+            }
+          }
+        },
+        "error": false,
+        "id": "license-get"
+      }
+    },
+    "ip1_addr": "239.70.133.108",
+    "ip1_port": 1000,
+    "ip3_addr": "239.80.133.108",
+    "ip3_port": 1000
+  },
+  {
+    "ip": "192.168.200.151",
+    "type": "Decoder",
+    "role": "decoder",
+    "model": "hw-omni-d4511",
+    "version": "2.1.0_RC05",
+    "hostname": "hw-omni-d4511-08586",
+    "serialnumber": "3452000000000850806",
+    "mac": "b8:98:b0:07:85:86",
+    "details": {
+      "systeminfo": {
+        "config": {
+          "board": {
+            "revision": "",
+            "serialnumber": "3452000000000850806"
+          },
+          "buttons": {
+            "enabled": true,
+            "infoenabled": false,
+            "updownenabled": false
+          },
+          "cpufanspeed": 3096,
+          "datetime": "2026-01-29T22:04:45.000UTC",
+          "description": "",
+          "detailedfirmwareversion": "SW: 2.1.0_RC05.AUTOINC+a55ae4e16a, FPGA: 2.0 (e72ad28), MCU: 0.2.46",
+          "dietemperature": 74.685748290788,
+          "firmwareversion": "2.1.0_RC05",
+          "fpga": "xc7z035-ffg676",
+          "hostname": "hw-omni-d4511-08586",
+          "leds": {
+            "enabled": true
+          },
+          "location": "",
+          "model": "hw-omni-d4511",
+          "ntpserver": "pool.ntp.org",
+          "supported_system_modes": [
+            "Colibri"
+          ],
+          "sysfanspeed": 2986,
+          "system_mode": "Colibri",
+          "temperature": 60.375,
+          "type": "Decoder",
+          "uptime": 29054
+        },
+        "error": false,
+        "id": "systeminfo-get"
+      },
+      "license": {
+        "config": {
+          "device_id": "b898b0078586",
+          "features": {
+            "4k": {
+              "installed": true,
+              "key": "4K:e31364ce6efdff0bb0fd00affeba33129266a0910556c4fed36dbdaef51ff7cc5d18b9dad1a90bd47452851f1ae4230a61e94a3a5e6e900ac4d1465b471ab10b",
+              "request": "4K:b898b0078586"
+            },
+            "redundancy": {
+              "installed": true,
+              "key": "REDUNDANCY:3bf423e7dadf4f5550623bb3a5139b3e3a76a8c0df9d4ff601dae0b784efaba78bb7b1fae88074c037c49384bc5780ddb7a55a2d90460fe32737c6ae222b7c01",
+              "request": "REDUNDANCY:b898b0078586"
+            },
+            "scrambling": {
+              "installed": true,
+              "key": "SCRAMBLING:417e575bbd90cd764fcc8951cb1d3498e20edf5395eec5196ac0b7e8c7fb68d8c51f516efd5580f181963029c594e8683fa5e19de2222655818205b4541eff04",
+              "request": "SCRAMBLING:b898b0078586"
+            }
+          }
+        },
+        "error": false,
+        "id": "license-get"
+      }
+    },
+    "ip1_addr": "239.70.62.4",
+    "ip1_port": 1000,
+    "ip3_addr": "239.80.62.4",
+    "ip3_port": 1000
+  },
+  {
+    "ip": "192.168.200.152",
+    "type": "Decoder",
+    "role": "decoder",
+    "model": "hw-omni-d4511",
+    "version": "2.1.0_RC05",
+    "hostname": "hw-omni-d4511-085c0",
+    "serialnumber": "3452000000000851200",
+    "mac": "b8:98:b0:07:85:c0",
+    "details": {
+      "systeminfo": {
+        "config": {
+          "board": {
+            "revision": "",
+            "serialnumber": "3452000000000851200"
+          },
+          "buttons": {
+            "enabled": true,
+            "infoenabled": false,
+            "updownenabled": false
+          },
+          "cpufanspeed": 3103,
+          "datetime": "2026-01-29T22:04:45.000UTC",
+          "description": "",
+          "detailedfirmwareversion": "SW: 2.1.0_RC05.AUTOINC+a55ae4e16a, FPGA: 2.0 (e72ad28), MCU: 0.2.46",
+          "dietemperature": 73.94750366188401,
+          "firmwareversion": "2.1.0_RC05",
+          "fpga": "xc7z035-ffg676",
+          "hostname": "hw-omni-d4511-085c0",
+          "leds": {
+            "enabled": true
+          },
+          "location": "",
+          "model": "hw-omni-d4511",
+          "ntpserver": "pool.ntp.org",
+          "supported_system_modes": [
+            "Colibri"
+          ],
+          "sysfanspeed": 3006,
+          "system_mode": "Colibri",
+          "temperature": 59.75,
+          "type": "Decoder",
+          "uptime": 29054
+        },
+        "error": false,
+        "id": "systeminfo-get"
+      },
+      "license": {
+        "config": {
+          "device_id": "b898b00785c0",
+          "features": {
+            "4k": {
+              "installed": true,
+              "key": "4K:507deaad3e24c3cc9cb5e602c510e94cecf7c720080a98d3076caaa51625840b79234a08ff01747499813d32f742b06bb2ce1f279d0eb43fe6e2a6cfa0f11204",
+              "request": "4K:b898b00785c0"
+            },
+            "redundancy": {
+              "installed": true,
+              "key": "REDUNDANCY:7be1dceeefb96b6100e4b51aa3f3251ad6cd9298d96787a39dd130970b95db6c033d1bd60e1589f158c1b76d7816469d1479243d3613f023e9ee881846faa90b",
+              "request": "REDUNDANCY:b898b00785c0"
+            },
+            "scrambling": {
+              "installed": true,
+              "key": "SCRAMBLING:48a439342051825c5c71b53913fcb72ab1395c79fc5a579da9c50810739deae806641baf69e881ec5db9b5116a21e7909840173a679362891c109d6af2c24c07",
+              "request": "SCRAMBLING:b898b00785c0"
+            }
+          }
+        },
+        "error": false,
+        "id": "license-get"
+      }
+    },
+    "ip1_addr": "239.70.62.4",
+    "ip1_port": 1000,
+    "ip3_addr": "239.80.62.4",
+    "ip3_port": 1000
+  },
+  {
+    "ip": "192.168.200.154",
+    "type": "Decoder",
+    "role": "decoder",
+    "model": "hw-omni-d4511",
+    "version": "2.1.0_RC05",
+    "hostname": "hw-omni-d4511-08578",
+    "serialnumber": "3452000000000850708",
+    "mac": "b8:98:b0:07:85:78",
+    "details": {
+      "systeminfo": {
+        "config": {
+          "board": {
+            "revision": "",
+            "serialnumber": "3452000000000850708"
+          },
+          "buttons": {
+            "enabled": true,
+            "infoenabled": false,
+            "updownenabled": false
+          },
+          "cpufanspeed": 3221,
+          "datetime": "2026-01-29T22:04:45.000UTC",
+          "description": "",
+          "detailedfirmwareversion": "SW: 2.1.0_RC05.AUTOINC+a55ae4e16a, FPGA: 2.0 (e72ad28), MCU: 0.2.46",
+          "dietemperature": 69.02587280252399,
+          "firmwareversion": "2.1.0_RC05",
+          "fpga": "xc7z035-ffg676",
+          "hostname": "hw-omni-d4511-08578",
+          "leds": {
+            "enabled": true
+          },
+          "location": "",
+          "model": "hw-omni-d4511",
+          "ntpserver": "pool.ntp.org",
+          "supported_system_modes": [
+            "Colibri"
+          ],
+          "sysfanspeed": 2947,
+          "system_mode": "Colibri",
+          "temperature": 56.625,
+          "type": "Decoder",
+          "uptime": 2957
+        },
+        "error": false,
+        "id": "systeminfo-get"
+      },
+      "license": {
+        "config": {
+          "device_id": "b898b0078578",
+          "features": {
+            "4k": {
+              "installed": true,
+              "key": "4K:8ca445c00503ba2c0487b6fb3b839762a80c47cb5acf236e5a76315f008867a0ad0d534184e92754f705dec3f869d534c476804d501575506445942ee57f930d",
+              "request": "4K:b898b0078578"
+            },
+            "redundancy": {
+              "installed": true,
+              "key": "REDUNDANCY:8f729081a9b74de379a08a8d744401f53a33a84490194ea8bf5da3507244547cf3dad1cc49af962633463f72d187be7191f70661972256bf9dbcd8ab1fe87206",
+              "request": "REDUNDANCY:b898b0078578"
+            },
+            "scrambling": {
+              "installed": true,
+              "key": "SCRAMBLING:a3c7b48f99a6f59b0fa72e31fd14ab7e35ebbaaa231d2a57acb3a3ccf323b01a9f8d931ea643b6ea8d0fd9b6688d38001e9f24feeeb9e56fb334be874333d203",
+              "request": "SCRAMBLING:b898b0078578"
+            }
+          }
+        },
+        "error": false,
+        "id": "license-get"
+      }
+    },
+    "ip1_addr": "239.70.133.108",
+    "ip1_port": 1000,
+    "ip3_addr": "239.80.133.108",
+    "ip3_port": 1000
+  },
+  {
+    "ip": "192.168.150.111",
+    "type": "Decoder",
+    "role": "decoder",
+    "model": "hw-omni-d4111",
+    "version": "2.1.0_RC03-MACSEC",
+    "hostname": "hw-omni-d4111-00113",
+    "serialnumber": "3452000000000050113",
+    "mac": "b8:98:b0:07:85:1d",
+    "details": {
+      "systeminfo": {
+        "config": {
+          "board": {
+            "revision": "",
+            "serialnumber": "3452000000000050113"
+          },
+          "buttons": {
+            "enabled": true,
+            "infoenabled": false,
+            "updownenabled": false
+          },
+          "cpufanspeed": 5232,
+          "datetime": "2026-01-29T22:04:51.000UTC",
+          "description": "",
+          "detailedfirmwareversion": "SW: 2.1.0_RC03-MACSEC.AUTOINC+7338c90b2d, FPGA: 2.0 (e72ad28), MCU: 0.2.44",
+          "dietemperature": 72.224932861108,
+          "firmwareversion": "2.1.0_RC03-MACSEC",
+          "fpga": "xc7z035-ffg676",
+          "hostname": "hw-omni-d4111-00113",
+          "leds": {
+            "enabled": true
+          },
+          "location": "",
+          "model": "hw-omni-d4111",
+          "ntpserver": "pool.ntp.org",
+          "supported_system_modes": [
+            "Colibri"
+          ],
+          "sysfanspeed": 5113,
+          "system_mode": "Colibri",
+          "temperature": 60.25,
+          "type": "Decoder",
+          "uptime": 29061
+        },
+        "error": false,
+        "id": "systeminfo-get"
+      },
+      "license": {
+        "config": {
+          "device_id": "b898b007851d",
+          "features": {
+            "4k": {
+              "installed": true,
+              "key": "4K:276beed295dd7a45ac7bcea64e95ce1317bef9076385a09384ea4f198ca794077b9e7b286a766723c0fea8921c7afc2be9249064658f835c67e15eba81aef300",
+              "request": "4K:b898b007851d"
+            },
+            "redundancy": {
+              "installed": true,
+              "key": "REDUNDANCY:9b0e696b75b0d612ddd386c973ac1ab54394e3733a281396dca9bc7bd2c1643aa4a1f4b7e067793748dde046d12bbed2b3accd145242461067e1d9fd68a8400c",
+              "request": "REDUNDANCY:b898b007851d"
+            },
+            "scrambling": {
+              "installed": true,
+              "key": "SCRAMBLING:52cb2d86e41ff6ab7b733049c3e1fa27adc4a904c42d6f260679881dfd98a25767dd015f7974c109988dd3dbc775f9ea75a1f2a0cb1b17b04ee48ca5f3418002",
+              "request": "SCRAMBLING:b898b007851d"
+            }
+          }
+        },
+        "error": false,
+        "id": "license-get"
+      }
+    },
+    "ip1_addr": "239.70.62.4",
+    "ip1_port": 1000,
+    "ip3_addr": "239.80.62.4",
+    "ip3_port": 1000
+  },
+  {
+    "ip": "192.168.150.155",
+    "type": "Decoder",
+    "role": "decoder",
+    "model": "hw-omni-d4111",
+    "version": "2.1.0_RC05",
+    "hostname": "hw-omni-d4111-00206",
+    "serialnumber": "3452000000000050206",
+    "mac": "b8:98:b0:07:85:26",
+    "details": {
+      "systeminfo": {
+        "config": {
+          "board": {
+            "revision": "",
+            "serialnumber": "3452000000000050206"
+          },
+          "buttons": {
+            "enabled": true,
+            "infoenabled": true,
+            "updownenabled": true
+          },
+          "cpufanspeed": 3221,
+          "datetime": "2026-01-29T22:04:51.000UTC",
+          "description": "",
+          "detailedfirmwareversion": "SW: 2.1.0_RC05.AUTOINC+a55ae4e16a, FPGA: 2.0 (e72ad28), MCU: 0.2.46",
+          "dietemperature": 70.13323974587999,
+          "firmwareversion": "2.1.0_RC05",
+          "fpga": "xc7z035-ffg676",
+          "hostname": "hw-omni-d4111-00206",
+          "leds": {
+            "enabled": true
+          },
+          "location": "",
+          "model": "hw-omni-d4111",
+          "ntpserver": "pool.ntp.org",
+          "supported_system_modes": [
+            "Colibri"
+          ],
+          "sysfanspeed": 2385,
+          "system_mode": "Colibri",
+          "temperature": 58.75,
+          "type": "Decoder",
+          "uptime": 29061
+        },
+        "error": false,
+        "id": "systeminfo-get"
+      },
+      "license": {
+        "config": {
+          "device_id": "b898b0078526",
+          "features": {
+            "4k": {
+              "installed": true,
+              "key": "4K:56b202b574bb6f737874c6483bd08932a1a2b89d9dc8bf8344e075dfd499830cb1b789d97e25aecd7ed0ac1c109ce8d24abf7cef851f3e05d3833fe05c0f1a0e",
+              "request": "4K:b898b0078526"
+            },
+            "redundancy": {
+              "installed": true,
+              "key": "REDUNDANCY:fa7821d5c5b5ce4d3854ce77f6134821bbeb5234323650312cd99ee0a15874c961ea2914780fece62d8f4801f232b9d30c64402899f3a181a3df5430e25b2b08",
+              "request": "REDUNDANCY:b898b0078526"
+            },
+            "scrambling": {
+              "installed": true,
+              "key": "SCRAMBLING:876f138b6a80a7ae188c668d444cca7765296a829a47947cbad7bb132867ddfebf0f8403e3b83fe1acf6db53439af0362b7f4d9b44b62099c2a015db8af4520f",
+              "request": "SCRAMBLING:b898b0078526"
+            }
+          }
+        },
+        "error": false,
+        "id": "license-get"
+      }
+    },
+    "ip1_addr": "239.70.62.4",
+    "ip1_port": 1000,
+    "ip3_addr": "239.80.62.4",
+    "ip3_port": 1000
+  },
+  {
+    "ip": "192.168.150.110",
+    "type": "Decoder",
+    "role": "decoder",
+    "model": "hw-omni-d4111",
+    "version": "2.1.0_RC05",
+    "hostname": "hw-omni-d4111-00203",
+    "serialnumber": "3452000000000050203",
+    "mac": "b8:98:b0:07:85:23",
+    "details": {
+      "systeminfo": {
+        "config": {
+          "board": {
+            "revision": "",
+            "serialnumber": "3452000000000050203"
+          },
+          "buttons": {
+            "enabled": true,
+            "infoenabled": false,
+            "updownenabled": false
+          },
+          "cpufanspeed": 3096,
+          "datetime": "2026-01-29T22:04:51.000UTC",
+          "description": "",
+          "detailedfirmwareversion": "SW: 2.1.0_RC05.AUTOINC+a55ae4e16a, FPGA: 2.0 (e72ad28), MCU: 0.2.46",
+          "dietemperature": 73.701422118916,
+          "firmwareversion": "2.1.0_RC05",
+          "fpga": "xc7z035-ffg676",
+          "hostname": "hw-omni-d4111-00203",
+          "leds": {
+            "enabled": true
+          },
+          "location": "",
+          "model": "hw-omni-d4111",
+          "ntpserver": "pool.ntp.org",
+          "supported_system_modes": [
+            "Colibri"
+          ],
+          "sysfanspeed": 2327,
+          "system_mode": "Colibri",
+          "temperature": 58,
+          "type": "Decoder",
+          "uptime": 29061
+        },
+        "error": false,
+        "id": "systeminfo-get"
+      },
+      "license": {
+        "config": {
+          "device_id": "b898b0078523",
+          "features": {
+            "4k": {
+              "installed": true,
+              "key": "4K:027734ebe8dcbdbfce60328e0e75bc6847e73c50d842b8d5bfa3a622b052cd1198a95af8067ccfc565f4bb0e05ac7b89b05800766b37d028ef53130283babe0f",
+              "request": "4K:b898b0078523"
+            },
+            "redundancy": {
+              "installed": true,
+              "key": "REDUNDANCY:33886895e25c09b30994e3447a27ebf59c60269082e0f2a2c19ca45c9c72d7d1108a0fe4467e0e3be10328856550a262847a2db40efd9734dbdcbf8098292904",
+              "request": "REDUNDANCY:b898b0078523"
+            },
+            "scrambling": {
+              "installed": true,
+              "key": "SCRAMBLING:a08c09ab02efc367c67be066e54f0294e9d6b8eb3164b77b05e993981f144f90505f4b1ce2b9b312d28a073f02dbffadff06940c0c1d58c83a8e9fee9caf1007",
+              "request": "SCRAMBLING:b898b0078523"
+            }
+          }
+        },
+        "error": false,
+        "id": "license-get"
+      }
+    },
+    "ip1_addr": "239.70.62.4",
+    "ip1_port": 1000,
+    "ip3_addr": "239.80.62.4",
+    "ip3_port": 1000
+  },
+  {
+    "ip": "192.168.150.144",
+    "type": "Encoder",
+    "role": "encoder",
+    "model": "hw-omni-e4521",
+    "version": "2.1.0_RC05",
+    "hostname": "hw-omni-e4521-85e6",
+    "serialnumber": "3452000000000851406",
+    "mac": "b8:98:b0:07:85:e6",
+    "details": {
+      "systeminfo": {
+        "config": {
+          "board": {
+            "revision": "",
+            "serialnumber": "3452000000000851406"
+          },
+          "buttons": {
+            "enabled": true,
+            "menuenabled": false
+          },
+          "cpufanspeed": 5510,
+          "datetime": "2026-01-29T22:04:51.000UTC",
+          "description": "",
+          "detailedfirmwareversion": "SW: 2.1.0_RC05.AUTOINC+a55ae4e16a, FPGA: 2.0 (e72ad28), MCU: 0.2.46",
+          "dietemperature": 73.086218261496,
+          "eps": {
+            "present": false
+          },
+          "firmwareversion": "2.1.0_RC05",
+          "fpga": "xc7z035-ffg676",
+          "hostname": "hw-omni-e4521-85e6",
+          "lcd": {
+            "brightness": 10
+          },
+          "leds": {
+            "enabled": true
+          },
+          "location": "",
+          "model": "hw-omni-e4521",
+          "ntpserver": "pool.ntp.org",
+          "supported_system_modes": [
+            "Colibri"
+          ],
+          "sysfanspeed": 5378,
+          "system_mode": "Colibri",
+          "temperature": 58.125,
+          "type": "Encoder",
+          "uptime": 29061
+        },
+        "error": false,
+        "id": "systeminfo-get"
+      },
+      "license": {
+        "config": {
+          "device_id": "b898b00785e6",
+          "features": {
+            "4k": {
+              "installed": true,
+              "key": "4K:3f1ee72997933bc7c1c05472f38dbd3322b2a1ac11bbf0ffda5a9d6c2ebbaf43a89cbb6fd77f9a5a0f6895174092961728bdc566cc667dbacac7b0c543c0fb04",
+              "request": "4K:b898b00785e6"
+            },
+            "fec": {
+              "installed": true,
+              "key": "FEC:9c9be47f147b7e93537be984c4010e9b40282f0ece2a339cd96bd3efc451ebc46853cceb9a46cb387a54129feaf268529000040c826928e40551ea9e5aa1d703",
+              "request": "FEC:b898b00785e6"
+            },
+            "scrambling": {
+              "installed": true,
+              "key": "SCRAMBLING:ee1c7169ff320d0ba6712843cc8414ad6f03ea9252f93f89332bd9e58714f74ad98b537a4305007b9311568e5df1ed281330dd60b8f802ad56ddcae79c79a500",
+              "request": "SCRAMBLING:b898b00785e6"
+            }
+          }
+        },
+        "error": false,
+        "id": "license-get"
+      }
+    },
+    "v_mcast": "239.70.133.230",
+    "v_port": 1000,
+    "a_mcast": "239.80.133.230",
+    "a_port": 1000
+  },
+  {
+    "ip": "192.168.150.142",
+    "type": "Encoder",
+    "role": "encoder",
+    "model": "hw-omni-e4111",
+    "version": "2.1.0_RC05",
+    "hostname": "hw-omni-e4111-08414",
+    "serialnumber": "3452000000000000014",
+    "mac": "b8:98:b0:07:84:fe",
+    "details": {
+      "systeminfo": {
+        "config": {
+          "board": {
+            "revision": "",
+            "serialnumber": "3452000000000000014"
+          },
+          "buttons": {
+            "enabled": true,
+            "menuenabled": false
+          },
+          "cpufanspeed": 3316,
+          "datetime": "2026-01-29T22:04:51.000UTC",
+          "description": "",
+          "detailedfirmwareversion": "SW: 2.1.0_RC05.AUTOINC+a55ae4e16a, FPGA: 2.0 (e72ad28), MCU: 0.2.46",
+          "dietemperature": 74.193585204852,
+          "firmwareversion": "2.1.0_RC05",
+          "fpga": "xc7z035-ffg676",
+          "hostname": "hw-omni-e4111-08414",
+          "lcd": {
+            "brightness": 10
+          },
+          "leds": {
+            "enabled": true
+          },
+          "location": "",
+          "model": "hw-omni-e4111",
+          "ntpserver": "pool.ntp.org",
+          "supported_system_modes": [
+            "Colibri"
+          ],
+          "sysfanspeed": 2070,
+          "system_mode": "Colibri",
+          "temperature": 60.625,
+          "type": "Encoder",
+          "uptime": 29061
+        },
+        "error": false,
+        "id": "systeminfo-get"
+      },
+      "license": {
+        "config": {
+          "device_id": "b898b00784fe",
+          "features": {
+            "4k": {
+              "installed": true,
+              "key": "4K:d3fed0309a2bb3b4fa524cbeef002c08e6b1ffb07c2bedd5a82d13e6d630e8e51f4485898f9a26565ea7eabbbc06d37b667d33828e1ab3e0d71052e0b6fe5304",
+              "request": "4K:b898b00784fe"
+            },
+            "fec": {
+              "installed": true,
+              "key": "FEC:f8ab5dc632ab51ee90d4d9e6df000fcc5848c0edc15270f0c613f22456369ce35f49486c31985bac258a2bcf587682d8b4585516142a8960c3fd347d857a0207",
+              "request": "FEC:b898b00784fe"
+            },
+            "scrambling": {
+              "installed": true,
+              "key": "SCRAMBLING:c62e7143aa1b9c6eb1b8017550789d08064f8db4b98aa8b30f639610cf5ecc30c76bf10c9bc85807bf45ea89b7f8c8495697997402065e436c16fe0438692203",
+              "request": "SCRAMBLING:b898b00784fe"
+            }
+          }
+        },
+        "error": false,
+        "id": "license-get"
+      }
+    },
+    "v_mcast": "239.70.132.254",
+    "v_port": 1000,
+    "a_mcast": "239.80.132.254",
+    "a_port": 1000
+  }
+]

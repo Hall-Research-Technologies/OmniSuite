@@ -1,0 +1,2445 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta http-equiv="X-UA-Compatible" content="IE=edge"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>OmniSuite Upgrade Manager</title>
+  <link rel="icon" href="/ui/favicon.ico">
+  <style>
+    .hover-preview{
+      position:fixed; z-index:10000; display:none;
+      border:1px solid var(--border); background:var(--card);
+      padding:6px; border-radius:8px; box-shadow:0 6px 20px rgba(0,0,0,.35);
+      max-width:50vw; max-height:50vh; overflow:hidden;
+    }
+    .hover-preview img{ max-width:50vw; max-height:50vh; display:block; }
+  </style>
+  <div id="hover_preview" class="hover-preview"><img id="hover_preview_img" alt="preview"/></div>
+  <style>
+    :root{--bg:#1d232a;--card:#222a33;--panel-2:#262f39;--fg:#e9eef5;--muted:#9aa7b4;--accent:#1e90ff;--accent-strong:#1f2937;--border:rgba(255,255,255,0.08);--table:#0f172a;--spinner:#9ca3af;--danger:#e5534b}
+    .light{--bg:#f7f8fb;--card:#fff;--panel-2:#f2f5f8;--fg:#0d1117;--muted:#5a6b7a;--border:rgba(0,0,0,.08);--table:#fff;--accent:#1e90ff;--accent-strong:#f2f5f8;--spinner:#6b7280}
+    *{box-sizing:border-box}
+    body{margin:16px;background:var(--bg);color:var(--fg);font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif;font-size:14px;line-height:1.4;min-width:1000px}
+    a{color:#93c5fd;text-decoration:underline;cursor:pointer}
+    a:hover{opacity:.8}
+    h1{margin:0 0 14px;font-size:22px;font-weight:600}
+    input[type=checkbox]{cursor:pointer}
+    .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    .box{border:1px solid var(--border);background:var(--card);border-radius:10px;padding:12px;margin:4px 0}
+    /* Header */
+    .header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+    .header .left{display:flex;align-items:center;gap:12px}
+    .header .logo{height:48px;width:auto;border-radius:6px}
+    .header h1{margin:0}
+    .header .controls{display:flex;gap:12px;align-items:center}
+    .toggle{display:inline-flex;align-items:center;gap:8px;cursor:pointer;user-select:none}
+    .toggle *{pointer-events:none}
+    .toggle .label{opacity:.9;font-size:14px}
+    .switch{position:relative;width:33px;height:18px;background:var(--border);border-radius:999px}
+      .switch{position:relative;width:33px;height:18px;background:var(--border);border-radius:999px;cursor:pointer}
+    .switch.on{background:rgba(30,144,255,.25)}
+    .knob{position:absolute;top:1px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--fg);transition:left .15s}
+    .switch.on .knob{left:17px;background:var(--accent)}
+    .gear-btn{width:36px;height:36px;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid var(--border);background:var(--panel-2);cursor:pointer;font-size:18px;color:var(--fg)}
+    .gear-btn:hover{filter:brightness(1.1)}
+    /* Control bar */
+    .control-bar{display:flex;gap:12px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+    .control-bar .label{font-size:12px;color:var(--muted)}
+    select,input[type=text],input[type=number],input[type=password]{font-size:14px;color:var(--fg);background:var(--card);border:1px solid var(--border);padding:6px 8px;border-radius:6px;outline:none}
+    select{width:120px}
+    input[type=text]{width:160px}
+    input[type=text].wide{width:240px}
+    input[type=number]{width:100px}
+    input[type=password]{width:160px}
+    .btn{padding:3px 8px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--accent);color:var(--fg);font-size:14px;display:inline-flex;align-items:center;gap:6px;transition:filter .16s}
+    .btn:hover{filter:brightness(1.1)}
+    .btn.small{padding:3px 8px;font-size:12px}
+    .btn.danger{background:var(--danger)}
+    /* Table */
+    .table-wrapper{overflow-x:auto;border:1px solid var(--border);border-radius:8px;background:var(--table)}
+    table{width:100%;border-collapse:collapse;background:var(--table);font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif}
+    th,td{padding:6px 8px;border-bottom:1px solid var(--border);text-align:left;font-size:14px;font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif}
+    th{background:var(--table);font-weight:600;font-size:14px}
+    tr:hover{background:rgba(30,144,255,.08)}
+    .ip{color:#93c5fd;text-decoration:underline;cursor:pointer}
+    .status{padding:2px 8px;border-radius:999px;font-size:12px;display:inline-flex;align-items:center;gap:6px}
+    .s-idle{background:#14532d;color:#bbf7d0}
+    .s-error{background:#7f1d1d;color:#fecaca}
+    .s-uploading{background:#854d0e;color:#fde68a}
+    .s-upgrading{background:#1d4ed8;color:#dbeafe}
+    .s-rebooting{background:#0f172a;color:#bfdbfe;border:1px solid rgba(255,255,255,0.08)}
+    .s-na{background:#374151;color:#e5e7eb}
+    .pwd-pill{padding:2px 8px;border-radius:999px;font-size:12px;display:inline-flex;align-items:center;gap:6px}
+    .pwd-primary{background:#1f2937;color:#e5e7eb}
+    .pwd-fallback{background:#7f1d1d;color:#fecaca}
+    .usb-pill{padding:2px 6px;border-radius:999px;font-size:11px;background:#1d4ed8;color:#dbeafe;display:inline-block}
+    .action-btn{background:transparent;color:var(--fg);border:none;cursor:pointer;font-size:16px;padding:0;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;line-height:1}
+    .action-btn:hover{background:var(--accent);transform:scale(1.05)}
+    .action-link{color:#93c5fd;cursor:pointer;text-decoration:underline}
+    .action-link:hover{opacity:.8}
+    /* Footer bar */
+    .footer-bar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap}
+    .footer-bar .left{display:flex;gap:8px}
+    .footer-bar .right{display:flex;gap:8px}
+    /* Modal */
+    .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;z-index:20000}
+    .modal{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;width:540px;max-width:95%;color:var(--fg)}
+    .modal h3{margin:0 0 12px 0;font-size:16px;font-weight:600}
+    .modal-row{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+    .modal-row label{min-width:100px;font-size:12px;color:var(--muted)}
+    .modal-row input[type=text],.modal-row select{flex:1}
+    .modal-row input[type=password]{flex:1}
+    .modal-path-input{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+    .modal-path-input input[type=text]{flex:1}
+    .modal-error{color:var(--danger);font-size:12px;margin:8px 0;display:none}
+    .modal-buttons{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+    .browser-list{max-height:300px;overflow-y:auto;border:1px solid var(--border);padding:8px;background:var(--panel-2);border-radius:6px;margin-bottom:10px}
+    .browser-item{padding:8px;cursor:pointer;border-bottom:1px solid var(--border);border-radius:4px;transition:all .1s}
+    .browser-item:hover{background:rgba(30,144,255,.15)}
+    .browser-item:last-child{border-bottom:none}
+    .small{font-size:12px;color:var(--muted)}
+    .code{font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif;font-size:11px;opacity:.8}
+    .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--spinner);border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .pill{padding:4px 10px;border-radius:999px;background:var(--accent-strong);color:var(--fg);font-size:12px}
+    /* Tabs */
+    .tabs{display:flex;gap:0;}
+    .tab{padding:8px 16px;cursor:pointer;background:transparent;color:var(--muted);border:none;font-size:14px;font-weight:500;border-bottom:2px solid transparent;transition:all .16s;text-decoration:none;border-radius:6px 6px 0 0}
+    .tab:hover{color:var(--fg);background:rgba(30,144,255,.08)}
+    .tab.active{color:var(--accent);background:rgba(30,144,255,.08)}
+    /* Loading Overlay */
+    .loading-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:30000;}
+    .loading-overlay.hidden{display:none!important;}
+    .loading-message{color:var(--fg);text-align:center;padding:40px;font-size:18px;}
+    .loading-spinner{width:40px;height:40px;border:4px solid rgba(255,255,255,0.2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 20px;}
+    .version-footer{position:fixed;right:14px;bottom:10px;font-size:12px;color:var(--muted);opacity:.85;pointer-events:none}
+  </style>
+</head>
+<body>
+<script>
+  // Apply theme immediately to prevent flash
+  (function(){
+    const dark = localStorage.getItem("dark") !== "false";
+    const apply = ()=>{
+      const target = document.body || document.documentElement;
+      if (!target) return;
+      target.classList.toggle("light", !dark);
+    };
+    if (document.body) {
+      apply();
+    } else {
+      document.addEventListener('DOMContentLoaded', apply, {once:true});
+    }
+  })();
+</script>
+
+<!-- Header -->
+<div class="header">
+  <div class="left">
+    <img src="/ui/companylogo.png" alt="Company Logo" class="logo">
+    <h1>OmniSuite Upgrade Manager</h1>
+  </div>
+  <div class="controls">
+    <div class="tabs">
+      <a href="/" class="tab active">Device Manager</a>
+      <a href="/matrix" class="tab">A/V Matrix</a>
+      <a href="/matrix/usb" class="tab">USB Matrix</a>
+    </div>
+    <label class="toggle" id="header_dark_label">
+      <input type="checkbox" id="dark_mode_toggle" style="display:none;" />
+      <div style="font-size:14px;">Dark Mode</div>
+      <div id="dark_switch" class="switch on"><div class="knob"></div></div>
+    </label>
+    <button id="header_gear" class="gear-btn" title="Settings">⚙️</button>
+  </div>
+</div>
+
+<!-- Scan Control Bar -->
+<div class="box">
+  <div class="row">
+    <div>
+      <label for="adapters" class="small">Adapters</label>
+      <select id="adapters" style="width:240px;"></select>
+    </div>
+    <div>
+      <label for="targets" class="small">Targets</label>
+      <input id="targets" type="text" placeholder="e.g. 10.1.1.1-254 or 10.1.1.1/24" style="width:240px;"/>
+    </div>
+    <button id="scan_btn" class="btn">🔍 Scan</button>
+    <button id="clear_units_btn" class="btn">🗑️ Clear Units</button>
+    <span id="scan_status" class="small pill"></span>
+  </div>
+</div>
+
+<!-- Firmware/Upgrade Control Bar -->
+<div class="box">
+  <div class="row" style="gap:16px;">
+    <div style="display:flex; align-items:center; gap:4px;">
+      <button class="btn" id="refresh_files_btn" style="color:#1e90ff; background:transparent; border:none; font-size:20px; padding:4px 8px; cursor:pointer;" title="Refresh firmware list">🔄</button>
+      <button class="btn" id="open_firmware_folder_btn" style="color:#1e90ff; background:transparent; border:none; font-size:20px; padding:4px 8px; cursor:pointer;" title="Open firmware folder">📁</button>
+      <div>
+        <select id="files" style="width:240px;"></select>
+      </div>
+    </div>
+    <button id="upgrade_btn" class="btn">⚡ Upgrade Selected</button>
+    <div style="margin-left:auto; display:flex; align-items:center; gap:8px;">
+      <label class="toggle" for="poll_units_toggle" style="margin:0;">
+        <span class="label">Poll Units</span>
+        <input type="checkbox" id="poll_units_toggle" style="display:none;"/>
+        <div id="poll_switch" class="switch"><div class="knob"></div></div>
+      </label>
+    </div>
+  </div>
+</div>
+
+<!-- Units Table -->
+<div class="table-wrapper">
+  <table>
+    <thead>
+      <tr>
+        <th style="width:32px;"><input type="checkbox" id="select_all"></th>
+        <th onclick="sortTable(1)">IP</th>
+        <th onclick="sortTable(2)">MAC</th>
+        <th onclick="sortTable(3)">Link Speed</th>
+        <th onclick="sortTable(4)">Hostname</th>
+        <th onclick="sortTable(5)">TimeZone</th>
+        <th onclick="sortTable(6)">NTP Server</th>
+        <th onclick="sortTable(7)">Type</th>
+        <th onclick="sortTable(8)">Model</th>
+        <th onclick="sortTable(9)">Version</th>
+        <th>Password</th>
+        <th style="width:60px;">Status</th>
+        <th style="width:40px;">Blink</th>
+        <th style="width:70px;">Preview</th>
+        <th style="width:90px;">USB</th>
+      </tr>
+    </thead>
+    <tbody id="units_table">
+      <tr><td colspan="14" style="text-align:center;padding:40px;opacity:.6;">Scan to discover units</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- Footer Actions -->
+<div class="footer-bar">
+  <div class="left">
+    <button class="btn danger" id="reboot_btn" title="Reboot selected devices">🔃 Reboot Selected</button>
+    <button class="btn danger" id="remove_btn" title="Remove selected devices from cache">🗑️ Remove Selected</button>
+    <button class="btn" id="sync_passwords_btn" title="Synchronize unit passwords to primary or fallback">🔐 Sync all Passwords</button>
+    <button class="btn" id="set_ntp_btn" title="Set NTP server and timezone for selected units or all">🕒 Set NTP</button>
+  </div>
+  <div class="right">
+    <button class="btn" id="export_units_btn">⬇️ Inventory</button>
+  </div>
+</div>
+
+<!-- Configuration Modal -->
+<div id="cfg_backdrop" class="modal-backdrop">
+  <div class="modal">
+    <h3>Configuration</h3>
+    <div class="modal-row">
+      <label>Username</label>
+      <input id="cfg_username" type="text" value="admin"/>
+    </div>
+    <div class="modal-row">
+      <label>Password</label>
+      <div style="display:flex;gap:6px;flex:1;">
+        <input id="cfg_password" type="password" style="flex:1;"/>
+        <button id="cfg_pw_toggle" class="btn small" type="button">👁️</button>
+      </div>
+    </div>
+    <div class="modal-row">
+      <label>Fallback Password</label>
+      <div style="display:flex;gap:6px;flex:1;">
+        <input id="cfg_fallback_password" type="password" style="flex:1;"/>
+        <button id="cfg_fallback_pw_toggle" class="btn small" type="button">👁️</button>
+      </div>
+    </div>
+    <div class="modal-row">
+      <label>WS Port</label>
+      <select id="cfg_ws_port" style="width:140px;">
+        <option value="80" selected>80 (ws/http)</option>
+        <option value="443">443 (wss/https)</option>
+      </select>
+    </div>
+    <div class="modal-row">
+      <label>Timeout (s)</label>
+      <input id="cfg_timeout" type="number" value="4.5" step="0.1" style="width:100px;"/>
+    </div>
+    <div class="modal-row">
+      <label>Concurrency</label>
+      <select id="cfg_concurrency" style="width:100px;">
+        <option>1</option><option>2</option><option>4</option><option selected>6</option><option>8</option><option>12</option>
+      </select>
+    </div>
+    <div class="modal-row">
+      <label>Firmware Path</label>
+      <div class="modal-path-input">
+        <input id="cfg_firmware_path" type="text" placeholder="e.g. ui/firmware/"/>
+        <button id="cfg_firmware_browse" class="btn small" type="button">📁</button>
+      </div>
+    </div>
+    <div id="cfg_error" class="modal-error"></div>
+    <div class="modal-buttons">
+      <button id="cfg_close" class="btn" type="button">Close</button>
+      <button id="cfg_save" class="btn" type="button">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Password Sync Modal -->
+<div id="sync_pwd_backdrop" class="modal-backdrop">
+  <div class="modal" style="width:560px;">
+    <h3>Sync all Passwords</h3>
+    <div class="small" style="margin-bottom:10px;line-height:1.45;">
+      Use this to make all discovered units use one admin password.<br/>
+      1) Pick <b>Sync to Primary</b> or <b>Sync to Fallback</b>.<br/>
+      2) Click <b>Sync</b> to update units that are not already on that password.<br/>
+      Note: the password you are moving away from must be the unit's current password (or the sync cannot authenticate that unit).<br/>
+      To change the Primary/Fallback password values, open the <b>⚙ Configuration</b> panel (gear icon) and update them there.
+    </div>
+    <div class="modal-row" style="align-items:flex-start;">
+      <label>Target</label>
+      <div style="display:flex;flex-direction:column;gap:10px;flex:1;">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input id="sync_target_primary" type="radio" name="sync_target" value="primary" checked>
+          <span>Sync to Primary</span>
+        </label>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <input id="sync_primary_password" type="password" readonly style="flex:1;"/>
+          <button id="sync_primary_eye" class="btn small" type="button">👁️</button>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input id="sync_target_fallback" type="radio" name="sync_target" value="fallback">
+          <span>Sync to Fallback</span>
+        </label>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <input id="sync_fallback_password" type="password" readonly style="flex:1;"/>
+          <button id="sync_fallback_eye" class="btn small" type="button">👁️</button>
+        </div>
+      </div>
+    </div>
+    <div id="sync_pwd_error" class="modal-error"></div>
+    <div class="modal-buttons">
+      <button id="sync_pwd_cancel" class="btn" type="button">Cancel</button>
+      <button id="sync_pwd_confirm" class="btn" type="button">Sync</button>
+    </div>
+  </div>
+</div>
+
+<!-- NTP Modal -->
+<div id="set_ntp_backdrop" class="modal-backdrop">
+  <div class="modal" style="width:620px;">
+    <h3>Set NTP</h3>
+    <div class="small" style="margin-bottom:10px;line-height:1.45;">
+      Set NTP server and timezone for selected units or all discovered units.
+    </div>
+    <div class="small" style="margin-bottom:10px;color:var(--warn, #f0b35a);line-height:1.45;">
+      Units must be rebooted for NTP and timezone changes to take effect.
+    </div>
+    <div class="modal-row" style="align-items:flex-start;">
+      <label>Apply To</label>
+      <div style="display:flex;flex-direction:column;gap:8px;flex:1;">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input id="ntp_scope_selected" type="radio" name="ntp_scope" value="selected" checked>
+          <span id="ntp_scope_selected_label">Selected units (0)</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input id="ntp_scope_all" type="radio" name="ntp_scope" value="all">
+          <span id="ntp_scope_all_label">All units (0)</span>
+        </label>
+      </div>
+    </div>
+    <div class="modal-row">
+      <label>NTP Server</label>
+      <input id="ntp_server_input" type="text" placeholder="e.g. pool.ntp.org" style="flex:1;"/>
+    </div>
+    <div class="modal-row">
+      <label>Timezone</label>
+      <select id="ntp_timezone_select" style="flex:1;"></select>
+    </div>
+    <div id="set_ntp_error" class="modal-error"></div>
+    <div class="modal-buttons">
+      <button id="set_ntp_cancel" class="btn" type="button">Cancel</button>
+      <button id="set_ntp_confirm" class="btn" type="button">Apply</button>
+      <button id="set_ntp_confirm_reboot" class="btn danger" type="button">Apply and Reboot</button>
+    </div>
+  </div>
+</div>
+
+<!-- Folder Browser Modal -->
+<div id="cfg_browser_backdrop" class="modal-backdrop">
+  <div class="modal" style="width:600px;">
+    <h3>Select Folder</h3>
+    <div style="display:flex;gap:8px;margin-bottom:10px;">
+      <button id="cfg_browser_up" class="btn small">📁 Up</button>
+      <input id="cfg_browser_path" type="text" readonly style="flex:1;"/>
+      <button id="cfg_browser_select" class="btn small">Select</button>
+      <button id="cfg_browser_cancel" class="btn small">Cancel</button>
+    </div>
+    <div id="cfg_browser_list" class="browser-list"></div>
+  </div>
+</div>
+
+<!-- Loading Overlay -->
+<div id="loading_overlay" class="loading-overlay hidden">
+  <div class="loading-message">
+    <div class="loading-spinner"></div>
+    <div>Please standby while we populate the list of cached units...</div>
+  </div>
+</div>
+
+<script>
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
+
+// ===== Firmware Compatibility =====
+// Must be defined early so loadFiles() can use it
+const FIRMWARE_MODEL_MAP = {
+  'dual': ['at-omni-112', 'at-omni-122'],
+  'single': ['at-omni-111', 'at-omni-121', 'at-omni-111-wp'],
+  'omni2': ['at-omni-d4111', 'at-omni-d4511', 'at-omni-e4521', 'at-omni-e4111-wp', 'at-omni-e4111', 'hw-omni-d4111', 'hw-omni-d4511', 'hw-omni-e4521', 'hw-omni-e4111-wp', 'hw-omni-e4111'],
+  'residential': ['at-omni-512', 'at-omni-521']
+};
+
+function _getFirmwareType(filename) {
+  const f = (filename || '').toLowerCase();
+  if (f.includes('-dual-')) return 'dual';
+  if (f.includes('-single-')) return 'single';
+  if (f.includes('-omni2-')) return 'omni2';
+  if (f.includes('-residential-')) return 'residential';
+  return 'any';
+}
+
+function _checkFirmwareCompatibility(fwType, selectedIps) {
+  const compatibleModels = FIRMWARE_MODEL_MAP[fwType] || [];
+  const incompatible = [];
+  
+  selectedIps.forEach(ip => {
+    const row = getRowByIp(ip);
+    if (!row) return;
+    
+    const modelCell = row.cells[8];
+    const model = modelCell ? modelCell.textContent.trim() : '';
+    
+    console.log(`[FIRMWARE_CHECK] ${ip}: model="${model}", compatible="${compatibleModels.some(m => model.toLowerCase().includes(m))}"`);
+    
+    if (model && !compatibleModels.some(m => model.toLowerCase().includes(m))) {
+      incompatible.push(`${ip} (${model})`);
+    }
+  });
+  
+  console.log(`[FIRMWARE_CHECK] Incompatible devices: ${JSON.stringify(incompatible)}`);
+  return incompatible;
+}
+
+function getVisibleSelectableRowCheckboxes() {
+  const rows = Array.from($$('#units_table tr'));
+  return rows
+    .filter(row => row && row.cells && row.cells.length > 0 && getComputedStyle(row).display !== 'none')
+    .map(row => row.querySelector('input[type="checkbox"].row-select'))
+    .filter(cb => cb && !cb.disabled);
+}
+
+function updateSelectAllCheckboxState() {
+  const selectAll = $('#select_all');
+  if (!selectAll) return;
+  const visibleCheckboxes = getVisibleSelectableRowCheckboxes();
+  const allChecked = visibleCheckboxes.length > 0 && visibleCheckboxes.every(cb => cb.checked);
+  selectAll.checked = allChecked;
+}
+
+// ===== Theme Toggle =====
+function initTheme() {
+  const darkSwitch = document.getElementById('dark_switch');
+  const darkToggle = document.getElementById('dark_mode_toggle');
+
+  const applyTheme = (isDark) => {
+    document.body.classList.toggle('light', !isDark);
+    if (darkSwitch) darkSwitch.classList.toggle('on', isDark);
+    if (darkToggle) darkToggle.checked = isDark;
+  };
+
+  applyTheme(localStorage.getItem('dark') !== 'false');
+
+  const label = document.getElementById('header_dark_label');
+  if (label) {
+    const toggle = () => {
+      const nowDark = !document.body.classList.contains('light');
+      const nextDark = !nowDark;
+      applyTheme(nextDark);
+      localStorage.setItem('dark', nextDark.toString());
+    };
+    label.addEventListener('click', (e) => { e.preventDefault(); toggle(); });
+    if (darkToggle) darkToggle.addEventListener('change', () => toggle());
+    if (darkSwitch) darkSwitch.addEventListener('click', (e) => { e.preventDefault(); toggle(); });
+  }
+
+  // Keep in sync across tabs/pages
+  window.addEventListener('storage', (e) => {
+    if (e.key === 'dark') {
+      applyTheme(e.newValue !== 'false');
+    }
+  });
+}
+
+// ===== Configuration Modal =====
+function initConfig() {
+  const gear = $('#header_gear');
+  const backdrop = $('#cfg_backdrop');
+  const closeBtn = $('#cfg_close');
+  const saveBtn = $('#cfg_save');
+  const pwToggle = $('#cfg_pw_toggle');
+  const pwInput = $('#cfg_password');
+  const fallbackPwToggle = $('#cfg_fallback_pw_toggle');
+  const fallbackPwInput = $('#cfg_fallback_password');
+  const fbtn = $('#cfg_firmware_browse');
+  
+  // Store current password values so they persist even if user doesn't view them
+  let currentPassword = 'password';
+  let currentFallbackPassword = 'Atlona';
+
+  if (gear) gear.addEventListener('click', () => backdrop.style.display = 'flex');
+  if (closeBtn) closeBtn.addEventListener('click', () => backdrop.style.display = 'none');
+  
+  backdrop.addEventListener('click', (e) => {
+    if (e.target === backdrop) backdrop.style.display = 'none';
+  });
+
+  if (pwToggle && pwInput) {
+    pwToggle.addEventListener('click', async (e) => {
+      e.preventDefault();
+      if (pwInput.type === 'password') {
+        // Show password - fetch actual value from server
+        try {
+          const res = await fetch('/api/config?include_password=1');
+          const cfg = await res.json();
+          if (cfg.ok && cfg.password) {
+            pwInput.value = cfg.password;
+            currentPassword = cfg.password;
+          }
+        } catch (err) {}
+        pwInput.type = 'text';
+      } else {
+        // Hide password
+        pwInput.type = 'password';
+      }
+    });
+  }
+
+  if (fallbackPwToggle && fallbackPwInput) {
+    fallbackPwToggle.addEventListener('click', async (e) => {
+      e.preventDefault();
+      if (fallbackPwInput.type === 'password') {
+        // Show password - fetch actual value from server
+        try {
+          const res = await fetch('/api/config?include_password=1');
+          const cfg = await res.json();
+          if (cfg.ok && cfg.fallback_password) {
+            fallbackPwInput.value = cfg.fallback_password;
+            currentFallbackPassword = cfg.fallback_password;
+          }
+        } catch (err) {}
+        fallbackPwInput.type = 'text';
+      } else {
+        // Hide password
+        fallbackPwInput.type = 'password';
+      }
+    });
+  }
+
+  if (fbtn) {
+    fbtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      openFolderBrowser($('#cfg_firmware_path').value, '#cfg_firmware_path');
+    });
+  }
+
+  if (saveBtn) {
+    saveBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      // Use stored values if input is empty
+      const pwValue = pwInput.value || currentPassword || 'password';
+      const fallbackPwValue = fallbackPwInput.value || currentFallbackPassword || 'Atlona';
+      
+      const payload = {
+        username: $('#cfg_username').value || 'admin',
+        password: pwValue,
+        fallback_password: fallbackPwValue,
+        ws_port: parseInt($('#cfg_ws_port').value || '80'),
+        timeout: parseFloat($('#cfg_timeout').value || '4.5'),
+        concurrency: parseInt($('#cfg_concurrency').value || '6'),
+        firmware_path: $('#cfg_firmware_path').value
+      };
+      try {
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        if (res.ok) {
+          $('#cfg_error').textContent = 'Configuration saved';
+          $('#cfg_error').style.color = 'var(--accent)';
+          $('#cfg_error').style.display = 'block';
+        } else {
+          $('#cfg_error').textContent = 'Save failed';
+          $('#cfg_error').style.color = 'var(--danger)';
+          $('#cfg_error').style.display = 'block';
+        }
+      } catch (e) {
+        $('#cfg_error').textContent = 'Error: ' + e.message;
+        $('#cfg_error').style.color = 'var(--danger)';
+        $('#cfg_error').style.display = 'block';
+      }
+    });
+  }
+
+  // Load current config on modal open
+  gear.addEventListener('click', async () => {
+    try {
+      const res = await fetch('/api/config?include_password=1');
+      const cfg = await res.json();
+      if (cfg.ok) {
+        $('#cfg_error').style.display = 'none';
+        $('#cfg_error').style.color = 'var(--danger)';
+        $('#cfg_error').textContent = '';
+        $('#cfg_username').value = cfg.username || 'admin';
+        $('#cfg_ws_port').value = cfg.ws_port || 80;
+        $('#cfg_timeout').value = cfg.timeout || 4.5;
+        $('#cfg_concurrency').value = cfg.concurrency || 6;
+        $('#cfg_firmware_path').value = cfg.firmware_path || '';
+        // Store current passwords for later use
+        currentPassword = cfg.password || 'password';
+        currentFallbackPassword = cfg.fallback_password || 'Atlona';
+        // Clear password fields initially (user needs to click eye to view them)
+        pwInput.value = '';
+        fallbackPwInput.value = '';
+        pwInput.type = 'password';
+        fallbackPwInput.type = 'password';
+      }
+    } catch (e) {}
+  });
+}
+
+function initPasswordSync() {
+  const openBtn = $('#sync_passwords_btn');
+  const backdrop = $('#sync_pwd_backdrop');
+  const cancelBtn = $('#sync_pwd_cancel');
+  const confirmBtn = $('#sync_pwd_confirm');
+  const primaryInput = $('#sync_primary_password');
+  const fallbackInput = $('#sync_fallback_password');
+  const primaryEye = $('#sync_primary_eye');
+  const fallbackEye = $('#sync_fallback_eye');
+  const primaryRadio = $('#sync_target_primary');
+  const fallbackRadio = $('#sync_target_fallback');
+  const err = $('#sync_pwd_error');
+
+  if (!openBtn || !backdrop || !cancelBtn || !confirmBtn) return;
+
+  const clearError = () => {
+    if (!err) return;
+    err.style.display = 'none';
+    err.textContent = '';
+  };
+
+  const showError = (msg) => {
+    if (!err) return;
+    err.textContent = msg;
+    err.style.display = 'block';
+  };
+
+  const setBusy = (busy) => {
+    openBtn.disabled = busy;
+    cancelBtn.disabled = busy;
+    confirmBtn.disabled = busy;
+    if (primaryRadio) primaryRadio.disabled = busy;
+    if (fallbackRadio) fallbackRadio.disabled = busy;
+    confirmBtn.textContent = busy ? 'Syncing...' : 'Sync';
+  };
+
+  const togglePasswordVisibility = (input) => {
+    if (!input) return;
+    input.type = input.type === 'password' ? 'text' : 'password';
+  };
+
+  primaryEye?.addEventListener('click', () => togglePasswordVisibility(primaryInput));
+  fallbackEye?.addEventListener('click', () => togglePasswordVisibility(fallbackInput));
+
+  const closeModal = () => {
+    backdrop.style.display = 'none';
+    clearError();
+    setBusy(false);
+    if (primaryInput) primaryInput.type = 'password';
+    if (fallbackInput) fallbackInput.type = 'password';
+  };
+
+  cancelBtn.addEventListener('click', closeModal);
+  backdrop.addEventListener('click', (e) => {
+    if (e.target === backdrop) closeModal();
+  });
+
+  openBtn.addEventListener('click', async () => {
+    clearError();
+    setBusy(true);
+    try {
+      const res = await fetch('/api/config?include_password=1');
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Failed to load passwords');
+      }
+
+      if (primaryInput) primaryInput.value = data.password || '';
+      if (fallbackInput) fallbackInput.value = data.fallback_password || '';
+      if (primaryRadio) primaryRadio.checked = true;
+      if (fallbackRadio) fallbackRadio.checked = false;
+
+      backdrop.style.display = 'flex';
+    } catch (e) {
+      showError(e.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  confirmBtn.addEventListener('click', async () => {
+    clearError();
+    const target = (document.querySelector('input[name="sync_target"]:checked') || {}).value;
+    if (!target) {
+      showError('Please select a target password.');
+      return;
+    }
+
+    const targetLabel = target === 'fallback' ? 'Fallback' : 'Primary';
+    if (!window.confirm(`Sync all unit admin passwords to ${targetLabel}?`)) {
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const res = await fetch('/api/sync_passwords', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({target})
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Password sync failed');
+      }
+
+      $('#scan_status').innerHTML = `✅ Password sync complete (${data.updated} updated, ${data.skipped} already set, ${data.failed} failed)`;
+      closeModal();
+      await loadUnits();
+    } catch (e) {
+      showError(e.message || String(e));
+      setBusy(false);
+    }
+  });
+}
+
+function initSetNtp() {
+  const openBtn = $('#set_ntp_btn');
+  const backdrop = $('#set_ntp_backdrop');
+  const cancelBtn = $('#set_ntp_cancel');
+  const confirmBtn = $('#set_ntp_confirm');
+  const confirmRebootBtn = $('#set_ntp_confirm_reboot');
+  const timezoneSel = $('#ntp_timezone_select');
+  const serverInput = $('#ntp_server_input');
+  const selectedRadio = $('#ntp_scope_selected');
+  const allRadio = $('#ntp_scope_all');
+  const selectedLabel = $('#ntp_scope_selected_label');
+  const allLabel = $('#ntp_scope_all_label');
+  const err = $('#set_ntp_error');
+
+  if (!openBtn || !backdrop || !cancelBtn || !confirmBtn || !confirmRebootBtn || !timezoneSel) return;
+
+  const getCheckedIps = () => Array.from($$('.row-select:checked')).map(cb => cb.getAttribute('data-ip')).filter(Boolean);
+  const getAllIps = () => Array.from($$('#units_table tr[data-ip]')).map(tr => tr.getAttribute('data-ip')).filter(Boolean);
+
+  const parseJsonResponse = async (res, fallbackMessage) => {
+    const raw = await res.text();
+    try {
+      return JSON.parse(raw || '{}');
+    } catch (e) {
+      throw new Error(`${fallbackMessage} (HTTP ${res.status})`);
+    }
+  };
+
+  const loadLocalTimezones = (preferred = 'UTC') => {
+    let zones = ['UTC'];
+    try {
+      if (Intl && typeof Intl.supportedValuesOf === 'function') {
+        const localZones = Intl.supportedValuesOf('timeZone');
+        if (Array.isArray(localZones) && localZones.length > 0) {
+          zones = localZones;
+        }
+      }
+    } catch (e) {
+      // Keep UTC fallback only.
+    }
+
+    timezoneSel.innerHTML = '';
+    zones.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      if (name === preferred) opt.selected = true;
+      timezoneSel.appendChild(opt);
+    });
+    if (!timezoneSel.value && timezoneSel.options.length > 0) {
+      timezoneSel.value = preferred || 'UTC';
+    }
+  };
+
+  const clearError = () => {
+    if (!err) return;
+    err.style.display = 'none';
+    err.textContent = '';
+  };
+
+  const showError = (msg) => {
+    if (!err) return;
+    err.textContent = msg;
+    err.style.display = 'block';
+  };
+
+  const setBusy = (busy) => {
+    openBtn.disabled = busy;
+    cancelBtn.disabled = busy;
+    confirmBtn.disabled = busy;
+    confirmRebootBtn.disabled = busy;
+    if (selectedRadio) selectedRadio.disabled = busy;
+    if (allRadio) allRadio.disabled = busy;
+    if (timezoneSel) timezoneSel.disabled = busy;
+    if (serverInput) serverInput.disabled = busy;
+    confirmBtn.textContent = busy ? 'Applying...' : 'Apply';
+    confirmRebootBtn.textContent = busy ? 'Applying...' : 'Apply and Reboot';
+  };
+
+  const closeModal = () => {
+    backdrop.style.display = 'none';
+    clearError();
+    setBusy(false);
+  };
+
+  cancelBtn.addEventListener('click', closeModal);
+  backdrop.addEventListener('click', (e) => {
+    if (e.target === backdrop) closeModal();
+  });
+
+  openBtn.addEventListener('click', async () => {
+    clearError();
+
+    const selectedIps = getCheckedIps();
+    const allIps = getAllIps();
+
+    if (selectedLabel) selectedLabel.textContent = `Selected units (${selectedIps.length})`;
+    if (allLabel) allLabel.textContent = `All units (${allIps.length})`;
+
+    if (selectedRadio && allRadio) {
+      if (selectedIps.length > 0) {
+        selectedRadio.checked = true;
+        selectedRadio.disabled = false;
+        allRadio.checked = false;
+      } else {
+        selectedRadio.checked = false;
+        selectedRadio.disabled = true;
+        allRadio.checked = true;
+      }
+    }
+
+    backdrop.style.display = 'flex';
+    setBusy(true);
+    try {
+      timezoneSel.innerHTML = '<option>Loading timezones...</option>';
+      const res = await fetch('/api/ntp_profile', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ips: selectedIps.length > 0 ? selectedIps : allIps})
+      });
+      const data = await parseJsonResponse(res, 'Failed to load timezone data');
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Failed to load timezone data');
+      }
+
+      const zones = Array.isArray(data.zones) ? data.zones : [];
+      const activeTimezone = (data.active_timezone || data.timezone || 'UTC');
+      const currentServer = data.ntp_server || '';
+
+      timezoneSel.innerHTML = '';
+      if (zones.length === 0) {
+        timezoneSel.innerHTML = '<option value="UTC">UTC</option>';
+      } else {
+        zones.forEach(z => {
+          const name = (typeof z === 'string') ? z : z?.name;
+          if (!name) return;
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          if (name === activeTimezone) opt.selected = true;
+          timezoneSel.appendChild(opt);
+        });
+      }
+
+      if (timezoneSel.options.length > 0 && !Array.from(timezoneSel.options).some(o => o.selected)) {
+        timezoneSel.value = activeTimezone;
+      }
+      if (serverInput) serverInput.value = currentServer;
+    } catch (e) {
+      loadLocalTimezones('UTC');
+      if (serverInput) serverInput.value = '';
+      showError(`Unable to read timezone config from unit (${e.message || String(e)}). Using local timezone list.`);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  const submitNtp = async ({rebootAfter}) => {
+    clearError();
+    const scope = (document.querySelector('input[name="ntp_scope"]:checked') || {}).value;
+    const selectedIps = getCheckedIps();
+    const allIps = getAllIps();
+    const targetIps = scope === 'all' ? allIps : selectedIps;
+    const timezone = timezoneSel.value;
+    const server = (serverInput?.value || '').trim();
+
+    if (!scope || targetIps.length === 0) {
+      showError('Please select at least one unit, or choose All units.');
+      return;
+    }
+    if (!timezone) {
+      showError('Please select a timezone.');
+      return;
+    }
+
+    const targetText = scope === 'selected' ? `${selectedIps.length} selected unit(s)` : 'all units';
+    const actionText = rebootAfter ? `Apply NTP settings and reboot ${targetText}?` : `Apply NTP settings to ${targetText}?`;
+    if (!window.confirm(actionText)) {
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const res = await fetch('/api/set_ntp', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          scope,
+          ips: selectedIps,
+          timezone,
+          server
+        })
+      });
+      const data = await parseJsonResponse(res, 'Failed to apply NTP settings');
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Failed to apply NTP settings');
+      }
+
+      let statusText = `✅ NTP update complete (${data.updated} updated, ${data.skipped} skipped, ${data.failed} failed)`;
+
+      if (rebootAfter) {
+        const changedIps = Array.isArray(data.changed_ips)
+          ? data.changed_ips
+          : targetIps.filter(ip => {
+              const r = (data.results || {})[ip] || {};
+              return !!(r.ok && r.changed);
+            });
+
+        if (changedIps.length === 0) {
+          statusText += '; reboot skipped (no settings changed)';
+        } else {
+        const rebootRes = await fetch('/api/reboot', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ips: changedIps})
+        });
+        const rebootData = await parseJsonResponse(rebootRes, 'Failed to reboot units');
+        if (!rebootRes.ok || !rebootData.ok) {
+          throw new Error(rebootData.error || 'Failed to reboot units');
+        }
+        const rebootResults = rebootData.results || {};
+        const rebootFailed = Object.values(rebootResults).filter(r => !r.ok).length;
+        const rebooted = changedIps.length - rebootFailed;
+        statusText += `; rebooted ${rebooted}, ${rebootFailed} failed`;
+        }
+      }
+
+      $('#scan_status').innerHTML = statusText;
+      closeModal();
+      await loadUnits();
+    } catch (e) {
+      showError(e.message || String(e));
+      setBusy(false);
+    }
+  };
+
+  confirmBtn.addEventListener('click', async () => {
+    await submitNtp({rebootAfter: false});
+  });
+
+  confirmRebootBtn.addEventListener('click', async () => {
+    await submitNtp({rebootAfter: true});
+  });
+}
+
+function openFolderBrowser(startPath, targetSelector) {
+  const backdrop = $('#cfg_browser_backdrop');
+  const list = $('#cfg_browser_list');
+  const pathInput = $('#cfg_browser_path');
+  const selectBtn = $('#cfg_browser_select');
+  const upBtn = $('#cfg_browser_up');
+  const cancelBtn = $('#cfg_browser_cancel');
+
+  let current = startPath || '';
+
+  async function load(p) {
+    list.innerHTML = '<div style="padding:20px;text-align:center;"><span class="spinner"></span></div>';
+    try {
+      const url = '/api/list_dir' + (p ? '?path=' + encodeURIComponent(p) : '');
+      const res = await fetch(url);
+      const j = await res.json();
+      if (!j.ok) {
+        list.innerHTML = '<div style="color:var(--danger);">Error: ' + (j.error || 'unknown') + '</div>';
+        return;
+      }
+      current = j.path || p || '';
+      pathInput.value = current;
+      list.innerHTML = '';
+      if ((j.entries || []).length === 0) {
+        list.innerHTML = '<div style="padding:12px;opacity:.6;">No folders</div>';
+      }
+      (j.entries || []).forEach(ent => {
+        if (!ent.is_dir) return;
+        const row = document.createElement('div');
+        row.className = 'browser-item';
+        row.textContent = '📁 ' + ent.name;
+        row.onclick = () => {
+          const base = (current || '').replace(/\\\\/g, '/');
+          const next = base.endsWith('/') || base === '' ? base + ent.name : base + '/' + ent.name;
+          load(next);
+        };
+        list.appendChild(row);
+      });
+    } catch (e) {
+      list.innerHTML = '<div style="color:var(--danger);">Error: ' + e.message + '</div>';
+    }
+  }
+
+  upBtn.addEventListener('click', () => {
+    const tmp = (current || '').replace(/\\\\/g, '/');
+    if (!tmp || tmp === '/') return;
+    const parts = tmp.split('/').filter(p => p);
+    parts.pop();
+    load('/' + parts.join('/'));
+  }, {once: true});
+
+  selectBtn.addEventListener('click', () => {
+    const target = document.querySelector(targetSelector);
+    if (target) target.value = pathInput.value;
+    backdrop.style.display = 'none';
+  }, {once: true});
+
+  cancelBtn.addEventListener('click', () => {
+    backdrop.style.display = 'none';
+  }, {once: true});
+
+  backdrop.style.display = 'flex';
+  load(current);
+}
+
+// ===== Data Loading =====
+async function loadAdapters() {
+  try {
+    const res = await fetch('/api/adapters');
+    const data = await res.json();
+    const sel = $('#adapters');
+    sel.innerHTML = '';
+    (data.adapters || []).forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.scan || '';
+      opt.textContent = a.name + ' (' + a.ip + ')';
+      sel.appendChild(opt);
+    });
+  } catch (e) {
+    console.error('Load adapters failed:', e);
+  }
+}
+
+async function loadFiles() {
+  try {
+    const res = await fetch('/api/files');
+    const data = await res.json();
+    const sel = $('#files');
+    sel.innerHTML = '';
+    (data.files || []).forEach(f => {
+      const opt = document.createElement('option');
+      opt.value = f.name;
+      opt.textContent = f.name;
+      sel.appendChild(opt);
+    });
+    
+    // Add event listener to filter devices when file is selected
+    sel.addEventListener('change', () => {
+      const selectedFile = sel.value;
+      const fwType = _getFirmwareType(selectedFile);
+      console.log('[FILES_CHANGE] Selected file:', selectedFile, '-> type:', fwType);
+      
+      if (fwType !== 'any') {
+        const compatibleModels = FIRMWARE_MODEL_MAP[fwType] || [];
+        console.log('[FILES_CHANGE] Filtering for compatible models:', compatibleModels);
+        
+        // Filter rows and update checkboxes
+        const rows = Array.from($$('#units_table tr'));
+        rows.forEach(row => {
+          const modelCell = row.cells[8];
+          const model = modelCell ? modelCell.textContent.trim() : '';
+          const checkbox = row.querySelector('input[type="checkbox"].row-select');
+          const isCompatible = model && compatibleModels.some(m => model.toLowerCase().includes(m));
+          
+          console.log('[FILES_CHANGE] Row - IP:', row.getAttribute('data-ip'), 'Model:', model, 'Compatible:', isCompatible);
+          
+          if (isCompatible) {
+            // Show compatible row
+            row.style.display = '';
+            if (checkbox) checkbox.disabled = false;
+          } else {
+            // Hide incompatible row and deselect it
+            row.style.display = 'none';
+            if (checkbox) {
+              checkbox.checked = false;
+              checkbox.disabled = true;
+            }
+          }
+        });
+      } else {
+        // No filtering - show all
+        const rows = Array.from($$('#units_table tr'));
+        rows.forEach(row => {
+          row.style.display = '';
+          const checkbox = row.querySelector('input[type="checkbox"].row-select');
+          if (checkbox) checkbox.disabled = false;
+        });
+      }
+
+      // Keep "select all" in sync with currently visible rows only
+      updateSelectAllCheckboxState();
+    });
+  } catch (e) {
+    console.error('Load files failed:', e);
+  }
+}
+
+// Status cache for preserving state across page navigations
+let unitStatusCache = {};
+let isFirstSession = true;
+
+function loadStatusCache() {
+  try {
+    const cached = localStorage.getItem('unitStatusCache');
+    unitStatusCache = cached ? JSON.parse(cached) : {};
+  } catch (e) {
+    unitStatusCache = {};
+  }
+}
+
+function saveStatusCache() {
+  try {
+    localStorage.setItem('unitStatusCache', JSON.stringify(unitStatusCache));
+  } catch (e) {
+    console.warn('[CACHE] Failed to save status cache:', e);
+  }
+}
+
+async function loadUnits() {
+  try {
+    // Load cached status on every entry
+    loadStatusCache();
+    
+    const hasUnits = () => {
+      const tbody = $('#units_table');
+      return tbody && tbody.children.length > 0 && 
+             !(tbody.children.length === 1 && tbody.children[0].cells && tbody.children[0].cells.length === 1);
+    };
+    
+    // Show loading overlay on first session to indicate units are being fetched and populated
+    if (isFirstSession) {
+      const overlay = $('#loading_overlay');
+      if (overlay) overlay.classList.remove('hidden');
+    }
+    
+    const res = await fetch('/api/cache');
+    const data = await res.json();
+    const units = data.units || [];
+    const tbody = $('#units_table');
+    tbody.innerHTML = '';
+    if (units.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="14" style="text-align:center;padding:40px;opacity:.6;">Scan to discover units</td></tr>';
+      const overlay = $('#loading_overlay');
+      if (overlay) overlay.classList.add('hidden');
+      return;
+    }
+    units.forEach((u, idx) => {
+      const tr = document.createElement('tr');
+      const isEncoder = (u.type || u.role || '').toLowerCase().includes('encoder');
+      const passwordSource = (u.password_source === 'Fallback') ? 'Fallback' : 'Primary';
+      const passwordClass = passwordSource === 'Fallback' ? 'pwd-fallback' : 'pwd-primary';
+      const timezone = (
+        u.timezone
+        || u.active_timezone
+        || u.details?.timezone?.config?.timezone
+        || u.details?.timezone?.config?.active_timezone
+        || ''
+      );
+      const ntpServer = (
+        u.ntp_server
+        || u.ntpserver
+        || u.details?.systeminfo?.config?.ntpserver
+        || u.details?.systeminfo?.config?.ntp_server
+        || u.details?.timezone?.config?.ntpserver
+        || u.details?.timezone?.config?.ntp_server
+        || ''
+      );
+      const previewUrl = isEncoder ? `http://${u.ip}/thumbnail/thumbnail1.jpg` : '';
+      const previewCell = isEncoder 
+        ? `<td style="text-align:center;">
+            <input type="checkbox" class="preview-checkbox" data-ip="${u.ip}" onclick="event.stopPropagation(); toggleThumbnail(this)" title="Enable/disable thumbnail" style="display:block;margin:0 auto 4px;">
+            <a class="action-link" data-preview-url="${previewUrl}" onmouseover="showHoverPreview(this, event)" onmouseout="hideHoverPreview()" onclick="openPreviewWindow('${previewUrl}'); return false;">Preview</a>
+          </td>`
+        : `<td></td>`;
+      
+      // Restore cached status if available, otherwise show default
+      const cached = unitStatusCache[u.ip] || {};
+      let statusCellHtml;
+      if (cached.statusClass) {
+        // Use cached status HTML
+        statusCellHtml = `<td><span class="status ${cached.statusClass}">${cached.statusText}</span></td>`;
+      } else if (isFirstSession) {
+        statusCellHtml = '<td><span class="status s-error">Disconnected</span></td>';
+      } else {
+        statusCellHtml = '<td><span class="status s-idle">Idle</span></td>';
+      }
+      
+      tr.innerHTML = `
+        <td><input type="checkbox" class="row-select" data-ip="${u.ip}" onclick="event.stopPropagation()"/></td>
+        <td><a class="ip" onclick="window.open('http://${u.ip}', '_blank')">${u.ip || ''}</a></td>
+        <td>${u.mac || ''}</td>
+        <td class="linkspeed_cell">${cached.linkspeedHtml || (u.linkspeed !== undefined && u.linkspeed !== null ? `<span style="color:${u.linkspeed === 1000 ? '#4ade80' : '#f87171'}">${u.linkspeed} Mbps</span>` : '')}</td>
+        <td>${u.hostname || ''}</td>
+        <td>${timezone || ''}</td>
+        <td>${ntpServer || ''}</td>
+        <td>${u.type || u.role || ''}</td>
+        <td>${u.model || ''}</td>
+        <td>${u.version || ''}</td>
+        <td><span class="pwd-pill ${passwordClass}">${passwordSource}</span></td>
+        ${statusCellHtml}
+        <td><button class="action-btn blink-btn" data-ip="${u.ip}" title="Blink LED">💡</button></td>
+        ${previewCell}
+        <td class="usb_cell">${cached.usbHtml || ''}</td>
+      `;
+        tr.setAttribute('data-ip', u.ip);
+      tbody.appendChild(tr);
+      
+      // Restore USB info if cached
+      if (cached.usb) {
+        const usbCell = tr.querySelector('.usb_cell');
+        if (usbCell && cached.usbHtml) {
+          usbCell.innerHTML = cached.usbHtml;
+          if (cached.usb.host_port) {
+            usbCell.title = `Host: ${cached.usb.host_port}`;
+          }
+        }
+      }
+      
+      // Fetch thumbnail status for encoders
+      if (isEncoder) {
+        fetchThumbnailStatus(u.ip);
+      }
+    });
+    isFirstSession = false;
+    // If polling is off, show N/A pills so users know status isn't live
+    if (localStorage.getItem('pollUnits') !== 'true') {
+      setStatusDisabled();
+    }
+    
+    // Hide loading overlay when done
+    const overlay = $('#loading_overlay');
+    if (overlay) overlay.classList.add('hidden');
+    
+    // Update select all checkbox
+    const selectAllOld = $('#select_all');
+    if (selectAllOld) {
+      const selectAll = selectAllOld.cloneNode(true); // Clone to remove old event listeners
+      selectAllOld.parentNode.replaceChild(selectAll, selectAllOld);
+      console.log(`[SELECT_ALL] Found ${$$('.row-select').length} row checkboxes`);
+      
+      selectAll.addEventListener('change', () => {
+        console.log(`[SELECT_ALL] Toggling all to ${selectAll.checked}`);
+        const visibleCheckboxes = getVisibleSelectableRowCheckboxes();
+        visibleCheckboxes.forEach(cb => cb.checked = selectAll.checked);
+        updateSelectAllCheckboxState();
+      });
+      
+      $$('.row-select').forEach(cb => {
+        cb.addEventListener('change', () => {
+          updateSelectAllCheckboxState();
+          console.log(`[CHECKBOX] Changed, select_all=${selectAll.checked}`);
+        });
+      });
+
+      // Initialize state once rows are bound
+      updateSelectAllCheckboxState();
+    }
+  } catch (e) {
+    console.error('Load units failed:', e);
+  }
+}
+
+// Load unified scan results (devices, encoders, decoders)
+let scanData = {devices: [], encoders: [], decoders: []};
+async function loadScanResults() {
+  try {
+    const res = await fetch('/api/scan_results');
+    const data = await res.json();
+    scanData = {
+      devices: data.devices || [],
+      encoders: data.encoders || [],
+      decoders: data.decoders || [],
+      timestamp: data.timestamp,
+      stats: data.stats || {}
+    };
+    // Save to localStorage
+    try {
+      localStorage.setItem('scan_results', JSON.stringify(scanData));
+    } catch (e) {
+      console.warn('[SCAN] Failed to save to localStorage:', e);
+    }
+    console.log('[SCAN] Loaded results:', {devices: scanData.devices.length, encoders: scanData.encoders.length, decoders: scanData.decoders.length});
+  } catch (e) {
+    console.error('Load scan results failed:', e);
+    // Try loading from localStorage as fallback
+    try {
+      const cached = localStorage.getItem('scan_results');
+      if (cached) {
+        scanData = JSON.parse(cached);
+        console.log('[SCAN] Loaded from localStorage (fallback):', {devices: scanData.devices.length, encoders: scanData.encoders.length, decoders: scanData.decoders.length});
+      }
+    } catch (err) {
+      console.error('[SCAN] localStorage fallback failed:', err);
+    }
+  }
+}
+
+function selectUnit(ip) {
+  // IP link now opens device webpage directly
+}
+
+// ===== Button Actions =====
+$('#scan_btn').addEventListener('click', async () => {
+  const targets = $('#targets').value || $('#adapters').value;
+  if (!targets) { alert('Please select an adapter or enter targets'); return; }
+  $('#scan_status').innerHTML = '<span class="spinner"></span> Scanning...';
+  try {
+    const res = await fetch('/api/scan', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({targets})
+    });
+    const data = await res.json();
+    $('#scan_status').innerHTML = `✅ ${data.reachable}/${data.tested} found`;
+    await loadUnits();
+    await loadScanResults();
+  } catch (e) {
+    $('#scan_status').innerHTML = '❌ Error: ' + e.message;
+  }
+});
+
+$('#clear_units_btn').addEventListener('click', async () => {
+  const wasPolling = pollInterval !== null;
+  if (wasPolling) stopPolling();
+  try {
+    await fetch('/api/clear_units', {method: 'POST'});
+    await loadUnits();
+    if (wasPolling) startPolling();
+  } catch (e) {
+    alert('Clear failed: ' + e.message);
+    if (wasPolling) startPolling();
+  }
+});
+
+$('#refresh_files_btn').addEventListener('click', loadFiles);
+
+$('#open_firmware_folder_btn').addEventListener('click', async () => {
+  try {
+    console.log('[FIRMWARE] Button clicked, sending request to /api/open_firmware_folder');
+    const response = await fetch('/api/open_firmware_folder', {method: 'POST'});
+    console.log('[FIRMWARE] Response status:', response.status);
+    const data = await response.json();
+    console.log('[FIRMWARE] Response data:', data);
+    if (data.ok) {
+      console.log('[FIRMWARE] Successfully opened folder:', data.path);
+      alert('Firmware folder opened: ' + data.path);
+    } else {
+      console.error('[FIRMWARE] Error:', data.error);
+      alert('Failed to open firmware folder: ' + (data.error || 'Unknown error'));
+    }
+  } catch (e) {
+    console.error('[FIRMWARE] Exception:', e);
+    alert('Failed to open firmware folder: ' + e.message);
+  }
+});
+
+$('#export_units_btn').addEventListener('click', async () => {
+  try {
+    await fetch('/api/export_csv', {method: 'POST'});
+    setTimeout(() => {
+      window.location = '/api/download_csv';
+    }, 100);
+  } catch (e) {
+    alert('Export failed: ' + e.message);
+  }
+});
+
+// --- Upgrade feedback helpers ---
+function getRowByIp(ip){
+  // #units_table is already the <tbody>; search its direct rows
+  return Array.from($$('#units_table tr')).find(r => r.getAttribute('data-ip') === ip);
+}
+function setStatus(ip, text, cls, holdMs){
+  const row = getRowByIp(ip); if(!row) { console.log('[STATUS] No row for', ip); return; }
+  const statusCell = row.cells[11]; if(!statusCell) { console.log('[STATUS] No status cell for', ip); return; }
+  console.log(`[STATUS] Setting ${ip} to '${text}' (${cls}), holdMs=${holdMs}`);
+  statusCell.innerHTML = `<span class="status ${cls}">${text}</span>`;
+  if(holdMs && holdMs>0){
+    statusCell.dataset.holdUntil = String(Date.now() + holdMs);
+  } else {
+    delete statusCell.dataset.holdUntil;
+  }
+}
+async function pollOnce(ip){
+  try{
+    const res = await fetch('/api/poll', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ip})});
+    return await res.json();
+  }catch(e){ return {ok:false,error:String(e)}; }
+}
+
+// Firmware compatibility checking
+async function monitorUpgrade(ip, snapshotVersion, file = null){
+  console.log(`[MONITOR] monitorUpgrade started for ${ip}, snapshotVersion="${snapshotVersion}", file="${file}"`);
+  
+  if(!snapshotVersion || snapshotVersion === ''){
+    console.warn(`[MONITOR] WARNING: snapshotVersion is empty for ${ip}`);
+  }
+  
+  // Keep showing Uploading while device is still connected
+  // We'll wait for actual connection loss before showing Rebooting
+  setStatus(ip, 'Uploading', 's-uploading', 0);
+  
+  console.log(`[MONITOR] Waiting for device to go offline...`);
+  let connectionLost = false;
+  let consecutiveFailures = 0;
+  const startTime = Date.now();
+  const timeoutMs = 240000;  // 4 minutes in milliseconds
+  
+  // Poll until we detect the device has gone offline (connection lost) - timeout 5 minutes
+  while(true){
+    const elapsedMs = Date.now() - startTime;
+    const tries = Math.floor(elapsedMs / 1000);
+    
+    // Check if we've exceeded 5 minutes
+    if(elapsedMs >= timeoutMs){
+      console.warn(`[MONITOR] 5 minute timeout reached (${tries} seconds elapsed)`);
+      break;
+    }
+    
+    const r = await pollOnce(ip);
+    console.log(`[MONITOR] Connectivity check ${tries+1}: ok=${r?.ok}`);
+    
+    if(!r || !r.ok){
+      // Connection failed
+      consecutiveFailures++;
+      console.log(`[MONITOR] Poll failure #${consecutiveFailures}`);
+      
+      // After 2 consecutive failures, confirm connection is lost
+      if(consecutiveFailures >= 2){
+        connectionLost = true;
+        console.log(`[MONITOR] Connection lost confirmed after ${consecutiveFailures} failures`);
+        break;
+      }
+    } else {
+      // Connection still active
+      consecutiveFailures = 0;
+      console.log(`[MONITOR] Device still online, waiting...`);
+    }
+    
+    await new Promise(res => setTimeout(res, 1000));  // Poll every 1 second
+  }
+  
+  if(!connectionLost){
+    console.warn(`[MONITOR] Device did not go offline within 5 minute timeout - ASKING USER TO REBOOT`);
+    
+    // Ask user if they want to reboot and retry
+    return new Promise((resolve) => {
+      const result = confirm(`Device ${ip}: Did not complete the upgrade. Do you want to reboot the device and try again?`);
+      
+      if(!result){
+        console.log(`[MONITOR] User declined reboot for ${ip}`);
+        setStatus(ip, 'Upgrade cancelled', 's-error', 30000);
+        resolve();
+        return;
+      }
+      
+      // User wants to reboot and retry
+      console.log(`[MONITOR] User accepted - rebooting ${ip} and retrying upgrade`);
+      setStatus(ip, 'Rebooting', 's-rebooting', 0);
+      
+      // Send reboot command
+      fetch('/api/reboot', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ips: [ip]})
+      }).then(async (resp) => {
+        const data = await resp.json();
+        console.log(`[MONITOR] Reboot API response:`, data);
+        
+        if(!data.ok || !data.results[ip] || !data.results[ip].ok){
+          console.error(`[MONITOR] Reboot failed for ${ip}`);
+          setStatus(ip, 'Reboot Failed', 's-error', 30000);
+          resolve();
+          return;
+        }
+        
+        // Wait for device to come back online
+        console.log(`[MONITOR] Waiting for ${ip} to come back online after reboot...`);
+        let reachable = false;
+        for(let tries = 0; tries < 120; tries++){
+          const r = await pollOnce(ip);
+          console.log(`[MONITOR] Reconnect attempt ${tries+1}: ok=${r?.ok}`);
+          
+          if(r && r.ok && r.unit){
+            reachable = true;
+            console.log(`[MONITOR] ${ip} is back online after reboot`);
+            break;
+          }
+          
+          await new Promise(res => setTimeout(res, 2000));
+        }
+        
+        if(!reachable){
+          console.log(`[MONITOR] ${ip} did not come back online after reboot`);
+          setStatus(ip, 'No response after reboot', 's-error', 30000);
+          resolve();
+          return;
+        }
+        
+        // Device is back online - wait longer for it to fully stabilize
+        console.log(`[MONITOR] Device back online, waiting for full stabilization before uploading...`);
+        await new Promise(res => setTimeout(res, 15000));  // Wait 15 seconds for full device boot
+        
+        // Test responsiveness with retries - device may still be finishing boot
+        console.log(`[MONITOR] Testing device responsiveness...`);
+        let deviceStable = false;
+        for(let testTries = 0; testTries < 10; testTries++){
+          const testPoll = await pollOnce(ip);
+          console.log(`[MONITOR] Stability test ${testTries+1}/10: ok=${testPoll?.ok}`);
+          
+          if(testPoll && testPoll.ok){
+            deviceStable = true;
+            console.log(`[MONITOR] Device confirmed stable on attempt ${testTries+1}`);
+            break;
+          }
+          
+          await new Promise(res => setTimeout(res, 1000));
+        }
+        
+        if(!deviceStable){
+          console.error(`[MONITOR] Device not responding after 10 test attempts, aborting upload`);
+          setStatus(ip, 'Device unresponsive', 's-error', 30000);
+          resolve();
+          return;
+        }
+        
+        // Device is stable - restart upgrade
+        console.log(`[MONITOR] Device stabilized and responsive, restarting upgrade for ${ip} with file: ${file}`);
+        setStatus(ip, 'Uploading', 's-uploading', 0);
+        
+        if(file){
+          try {
+            console.log(`[MONITOR] Sending upgrade API call with file=${file}, ip=${ip}`);
+            const uploadResp = await fetch('/api/upgrade', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({file, targets: [ip]})
+            });
+            const uploadData = await uploadResp.json();
+            console.log(`[MONITOR] Upgrade restart response:`, uploadData);
+            
+            if(uploadData.ok){
+              console.log(`[MONITOR] Upload started successfully, monitoring...`);
+              const result = await monitorUpgrade(ip, snapshotVersion, file);
+              resolve();
+            } else {
+              console.error(`[MONITOR] Upload restart failed - API error:`, uploadData.error);
+              setStatus(ip, `Upload Failed: ${uploadData.error || 'Unknown error'}`, 's-error', 30000);
+              resolve();
+            }
+          } catch(e){
+            console.error(`[MONITOR] Upload restart exception:`, e);
+            setStatus(ip, 'Upload Failed', 's-error', 30000);
+            resolve();
+          }
+        } else {
+          setStatus(ip, 'No firmware file', 's-error', 30000);
+          resolve();
+        }
+      }).catch((e) => {
+        console.error(`[MONITOR] Reboot exception:`, e);
+        setStatus(ip, 'Reboot error', 's-error', 30000);
+        resolve();
+      });
+    });
+  }
+  
+  // Device is now offline - show Rebooting
+  console.log(`[MONITOR] Device offline, showing Rebooting status`);
+  setStatus(ip, 'Rebooting', 's-rebooting', 0);
+  
+  // Now wait for device to come back online
+  console.log(`[MONITOR] Waiting for device to come back online...`);
+  let reachable = false;
+  for(let tries = 0; tries < 120; tries++){
+    const r = await pollOnce(ip);
+    console.log(`[MONITOR] Reconnect attempt ${tries+1}: ok=${r?.ok}, unit.version="${r?.unit?.version}"`);
+    
+    if(r && r.ok && r.unit){
+      reachable = true;
+      console.log(`[MONITOR] ${ip} is back online after ${tries}s`);
+      break;
+    }
+    
+    await new Promise(res => setTimeout(res, 2000));
+  }
+  
+  if(!reachable){
+    console.log(`[MONITOR] ${ip} did not come back online within 4 minutes`);
+    setStatus(ip, 'No response', 's-error', 30000);
+    return;
+  }
+  
+  // Device is back - wait for it to be fully ready and query version (up to 1 minute)
+  // Use "fw" field which comes from poll_unit_status() (same as device scan)
+  console.log(`[MONITOR] Waiting for ${ip} to be fully ready and report version...`);
+  let currentVersion = '';
+  let versionReady = false;
+  
+  for(let tries = 0; tries < 30; tries++){
+    const finalPoll = await pollOnce(ip);
+    console.log(`[MONITOR] Version check attempt ${tries+1} for ${ip}:`, finalPoll);
+    
+    if(finalPoll && finalPoll.ok && finalPoll.unit){
+      // Use "fw" field which comes from poll_unit_status()
+      currentVersion = (finalPoll.unit.fw || '').trim();
+      
+      // Keep polling if version is empty - device still initializing
+      if(!currentVersion){
+        console.log(`[MONITOR] Version (fw) is empty, device still initializing... (attempt ${tries+1}/30)`);
+        await new Promise(res => setTimeout(res, 2000));
+        continue;
+      }
+      
+      // Got a valid version
+      versionReady = true;
+      console.log(`[MONITOR] Version ready for ${ip}: "${currentVersion}"`);
+      break;
+    }
+    
+    console.log(`[MONITOR] Poll failed for ${ip}, retrying...`);
+    await new Promise(res => setTimeout(res, 2000));
+  }
+  
+  if(!versionReady){
+    console.log(`[MONITOR] ${ip} came back but version never became ready`);
+    setStatus(ip, 'No response', 's-error', 30000);
+    return;
+  }
+  
+  // Now compare versions
+  const oldVersion = (snapshotVersion || '').trim();
+  
+  console.log(`[MONITOR] Version comparison for ${ip}:`);
+  console.log(`  Old version: "${oldVersion}" (length: ${oldVersion.length})`);
+  console.log(`  New version: "${currentVersion}" (length: ${currentVersion.length})`);
+  console.log(`  Changed: ${currentVersion !== oldVersion}`);
+  
+  // Update version cell in table
+  const row = getRowByIp(ip);
+  if(row && row.cells[9]){
+    row.cells[9].textContent = currentVersion || '(unknown)';
+  }
+  
+  // Compare versions
+  if(currentVersion && oldVersion && currentVersion !== oldVersion){
+    console.log(`[MONITOR] ✓ ${ip} Upgrade successful: "${oldVersion}" -> "${currentVersion}"`);
+    setStatus(ip, 'Upgrade successful', 's-idle', 30000);
+    
+    // Keep unit in cache so browser refresh does not remove it from the table
+    console.log(`[MONITOR] Keeping ${ip} in cache after successful upgrade`);
+  } else if(!oldVersion && currentVersion){
+    console.warn(`[MONITOR] ⚠ ${ip} Initial version was empty, now "${currentVersion}" - treating as upgrade`);
+    setStatus(ip, 'Upgrade successful', 's-idle', 30000);
+    
+    // Keep unit in cache so browser refresh does not remove it from the table
+    console.log(`[MONITOR] Keeping ${ip} in cache after successful upgrade`);
+  } else {
+    // Device rebooted but version is the same - this is okay, user may be flashing same version
+    if(connectionLost){
+      console.log(`[MONITOR] ✓ ${ip} Device rebooted and firmware installed (same version)`);
+      setStatus(ip, 'Upgrade successful', 's-idle', 30000);
+      
+      // Keep unit in cache so browser refresh does not remove it from the table
+      console.log(`[MONITOR] Keeping ${ip} in cache after successful upgrade`);
+    } else {
+      // Device didn't reboot at all, version unchanged
+      console.log(`[MONITOR] → ${ip} No change: both versions are "${oldVersion}"`);
+      setStatus(ip, 'No Change', 's-idle', 30000);
+    }
+  }
+}
+
+$('#upgrade_btn').addEventListener('click', async () => {
+  const file = $('#files').value;
+  if (!file || file === 'Select Firmware') { alert('Please select a firmware file'); return; }
+
+  // Determine firmware type from filename
+  const fwType = _getFirmwareType(file);
+  console.log('[UPGRADE] Firmware file:', file, '-> type:', fwType);
+
+  // Debug: log all checkboxes and their checked state
+  // Only consider checkboxes that are NOT preview-checkboxes for upgrade selection
+  const allCheckboxes = Array.from($$('#units_table input[type="checkbox"]:not(.preview-checkbox)'));
+  allCheckboxes.forEach(cb => {
+    console.log('[DEBUG] Checkbox', {
+      ip: cb.getAttribute('data-ip'),
+      checked: cb.checked
+    });
+  });
+  const selected = allCheckboxes.filter(cb => cb.checked).map(cb => cb.getAttribute('data-ip'));
+  console.log('[UPGRADE] Selected IPs for upgrade:', selected);
+  
+  if (selected.length === 0) { alert('Please select units to upgrade'); return; }
+  
+  // Check compatibility if firmware type is restricted
+  if (fwType !== 'any') {
+    console.log('[UPGRADE] Checking firmware compatibility for type:', fwType);
+    const incompatible = _checkFirmwareCompatibility(fwType, selected);
+    console.log('[UPGRADE] Compatibility check result:', incompatible);
+    if (incompatible.length > 0) {
+      const msg = `ERROR: Cannot upgrade with ${fwType} firmware.\n\nIncompatible devices:\n${incompatible.join('\n')}\n\nThis firmware is only compatible with ${fwType} devices.`;
+      console.error('[UPGRADE]', msg);
+      alert(msg);
+      return;
+    }
+  }
+  
+  // Show confirmation dialog with Cancel/OK
+  const confirmMsg = '[DEBUG] Selected IPs for upgrade:\n' + JSON.stringify(selected, null, 2) + '\n\nProceed with upgrade?';
+  if (!window.confirm(confirmMsg)) {
+    console.log('[UPGRADE] Upgrade cancelled by user.');
+    return;
+  }
+
+  // Snapshot versions and mark Uploading
+  const snapVersions = {};
+  $('#scan_status').innerHTML = '<span class="spinner"></span> Uploading...';
+  selected.forEach(ip => {
+    const row = getRowByIp(ip);
+    if(row){
+      const verCell = row.cells[9];
+      const ver = verCell ? verCell.textContent.trim() : '';
+      snapVersions[ip] = ver;
+      console.log(`[UPGRADE] Captured version for ${ip}: "${ver}"`);
+      
+      if(!ver || ver === ''){
+        console.warn(`[UPGRADE] WARNING: Version is empty for ${ip} - may cause issues detecting upgrade success`);
+      }
+      
+      const statusCell = row.cells[11];
+      if(statusCell){
+        statusCell.innerHTML = '<span class="status s-uploading">Uploading</span>';
+        // Mark this row as under active upgrade monitoring so poller skips it
+        statusCell.dataset.monitoring = '1';
+        // Hold uploading state until we get the response (upload + upgrade in progress)
+        statusCell.dataset.holdUntil = String(Date.now() + 120000);
+      }
+    }
+  });
+  
+  try {
+    const res = await fetch('/api/upgrade', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({file, targets: selected})
+    });
+    let data = {};
+    try { data = await res.json(); } catch(_) { data = {}; }
+    
+    // Check for API errors (e.g., incompatible devices)
+    if (!data.ok && data.error) {
+      let errorMsg = `❌ Upgrade failed: ${data.error}`;
+      if (data.incompatible_devices && data.incompatible_devices.length > 0) {
+        errorMsg += `\n\nIncompatible devices:\n${data.incompatible_devices.join('\n')}`;
+      }
+      if (data.expected_models && data.expected_models.length > 0) {
+        errorMsg += `\n\nExpected models: ${data.expected_models.join(', ')}`;
+      }
+      alert(errorMsg);
+      $('#scan_status').innerHTML = `❌ ${data.error}`;
+      
+      // Clear the uploading status from selected devices since upgrade was rejected
+      selected.forEach(ip => {
+        const row = getRowByIp(ip);
+        if(row && row.cells && row.cells[11]){
+          row.cells[11].innerHTML = '<span class="status s-idle">Idle</span>';
+          delete row.cells[11].dataset.monitoring;
+        }
+      });
+      return;
+    }
+    
+    const results = (data && data.results) || {};
+
+    const totalStarted = selected.length;
+    let pendingCount = selected.length;
+    let hasProgressed = false;
+    const renderUploadProgress = () => {
+      const prefix = hasProgressed ? '⏳ Firmware upgrades in progress...' : '⏳ Starting firmware upgrades...';
+      $('#scan_status').innerHTML = `${prefix} (${totalStarted} started, ${pendingCount} pending)`;
+    };
+
+    // Queue-style progress: started remains fixed, pending counts down as each monitor completes
+    renderUploadProgress();
+    // Start monitors per IP
+    selected.forEach(ip => {
+      const snap = snapVersions[ip] || '';
+      // Clear the uploadinghold so monitor can show Upgrading now
+      const row = getRowByIp(ip);
+      if(row && row.cells && row.cells[11]){
+        delete row.cells[11].dataset.holdUntil;
+      }
+      // Monitor will show progression: Uploading -> Upgrading -> Rebooting -> success/no-change
+      // Pass file name so retry can be triggered if device doesn't reboot
+      monitorUpgrade(ip, snap, file).finally(()=>{
+        // Clear monitoring flag after monitor completes
+        const statusCell = row && row.cells ? row.cells[11] : null;
+        if(statusCell){ delete statusCell.dataset.monitoring; }
+
+        pendingCount = Math.max(0, pendingCount - 1);
+        hasProgressed = true;
+        if (pendingCount > 0) {
+          renderUploadProgress();
+        } else {
+          $('#scan_status').innerHTML = `✅ Firmware upgrades complete (${totalStarted} completed successfully)`;
+        }
+      });
+    });
+  } catch (e) {
+    $('#scan_status').innerHTML = '❌ Error: ' + e.message;
+  }
+});
+
+$('#reboot_btn').addEventListener('click', async () => {
+  const allChecked = $$('.row-select:checked');
+  console.log(`[REBOOT] Found ${allChecked.length} checked checkboxes total`);
+  
+  const selected = Array.from(allChecked).map(cb => cb.getAttribute('data-ip'));
+  console.log(`[REBOOT] Selected device IPs:`, selected);
+  if (selected.length === 0) return;
+  
+  try {
+    const resp = await fetch('/api/reboot', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ips: selected})
+    });
+    const data = await resp.json();
+    console.log('[REBOOT] API response:', data);
+    if (!data.ok) {
+      alert(`Reboot failed: ${data.error || 'unknown error'}`);
+      return;
+    }
+    const results = data.results || {};
+    const failed = Object.values(results).filter(r => !r.ok);
+    if (failed.length) {
+      alert(`Reboot failed for ${failed.length} device(s). Check console for details.`);
+      console.error('[REBOOT] Failures:', failed);
+    }
+  } catch (e) {
+    console.error('Reboot error:', e);
+  }
+});
+
+$('#remove_btn').addEventListener('click', async () => {
+  const allChecked = $$('.row-select:checked');
+  console.log(`[REMOVE] Found ${allChecked.length} checked checkboxes total`);
+  allChecked.forEach(cb => console.log(`  - Checkbox: data-ip="${cb.getAttribute('data-ip')}"`));
+  
+  const selected = Array.from(allChecked).map(cb => cb.getAttribute('data-ip'));
+  console.log(`[REMOVE] Selected device IPs:`, selected);
+  if (selected.length === 0) return;
+  
+  if (!confirm(`Remove ${selected.length} selected device(s) from cache?`)) return;
+  
+  try {
+    const resp = await fetch('/api/remove_units', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ips: selected})
+    });
+    const data = await resp.json();
+    console.log(`[REMOVE] API response:`, data);
+    if (data.ok) {
+      console.log(`[REMOVE] Success! Removed ${data.removed} units, ${data.remaining} remaining`);
+      // Reload matrix logic cache
+      await fetch('/api/reload_cache', {method: 'POST'});
+      // Reload the cache to update the table
+      await loadUnits();
+    } else {
+      console.error(`[REMOVE] Failed:`, data.error);
+      alert(`Failed to remove units: ${data.error}`);
+    }
+  } catch (e) {
+    console.error('Remove error:', e);
+  }
+});
+
+
+// Table sorting state
+let currentSortCol = null;
+let sortAscending = true;
+
+function sortTable(colIndex, dataAttr) {
+  const tbody = $('#units_table');
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  
+  // Toggle sort direction if clicking same column
+  if (currentSortCol === colIndex) {
+    sortAscending = !sortAscending;
+  } else {
+    sortAscending = true;
+    currentSortCol = colIndex;
+  }
+  
+  rows.sort((a, b) => {
+    let aVal = a.cells[colIndex]?.textContent.trim() || '';
+    let bVal = b.cells[colIndex]?.textContent.trim() || '';
+    
+    // Only try numeric sort if BOTH values are simple numbers (no dots except decimal point, no special chars)
+    // This prevents IP addresses and version strings from being incorrectly parsed as numbers
+    const isSimpleNumber = /^-?\d+(\.\d+)?$/;
+    if (isSimpleNumber.test(aVal) && isSimpleNumber.test(bVal)) {
+      const aNum = parseFloat(aVal);
+      const bNum = parseFloat(bVal);
+      return sortAscending ? aNum - bNum : bNum - aNum;
+    }
+    
+    // String sort for everything else (IPs, versions, hostnames, etc)
+    return sortAscending ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+  });
+  
+  // Re-append sorted rows
+  rows.forEach(row => tbody.appendChild(row));
+  
+  // Update header indicators
+  Array.from(document.querySelectorAll('table th')).forEach((th, idx) => {
+    th.style.cursor = idx <= 8 ? 'pointer' : 'default';
+    th.style.opacity = (idx === colIndex) ? '1' : '0.6';
+    th.textContent = th.textContent.replace(/ [↑↓]/g, '');
+    if (idx === colIndex) {
+      th.textContent += sortAscending ? ' ↑' : ' ↓';
+    }
+  });
+}
+
+// Poll Units functionality
+let pollInterval = null;
+let pollToggle = null;
+let pollSwitch = null;
+let pollingEnabled = false;
+// Track recent poll results per device to prevent flipping due to transient issues
+let pollResultHistory = {};
+
+function setStatusDisabled() {
+  // Set all non-monitored rows to N/A
+  const rows = $$('#units_table tr');
+  rows.forEach(r => {
+    const cell = r.cells && r.cells[11];
+    if (cell) {
+      // Don't change status if this device is currently being monitored for upgrade
+      if (cell.dataset?.monitoring === '1') {
+        console.log('[POLL] Skipping status clear for monitored device:', r.getAttribute('data-ip'));
+        return;
+      }
+      cell.innerHTML = '<span class="status s-na">N/A</span>';
+    }
+  });
+}
+
+// Check if poll result is stable (consistent across last 2 polls)
+function isPollResultStable(ip, newStatus) {
+  if (!pollResultHistory[ip]) {
+    pollResultHistory[ip] = [];
+  }
+  const history = pollResultHistory[ip];
+  history.push(newStatus);
+  // Keep only last 2 results
+  if (history.length > 2) {
+    history.shift();
+  }
+  // If we have 2 results and they match, it's stable
+  if (history.length === 2) {
+    return history[0] === history[1];
+  }
+  // First result is not stable yet, store it for next poll
+  return false;
+}
+
+async function pollUnits() {
+  console.log('[POLL] pollUnits executing...');
+  if (!pollingEnabled || !pollInterval || (pollToggle && !pollToggle.checked)) {
+    console.log('[POLL] Skipping poll; polling disabled');
+    return;
+  }
+  const tbody = $('#units_table');
+  const trs = tbody ? tbody.querySelectorAll('tr') : [];
+  console.log('[POLL] Table tbody:', tbody, 'rows found:', trs.length);
+  for (let tr of trs) {
+    console.log('[POLL] Row:', tr.innerHTML.substring(0, 50));
+  }
+  const units = Array.from($$('#units_table tr')).map(row => ({
+    ip: row.getAttribute('data-ip'),
+    el: row
+  }));
+  console.log(`[POLL] Found ${units.length} rows in table`);
+  
+  for (const u of units) {
+    console.log(`[POLL] Processing unit - ip: ${u.ip}, has cells: ${!!u.el.cells}, cell[10]: ${u.el.cells?.[10]?.innerHTML}`);
+    // Skip rows without IP or without a status cell
+    if (!u.ip || !u.el || !u.el.cells || !u.el.cells[11]) {
+      console.log(`[POLL] Skipping - missing ip(${!!u.ip}) el(${!!u.el}) cells(${!!u.el?.cells}) cell10(${!!u.el?.cells?.[10]})`);
+      continue;
+    }
+    const statusCell = u.el.cells[11];
+    // Skip rows under active upgrade monitoring
+    if (statusCell?.dataset?.monitoring === '1') {
+      console.log(`[POLL] Skipping ${u.ip} due to active monitoring`);
+      continue;
+    }
+    // Do not override active uploads or held statuses
+    const holdUntil = Number(statusCell?.dataset?.holdUntil||0);
+    if (holdUntil && Date.now() < holdUntil) continue;
+    try {
+      if (!pollingEnabled || !pollInterval || (pollToggle && !pollToggle.checked)) {
+        console.log('[POLL] Poll disabled mid-loop; break');
+        break;
+      }
+      const res = await fetch('/api/poll', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ip: u.ip})
+      });
+      const data = await res.json();
+      if (!pollingEnabled || !pollInterval || (pollToggle && !pollToggle.checked)) {
+        console.log('[POLL] Poll disabled after response; skip update');
+        break;
+      }
+      console.log(`[POLL] ${u.ip}: ok=${data.ok}, response:`, data);
+      console.log(`[POLL] ${u.ip}: data.unit=`, data.unit, '| linkspeed=', data.unit ? data.unit.linkspeed : 'NO_UNIT');
+      
+      // Determine new status
+      const newStatus = (data.ok && !data.aliveOnly) ? 'idle' : 'disconnected';
+      
+      // Check if this status is stable (consistent across polls)
+      if (!isPollResultStable(u.ip, newStatus)) {
+        console.log(`[POLL] ${u.ip} status=${newStatus} not stable yet, waiting for confirmation`);
+        // Still update linkspeed even during stability wait — it's not a volatile field
+        try {
+          const ls = (data.unit || {}).linkspeed;
+          console.log(`[POLL][LS] ${u.ip} (pre-stable) linkspeed=${ls}`);
+          const lsCell = u.el.querySelector('.linkspeed_cell');
+          console.log(`[POLL][LS] ${u.ip} lsCell found:`, !!lsCell);
+          if (lsCell && ls !== undefined && ls !== null) {
+            const lsHtml = `<span style="color:${ls === 1000 ? '#4ade80' : '#f87171'}">${ls} Mbps</span>`;
+            lsCell.innerHTML = lsHtml;
+            if (!unitStatusCache[u.ip]) unitStatusCache[u.ip] = {};
+            unitStatusCache[u.ip].linkspeedHtml = lsHtml;
+            console.log(`[POLL][LS] ${u.ip} updated linkspeed cell: ${ls} Mbps`);
+          }
+        } catch(e) { console.warn('[POLL][LS] pre-stable update error:', e); }
+        continue;
+      }
+      
+      // Status is stable, update UI
+      if (newStatus === 'idle') {
+        console.log(`[POLL] ${u.ip} is IDLE (stable)`);
+        statusCell.innerHTML = '<span class="status s-idle">Idle</span>';
+        // Cache status
+        unitStatusCache[u.ip] = {
+          status: 'Idle',
+          statusClass: 's-idle',
+          statusText: 'Idle',
+          timestamp: Date.now()
+        };
+        // Update USB indicator if available
+        try{
+          const usb = data.usb || {};
+          console.log(`[POLL][USB] ${u.ip}`, usb);
+          const usbCell = u.el.querySelector('.usb_cell') || (u.el.cells && u.el.cells[u.el.cells.length-1]);
+          if(usbCell){
+            const role = (usb.role||'').toUpperCase();
+            const peers = usb.found_count||0;
+            const label = role || (usb.mac ? 'USB' : '');
+            const usbHtml = label ? `<span class="usb-pill">${label} · ${peers}</span>` : '';
+            usbCell.innerHTML = usbHtml;
+            // Cache USB info
+            if (label) {
+              unitStatusCache[u.ip].usb = usb;
+              unitStatusCache[u.ip].usbHtml = usbHtml;
+            }
+            if(usb.host_port){ usbCell.title = `Host: ${usb.host_port}`; } else { usbCell.removeAttribute('title'); }
+          }
+        }catch(e){ console.warn('[POLL][USB] update error:', e); }
+        // Update link speed indicator if available
+        try{
+          const ls = (data.unit || {}).linkspeed;
+          const lsCell = u.el.querySelector('.linkspeed_cell');
+          console.log(`[POLL][LS] ${u.ip} (stable) linkspeed=${ls}, lsCell found:`, !!lsCell);
+          if(lsCell && ls !== undefined && ls !== null){
+            const lsHtml = `<span style="color:${ls === 1000 ? '#4ade80' : '#f87171'}">${ls} Mbps</span>`;
+            lsCell.innerHTML = lsHtml;
+            unitStatusCache[u.ip].linkspeedHtml = lsHtml;
+            console.log(`[POLL][LS] ${u.ip} updated linkspeed cell: ${ls} Mbps`);
+          } else {
+            console.log(`[POLL][LS] ${u.ip} skipped — ls=${ls}, lsCell=${lsCell}`);
+          }
+        }catch(e){ console.warn('[POLL][LS] update error:', e); }
+      } else {
+        console.log(`[POLL] ${u.ip} is DISCONNECTED (stable)`);
+        statusCell.innerHTML = '<span class="status s-error">Disconnected</span>';
+        // Cache status
+        unitStatusCache[u.ip] = {
+          status: 'Disconnected',
+          statusClass: 's-error',
+          statusText: 'Disconnected',
+          timestamp: Date.now(),
+          usb: null,
+          usbHtml: ''
+        };
+        // Clear USB indicator on disconnect
+        try{
+          const usbCell = u.el.querySelector('.usb_cell') || (u.el.cells && u.el.cells[u.el.cells.length-1]);
+          if(usbCell){ usbCell.innerHTML = ''; usbCell.removeAttribute('title'); }
+        }catch(e){}
+      }
+      saveStatusCache();
+    } catch (e) {
+      console.error(`[POLL] ${u.ip} fetch error:`, e);
+      // Treat fetch error as 'disconnected' and check stability
+      if (!isPollResultStable(u.ip, 'disconnected')) {
+        console.log(`[POLL] ${u.ip} error result not stable yet, waiting for confirmation`);
+        continue;
+      }
+      // Error is stable, mark as disconnected
+      statusCell.innerHTML = '<span class="status s-error">Disconnected</span>';
+      // Cache disconnected status on error
+      unitStatusCache[u.ip] = {
+        status: 'Disconnected',
+        statusClass: 's-error',
+        statusText: 'Disconnected',
+        timestamp: Date.now(),
+        usb: null,
+        usbHtml: ''
+      };
+      // Clear USB indicator on error
+      try{
+        const usbCell = u.el.querySelector('.usb_cell') || (u.el.cells && u.el.cells[u.el.cells.length-1]);
+        if(usbCell){ usbCell.innerHTML = ''; usbCell.removeAttribute('title'); }
+      }catch(err){}
+      saveStatusCache();
+    }
+  }
+}
+
+function startPolling() {
+  console.log('[POLL] startPolling called');
+  if (pollInterval) {
+    console.log('[POLL] Poll already running');
+    return;
+  }
+  console.log('[POLL] First poll...');
+  pollingEnabled = true;
+  pollUnits();
+  pollInterval = setInterval(pollUnits, 2000);
+  console.log('[POLL] Interval started');
+}
+
+function stopPolling() {
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
+  }
+  pollingEnabled = false;
+  // When polling stops, show that status is unavailable
+  setStatusDisabled();
+}
+
+function initPolling() {
+  console.log('[POLL] initPolling called');
+  pollToggle = $('#poll_units_toggle');
+  pollSwitch = $('#poll_switch');
+  console.log('[POLL] pollToggle:', pollToggle, 'pollSwitch:', pollSwitch);
+  if (!pollToggle) {
+    console.error('[POLL] pollToggle not found!');
+    return;
+  }
+  
+  pollToggle.addEventListener('change', (e) => {
+    console.log('[POLL] Toggle changed:', e.target.checked);
+    if (e.target.checked) {
+      console.log('[POLL] Starting poll...');
+      pollSwitch.classList.add('on');
+      startPolling();
+      localStorage.setItem('pollUnits', 'true');
+    } else {
+      pollSwitch.classList.remove('on');
+      stopPolling();
+      localStorage.setItem('pollUnits', 'false');
+    }
+  });
+  
+  if (localStorage.getItem('pollUnits') === 'true') {
+    pollToggle.checked = true;
+    pollSwitch.classList.add('on');
+    startPolling();
+  } else {
+    // Make it clear polling is off
+    setStatusDisabled();
+  }
+}
+
+async function blink(btn, ip) {
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳';
+  
+  try {
+    const resp = await fetch('/api/blink', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ip})
+    });
+    const data = await resp.json();
+    
+    if (!resp.ok || !data.ok) {
+      throw new Error(data.error || 'Blink failed');
+    }
+    
+    // Success - show checkmark
+    btn.textContent = '✔';
+    setTimeout(() => {
+      btn.textContent = originalText;
+      btn.disabled = false;
+    }, 10000); // 10 seconds
+  } catch (e) {
+    console.error('Blink error:', e);
+    btn.textContent = '❌';
+    setTimeout(() => {
+      btn.textContent = originalText;
+      btn.disabled = false;
+    }, 3000);
+  }
+}
+
+async function toggleThumbnail(checkbox) {
+  const ip = checkbox.getAttribute('data-ip');
+  const enable = checkbox.checked;
+  
+  try {
+    const resp = await fetch('/api/set_thumbnail', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ip, enable})
+    });
+    const data = await resp.json();
+    
+    if (!resp.ok || !data.ok) {
+      throw new Error(data.error || 'Thumbnail toggle failed');
+      checkbox.checked = !enable; // Revert on error
+    }
+  } catch (e) {
+    console.error('Thumbnail toggle error:', e);
+    alert('Failed to toggle thumbnail: ' + e.message);
+    checkbox.checked = !enable; // Revert on error
+  }
+}
+
+async function fetchThumbnailStatus(ip) {
+  try {
+    const resp = await fetch('/api/get_thumbnail_status', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ip})
+    });
+    const data = await resp.json();
+    
+    if (resp.ok && data.ok) {
+      // Find the checkbox for this IP and set its state
+      const checkbox = document.querySelector(`.preview-checkbox[data-ip="${ip}"]`);
+      if (checkbox) {
+        checkbox.checked = data.enable;
+      }
+    }
+  } catch (e) {
+    console.error('Fetch thumbnail status error:', e);
+  }
+}
+
+// Track the currently loading preview to prevent race conditions
+let _previewLoadingUrl = null;
+let _previewLoadAbortController = null;
+let _previewRefreshInterval = null;
+
+function _refreshPreviewImage(url) {
+  const img = document.getElementById('hover_preview_img');
+  if (_previewLoadingUrl === url) {
+    const tempImg = new Image();
+    tempImg.onload = () => {
+      if (_previewLoadingUrl === url) {
+        // Add new timestamp to bypass cache
+        img.src = url + '?t=' + Date.now();
+        img.style.opacity = '1';
+      }
+    };
+    tempImg.onerror = () => {
+      // Silently fail
+    };
+    tempImg.src = url + '?t=' + Date.now();
+  }
+}
+
+function showHoverPreview(el, evt) {
+  const url = el.getAttribute('data-preview-url');
+  if (!url) return;
+  
+  const box = document.getElementById('hover_preview');
+  const img = document.getElementById('hover_preview_img');
+  
+  // Cancel any previous load
+  if (_previewLoadAbortController) {
+    _previewLoadAbortController.abort();
+  }
+  
+  // Cancel any previous refresh interval
+  if (_previewRefreshInterval) {
+    clearInterval(_previewRefreshInterval);
+  }
+  
+  // Create new abort controller for this load
+  _previewLoadAbortController = new AbortController();
+  _previewLoadingUrl = url;
+  
+  // Clear the image first to avoid showing stale image
+  img.src = '';
+  img.style.opacity = '0.5';
+  
+  // Add timestamp to force fresh image fetch
+  const freshUrl = url + '?t=' + Date.now();
+  
+  // Create a new image to preload it
+  const tempImg = new Image();
+  tempImg.onload = () => {
+    // Only update if this is still the URL we want to show
+    if (_previewLoadingUrl === url) {
+      img.src = freshUrl;
+      img.style.opacity = '1';
+    }
+  };
+  tempImg.onerror = () => {
+    // Silently fail - just hide the preview
+    if (_previewLoadingUrl === url) {
+      img.src = '';
+    }
+  };
+  tempImg.src = freshUrl;
+  
+  box.style.display = 'block';
+  
+  // Position to the left of the Preview link
+  const rect = el.getBoundingClientRect();
+  box.style.right = (window.innerWidth - rect.left + 12) + 'px';
+  box.style.left = 'auto';
+  box.style.top = (rect.top - 50) + 'px';
+  
+  // Refresh preview every 2 seconds while it's showing
+  _previewRefreshInterval = setInterval(() => {
+    _refreshPreviewImage(url);
+  }, 2000);
+}
+
+function hideHoverPreview() {
+  const box = document.getElementById('hover_preview');
+  if (box) box.style.display = 'none';
+  
+  // Cancel any pending loads
+  if (_previewLoadAbortController) {
+    _previewLoadAbortController.abort();
+    _previewLoadAbortController = null;
+  }
+  _previewLoadingUrl = null;
+  
+  // Stop refresh interval
+  if (_previewRefreshInterval) {
+    clearInterval(_previewRefreshInterval);
+    _previewRefreshInterval = null;
+  }
+}
+
+function openPreviewWindow(url) {
+  const width = 480;
+  const height = 400;
+  const left = (window.innerWidth - width) / 2;
+  const top = (window.innerHeight - height) / 2;
+  
+  // Create a self-refreshing preview page using blob instead of data URI
+  const htmlContent = '<!DOCTYPE html><html><head><title>Preview</title><style>body{margin:0;padding:8px;background:#1d232a;display:flex;align-items:center;justify-content:center;height:100vh;}img{max-width:100%;max-height:100%;object-fit:contain;}</style></head><body><img id="preview" alt="preview"/><script>const u="' + url + '";function r(){document.getElementById("preview").src=u+"?t="+Date.now()}r();setInterval(r,2000)<\/script></body></html>';
+  
+  const blob = new Blob([htmlContent], {type: 'text/html'});
+  const blobUrl = URL.createObjectURL(blob);
+  window.open(blobUrl, 'preview_' + Date.now(), `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`);
+}
+
+// ===== Initialize =====
+(async () => {
+  console.log('[INIT] Starting initialization IIFE...');
+  const start = performance.now();
+  await Promise.all([loadAdapters(), loadFiles(), loadUnits(), loadScanResults()]);
+  const elapsed = performance.now() - start;
+  console.log(`[INIT] Data loading complete in ${elapsed.toFixed(0)}ms`);
+  initTheme();
+  initConfig();
+  initPasswordSync();
+  initSetNtp();
+  console.log('[INIT] About to call initPolling...');
+  initPolling();
+  console.log('[INIT] initPolling called');
+  
+  // Delegated click handler for blink buttons
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.blink-btn');
+    if (!btn) return;
+    const ip = btn.getAttribute('data-ip');
+    if (ip) blink(btn, ip);
+  });
+})();
+</script>
+<div class="version-footer">OmniSuite Version V0.9.1.1</div>
+</body>
+</html>

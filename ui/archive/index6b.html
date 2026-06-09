@@ -1,0 +1,275 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Omni Upgrade Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    body { font-family: system-ui, Segoe UI, Roboto, sans-serif; margin: 16px; }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .box { border:1px solid #ddd; border-radius:10px; padding:12px; margin:8px 0; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { padding:8px; border-bottom:1px solid #eee; text-align:left; }
+    .status { padding:2px 8px; border-radius:999px; font-size:12px; display:inline-block; }
+    .s-sending { background:#fff3cd; color:#8a6d3b; }
+    .s-rebooting { background:#dbeafe; color:#1e40af; }
+    .s-idle { background:#dcfce7; color:#166534; }
+    .s-idle-unchanged { background:#f3f4f6; color:#374151; }
+    .btn { padding:8px 12px; border-radius:8px; border:1px solid #ddd; cursor:pointer; background:#fafafa; }
+    .btn:hover { background:#f0f0f0; }
+    select, input, button { font-size:14px; }
+    .small { font-size:12px; color:#555; }
+    .w80 { width:80px; }
+    .w120 { width:120px; }
+    .w240 { width:240px; }
+  </style>
+</head>
+<body>
+  <h2>Omni Upgrade Manager</h2>
+
+  <div class="box">
+    <div class="row">
+      <label>Username <input id="username" value="admin" class="w120"/></label>
+      <label>Password <input id="password" value="Atlona" class="w120" type="password"/></label>
+      <label>WS Port <input id="ws_port" value="80" class="w80"/></label>
+      <label>Upload Port (opt) <input id="upload_port" placeholder="(blank = WS port)" class="w120"/></label>
+      <button class="btn" id="apply">Apply Config</button>
+      <span id="cfg_status" class="small"></span>
+    </div>
+  </div>
+
+  <div class="box">
+    <div class="row" style="gap:16px;">
+      <div>
+        <div class="small">Adapters</div>
+        <select id="adapters" class="w240">
+          <option value="">(loading adapters...)</option>
+        </select>
+      </div>
+      <div>
+        <div class="small">Targets (free-form). If empty, uses selected adapter range.</div>
+        <input id="targets" class="w240" placeholder="e.g. 192.168.100.1-254, or 192.168.100.0/24, or IPs"/>
+      </div>
+      <button class="btn" id="scan">Scan</button>
+      <span id="scan_status" class="small"></span>
+    </div>
+  </div>
+
+  <div class="box">
+    <div class="row">
+      <div>
+        <div class="small">Firmware (.vpup2 in server folder)</div>
+        <select id="files" class="w240"></select>
+      </div>
+      <button class="btn" id="refresh_files">Refresh Files</button>
+      <button class="btn" id="upgrade_sel">Upgrade Selected</button>
+      <span id="up_status" class="small"></span>
+    </div>
+  </div>
+
+  <div class="box">
+    <table id="tbl">
+      <thead>
+        <tr>
+          <th><input type="checkbox" id="chk_all"/></th>
+          <th>IP</th>
+          <th>MAC</th>
+          <th>Hostname</th>
+          <th>Model</th>
+          <th>Version</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+<script>
+const $ = sel => document.querySelector(sel);
+const api = (p, opt={}) => fetch(p, opt).then(r => r.json());
+
+let units = []; // rows from last scan
+const unitMap = new Map();
+
+function statusBadge(text, cls){
+  const span = document.createElement('span');
+  span.className = `status ${cls}`;
+  span.textContent = text;
+  return span;
+}
+
+function renderRows(list){
+  const tb = $("#tbody"); tb.innerHTML = "";
+  list.forEach(u=>{
+    const tr = document.createElement('tr');
+    tr.dataset.ip = u.ip;
+    const chk = document.createElement('input'); chk.type = "checkbox"; chk.className = "sel";
+    const tdSel = document.createElement('td'); tdSel.appendChild(chk);
+
+    const tdIP = document.createElement('td'); tdIP.textContent = u.ip || "";
+    const tdMAC = document.createElement('td'); tdMAC.textContent = u.mac || "";
+    const tdHost = document.createElement('td'); tdHost.textContent = u.hostname || "";
+    const tdModel = document.createElement('td'); tdModel.textContent = u.model || "";
+    const tdVer = document.createElement('td'); tdVer.textContent = u.version || "";
+    const tdStatus = document.createElement('td'); tdStatus.appendChild(statusBadge("idle", "s-idle-unchanged"));
+
+    tr.append(tdSel, tdIP, tdMAC, tdHost, tdModel, tdVer, tdStatus);
+    tb.appendChild(tr);
+    unitMap.set(u.ip, { ...u, statusCell: tdStatus, versionCell: tdVer });
+  });
+}
+
+async function loadAdapters(){
+  try{
+    const res = await api("/api/adapters");
+    const sel = $("#adapters");
+    sel.innerHTML = "";
+    const list = (res && res.adapters) || [];
+    if(!list.length){
+      sel.innerHTML = `<option value="">(no adapters found)</option>`;
+      return;
+    }
+    list.forEach(a=>{
+      const o = document.createElement("option");
+      o.value = a.scan;
+      o.textContent = `${a.name} — ${a.cidr} (scan: ${a.scan})`;
+      sel.appendChild(o);
+    });
+  }catch(e){
+    $("#adapters").innerHTML = `<option value="">(adapters error)</option>`;
+  }
+}
+
+async function refreshFiles(){
+  const res = await api("/api/files");
+  const sel = $("#files"); sel.innerHTML = "";
+  (res.files || []).forEach(f=>{
+    const o = document.createElement("option");
+    o.value = f.name; o.textContent = `${f.name} (${(f.size/1024/1024).toFixed(1)} MB)`;
+    sel.appendChild(o);
+  });
+  $("#up_status").textContent = res.files?.length ? "files refreshed" : "no .vpup2 files found";
+}
+
+async function applyConfig(){
+  const body = {
+    username: $("#username").value || "admin",
+    password: $("#password").value || "Atlona",
+    ws_port: parseInt($("#ws_port").value || "80", 10),
+    upload_port: ($("#upload_port").value||"").trim()
+  };
+  const res = await api("/api/config", { method:"POST", headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  $("#cfg_status").textContent = res.ok ? "config applied" : (res.error || "config error");
+}
+
+async function scan(){
+  const text = ($("#targets").value || "").trim();
+  const chosen = ($("#adapters").value || "").trim();
+  const targets = text || chosen;
+  if(!targets){ $("#scan_status").textContent = "no targets"; return; }
+  $("#scan_status").textContent = "scanning...";
+  const body = { targets };
+  const res = await api("/api/scan", { method:"POST", headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  if(res.ok){
+    units = res.units || [];
+    renderRows(units);
+    $("#scan_status").textContent = `scan ok; units: ${units.length}`;
+  }else{
+    $("#scan_status").textContent = res.error || "scan error";
+  }
+}
+
+function getSelectedIPs(){
+  const rows = Array.from(document.querySelectorAll("#tbody tr"));
+  const ips = [];
+  rows.forEach(r=>{
+    const chk = r.querySelector("input.sel");
+    if(chk && chk.checked) ips.push(r.dataset.ip);
+  });
+  return ips;
+}
+
+function setStatus(ip, text, cls){
+  const row = unitMap.get(ip);
+  if(!row) return;
+  const td = row.statusCell; td.innerHTML = "";
+  td.appendChild(statusBadge(text, cls));
+}
+
+async function pollUntilChanged(ip, originalVersion, timeoutMs=8*60*1000){
+  const start = Date.now();
+  let sawDown = false;
+  while(Date.now() - start < timeoutMs){
+    try{
+      const res = await api("/api/poll", {method:"POST", headers:{'Content-Type':'application/json'}, body: JSON.stringify({ip})});
+      if(res && res.ok){
+        const curV = (res.unit && res.unit.version) || "";
+        if(sawDown){
+          if(curV && curV !== originalVersion){
+            setStatus(ip, "idle", "s-idle");
+          }else{
+            setStatus(ip, "idle (unchanged)", "s-idle-unchanged");
+          }
+          const row = unitMap.get(ip);
+          if(row && curV){ row.versionCell.textContent = curV; }
+          return;
+        }else{
+          await new Promise(r=>setTimeout(r, 3000));
+        }
+      }else{
+        if(!sawDown){
+          setStatus(ip, "rebooting", "s-rebooting");
+          sawDown = true;
+        }
+        await new Promise(r=>setTimeout(r, 3000));
+      }
+    }catch(e){
+      if(!sawDown){
+        setStatus(ip, "rebooting", "s-rebooting");
+        sawDown = true;
+      }
+      await new Promise(r=>setTimeout(r, 3000));
+    }
+  }
+  setStatus(ip, "idle (timeout)", "s-idle-unchanged");
+}
+
+async function upgradeSelected(){
+  const file = $("#files").value;
+  if(!file){ $("#up_status").textContent = "select a .vpup2"; return; }
+  const ips = getSelectedIPs();
+  if(!ips.length){ $("#up_status").textContent = "select at least one unit"; return; }
+
+  $("#up_status").textContent = "starting upgrades...";
+  for(const ip of ips){
+    const row = unitMap.get(ip);
+    const originalVersion = (row && row.versionCell && row.versionCell.textContent) || "";
+    setStatus(ip, "sending", "s-sending");
+    const body = {
+      targets: [ip],
+      file,
+      username: $("#username").value || "admin",
+      password: $("#password").value || "Atlona"
+    };
+    try{
+      await api("/api/upgrade", {method:"POST", headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    }catch(e){}
+    pollUntilChanged(ip, originalVersion).catch(()=>{});
+  }
+  $("#up_status").textContent = "upgrade commands sent";
+}
+
+document.addEventListener("DOMContentLoaded", ()=>{
+  $("#apply").addEventListener("click", applyConfig);
+  $("#scan").addEventListener("click", scan);
+  $("#refresh_files").addEventListener("click", refreshFiles);
+  $("#upgrade_sel").addEventListener("click", upgradeSelected);
+  $("#chk_all").addEventListener("change", (e)=>{
+    document.querySelectorAll("#tbody .sel").forEach(c=> c.checked = e.target.checked);
+  });
+  loadAdapters();
+  refreshFiles();
+});
+</script>
+</body>
+</html>

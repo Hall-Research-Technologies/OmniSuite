@@ -1,0 +1,249 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Omni Upgrade Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    :root { --bg:#0b0f16; --fg:#e5e7eb; --muted:#9ca3af; --card:#111827; --border:#273449; --table:#0f172a; --accent:#374151; --accent-strong:#1f2937; --spinner:#9ca3af; }
+    .light { --bg:#fff; --fg:#111827; --muted:#6b7280; --card:#fff; --border:#e5e7eb; --table:#fff; --accent:#f3f4f6; --accent-strong:#e5e7eb; --spinner:#6b7280; }
+    body { font-family: system-ui, Segoe UI, Roboto, sans-serif; margin:16px; background:var(--bg); color:var(--fg); }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .row-between { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+    .box { border:1px solid var(--border); background:var(--card); border-radius:10px; padding:12px; margin:8px 0; }
+    table { width:100%; border-collapse:collapse; background:var(--table); }
+    th, td { padding:8px; border-bottom:1px solid var(--border); text-align:left; }
+    .status { padding:2px 8px; border-radius:999px; font-size:12px; display:inline-flex; align-items:center; gap:6px; }
+    .s-sending { background:#854d0e; color:#fde68a; }
+    .s-rebooting { background:#1e3a8a; color:#bfdbfe; }
+    .s-idle { background:#14532d; color:#bbf7d0; }
+    .s-idle-unchanged { background:#374151; color:#e5e7eb; }
+    .s-disconnected { background:#7f1d1d; color:#fecaca; }
+    .btn { padding:8px 12px; border-radius:8px; border:1px solid var(--border); cursor:pointer; background:var(--accent); color:var(--fg); }
+    .btn:hover { filter: brightness(1.1); }
+    select, input, button { font-size:14px; color:var(--fg); background:var(--card); border:1px solid var(--border); padding:6px 8px; border-radius:6px; }
+    .small { font-size:12px; color:var(--muted); }
+    .w80 { width:80px; } .w120 { width:120px; } .w160 { width:160px; } .w240 { width:240px; }
+    label.toggle { display:flex; align-items:center; gap:8px; user-select:none; cursor:pointer; }
+    .switch { position:relative; width:44px; height:24px; background:var(--border); border-radius:999px; }
+    .knob { position:absolute; top:2px; left:2px; width:20px; height:20px; border-radius:50%; background:var(--fg); transition:left .15s; }
+    .switch.on .knob { left:22px; }
+    .pill { padding:4px 10px; border-radius:999px; background:var(--accent-strong); color:var(--fg); }
+    .spinner { display:inline-block; width:14px; height:14px; border:2px solid var(--spinner); border-top-color:transparent; border-radius:50%; animation: spin .8s linear infinite; vertical-align:-2px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .err { color:#fca5a5; }
+  </style>
+</head>
+<body>
+  <h2>Omni Upgrade Manager</h2>
+
+  <div class="box">
+    <div class="row">
+      <label>Username <input id="username" value="admin" class="w120"/></label>
+      <label>Password <input id="password" value="Atlona" class="w120" type="password"/></label>
+      <label>WS PORT
+        <select id="ws_port" class="w120">
+          <option value="80" selected>80 (ws)</option>
+          <option value="443">443 (wss)</option>
+        </select>
+      </label>
+      <label class="toggle">
+        <div>Dark mode</div>
+        <div id="dark_switch" class="switch on"><div class="knob"></div></div>
+      </label>
+      <label>Parallel uploads
+        <select id="concurrency" class="w80">
+          <option>1</option><option>2</option><option>4</option><option selected>6</option><option>8</option><option>12</option>
+        </select>
+      </label>
+      <button class="btn" id="apply">Apply Config</button>
+      <span id="cfg_status" class="small"></span>
+    </div>
+  </div>
+
+  <div class="box">
+    <div class="row" style="gap:16px;">
+      <div>
+        <div class="small">Adapters <span id="adapters_err" class="small err"></span></div>
+        <select id="adapters" class="w240"><option value="">(loading adapters...)</option></select>
+      </div>
+      <div>
+        <div class="small">Targets (free-form). If empty, uses selected adapter range.</div>
+        <input id="targets" class="w240" placeholder="e.g. 192.168.100.1-254, or 192.168.100.0/24, or IPs"/>
+      </div>
+      <button class="btn" id="scan">Scan</button>
+      <button class="btn" id="clear_units">Clear Units</button>
+      <span id="scan_status" class="small pill"></span>
+    </div>
+  </div>
+
+  <div class="box">
+    <div class="row-between">
+      <div class="row">
+        <div>
+          <div class="small">Firmware (.vpup2 in application folder) <span id="files_err" class="small err"></span></div>
+          <select id="files" class="w240"></select>
+          <div class="small" style="margin-top:6px;">select the firmware for the unit type you are wanting to view</div>
+        </div>
+        <button class="btn" id="refresh_files">Refresh Files</button>
+        <label class="toggle" title="After confirming version change, issue factory reset">
+          <input id="reset_after" type="checkbox" style="width:16px;height:16px; accent-color:#10b981;"/>
+          <span>Factory reset after upgrade</span>
+        </label>
+        <button class="btn" id="upgrade_sel">Upgrade Selected</button>
+        <span id="up_status" class="small"></span>
+      </div>
+      <div class="row" style="justify-content:center; gap:16px;">
+        <label class="toggle">
+          <div>Poll Units</div>
+          <div id="poll_switch" class="switch"><div class="knob"></div></div>
+        </label>
+        <button class="btn" id="export_units">Export Units</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="box">
+    <table id="tbl">
+      <thead>
+        <tr>
+          <th><input type="checkbox" id="chk_all"/></th>
+          <th>IP</th><th>MAC</th><th>Hostname</th><th>Model</th><th>Version</th><th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+<script>
+const $ = sel => document.querySelector(sel);
+const api = (p, opt={}) => fetch(p, opt).then(r => r.json());
+
+function applyTheme(){ const dark = localStorage.getItem("dark") !== "false"; document.body.classList.toggle("light", !dark); $("#dark_switch").classList.toggle("on", dark); }
+function toggleDark(){ const isOn = $("#dark_switch").classList.contains("on"); localStorage.setItem("dark", (!isOn).toString()); applyTheme(); }
+
+let units = []; const unitMap = new Map();
+const lastPolledText = new Map();
+const failureMap = new Map();
+let pollTimer = null;
+
+function statusBadge(text, cls, spin=false){ const span=document.createElement('span'); span.className=`status ${cls}`; const t=document.createElement('span'); t.textContent=text; span.appendChild(t); if(spin){ const s=document.createElement('span'); s.className='spinner'; s.style.width='12px'; s.style.height='12px'; s.style.borderWidth='2px'; span.appendChild(s);} return span; }
+function renderRows(list){ const tb=$("#tbody"); tb.innerHTML=""; list.forEach(u=>{ const tr=document.createElement('tr'); tr.dataset.ip=u.ip; const chk=document.createElement('input'); chk.type="checkbox"; chk.className="sel"; const tdSel=document.createElement('td'); tdSel.appendChild(chk); const tdIP=document.createElement('td'); tdIP.textContent=u.ip||""; const tdMAC=document.createElement('td'); tdMAC.textContent=u.mac||""; const tdHost=document.createElement('td'); tdHost.textContent=u.hostname||""; const tdModel=document.createElement('td'); tdModel.textContent=u.model||""; const tdVer=document.createElement('td'); tdVer.textContent=u.version||""; const tdStatus=document.createElement('td'); tdStatus.appendChild(statusBadge("idle","s-idle-unchanged")); tr.append(tdSel,tdIP,tdMAC,tdHost,tdModel,tdVer,tdStatus); tb.appendChild(tr); unitMap.set(u.ip,{...u,statusCell:tdStatus,versionCell:tdVer}); }); }
+function filteredUnits(){ return units; }
+function rerenderFiltered(){ renderRows(filteredUnits()); setGrayForAllIfPollingOff(); }
+
+async function loadAdapters(){ try{ const sel=$("#adapters"); sel.innerHTML=`<option value="">(loading adapters...)</option>`; const res=await api("/api/adapters"); const list=res.adapters||[]; sel.innerHTML=""; if(!list.length){ sel.innerHTML=`<option value="">(no adapters found)</option>`; return; } list.forEach(a=>{ const o=document.createElement("option"); o.value=a.scan; o.textContent=`${a.name} — ${a.cidr} (scan: ${a.scan})`; sel.appendChild(o); }); }catch(e){ $("#adapters").innerHTML=`<option value="">(adapters error)</option>`; } }
+async function refreshFiles(){ const sel=$("#files"); try{ const res=await api("/api/files"); sel.innerHTML=""; (res.files||[]).forEach(f=>{ const o=document.createElement("option"); o.value=f.name; o.textContent=`${f.name} (${(f.size/1024/1024).toFixed(1)} MB)`; sel.appendChild(o); }); }catch(e){ } rerenderFiltered(); }
+async function loadCache(){ const res=await api("/api/cache"); if(res && res.ok && Array.isArray(res.units) && res.units.length){ units=res.units; rerenderFiltered(); } }
+
+function setScanStatusScanning(){ $("#scan_status").innerHTML=`scanning <span class="spinner"></span>`; }
+function setScanStatusText(msg){ $("#scan_status").textContent=msg; }
+
+async function scan(){ const text=($("#targets").value||"").trim(); const chosen=($("#adapters").value||"").trim(); const targets=text||chosen; if(!targets){ setScanStatusText("no targets"); return; } setScanStatusScanning(); const body={targets}; const res=await api("/api/scan",{method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); if(res.ok){ units=res.units||[]; rerenderFiltered(); setScanStatusText(`scan ok; total unique: ${units.length}`); } else { setScanStatusText(res.error||"scan error"); } }
+
+function getSelectedIPs() {
+  // Only include visible, checked, unique IPs
+  const rows = Array.from(document.querySelectorAll("#tbody tr"));
+  const seen = new Set();
+  const ips = [];
+  let debugChecked = [];
+  rows.forEach(r => {
+    if (r.offsetParent === null) return;
+    const chk = r.querySelector("input.sel");
+    const ip = r.dataset.ip;
+    if (chk && chk.checked) debugChecked.push(ip);
+    if (chk && chk.checked && ip && !seen.has(ip)) {
+      ips.push(ip);
+      seen.add(ip);
+    }
+  });
+  console.log('[DEBUG] Checked IPs:', debugChecked);
+  console.log('[DEBUG] Selected IPs for upgrade:', ips);
+  return ips;
+}
+function setStatus(ip,text,cls,spin=false){ const row=unitMap.get(ip); if(!row) return; const td=row.statusCell; td.innerHTML=""; td.appendChild(statusBadge(text,cls,spin)); const t=(text||'').toLowerCase(); if(cls==='s-idle' || cls==='s-disconnected' || t.includes('idle') || t.includes('disconnected')){ lastPolledText.set(ip, text); } }
+function isActiveStatus(ip){ const row = unitMap.get(ip); if(!row) return false; const text = row.statusCell.textContent.toLowerCase(); return text.includes("sending") || text.includes("rebooting") || text.includes("resetting"); }
+function setGrayForAllIfPollingOff(){ const pollEl=$("#poll_switch"); const on=pollEl && pollEl.classList.contains("on"); if(on) return; const list=filteredUnits(); for(const u of list){ const ip=u.ip; if(isActiveStatus(ip)) continue; const last=lastPolledText.get(ip) || (unitMap.get(ip)?.statusCell?.textContent || "idle"); const row=unitMap.get(ip); if(row && row.statusCell){ row.statusCell.innerHTML=""; row.statusCell.appendChild(statusBadge(last,"s-idle-unchanged")); } } }
+
+async function tcpProbe(ip){ try{ const r = await api("/api/tcp_probe",{method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,timeout_ms:400})}); if(r && r.ok) return !!r.reachable; }catch(e){} try{ const r2 = await api("/api/ping",{method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,timeout_ms:400})}); if(r2 && r2.ok) return !!r2.reachable; }catch(e){} return false; }
+function isPollingOn(){ return $("#poll_switch").classList.contains("on"); }
+async function pollDisplayedOnce(){ if(!isPollingOn()) return; const list=filteredUnits(); for(const u of list){ const ip=u.ip; if(isActiveStatus(ip)) continue; const ok=await tcpProbe(ip); if(ok){ lastPolledText.set(ip,"idle"); setStatus(ip,"idle","s-idle"); } else { const n=(failureMap.get(ip)||0)+1; failureMap.set(ip,n); if(n>=3){ lastPolledText.set(ip,"disconnected"); setStatus(ip,"disconnected","s-disconnected"); } } } }
+function enablePolling(on){ if(on){ if(pollTimer) return; pollTimer=setInterval(pollDisplayedOnce,3000); pollDisplayedOnce(); } else { if(pollTimer){ clearInterval(pollTimer); pollTimer=null; } setGrayForAllIfPollingOff(); } }
+
+async function upgradeSelected(){
+  const file=$("#files").value; if(!file){ $("#up_status").textContent="select a .vpup2"; return; }
+  const ips=getSelectedIPs(); if(!ips.length){ $("#up_status").textContent="select at least one unit"; return; }
+  const doReset = $("#reset_after").checked;
+  if(doReset){
+    const ok=confirm("You have Requested a factory reset after Upgrade.  The ip address will remain, the device will need to be reconfigured.\n\nCancel/Continue");
+    if(!ok) return;
+  }
+  $("#up_status").textContent="starting upgrades...";
+  const concurrency=6;
+  const body={ targets:ips, file, username:$("#username").value||"admin", password:$("#password").value||"Atlona", concurrency };
+  ips.forEach(ip=> setStatus(ip,"sending","s-sending",true));
+  try{ await api("/api/upgrade",{method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }catch(e){}
+  for(const ip of ips){
+    const original=(unitMap.get(ip)?.versionCell?.textContent)||"";
+    let down=false; let resetSent=false;
+    (async function loop(){
+      const start=Date.now();
+      while(Date.now()-start<15*60*1000){
+        try{
+          const res=await api("/api/poll",{method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({ip})});
+          if(res && res.ok){
+            const u=res.unit||{}; const cur=u.version||"";
+            if(res.aliveOnly){ setStatus(ip,"rebooting","s-rebooting",true); await new Promise(r=>setTimeout(r,3000)); continue; }
+            if(!down){ await new Promise(r=>setTimeout(r,1500)); down=true; continue; }
+            if(cur && cur!==original){
+              if(doReset && !resetSent){
+                setStatus(ip,"resetting","s-rebooting",true);
+                try{ await api("/api/reset",{method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({ip, username:$("#username").value||"admin", password:$("#password").value||"Atlona"})}); }catch(e){}
+                resetSent=true; down=false; await new Promise(r=>setTimeout(r,2000)); continue;
+              } else {
+                setStatus(ip,"idle","s-idle");
+                const vc=unitMap.get(ip)?.versionCell; if(vc) vc.textContent=cur;
+                return;
+              }
+            } else {
+              setStatus(ip,"idle (unchanged)","s-idle-unchanged"); return;
+            }
+          } else {
+            if(!down){ down=true; }
+            setStatus(ip,"rebooting","s-rebooting",true);
+            await new Promise(r=>setTimeout(r,3000));
+          }
+        }catch(e){
+          if(!down){ down=true; }
+          setStatus(ip,"rebooting","s-rebooting",true);
+          await new Promise(r=>setTimeout(r,3000));
+        }
+      }
+      setStatus(ip,"idle (timeout)","s-idle-unchanged");
+    })().catch(()=>{});
+  }
+  $("#up_status").textContent=`upgrade commands sent (parallel: ${concurrency})`;
+}
+
+// events
+document.addEventListener("DOMContentLoaded", async ()=>{
+  $("#dark_switch").addEventListener("click", toggleDark);
+  $("#apply").addEventListener("click", async()=>{
+    await fetch("/api/config",{method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$("#username").value||"admin",password:$("#password").value||"Atlona",ws_port:parseInt($("#ws_port").value||"80",10)})});
+  });
+  $("#scan").addEventListener("click", scan);
+  $("#clear_units").addEventListener("click", async()=>{ await api("/api/clear_units",{method:"POST"}); units=[]; unitMap.clear(); renderRows([]); $("#scan_status").textContent="units cleared"; });
+  $("#export_units").addEventListener("click", async()=>{ try{ await api("/api/export_csv",{method:"POST"}); }catch(e){} window.location.href="/api/download_csv"; });
+  $("#refresh_files").addEventListener("click", refreshFiles);
+  $("#upgrade_sel").addEventListener("click", upgradeSelected);
+  $("#files").addEventListener("change", ()=>rerenderFiltered());
+  $("#chk_all").addEventListener("change", (e)=>{ document.querySelectorAll("#tbody .sel").forEach(c=> c.checked=e.target.checked); });
+  $("#poll_switch").addEventListener("click", ()=>{ const on = !$("#poll_switch").classList.contains("on"); if(on) $("#poll_switch").classList.add("on"); else $("#poll_switch").classList.remove("on"); enablePolling(on); });
+
+  applyTheme();
+  await Promise.allSettled([loadAdapters(), refreshFiles(), loadCache()]);
+  setGrayForAllIfPollingOff();
+});
+</script>
+</body>
+</html>

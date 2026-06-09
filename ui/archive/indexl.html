@@ -1,0 +1,112 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Omni Upgrade Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    :root { --bg:#0b0f16; --fg:#e5e7eb; --muted:#9ca3af; --card:#111827; --border:#273449; --table:#0f172a; --accent:#374151; --accent-strong:#1f2937; --spinner:#9ca3af; }
+    .light { --bg:#fff; --fg:#111827; --muted:#6b7280; --card:#fff; --border:#e5e7eb; --table:#fff; --accent:#f3f4f6; --accent-strong:#e5e7eb; --spinner:#6b7280; }
+    body { font-family: system-ui, Segoe UI, Roboto, sans-serif; margin:16px; background:var(--bg); color:var(--fg); }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .row-between { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+    .box { border:1px solid var(--border); background:var(--card); border-radius:10px; padding:12px; margin:8px 0; }
+    table { width:100%; border-collapse:collapse; background:var(--table); }
+    th, td { padding:8px; border-bottom:1px solid var(--border); text-align:left; }
+    a.ip { color:#93c5fd; text-decoration: underline; cursor:pointer; }
+    .status { padding:2px 8px; border-radius:999px; font-size:12px; display:inline-flex; align-items:center; gap:6px; }
+    .s-sending { background:#854d0e; color:#fde68a; }
+    .s-rebooting { background:#1e3a8a; color:#bfdbfe; }
+    .s-idle { background:#14532d; color:#bbf7d0; }
+    .s-idle-unchanged { background:#374151; color:#e5e7eb; }
+    .s-disconnected { background:#7f1d1d; color:#fecaca; }
+    .btn { padding:8px 12px; border-radius:8px; border:1px solid var(--border); cursor:pointer; background:var(--accent); color:var(--fg); }
+    .btn:hover { filter: brightness(1.1); }
+    select, input, button { font-size:14px; color:var(--fg); background:var(--card); border:1px solid var(--border); padding:6px 8px; border-radius:6px; }
+    .small { font-size:12px; color:var(--muted); }
+    .w80 { width:80px; } .w120 { width:120px; } .w160 { width:160px; } .w240 { width:240px; }
+    label.toggle { display:flex; align-items:center; gap:8px; user-select:none; cursor:pointer; }
+    .switch { position:relative; width:44px; height:24px; background:var(--border); border-radius:999px; }
+    .knob { position:absolute; top:2px; left:2px; width:20px; height:20px; border-radius:50%; background:var(--fg); transition:left .15s; }
+    .switch.on .knob { left:22px; }
+    .pill { padding:4px 10px; border-radius:999px; background:var(--accent-strong); color:var(--fg); }
+    .spinner { display:inline-block; width:14px; height:14px; border:2px solid var(--spinner); border-top-color:transparent; border-radius:50%; animation: spin .8s linear infinite; vertical-align:-2px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .err { color:#fca5a5; }
+  </style>
+</head>
+<body>
+  <h2>Omni Upgrade Manager</h2>
+
+  <div class="box">
+    <div class="row">
+      <label>Username <input id="username" value="admin" class="w120"/></label>
+      <label>Password <input id="password" value="Atlona" class="w120" type="password"/></label>
+      <label>WS PORT
+        <select id="ws_port" class="w120">
+          <option value="80" selected>80 (ws)</option>
+          <option value="443">443 (wss)</option>
+        </select>
+      </label>
+      <label class="toggle">
+        <div>Dark mode</div>
+        <div id="dark_switch" class="switch on"><div class="knob"></div></div>
+      </label>
+      <button class="btn" id="apply">Apply Config</button>
+      <span id="cfg_status" class="small"></span>
+    </div>
+  </div>
+
+  <!-- (rest of your UI unchanged) -->
+
+  <div class="box">
+    <table id="tbl">
+      <thead>
+        <tr>
+          <th><input type="checkbox" id="chk_all"/></th>
+          <th>IP</th><th>MAC</th><th>Hostname</th><th>Model</th><th>Version</th><th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+<script>
+const $ = sel => document.querySelector(sel);
+const api = (p, opt={}) => fetch(p, opt).then(r => r.json());
+
+function applyTheme(){ const dark = localStorage.getItem("dark") !== "false"; document.body.classList.toggle("light", !dark); $("#dark_switch").classList.toggle("on", dark); }
+
+// ---------- CHANGED: open via proxy so cookies/session/auth live on our origin ----------
+function ipLink(ip){
+  const a=document.createElement('a'); a.textContent=ip; a.className='ip'; a.href='#';
+  a.addEventListener('click', (e)=>{
+    e.preventDefault();
+    const port = parseInt($("#ws_port").value||"80",10);
+    // Pass ip/port as query so the injected script knows where to WS and how to auto-login
+    const q = new URLSearchParams({ "__ip__": ip, "__port__": String(port) });
+    window.open(`/proxy/${ip}/#/login?${q.toString()}`, '_blank');
+  });
+  return a;
+}
+// ---------------------------------------------------------------------------------------
+
+document.addEventListener("DOMContentLoaded", async ()=>{
+  applyTheme();
+
+  // Store creds/port for the injected script to pick up inside the proxy page
+  $("#apply").addEventListener("click", async ()=>{
+    const user = $("#username").value || "admin";
+    const pass = $("#password").value || "Atlona";
+    const port = parseInt($("#ws_port").value||"80",10);
+    sessionStorage.setItem('omni_user', user);
+    sessionStorage.setItem('omni_pass', pass);
+    sessionStorage.setItem('omni_ws_port', String(port));
+    await fetch("/api/config",{method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({username:user,password:pass,ws_port:port})});
+  });
+
+  // TODO: keep your existing init (adapters, files, scan, etc.)
+});
+</script>
+</body>
+</html>

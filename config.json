@@ -1,0 +1,9 @@
+{
+  "username": "admin",
+  "password": "password",
+  "fallback_password": "Atlona",
+  "ws_port": 80,
+  "timeout": 4.0,
+  "concurrency": 12,
+  "firmware_path": "C:\\softwareDEV\\omniSuite\\firmware"
+}

@@ -1,0 +1,112 @@
+name: Build OmniSuite Cross Platform
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Override version (example: V0.9.1.1)"
+        required: false
+        type: string
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+      - "V*"
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            suffix: windows
+            artifact_name: OmniSuite-Windows
+            mac_arch: ""
+          - os: ubuntu-latest
+            suffix: linux
+            artifact_name: OmniSuite-Linux
+            mac_arch: ""
+          - os: macos-15-intel
+            suffix: x86_64
+            artifact_name: OmniSuite-macOS-intel
+            mac_arch: x86_64
+          - os: macos-latest
+            suffix: arm64
+            artifact_name: OmniSuite-macOS-arm64
+            mac_arch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Linux GUI deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk libx11-dev libxkbcommon-x11-0
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.release_version }}" ]; then
+            v="${{ github.event.inputs.release_version }}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            v="${GITHUB_REF_NAME}"
+          else
+            v="$(cat VERSION)"
+          fi
+          echo "release_version=${v}" >> "$GITHUB_OUTPUT"
+          echo "Using version: ${v}"
+
+      - name: Build and package
+        env:
+          PYI_MACOS_ARCH: ${{ matrix.mac_arch }}
+          RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
+        run: |
+          python tools/build_release.py --suffix ${{ matrix.suffix }} --version "${{ steps.version.outputs.release_version }}"
+
+      - name: Upload packaged release artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: release-${{ matrix.artifact_name }}
+          path: release/*
+          if-no-files-found: error
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v5
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/*

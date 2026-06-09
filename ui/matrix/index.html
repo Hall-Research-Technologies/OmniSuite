@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Omni Matrix</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="icon" href="/ui/favicon.ico"/>
+  <link rel="stylesheet" href="/ui/matrix/matrix.css"/>
+  <style>
+    .tabs{display:flex;gap:0;}
+    .tab{padding:8px 16px;cursor:pointer;background:transparent;color:var(--muted);border:none;font-size:14px;font-weight:500;border-bottom:2px solid transparent;transition:all .16s;text-decoration:none;border-radius:6px 6px 0 0}
+    .tab:hover{color:var(--fg);background:rgba(30,144,255,.08)}
+    .tab.active{color:var(--accent);background:rgba(30,144,255,.08)}
+    /* Loading Overlay */
+    .matrix-loading-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:50000;}
+    .matrix-loading-overlay.hidden{display:none!important;}
+    .matrix-loading-message{color:var(--text);text-align:center;padding:40px;font-size:18px;}
+    .matrix-loading-spinner{width:40px;height:40px;border:4px solid rgba(255,255,255,0.2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 20px;}
+    @keyframes spin{to{transform:rotate(360deg)}}
+  </style>
+  <script>
+    // Apply theme early to avoid flash; guard if body not ready yet
+    (function(){
+      const dark = localStorage.getItem('dark') !== 'false';
+      const apply = ()=>{
+        const target = document.body || document.documentElement;
+        if(!target) return;
+        target.classList.toggle('light', !dark);
+      };
+      if (document.body) {
+        apply();
+      } else {
+        document.addEventListener('DOMContentLoaded', apply, {once:true});
+      }
+    })();
+  </script>
+  
+</head>
+<body>
+  <!-- Header at top -->
+  <div class="header">
+    <div class="left">
+      <img src="/ui/companylogo.png" alt="Company Logo" class="logo">
+      <h1>OmniSuite Matrix</h1>
+    </div>
+    <div class="controls">
+      <div class="tabs">
+        <a href="/" class="tab">Device Manager</a>
+        <a href="/matrix" class="tab active">A/V Matrix</a>
+        <a href="/matrix/usb" class="tab">USB Matrix</a>
+      </div>
+      <label class="toggle" id="header_dark_label">
+        <input type="checkbox" id="dark_mode_toggle" style="display:none;" />
+        <div class="label">Dark Mode</div>
+        <div id="dark_switch" class="switch on"><div class="knob"></div></div>
+      </label>
+    </div>
+  </div>
+
+  <div class="top">
+    <div class="row">
+      <button id="refreshBtn">Refresh</button>
+      <button id="reloadCacheBtn" style="margin-left:8px;">Reload Cache</button>
+      <div class="divider"></div>
+      <div class="mode">
+        <span id="mode_label" class="mode-label">AV (Audio + Video)</span>
+        <button class="modebtn active" data-mode="av" title="Route both audio and video">AV</button>
+        <button class="modebtn" data-mode="video" title="Route video only (outer ring)">Video</button>
+        <button class="modebtn" data-mode="audio" title="Route audio only (inner dot)">Audio</button>
+      </div>
+      <div class="divider"></div>
+      <label class="toggle" id="sticky_headers_label">
+        <input type="checkbox" id="sticky_headers_toggle" style="display:none;" />
+        <div class="label">Lock Headers</div>
+        <div id="sticky_switch" class="switch"><div class="knob"></div></div>
+      </label>
+      <label class="toggle" id="preview_toggle_label">
+        <input type="checkbox" id="preview_toggle" style="display:none;" />
+        <div class="label">Preview</div>
+        <div id="preview_switch" class="switch on"><div class="knob"></div></div>
+      </label>
+    </div>
+    <div class="legend">
+      <span class="legend-item"><span class="legend-both"></span> <span>AV routed (both)</span></span>
+      <span class="legend-item"><span class="legend-video-outer"></span> <span>Video routed</span></span>
+      <span class="legend-item"><span class="legend-audio-inner"></span> <span>Audio routed (black dot)</span></span>
+    </div>
+  </div>
+
+  <div class="matrix-area">
+    <div class="matrix-wrap">
+      <table id="matrix" class="matrix" aria-label="Routing matrix"></table>
+    </div>
+    <div style="display:flex;gap:24px;margin:18px 0 8px 0;align-items:center;">
+      <div>
+        <label for="encFilterInput"><b>Filter Encoders:</b></label>
+        <input type="text" id="encFilterInput" placeholder="Type to filter encoders..." style="margin-left:8px;min-width:110px;width:110px;">
+        <button id="encFilterClearBtn" type="button" style="margin-left:4px;">Clear</button>
+      </div>
+      <div>
+        <label for="decFilterInput"><b>Filter Decoders:</b></label>
+        <input type="text" id="decFilterInput" placeholder="Type to filter decoders..." style="margin-left:8px;min-width:110px;width:110px;">
+        <button id="decFilterClearBtn" type="button" style="margin-left:4px;">Clear</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="collapsible" id="encoders-section">
+    <div class="header">
+      <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="6 9 12 15 18 9"></polyline>
+      </svg>
+      <h3 style="margin:0;">Encoders</h3>
+    </div>
+    <div class="body">
+      <div class="tbl-wrap"><table id="encTbl" class="grid" aria-label="Encoders table"></table></div>
+    </div>
+  </div>
+
+  <div class="collapsible" id="decoders-section">
+    <div class="header">
+      <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="6 9 12 15 18 9"></polyline>
+      </svg>
+      <h3 style="margin:0;">Decoders</h3>
+    </div>
+    <div class="body">
+      <div class="tbl-wrap"><table id="decTbl" class="grid" aria-label="Decoders table"></table></div>
+    </div>
+  </div>
+
+  <!-- Loading Overlay -->
+  <div id="matrix_loading_overlay" class="matrix-loading-overlay hidden">
+    <div class="matrix-loading-message">
+      <div class="matrix-loading-spinner"></div>
+      <div>Please wait while we build the Matrix...</div>
+    </div>
+  </div>
+
+  <script src="/ui/matrix/matrix.js"></script>
+</body>

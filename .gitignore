@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+build/
+dist/
+release/
+firmware/*.vpup2
+upgrademanager.zip
+
+*.log
+
+.DS_Store
+Thumbs.db
