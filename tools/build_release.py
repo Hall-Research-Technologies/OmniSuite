@@ -92,15 +92,13 @@ def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
     gui_app = True
     version = read_version(None)
 
-    runtime_hook: Path | None = None
-    if onefile:
-        work_path.mkdir(parents=True, exist_ok=True)
-        runtime_hook = work_path / "omni_version_runtime_hook.py"
-        runtime_hook.write_text(
-            "import os\n"
-            f"os.environ.setdefault('OMNI_VERSION', {version!r})\n",
-            encoding="utf-8",
-        )
+    work_path.mkdir(parents=True, exist_ok=True)
+    runtime_hook = work_path / "omni_version_runtime_hook.py"
+    runtime_hook.write_text(
+        "import os\n"
+        f"os.environ.setdefault('OMNI_VERSION', {version!r})\n",
+        encoding="utf-8",
+    )
 
     cmd = [
         sys.executable,
@@ -121,7 +119,7 @@ def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
         "--add-data",
         f"{ROOT / 'ui'}{data_sep}ui",
         "--add-data",
-        f"{VERSION_FILE}{data_sep}VERSION",
+        f"{VERSION_FILE}{data_sep}.",
         "--hidden-import",
         "PIL",
         "--hidden-import",
@@ -140,8 +138,7 @@ def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
         cmd.append(f"--icon={APP_ICON}")
         cmd.extend(["--add-data", f"{APP_ICON}{data_sep}."])
 
-    if runtime_hook is not None:
-        cmd.extend(["--runtime-hook", str(runtime_hook)])
+    cmd.extend(["--runtime-hook", str(runtime_hook)])
 
     if HEADER_LOGO.exists():
         cmd.extend(["--add-data", f"{HEADER_LOGO}{data_sep}."])
@@ -204,7 +201,7 @@ def package_release(dist_path: Path, suffix: str, version: str) -> Path:
         if not app_bundle.exists():
             raise RuntimeError(f"Expected build output not found: {app_bundle}")
 
-        artifact = RELEASE_DIR / f"OmniSuite-{version}-{suffix}.zip"
+        artifact = RELEASE_DIR / f"OmniSuite-{version}-MAC-{suffix}.zip"
         zip_macos_app(app_bundle, artifact)
         return artifact
 
