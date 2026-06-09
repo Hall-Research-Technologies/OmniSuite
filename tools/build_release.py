@@ -64,6 +64,7 @@ def tar_path(source: Path, target_tgz: Path) -> None:
 
 def build_binary(dist_path: Path, work_path: Path) -> None:
     data_sep = ";" if os.name == "nt" else ":"
+    firmware_dir = ROOT / "firmware"
 
     cmd = [
         sys.executable,
@@ -82,10 +83,15 @@ def build_binary(dist_path: Path, work_path: Path) -> None:
         str(work_path),
         "--add-data",
         f"{ROOT / 'ui'}{data_sep}ui",
-        "--add-data",
-        f"{ROOT / 'firmware'}{data_sep}firmware",
         str(ENTRY),
     ]
+
+    if firmware_dir.exists():
+        cmd[cmd.index(str(ENTRY)):cmd.index(str(ENTRY))] = [
+            "--add-data",
+            f"{firmware_dir}{data_sep}firmware",
+        ]
+
     run(cmd)
 
 
