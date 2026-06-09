@@ -2,3 +2,5 @@ websocket-client
 requests
 flask
 rich
+Pillow
+pystray

@@ -13,6 +13,9 @@ ENTRY = ROOT / "OmniMatrix_upgrade_server_v7_6y.py"
 LAUNCHER = ROOT / "app_launcher.py"
 VERSION_FILE = ROOT / "VERSION"
 RELEASE_DIR = ROOT / "release"
+APP_ICON = ROOT / "omnimatrix.ico"
+HEADER_LOGO = ROOT / "hallway.png"
+FOOTER_LOGO = ROOT / "atlona.png"
 
 
 def read_version(cli_version: str | None) -> str:
@@ -86,6 +89,18 @@ def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
     firmware_dir = ROOT / "firmware"
     onefile = suffix == "windows"
     mac_bundle = suffix in {"x86_64", "arm64"}
+    gui_app = True
+    version = read_version(None)
+
+    runtime_hook: Path | None = None
+    if onefile:
+        work_path.mkdir(parents=True, exist_ok=True)
+        runtime_hook = work_path / "omni_version_runtime_hook.py"
+        runtime_hook.write_text(
+            "import os\n"
+            f"os.environ.setdefault('OMNI_VERSION', {version!r})\n",
+            encoding="utf-8",
+        )
 
     cmd = [
         sys.executable,
@@ -94,7 +109,7 @@ def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
         "--noconfirm",
         "--clean",
         "--onefile" if onefile else "--onedir",
-        "--windowed" if mac_bundle else "--console",
+        "--windowed" if gui_app else "--console",
         "--name",
         "OmniSuite",
         "--distpath",
@@ -107,7 +122,32 @@ def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
         f"{ROOT / 'ui'}{data_sep}ui",
         "--add-data",
         f"{VERSION_FILE}{data_sep}VERSION",
+        "--hidden-import",
+        "PIL",
+        "--hidden-import",
+        "PIL.Image",
+        "--hidden-import",
+        "PIL.ImageTk",
+        "--hidden-import",
+        "pystray",
+        "--collect-submodules",
+        "PIL",
+        "--collect-data",
+        "PIL",
     ]
+
+    if APP_ICON.exists():
+        cmd.append(f"--icon={APP_ICON}")
+        cmd.extend(["--add-data", f"{APP_ICON}{data_sep}."])
+
+    if runtime_hook is not None:
+        cmd.extend(["--runtime-hook", str(runtime_hook)])
+
+    if HEADER_LOGO.exists():
+        cmd.extend(["--add-data", f"{HEADER_LOGO}{data_sep}."])
+
+    if FOOTER_LOGO.exists():
+        cmd.extend(["--add-data", f"{FOOTER_LOGO}{data_sep}."])
 
     if mac_bundle:
         cmd.extend(["--target-architecture", suffix])
@@ -117,6 +157,13 @@ def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
             "--add-data",
             f"{firmware_dir}{data_sep}firmware",
         ])
+
+    if suffix == "windows":
+        cmd.extend(["--hidden-import", "pystray._win32"])
+    elif suffix in {"x86_64", "arm64"}:
+        cmd.extend(["--hidden-import", "pystray._darwin"])
+    elif suffix == "linux":
+        cmd.extend(["--hidden-import", "pystray._xorg"])
 
     cmd.append(str(LAUNCHER))
 

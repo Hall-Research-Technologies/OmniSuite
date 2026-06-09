@@ -32,6 +32,7 @@ _background_executor = ThreadPoolExecutor(max_workers=2)
 
 FROZEN = getattr(sys, "frozen", False)
 SCRIPT_DIR = Path(getattr(sys, "executable", __file__)).resolve().parent if FROZEN else Path(__file__).resolve().parent
+ASSET_DIR = Path(getattr(sys, "_MEIPASS", SCRIPT_DIR)).resolve() if FROZEN else SCRIPT_DIR
 CWD = SCRIPT_DIR
 CACHE = CWD / "units_cache.json"
 SCAN_RESULTS = CWD / "scan_results.json"
@@ -39,6 +40,17 @@ CSV_VIEW = CWD / "units_view.csv"
 PORT = int(os.getenv("OMNI_PORT", "8088"))
 log = logging.getLogger("omni_upgrade")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+def _windows_hidden_subprocess_kwargs() -> dict:
+    if platform.system().lower() != "windows":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    return {
+        "startupinfo": startupinfo,
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    }
 
 app = Flask(__name__)
 
@@ -90,6 +102,7 @@ except Exception as e:
 
 FROZEN = getattr(sys, "frozen", False)
 SCRIPT_DIR = Path(getattr(sys, "executable", __file__)).resolve().parent if FROZEN else Path(__file__).resolve().parent
+ASSET_DIR = Path(getattr(sys, "_MEIPASS", SCRIPT_DIR)).resolve() if FROZEN else SCRIPT_DIR
 CWD = SCRIPT_DIR
 CACHE = CWD / "units_cache.json"
 SCAN_RESULTS = CWD / "scan_results.json"
@@ -665,26 +678,26 @@ def __health(): return "ok", 200
 # --------------- matrix UI entry ----------------
 @app.route("/matrix")
 def matrix_index():
-    idx = CWD / "ui" / "matrix" / "index.html"
+    idx = ASSET_DIR / "ui" / "matrix" / "index.html"
     if idx.exists():
         return send_file(str(idx), mimetype="text/html; charset=utf-8")
     return "<h1>Matrix UI not found</h1>", 404
 
 @app.route("/matrix/usb")
 def usb_matrix_index():
-    idx = CWD / "ui" / "matrix" / "usb.html"
+    idx = ASSET_DIR / "ui" / "matrix" / "usb.html"
     if idx.exists():
         return send_file(str(idx), mimetype="text/html; charset=utf-8")
     return "<h1>USB Matrix UI not found</h1>", 404
 
 @app.route("/")
 def index():
-    idx = CWD / "ui" / "index.html"
+    idx = ASSET_DIR / "ui" / "index.html"
     if idx.exists(): return send_file(str(idx), mimetype="text/html; charset=utf-8")
     return "<h1>Omni Upgrade Server</h1><p>UI not found (ui/index.html). Backend API available.</p>"
 
 @app.route("/ui/<path:filename>")
-def ui_files(filename): return send_from_directory(CWD / "ui", filename)
+def ui_files(filename): return send_from_directory(ASSET_DIR / "ui", filename)
 
 # ---------------- adapters ----------------
 import ipaddress as _ipa
@@ -695,7 +708,7 @@ def _is_private_ipv4(ip: str)->bool:
 def _adapters_windows(active_only=True):
     out = []
     try:
-        txt = subprocess.check_output(["ipconfig","/all"], text=True, encoding="utf-8", errors="ignore")
+        txt = subprocess.check_output(["ipconfig","/all"], text=True, encoding="utf-8", errors="ignore", **_windows_hidden_subprocess_kwargs())
     except Exception:
         return out
     blocks = re.split(r"\r?\n\r?\n", txt)
@@ -742,7 +755,7 @@ def _adapters_psutil(active_only=True):
 def _adapters_route_print():
     out = []
     try:
-        txt = subprocess.check_output(["route","print","-4"], text=True, encoding="utf-8", errors="ignore")
+        txt = subprocess.check_output(["route","print","-4"], text=True, encoding="utf-8", errors="ignore", **_windows_hidden_subprocess_kwargs())
     except Exception:
         return out
     for line in txt.splitlines():
@@ -1493,7 +1506,7 @@ def api_open_firmware_folder():
             except Exception as e:
                 log.warning(f"[FIRMWARE_FOLDER] os.startfile failed: {e}, trying explorer...")
                 # Fallback: try using explorer directly
-                subprocess.Popen(f'explorer /select, "{fw_dir}"', shell=True)
+                subprocess.Popen(f'explorer /select, "{fw_dir}"', shell=True, **_windows_hidden_subprocess_kwargs())
                 log.info(f"[FIRMWARE_FOLDER] Opened with explorer fallback")
         elif system == "Darwin":  # macOS
             subprocess.run(["open", str(fw_dir)], check=False)

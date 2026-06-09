@@ -245,14 +245,14 @@
     <div class="modal-row">
       <label>Password</label>
       <div style="display:flex;gap:6px;flex:1;">
-        <input id="cfg_password" type="password" style="flex:1;"/>
+        <input id="cfg_password" type="password" value="password" style="flex:1;"/>
         <button id="cfg_pw_toggle" class="btn small" type="button">👁️</button>
       </div>
     </div>
     <div class="modal-row">
       <label>Fallback Password</label>
       <div style="display:flex;gap:6px;flex:1;">
-        <input id="cfg_fallback_password" type="password" style="flex:1;"/>
+        <input id="cfg_fallback_password" type="password" value="Atlona" style="flex:1;"/>
         <button id="cfg_fallback_pw_toggle" class="btn small" type="button">👁️</button>
       </div>
     </div>
@@ -612,9 +612,9 @@ function initConfig() {
         // Store current passwords for later use
         currentPassword = cfg.password || 'password';
         currentFallbackPassword = cfg.fallback_password || 'Atlona';
-        // Clear password fields initially (user needs to click eye to view them)
-        pwInput.value = '';
-        fallbackPwInput.value = '';
+        // Keep the passwords prefilled, but hidden until the user clicks the eye.
+        pwInput.value = currentPassword;
+        fallbackPwInput.value = currentFallbackPassword;
         pwInput.type = 'password';
         fallbackPwInput.type = 'password';
       }

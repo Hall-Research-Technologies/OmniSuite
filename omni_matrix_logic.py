@@ -85,14 +85,19 @@ except Exception:
     _sys.modules["rich"] = _rich; _sys.modules["rich.console"] = _console_mod; _sys.modules["rich.prompt"] = _prompt_mod
 
 _here = _pl.Path(__file__).resolve().parent
-_user_py = _here / "omni_matrix.py"
-if not _user_py.exists():
-    raise RuntimeError("omni_matrix.py not found next to script")
+_data_dir = _pl.Path(os.getenv("OMNI_DATA_DIR", str(_here))).resolve()
 
-_spec = _ilu.spec_from_file_location("user_omni", str(_user_py))
-assert _spec and _spec.loader
-user = _ilu.module_from_spec(_spec)  # type: ignore
-_spec.loader.exec_module(user)       # type: ignore
+try:
+    import omni_matrix as user  # type: ignore
+except Exception:
+    _user_py = _here / "omni_matrix.py"
+    if not _user_py.exists():
+        raise RuntimeError("omni_matrix.py not found next to script")
+
+    _spec = _ilu.spec_from_file_location("user_omni", str(_user_py))
+    assert _spec and _spec.loader
+    user = _ilu.module_from_spec(_spec)  # type: ignore
+    _spec.loader.exec_module(user)       # type: ignore
 
 _state_lock = threading.RLock()
 _args: Dict[str, Any] = {}
@@ -103,7 +108,7 @@ _routes: Dict[str, Dict[str, bool]] = {}   # per-decoder: {enc_ip: True} for "se
 _poll = {"enabled": False, "interval": 3}
 
 # --- Cache file logic ---
-_cache_file = _here / "units_cache.json"
+_cache_file = _data_dir / "units_cache.json"
 
 def _ensure_ws():
     global _ws

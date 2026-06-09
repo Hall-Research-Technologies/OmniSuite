@@ -75,10 +75,21 @@ def is_alive_ping(ip: str, timeout_ms: int) -> bool:
     try:
         if "windows" in sysname:
             cmd = ["ping", "-n", "1", "-w", str(timeout_ms), ip]
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         else:
             sec = max(1, int(round(timeout_ms / 1000.0)))
             cmd = ["ping", "-c", "1", "-W", str(sec), ip]
-        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            startupinfo = None
+            creationflags = 0
+        res = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            startupinfo=startupinfo,
+            creationflags=creationflags,
+        )
         return res.returncode == 0
     except Exception:
         return False
