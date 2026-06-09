@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "OmniMatrix_upgrade_server_v7_6y.py"
+LAUNCHER = ROOT / "app_launcher.py"
 VERSION_FILE = ROOT / "VERSION"
 RELEASE_DIR = ROOT / "release"
 
@@ -62,9 +63,10 @@ def tar_path(source: Path, target_tgz: Path) -> None:
         tf.add(source, arcname=source.name)
 
 
-def build_binary(dist_path: Path, work_path: Path) -> None:
+def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
     data_sep = ";" if os.name == "nt" else ":"
     firmware_dir = ROOT / "firmware"
+    onefile = suffix == "windows"
 
     cmd = [
         sys.executable,
@@ -72,7 +74,7 @@ def build_binary(dist_path: Path, work_path: Path) -> None:
         "PyInstaller",
         "--noconfirm",
         "--clean",
-        "--onedir",
+        "--onefile" if onefile else "--onedir",
         "--name",
         "OmniSuite",
         "--distpath",
@@ -83,14 +85,17 @@ def build_binary(dist_path: Path, work_path: Path) -> None:
         str(work_path),
         "--add-data",
         f"{ROOT / 'ui'}{data_sep}ui",
-        str(ENTRY),
+        "--add-data",
+        f"{VERSION_FILE}{data_sep}VERSION",
     ]
 
     if firmware_dir.exists():
-        cmd[cmd.index(str(ENTRY)):cmd.index(str(ENTRY))] = [
+        cmd.extend([
             "--add-data",
             f"{firmware_dir}{data_sep}firmware",
-        ]
+        ])
+
+    cmd.append(str(LAUNCHER))
 
     run(cmd)
 
@@ -112,6 +117,16 @@ def resolve_suffix(cli_suffix: str | None) -> str:
 
 
 def package_release(dist_path: Path, suffix: str, version: str) -> Path:
+    if suffix == "windows":
+        windows_exe = dist_path / "OmniSuite.exe"
+        if not windows_exe.exists():
+            raise RuntimeError(f"Expected build output not found: {windows_exe}")
+
+        RELEASE_DIR.mkdir(parents=True, exist_ok=True)
+        artifact = RELEASE_DIR / f"OmniSuite-{version}-windows.zip"
+        zip_path(windows_exe, artifact)
+        return artifact
+
     bundle_dir = dist_path / "OmniSuite"
     if not bundle_dir.exists():
         raise RuntimeError(f"Expected build output not found: {bundle_dir}")
@@ -122,7 +137,7 @@ def package_release(dist_path: Path, suffix: str, version: str) -> Path:
         tar_path(bundle_dir, artifact)
         return artifact
 
-    if suffix in {"windows", "x86_64", "arm64"}:
+    if suffix in {"x86_64", "arm64"}:
         artifact = RELEASE_DIR / f"OmniSuite-{version}-{suffix}.zip"
         zip_path(bundle_dir, artifact)
         return artifact
@@ -138,6 +153,8 @@ def main() -> int:
 
     if not ENTRY.exists():
         raise RuntimeError(f"Entry script not found: {ENTRY}")
+    if not LAUNCHER.exists():
+        raise RuntimeError(f"Launcher script not found: {LAUNCHER}")
 
     suffix = resolve_suffix(args.suffix)
     version = read_version(args.version)
@@ -146,7 +163,7 @@ def main() -> int:
     work_path = ROOT / "build" / suffix
 
     clean_paths([dist_path, work_path, RELEASE_DIR])
-    build_binary(dist_path=dist_path, work_path=work_path)
+    build_binary(dist_path=dist_path, work_path=work_path, suffix=suffix)
     artifact = package_release(dist_path=dist_path, suffix=suffix, version=version)
 
     print(f"[release] Created {artifact}")
