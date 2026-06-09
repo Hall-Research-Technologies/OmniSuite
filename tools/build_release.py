@@ -63,10 +63,29 @@ def tar_path(source: Path, target_tgz: Path) -> None:
         tf.add(source, arcname=source.name)
 
 
+def zip_macos_app(app_bundle: Path, target_zip: Path) -> None:
+    target_zip.parent.mkdir(parents=True, exist_ok=True)
+    if shutil.which("ditto"):
+        subprocess.check_call([
+            "ditto",
+            "-c",
+            "-k",
+            "--sequesterRsrc",
+            "--keepParent",
+            str(app_bundle),
+            str(target_zip),
+        ])
+        return
+
+    # Fallback for non-mac environments.
+    zip_path(app_bundle, target_zip)
+
+
 def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
     data_sep = ";" if os.name == "nt" else ":"
     firmware_dir = ROOT / "firmware"
     onefile = suffix == "windows"
+    mac_bundle = suffix in {"x86_64", "arm64"}
 
     cmd = [
         sys.executable,
@@ -75,6 +94,7 @@ def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
         "--noconfirm",
         "--clean",
         "--onefile" if onefile else "--onedir",
+        "--windowed" if mac_bundle else "--console",
         "--name",
         "OmniSuite",
         "--distpath",
@@ -88,6 +108,9 @@ def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
         "--add-data",
         f"{VERSION_FILE}{data_sep}VERSION",
     ]
+
+    if mac_bundle:
+        cmd.extend(["--target-architecture", suffix])
 
     if firmware_dir.exists():
         cmd.extend([
@@ -127,19 +150,24 @@ def package_release(dist_path: Path, suffix: str, version: str) -> Path:
         zip_path(windows_exe, artifact)
         return artifact
 
+    RELEASE_DIR.mkdir(parents=True, exist_ok=True)
+
+    if suffix in {"x86_64", "arm64"}:
+        app_bundle = dist_path / "OmniSuite.app"
+        if not app_bundle.exists():
+            raise RuntimeError(f"Expected build output not found: {app_bundle}")
+
+        artifact = RELEASE_DIR / f"OmniSuite-{version}-{suffix}.zip"
+        zip_macos_app(app_bundle, artifact)
+        return artifact
+
     bundle_dir = dist_path / "OmniSuite"
     if not bundle_dir.exists():
         raise RuntimeError(f"Expected build output not found: {bundle_dir}")
 
-    RELEASE_DIR.mkdir(parents=True, exist_ok=True)
     if suffix == "linux":
         artifact = RELEASE_DIR / f"OmniSuite-{version}-linux.tar.gz"
         tar_path(bundle_dir, artifact)
-        return artifact
-
-    if suffix in {"x86_64", "arm64"}:
-        artifact = RELEASE_DIR / f"OmniSuite-{version}-{suffix}.zip"
-        zip_path(bundle_dir, artifact)
         return artifact
 
     raise RuntimeError(f"Unsupported suffix: {suffix}")
