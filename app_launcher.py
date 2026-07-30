@@ -42,7 +42,19 @@ def _get_log_path() -> Path:
     return base / "launcher.log"
 
 
+def _get_data_dir() -> Path:
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "OmniSuite"
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support" / "OmniSuite"
+    else:
+        base = Path.home() / ".omnisuite"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
 LOG_PATH = _get_log_path()
+DATA_DIR = _get_data_dir()
 
 
 def log_message(message: str) -> None:
@@ -242,7 +254,7 @@ class AppWindow:
         try:
             os.environ["OMNI_HOST"] = self.host
             os.environ["OMNI_PORT"] = str(self.port)
-            os.environ.setdefault("OMNI_DATA_DIR", str(EXE_DIR))
+            os.environ.setdefault("OMNI_DATA_DIR", str(DATA_DIR))
             os.environ.setdefault("OMNI_VERSION", self.version)
 
             sys.path.insert(0, str(EXE_DIR))
@@ -322,6 +334,7 @@ class AppWindow:
 def main() -> int:
     log_message(f"Launcher starting. Frozen={IS_FROZEN} ExeDir={EXE_DIR} BundleDir={BUNDLE_DIR}")
     log_message(f"Log file: {LOG_PATH}")
+    log_message(f"Data dir: {DATA_DIR}")
     root = tk.Tk()
     AppWindow(root)
     root.mainloop()

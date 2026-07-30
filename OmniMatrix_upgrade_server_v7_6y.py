@@ -33,7 +33,25 @@ _background_executor = ThreadPoolExecutor(max_workers=2)
 FROZEN = getattr(sys, "frozen", False)
 SCRIPT_DIR = Path(getattr(sys, "executable", __file__)).resolve().parent if FROZEN else Path(__file__).resolve().parent
 ASSET_DIR = Path(getattr(sys, "_MEIPASS", SCRIPT_DIR)).resolve() if FROZEN else SCRIPT_DIR
-CWD = SCRIPT_DIR
+def _default_data_dir() -> Path:
+    override = (os.getenv("OMNI_DATA_DIR") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    system = platform.system().lower()
+    if system == "darwin":
+        return Path.home() / "Library" / "Application Support" / "OmniSuite"
+    if system == "windows":
+        return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "OmniSuite"
+    return Path.home() / ".omnisuite"
+
+
+DATA_DIR = _default_data_dir()
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+except Exception as e:
+    print(f"[DATA_DIR] Failed to create {DATA_DIR}: {e}")
+    DATA_DIR = SCRIPT_DIR
+CWD = DATA_DIR
 CACHE = CWD / "units_cache.json"
 SCAN_RESULTS = CWD / "scan_results.json"
 CSV_VIEW = CWD / "units_view.csv"
@@ -117,13 +135,20 @@ except Exception as e:
 FROZEN = getattr(sys, "frozen", False)
 SCRIPT_DIR = Path(getattr(sys, "executable", __file__)).resolve().parent if FROZEN else Path(__file__).resolve().parent
 ASSET_DIR = Path(getattr(sys, "_MEIPASS", SCRIPT_DIR)).resolve() if FROZEN else SCRIPT_DIR
-CWD = SCRIPT_DIR
+DATA_DIR = _default_data_dir()
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+except Exception as e:
+    print(f"[DATA_DIR] Failed to create {DATA_DIR}: {e}")
+    DATA_DIR = SCRIPT_DIR
+CWD = DATA_DIR
 CACHE = CWD / "units_cache.json"
 SCAN_RESULTS = CWD / "scan_results.json"
 CSV_VIEW = CWD / "units_view.csv"
 PORT = int(os.getenv("OMNI_PORT", "8080"))
 log = logging.getLogger("omni_upgrade")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log.info("Runtime data directory: %s", CWD)
 
 # Configure matrix logic once app config is loaded
 def _configure_matrix_logic_from_app():

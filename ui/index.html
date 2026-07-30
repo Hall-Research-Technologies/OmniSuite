@@ -2130,7 +2130,7 @@ async function handleCodecSelectChange(select) {
   }
 }
 
-async function loadUnits() {
+async function loadUnits(fallbackUnits = null) {
   try {
     // Load cached status on every entry
     loadStatusCache();
@@ -2149,7 +2149,11 @@ async function loadUnits() {
     
     const res = await fetch('/api/cache');
     const data = await res.json();
-    const units = data.units || [];
+    let units = data.units || [];
+    if (!units.length && Array.isArray(fallbackUnits) && fallbackUnits.length) {
+      console.warn('[SCAN] Cache was empty after scan; rendering scan response directly.');
+      units = fallbackUnits;
+    }
     updateUnitCounts(units);
     updateDeviceCodecMismatchWarning(getDeviceCodecModesFromUnits(units));
     const tbody = $('#units_table');
@@ -2336,7 +2340,7 @@ $('#scan_btn').addEventListener('click', async () => {
     });
     const data = await res.json();
     $('#scan_status').innerHTML = `✅ ${data.reachable}/${data.tested} found`;
-    await loadUnits();
+    await loadUnits(data.units || []);
     await loadScanResults();
   } catch (e) {
     $('#scan_status').innerHTML = '❌ Error: ' + e.message;
