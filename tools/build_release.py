@@ -127,8 +127,6 @@ def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
         "--hidden-import",
         "PIL.ImageTk",
         "--hidden-import",
-        "pystray",
-        "--hidden-import",
         "psutil",
         "--collect-submodules",
         "PIL",
@@ -158,10 +156,10 @@ def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
         ])
 
     if suffix == "windows":
+        cmd.extend(["--hidden-import", "pystray"])
         cmd.extend(["--hidden-import", "pystray._win32"])
-    elif suffix in {"x86_64", "arm64"}:
-        cmd.extend(["--hidden-import", "pystray._darwin"])
     elif suffix == "linux":
+        cmd.extend(["--hidden-import", "pystray"])
         cmd.extend(["--hidden-import", "pystray._xorg"])
 
     cmd.append(str(LAUNCHER))

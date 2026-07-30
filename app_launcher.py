@@ -17,7 +17,10 @@ try:
     import tkinter as tk
     from tkinter import messagebox
     from PIL import Image, ImageTk
-    import pystray
+    if sys.platform == "darwin":
+        pystray = None
+    else:
+        import pystray
 except ImportError as exc:
     print(f"Launcher dependency error: {exc}")
     raise
@@ -203,6 +206,12 @@ class AppWindow:
                 log_message(f"Could not load atlona.png: {exc}")
 
     def setup_tray_icon(self) -> None:
+        if sys.platform == "darwin":
+            log_message("Tray icon disabled on macOS; AppKit tray loops must run on the main thread.")
+            return
+        if pystray is None:
+            log_message("Tray icon unavailable; pystray was not imported")
+            return
         icon_path = resolve_asset("omnimatrix.ico")
         if not icon_path:
             log_message("Tray icon asset omnimatrix.ico not found")
