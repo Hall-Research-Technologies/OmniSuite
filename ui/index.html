@@ -14,8 +14,20 @@
       max-width:50vw; max-height:50vh; overflow:hidden;
     }
     .hover-preview img{ max-width:50vw; max-height:50vh; display:block; }
+    .lldp-popup{
+      position:fixed; z-index:10001; display:none;
+      border:1px solid var(--border); background:var(--card); color:var(--fg);
+      padding:10px 12px; border-radius:8px; box-shadow:0 6px 20px rgba(0,0,0,.35);
+      width:360px; max-width:45vw; font-size:12px; line-height:1.35;
+    }
+    .lldp-popup h4{margin:0 0 8px;font-size:13px}
+    .lldp-grid{display:grid;grid-template-columns:110px 1fr;gap:4px 10px}
+    .lldp-label{color:var(--muted)}
+    .lldp-value{white-space:pre-wrap;overflow-wrap:anywhere}
+    .mac-lldp{cursor:help;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px}
   </style>
   <div id="hover_preview" class="hover-preview"><img id="hover_preview_img" alt="preview"/></div>
+  <div id="lldp_popup" class="lldp-popup"></div>
   <style>
     :root{--bg:#1d232a;--card:#222a33;--panel-2:#262f39;--fg:#e9eef5;--muted:#9aa7b4;--accent:#1e90ff;--accent-strong:#1f2937;--border:rgba(255,255,255,0.08);--table:#0f172a;--spinner:#9ca3af;--danger:#e5534b}
     .light{--bg:#f7f8fb;--card:#fff;--panel-2:#f2f5f8;--fg:#0d1117;--muted:#5a6b7a;--border:rgba(0,0,0,.08);--table:#fff;--accent:#1e90ff;--accent-strong:#f2f5f8;--spinner:#6b7280}
@@ -33,6 +45,9 @@
     .header .logo{height:48px;width:auto;border-radius:6px}
     .header h1{margin:0}
     .header .controls{display:flex;gap:12px;align-items:center}
+    .unit-counts{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .unit-count-pill{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);background:var(--panel-2);border-radius:999px;padding:3px 9px;font-size:12px;color:var(--fg)}
+    .unit-count-pill strong{font-size:13px;color:#93c5fd}
     .toggle{display:inline-flex;align-items:center;gap:8px;cursor:pointer;user-select:none}
     .toggle *{pointer-events:none}
     .toggle .label{opacity:.9;font-size:14px}
@@ -52,6 +67,10 @@
     input[type=text].wide{width:240px}
     input[type=number]{width:100px}
     input[type=password]{width:160px}
+    .clearable-input{position:relative;display:inline-flex;align-items:center}
+    .clearable-input input{padding-right:28px}
+    .input-clear-btn{position:absolute;right:4px;width:22px;height:22px;border:0;background:transparent;color:var(--muted);cursor:pointer;border-radius:50%;font-size:18px;line-height:1;display:flex;align-items:center;justify-content:center;padding:0}
+    .input-clear-btn:hover{background:rgba(30,144,255,.14);color:var(--fg);filter:none}
     .btn{padding:3px 8px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--accent);color:var(--fg);font-size:14px;display:inline-flex;align-items:center;gap:6px;transition:filter .16s}
     .btn:hover{filter:brightness(1.1)}
     .btn.small{padding:3px 8px;font-size:12px}
@@ -74,6 +93,20 @@
     .pwd-primary{background:#1f2937;color:#e5e7eb}
     .pwd-fallback{background:#7f1d1d;color:#fecaca}
     .usb-pill{padding:2px 6px;border-radius:999px;font-size:11px;background:#1d4ed8;color:#dbeafe;display:inline-block}
+    .codec-pill{padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600;display:inline-block}
+    .codec-ok{background:#14532d;color:#bbf7d0}
+    .codec-bad{background:#7f1d1d;color:#fecaca}
+    .codec-select{width:150px;padding:3px 6px;font-size:12px}
+    .codec-warning{margin:10px 0;padding:8px 10px;border:1px solid rgba(248,113,113,.45);border-radius:8px;background:rgba(127,29,29,.35);color:#fecaca;font-weight:600}
+    .codec-warning.hidden{display:none!important}
+    .inventory-extra-hidden{display:none!important}
+    .slate-manager-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+    .slate-manager-panel{border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--panel-2)}
+    .slate-manager-panel h4{margin:0 0 10px;font-size:13px}
+    .slate-manager-status{max-height:160px;overflow:auto;font-size:12px;line-height:1.45;white-space:pre-wrap}
+    .slate-manager-status .ok{color:#86efac}
+    .slate-manager-status .bad{color:#fecaca}
+    .slate-thumb{width:72px;height:41px;object-fit:cover;border:1px solid var(--border);border-radius:4px;background:#111827;display:none}
     .action-btn{background:transparent;color:var(--fg);border:none;cursor:pointer;font-size:16px;padding:0;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;line-height:1}
     .action-btn:hover{background:var(--accent);transform:scale(1.05)}
     .action-link{color:#93c5fd;cursor:pointer;text-decoration:underline}
@@ -94,9 +127,23 @@
     .modal-path-input input[type=text]{flex:1}
     .modal-error{color:var(--danger);font-size:12px;margin:8px 0;display:none}
     .modal-buttons{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
-    .browser-list{max-height:300px;overflow-y:auto;border:1px solid var(--border);padding:8px;background:var(--panel-2);border-radius:6px;margin-bottom:10px}
-    .browser-item{padding:8px;cursor:pointer;border-bottom:1px solid var(--border);border-radius:4px;transition:all .1s}
-    .browser-item:hover{background:rgba(30,144,255,.15)}
+    .confirm-modal{width:520px;max-width:min(95vw,560px)}
+    .confirm-modal .confirm-title{margin:0 0 8px;font-size:17px;font-weight:600}
+    .confirm-modal .confirm-message{color:var(--muted);line-height:1.45;margin-bottom:12px}
+    .confirm-summary{border:1px solid var(--border);border-radius:8px;background:var(--panel-2);padding:10px;margin:10px 0}
+    .confirm-summary-row{display:flex;justify-content:space-between;gap:16px;padding:3px 0;font-size:13px}
+    .confirm-summary-row span:first-child{color:var(--muted)}
+    .confirm-list{max-height:180px;overflow:auto;border:1px solid var(--border);border-radius:8px;background:var(--table);padding:6px;margin-top:8px}
+    .confirm-list div{padding:4px 6px;border-bottom:1px solid var(--border);font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif}
+    .confirm-list div:last-child{border-bottom:none}
+    .btn.secondary{background:var(--panel-2)}
+    .browser-list{max-height:360px;overflow-y:auto;border:1px solid var(--border);padding:8px;background:var(--panel-2);border-radius:6px;margin-bottom:10px}
+    .browser-toolbar{display:flex;gap:8px;margin-bottom:8px;align-items:center}
+    .browser-path-row{display:flex;gap:8px;margin-bottom:10px;align-items:center}
+    .browser-drive-select{width:86px}
+    .browser-help{font-size:12px;color:var(--muted);margin:-2px 0 8px}
+    .browser-item{padding:8px;cursor:pointer;border-bottom:1px solid var(--border);border-radius:4px;transition:all .1s;display:flex;align-items:center;gap:8px}
+    .browser-item:hover,.browser-item.selected{background:rgba(30,144,255,.15)}
     .browser-item:last-child{border-bottom:none}
     .small{font-size:12px;color:var(--muted)}
     .code{font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif;font-size:11px;opacity:.8}
@@ -114,6 +161,26 @@
     .loading-message{color:var(--fg);text-align:center;padding:40px;font-size:18px;}
     .loading-spinner{width:40px;height:40px;border:4px solid rgba(255,255,255,0.2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 20px;}
     .version-footer{position:fixed;right:14px;bottom:10px;font-size:12px;color:var(--muted);opacity:.85;pointer-events:none}
+    body.compact{font-size:12px}
+    body.compact h1{font-size:18px}
+    body.compact .header{margin-bottom:8px}
+    body.compact .header .logo{height:38px}
+    body.compact .header .controls{gap:8px}
+    body.compact .unit-count-pill{padding:2px 7px;font-size:11px}
+    body.compact .unit-count-pill strong{font-size:12px}
+    body.compact .tab{padding:6px 10px;font-size:12px}
+    body.compact .box{padding:8px;margin:3px 0;border-radius:8px}
+    body.compact .row{gap:8px}
+    body.compact .btn{padding:2px 7px;font-size:12px;border-radius:7px}
+    body.compact select,body.compact input[type=text],body.compact input[type=number],body.compact input[type=password]{font-size:12px;padding:4px 6px;border-radius:5px}
+    body.compact .clearable-input input{padding-right:24px}
+    body.compact .input-clear-btn{width:20px;height:20px;font-size:16px}
+    body.compact th,body.compact td{padding:3px 6px;font-size:12px}
+    body.compact .status,body.compact .pwd-pill,body.compact .codec-pill{font-size:11px;padding:1px 6px}
+    body.compact .codec-select{width:128px;font-size:11px;padding:2px 5px}
+    body.compact .footer-bar{margin-top:8px}
+    body.compact .modal{padding:14px}
+    body.compact .modal-row{margin-bottom:7px}
   </style>
 </head>
 <body>
@@ -121,10 +188,12 @@
   // Apply theme immediately to prevent flash
   (function(){
     const dark = localStorage.getItem("dark") !== "false";
+    const compact = localStorage.getItem("viewDensity") === "compact";
     const apply = ()=>{
       const target = document.body || document.documentElement;
       if (!target) return;
       target.classList.toggle("light", !dark);
+      target.classList.toggle("compact", compact);
     };
     if (document.body) {
       apply();
@@ -142,15 +211,11 @@
   </div>
   <div class="controls">
     <div class="tabs">
-      <a href="/" class="tab active">Device Manager</a>
+      <a href="/" class="tab active">Device Info</a>
+      <a href="/matrix/configure" class="tab">Configure</a>
       <a href="/matrix" class="tab">A/V Matrix</a>
       <a href="/matrix/usb" class="tab">USB Matrix</a>
     </div>
-    <label class="toggle" id="header_dark_label">
-      <input type="checkbox" id="dark_mode_toggle" style="display:none;" />
-      <div style="font-size:14px;">Dark Mode</div>
-      <div id="dark_switch" class="switch on"><div class="knob"></div></div>
-    </label>
     <button id="header_gear" class="gear-btn" title="Settings">⚙️</button>
   </div>
 </div>
@@ -164,7 +229,10 @@
     </div>
     <div>
       <label for="targets" class="small">Targets</label>
-      <input id="targets" type="text" placeholder="e.g. 10.1.1.1-254 or 10.1.1.1/24" style="width:240px;"/>
+      <span class="clearable-input">
+        <input id="targets" type="text" placeholder="e.g. 10.1.1.1-254 or 10.1.1.1/24" style="width:240px;"/>
+        <button id="targets_clear" class="input-clear-btn" type="button" aria-label="Clear targets" title="Clear targets">&times;</button>
+      </span>
     </div>
     <button id="scan_btn" class="btn">🔍 Scan</button>
     <button id="clear_units_btn" class="btn">🗑️ Clear Units</button>
@@ -183,7 +251,16 @@
       </div>
     </div>
     <button id="upgrade_btn" class="btn">⚡ Upgrade Selected</button>
+    <div class="unit-counts" aria-label="Discovered unit counts">
+      <span class="unit-count-pill">Encoders <strong id="encoder_count">0</strong></span>
+      <span class="unit-count-pill">Decoders <strong id="decoder_count">0</strong></span>
+    </div>
     <div style="margin-left:auto; display:flex; align-items:center; gap:8px;">
+      <label class="toggle" for="inventory_extra_toggle" style="margin:0;">
+        <span class="label" id="inventory_extra_label">Hide Device Details</span>
+        <input type="checkbox" id="inventory_extra_toggle" style="display:none;"/>
+        <div id="inventory_extra_switch" class="switch on"><div class="knob"></div></div>
+      </label>
       <label class="toggle" for="poll_units_toggle" style="margin:0;">
         <span class="label">Poll Units</span>
         <input type="checkbox" id="poll_units_toggle" style="display:none;"/>
@@ -195,6 +272,7 @@
 
 <!-- Units Table -->
 <div class="table-wrapper">
+  <div id="device_codec_mismatch_warning" class="codec-warning hidden"></div>
   <table>
     <thead>
       <tr>
@@ -202,21 +280,22 @@
         <th onclick="sortTable(1)">IP</th>
         <th onclick="sortTable(2)">MAC</th>
         <th onclick="sortTable(3)">Link Speed</th>
-        <th onclick="sortTable(4)">Hostname</th>
-        <th onclick="sortTable(5)">TimeZone</th>
-        <th onclick="sortTable(6)">NTP Server</th>
-        <th onclick="sortTable(7)">Type</th>
-        <th onclick="sortTable(8)">Model</th>
-        <th onclick="sortTable(9)">Version</th>
-        <th>Password</th>
+        <th onclick="sortTable(4)">Codec</th>
+        <th onclick="sortTable(5)">Hostname</th>
+        <th class="inventory-extra-col" onclick="sortTable(6)">TimeZone</th>
+        <th class="inventory-extra-col" onclick="sortTable(7)">NTP Server</th>
+        <th class="inventory-extra-col" onclick="sortTable(8)">Type</th>
+        <th class="inventory-extra-col" onclick="sortTable(9)">Model</th>
+        <th class="inventory-extra-col" onclick="sortTable(10)">Version</th>
+        <th class="inventory-extra-col">Password</th>
         <th style="width:60px;">Status</th>
         <th style="width:40px;">Blink</th>
         <th style="width:70px;">Preview</th>
-        <th style="width:90px;">USB</th>
+        <th class="inventory-extra-col" style="width:90px;">USB</th>
       </tr>
     </thead>
     <tbody id="units_table">
-      <tr><td colspan="14" style="text-align:center;padding:40px;opacity:.6;">Scan to discover units</td></tr>
+      <tr><td colspan="16" style="text-align:center;padding:40px;opacity:.6;">Scan to discover units</td></tr>
     </tbody>
   </table>
 </div>
@@ -228,6 +307,7 @@
     <button class="btn danger" id="remove_btn" title="Remove selected devices from cache">🗑️ Remove Selected</button>
     <button class="btn" id="sync_passwords_btn" title="Synchronize unit passwords to primary or fallback">🔐 Sync all Passwords</button>
     <button class="btn" id="set_ntp_btn" title="Set NTP server and timezone for selected units or all">🕒 Set NTP</button>
+    <button class="btn" id="slate_manager_btn" title="Upload and assign slate logos">Slate Manager</button>
   </div>
   <div class="right">
     <button class="btn" id="export_units_btn">⬇️ Inventory</button>
@@ -238,6 +318,24 @@
 <div id="cfg_backdrop" class="modal-backdrop">
   <div class="modal">
     <h3>Configuration</h3>
+    <div class="modal-row">
+      <label>Version</label>
+      <input id="cfg_app_version" type="text" value="V1.0.1" readonly style="flex:1;"/>
+    </div>
+    <div class="modal-row">
+      <label>Theme</label>
+      <select id="cfg_theme" style="flex:1;">
+        <option value="dark">Dark</option>
+        <option value="light">Light</option>
+      </select>
+    </div>
+    <div class="modal-row">
+      <label>View</label>
+      <select id="cfg_view_density" style="flex:1;">
+        <option value="comfortable">Comfortable</option>
+        <option value="compact">Compact</option>
+      </select>
+    </div>
     <div class="modal-row">
       <label>Username</label>
       <input id="cfg_username" type="text" value="admin"/>
@@ -282,6 +380,8 @@
     </div>
     <div id="cfg_error" class="modal-error"></div>
     <div class="modal-buttons">
+      <button id="cfg_user_guide" class="btn secondary" type="button" style="margin-right:auto;">User Guide</button>
+      <button id="cfg_ts_export" class="btn secondary" type="button">TS Dump</button>
       <button id="cfg_close" class="btn" type="button">Close</button>
       <button id="cfg_save" class="btn" type="button">Save</button>
     </div>
@@ -368,16 +468,105 @@
   </div>
 </div>
 
+<!-- Slate Manager Modal -->
+<div id="slate_manager_backdrop" class="modal-backdrop">
+  <div class="modal" style="width:760px;">
+    <h3>Slate Manager</h3>
+    <div class="small" style="margin-bottom:10px;line-height:1.45;">
+      Upload slate logos and assign Slate Mode / Slate Logo for encoders or decoders.
+    </div>
+    <div class="modal-row" style="align-items:flex-start;">
+      <label>Apply To</label>
+      <div style="display:flex;flex-wrap:wrap;gap:12px;flex:1;">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input id="slate_scope_selected" type="radio" name="slate_scope" value="selected" checked>
+          <span id="slate_scope_selected_label">Selected units (0)</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input id="slate_scope_encoders" type="radio" name="slate_scope" value="encoders">
+          <span id="slate_scope_encoders_label">All encoders (0)</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input id="slate_scope_decoders" type="radio" name="slate_scope" value="decoders">
+          <span id="slate_scope_decoders_label">All decoders (0)</span>
+        </label>
+      </div>
+    </div>
+    <div class="slate-manager-grid">
+      <div class="slate-manager-panel">
+        <h4>Upload Slate</h4>
+        <div class="modal-row">
+          <label>Name</label>
+          <input id="slate_upload_name" type="text" placeholder="DecoderSlate" style="flex:1;">
+        </div>
+        <div class="modal-row">
+          <label>File</label>
+          <input id="slate_upload_file" type="file" accept=".png,.jpg,.jpeg,image/png,image/jpeg" style="flex:1;">
+          <img id="slate_upload_preview" class="slate-thumb" alt="Slate preview">
+        </div>
+        <div class="modal-buttons">
+          <button id="slate_upload_btn" class="btn" type="button">Upload</button>
+        </div>
+      </div>
+      <div class="slate-manager-panel">
+        <h4>Assign Slate</h4>
+        <div class="modal-row">
+          <label>Slate Logo</label>
+          <select id="slate_logo_select" style="flex:1;"></select>
+        </div>
+        <div class="modal-row">
+          <label>Slate Mode</label>
+          <select id="slate_mode_select" style="flex:1;">
+            <option value="off">off</option>
+            <option value="auto">auto</option>
+            <option value="manual">manual</option>
+          </select>
+        </div>
+        <div class="modal-buttons">
+          <button id="slate_refresh_btn" class="btn" type="button">Refresh</button>
+          <button id="slate_delete_btn" class="btn danger" type="button">Delete</button>
+          <button id="slate_apply_btn" class="btn" type="button">Apply</button>
+        </div>
+      </div>
+    </div>
+    <div id="slate_manager_error" class="modal-error"></div>
+    <div id="slate_manager_status" class="slate-manager-status"></div>
+    <div class="modal-buttons">
+      <button id="slate_manager_close" class="btn" type="button">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirmation Modal -->
+<div id="confirm_backdrop" class="modal-backdrop">
+  <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm_title">
+    <h3 id="confirm_title" class="confirm-title">Confirm Action</h3>
+    <div id="confirm_message" class="confirm-message"></div>
+    <div id="confirm_summary" class="confirm-summary" style="display:none;"></div>
+    <div id="confirm_list" class="confirm-list" style="display:none;"></div>
+    <div class="modal-buttons">
+      <button id="confirm_cancel" class="btn secondary" type="button">Cancel</button>
+      <button id="confirm_ok" class="btn" type="button">Continue</button>
+    </div>
+  </div>
+</div>
+
 <!-- Folder Browser Modal -->
 <div id="cfg_browser_backdrop" class="modal-backdrop">
-  <div class="modal" style="width:600px;">
+  <div class="modal" style="width:750px;">
     <h3>Select Folder</h3>
+    <div class="browser-toolbar">
+      <select id="cfg_browser_drive" class="browser-drive-select" title="Drive"></select>
+      <button id="cfg_browser_home" class="btn small secondary" type="button">Home</button>
+    </div>
     <div style="display:flex;gap:8px;margin-bottom:10px;">
       <button id="cfg_browser_up" class="btn small">📁 Up</button>
-      <input id="cfg_browser_path" type="text" readonly style="flex:1;"/>
+      <input id="cfg_browser_path" type="text" style="flex:1;" spellcheck="false"/>
+      <button id="cfg_browser_go" class="btn small" type="button">Go</button>
       <button id="cfg_browser_select" class="btn small">Select</button>
       <button id="cfg_browser_cancel" class="btn small">Cancel</button>
     </div>
+    <div class="browser-help">Type or paste a full folder path, choose a drive, or double-click a folder below.</div>
     <div id="cfg_browser_list" class="browser-list"></div>
   </div>
 </div>
@@ -420,7 +609,7 @@ function _checkFirmwareCompatibility(fwType, selectedIps) {
     const row = getRowByIp(ip);
     if (!row) return;
     
-    const modelCell = row.cells[8];
+    const modelCell = row.cells[9];
     const model = modelCell ? modelCell.textContent.trim() : '';
     
     console.log(`[FIRMWARE_CHECK] ${ip}: model="${model}", compatible="${compatibleModels.some(m => model.toLowerCase().includes(m))}"`);
@@ -450,36 +639,73 @@ function updateSelectAllCheckboxState() {
   selectAll.checked = allChecked;
 }
 
+function unitRoleText(unit) {
+  return String(unit?.type || unit?.role || '').toLowerCase();
+}
+
+function updateUnitCounts(units = null) {
+  const list = Array.isArray(units)
+    ? units
+    : Array.from($$('#units_table tr[data-ip]')).map(row => ({
+        type: row.cells?.[8]?.textContent || '',
+      }));
+  const encoders = list.filter(unit => unitRoleText(unit).includes('encoder')).length;
+  const decoders = list.filter(unit => unitRoleText(unit).includes('decoder')).length;
+  const encEl = $('#encoder_count');
+  const decEl = $('#decoder_count');
+  if (encEl) encEl.textContent = encoders;
+  if (decEl) decEl.textContent = decoders;
+}
+
 // ===== Theme Toggle =====
 function initTheme() {
-  const darkSwitch = document.getElementById('dark_switch');
-  const darkToggle = document.getElementById('dark_mode_toggle');
+  const themeSelect = document.getElementById('cfg_theme');
 
   const applyTheme = (isDark) => {
     document.body.classList.toggle('light', !isDark);
-    if (darkSwitch) darkSwitch.classList.toggle('on', isDark);
-    if (darkToggle) darkToggle.checked = isDark;
+    if (themeSelect) themeSelect.value = isDark ? 'dark' : 'light';
   };
 
   applyTheme(localStorage.getItem('dark') !== 'false');
 
-  const label = document.getElementById('header_dark_label');
-  if (label) {
-    const toggle = () => {
-      const nowDark = !document.body.classList.contains('light');
-      const nextDark = !nowDark;
-      applyTheme(nextDark);
-      localStorage.setItem('dark', nextDark.toString());
-    };
-    label.addEventListener('click', (e) => { e.preventDefault(); toggle(); });
-    if (darkToggle) darkToggle.addEventListener('change', () => toggle());
-    if (darkSwitch) darkSwitch.addEventListener('click', (e) => { e.preventDefault(); toggle(); });
+  if (themeSelect) {
+    themeSelect.addEventListener('change', () => {
+      const isDark = themeSelect.value !== 'light';
+      applyTheme(isDark);
+      localStorage.setItem('dark', isDark.toString());
+    });
   }
 
   // Keep in sync across tabs/pages
   window.addEventListener('storage', (e) => {
     if (e.key === 'dark') {
       applyTheme(e.newValue !== 'false');
+    }
+  });
+}
+
+// ===== Density Toggle =====
+function initDensity() {
+  const densitySelect = document.getElementById('cfg_view_density');
+
+  const applyDensity = (isCompact) => {
+    document.body.classList.toggle('compact', isCompact);
+    if (densitySelect) densitySelect.value = isCompact ? 'compact' : 'comfortable';
+  };
+
+  applyDensity(localStorage.getItem('viewDensity') === 'compact');
+
+  if (densitySelect) {
+    densitySelect.addEventListener('change', () => {
+      const nextCompact = densitySelect.value === 'compact';
+      applyDensity(nextCompact);
+      localStorage.setItem('viewDensity', nextCompact ? 'compact' : 'comfortable');
+    });
+  }
+
+  window.addEventListener('storage', (e) => {
+    if (e.key === 'viewDensity') {
+      applyDensity(e.newValue === 'compact');
     }
   });
 }
@@ -495,6 +721,8 @@ function initConfig() {
   const fallbackPwToggle = $('#cfg_fallback_pw_toggle');
   const fallbackPwInput = $('#cfg_fallback_password');
   const fbtn = $('#cfg_firmware_browse');
+  const guideBtn = $('#cfg_user_guide');
+  const cfgTsExportBtn = $('#cfg_ts_export');
   
   // Store current password values so they persist even if user doesn't view them
   let currentPassword = 'password';
@@ -556,6 +784,23 @@ function initConfig() {
     });
   }
 
+  if (guideBtn) {
+    guideBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      window.open('/help', '_blank', 'noopener');
+    });
+  }
+
+  if (cfgTsExportBtn) {
+    cfgTsExportBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      $('#cfg_error').textContent = 'Preparing TS dump...';
+      $('#cfg_error').style.color = 'var(--accent)';
+      $('#cfg_error').style.display = 'block';
+      window.location = '/api/ts_export';
+    });
+  }
+
   if (saveBtn) {
     saveBtn.addEventListener('click', async (e) => {
       e.preventDefault();
@@ -609,6 +854,8 @@ function initConfig() {
         $('#cfg_timeout').value = cfg.timeout || 4.5;
         $('#cfg_concurrency').value = cfg.concurrency || 6;
         $('#cfg_firmware_path').value = cfg.firmware_path || '';
+        const versionInput = $('#cfg_app_version');
+        if (versionInput) versionInput.value = cfg.app_version || 'V0.0.0';
         // Store current passwords for later use
         currentPassword = cfg.password || 'password';
         currentFallbackPassword = cfg.fallback_password || 'Atlona';
@@ -711,7 +958,12 @@ function initPasswordSync() {
     }
 
     const targetLabel = target === 'fallback' ? 'Fallback' : 'Primary';
-    if (!window.confirm(`Sync all unit admin passwords to ${targetLabel}?`)) {
+    if (!await omniConfirm({
+      title: 'Sync Passwords',
+      message: `Sync all unit admin passwords to the ${targetLabel} password?`,
+      confirmText: 'Sync Passwords',
+      summary: [{label: 'Target', value: targetLabel}]
+    })) {
       return;
     }
 
@@ -913,8 +1165,17 @@ function initSetNtp() {
     }
 
     const targetText = scope === 'selected' ? `${selectedIps.length} selected unit(s)` : 'all units';
-    const actionText = rebootAfter ? `Apply NTP settings and reboot ${targetText}?` : `Apply NTP settings to ${targetText}?`;
-    if (!window.confirm(actionText)) {
+    if (!await omniConfirm({
+      title: rebootAfter ? 'Apply NTP and Reboot' : 'Apply NTP Settings',
+      message: rebootAfter ? `Apply NTP settings and reboot ${targetText}?` : `Apply NTP settings to ${targetText}?`,
+      confirmText: rebootAfter ? 'Apply and Reboot' : 'Apply',
+      danger: rebootAfter,
+      summary: [
+        {label: 'Targets', value: targetText},
+        {label: 'Timezone', value: timezone},
+        {label: 'NTP Server', value: server || '(blank)'}
+      ]
+    })) {
       return;
     }
 
@@ -979,6 +1240,365 @@ function initSetNtp() {
 
   confirmRebootBtn.addEventListener('click', async () => {
     await submitNtp({rebootAfter: true});
+  });
+}
+
+function initSlateManager() {
+  const openBtn = $('#slate_manager_btn');
+  const backdrop = $('#slate_manager_backdrop');
+  const closeBtn = $('#slate_manager_close');
+  const uploadBtn = $('#slate_upload_btn');
+  const applyBtn = $('#slate_apply_btn');
+  const deleteBtn = $('#slate_delete_btn');
+  const refreshBtn = $('#slate_refresh_btn');
+  const logoSelect = $('#slate_logo_select');
+  const modeSelect = $('#slate_mode_select');
+  const nameInput = $('#slate_upload_name');
+  const fileInput = $('#slate_upload_file');
+  const previewImg = $('#slate_upload_preview');
+  const statusBox = $('#slate_manager_status');
+  const err = $('#slate_manager_error');
+  const selectedRadio = $('#slate_scope_selected');
+  const encRadio = $('#slate_scope_encoders');
+  const decRadio = $('#slate_scope_decoders');
+  const selectedLabel = $('#slate_scope_selected_label');
+  const encLabel = $('#slate_scope_encoders_label');
+  const decLabel = $('#slate_scope_decoders_label');
+  if (!openBtn || !backdrop || !closeBtn || !uploadBtn || !applyBtn || !deleteBtn || !refreshBtn || !logoSelect || !modeSelect) return;
+
+  const clearError = () => {
+    if (!err) return;
+    err.style.display = 'none';
+    err.textContent = '';
+  };
+  const showError = (msg) => {
+    if (!err) return;
+    err.textContent = msg;
+    err.style.display = 'block';
+  };
+  const rowUnit = (row) => ({
+    ip: row.getAttribute('data-ip'),
+    type: (row.cells?.[8]?.textContent || '').trim().toLowerCase(),
+    label: `${row.getAttribute('data-ip') || ''} / ${(row.cells?.[5]?.textContent || '').trim()}`
+  });
+  const allUnits = () => Array.from($$('#units_table tr[data-ip]')).map(rowUnit).filter(u => u.ip);
+  const selectedUnits = () => Array.from($$('.row-select:checked')).map(cb => cb.closest('tr')).filter(Boolean).map(rowUnit).filter(u => u.ip);
+  const encoderUnits = () => allUnits().filter(u => u.type.includes('encoder'));
+  const decoderUnits = () => allUnits().filter(u => u.type.includes('decoder'));
+  const currentScope = () => (document.querySelector('input[name="slate_scope"]:checked') || {}).value || 'selected';
+  const targetUnits = () => {
+    const scope = currentScope();
+    if (scope === 'encoders') return encoderUnits();
+    if (scope === 'decoders') return decoderUnits();
+    return selectedUnits();
+  };
+  const targetIps = () => targetUnits().map(u => u.ip);
+
+  const updateScopeLabels = () => {
+    const selected = selectedUnits();
+    const encoders = encoderUnits();
+    const decoders = decoderUnits();
+    if (selectedLabel) selectedLabel.textContent = `Selected units (${selected.length})`;
+    if (encLabel) encLabel.textContent = `All encoders (${encoders.length})`;
+    if (decLabel) decLabel.textContent = `All decoders (${decoders.length})`;
+    if (selectedRadio) selectedRadio.disabled = selected.length === 0;
+    if (encRadio) encRadio.disabled = encoders.length === 0;
+    if (decRadio) decRadio.disabled = decoders.length === 0;
+    if (selected.length > 0) selectedRadio.checked = true;
+    else if (encoders.length > 0) encRadio.checked = true;
+    else if (decoders.length > 0) decRadio.checked = true;
+  };
+  const setBusy = (busy, label = '') => {
+    openBtn.disabled = busy;
+    uploadBtn.disabled = busy;
+    applyBtn.disabled = busy;
+    deleteBtn.disabled = busy || (!busy && (!logoSelect.value || logoSelect.value === 'Not used'));
+    refreshBtn.disabled = busy;
+    closeBtn.disabled = busy;
+    if (logoSelect) logoSelect.disabled = busy;
+    if (modeSelect) modeSelect.disabled = busy || (!busy && (!logoSelect.value || logoSelect.value === 'Not used'));
+    if (nameInput) nameInput.disabled = busy;
+    if (fileInput) fileInput.disabled = busy;
+    uploadBtn.textContent = busy && label === 'upload' ? 'Uploading...' : 'Upload';
+    applyBtn.textContent = busy && label === 'apply' ? 'Applying...' : 'Apply';
+    deleteBtn.textContent = busy && label === 'delete' ? 'Deleting...' : 'Delete';
+    refreshBtn.textContent = busy && label === 'refresh' ? 'Refreshing...' : 'Refresh';
+  };
+  const setStatusLines = (lines) => {
+    if (!statusBox) return;
+    statusBox.innerHTML = (lines || []).map(line => {
+      const cls = line.ok === false ? 'bad' : line.ok === true ? 'ok' : '';
+      return `<div class="${cls}">${escapeAttr(line.text || line)}</div>`;
+    }).join('');
+  };
+  const syncModeAvailability = () => {
+    const noLogo = !logoSelect.value || logoSelect.value === 'Not used';
+    if (noLogo) modeSelect.value = 'off';
+    modeSelect.disabled = noLogo;
+    if (deleteBtn) deleteBtn.disabled = noLogo;
+  };
+  const populateLogoOptions = (options, selectedLogo) => {
+    const values = Array.isArray(options) && options.length ? options : ['Not used'];
+    logoSelect.innerHTML = '';
+    values.forEach(value => {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = value;
+      logoSelect.appendChild(opt);
+    });
+    if (selectedLogo && values.includes(selectedLogo)) logoSelect.value = selectedLogo;
+    syncModeAvailability();
+  };
+  const isAllowedSlateFile = (file) => {
+    const name = (file?.name || '').toLowerCase();
+    return name.endsWith('.png') || name.endsWith('.jpg') || name.endsWith('.jpeg');
+  };
+  const clearPreview = () => {
+    if (!previewImg) return;
+    if (previewImg.dataset.objectUrl) {
+      URL.revokeObjectURL(previewImg.dataset.objectUrl);
+      delete previewImg.dataset.objectUrl;
+    }
+    previewImg.removeAttribute('src');
+    previewImg.style.display = 'none';
+  };
+  const showPreview = (file) => {
+    clearPreview();
+    if (!previewImg || !file || !isAllowedSlateFile(file)) return;
+    const url = URL.createObjectURL(file);
+    previewImg.dataset.objectUrl = url;
+    previewImg.src = url;
+    previewImg.style.display = 'block';
+  };
+  const parseSlateResponse = async (res, fallbackMessage) => {
+    const raw = await res.text();
+    try {
+      return JSON.parse(raw || '{}');
+    } catch (e) {
+      const trimmed = raw.trim();
+      const looksHtml = trimmed.startsWith('<');
+      const detail = looksHtml
+        ? 'Server returned HTML instead of JSON. Restart the Python server if this route was just added.'
+        : (trimmed.slice(0, 180) || 'empty response');
+      throw new Error(`${fallbackMessage} (HTTP ${res.status}). ${detail}`);
+    }
+  };
+
+  const refreshSlateState = async (options = {}) => {
+    const preserveStatus = !!options.preserveStatus;
+    if (!preserveStatus) clearError();
+    const units = targetUnits();
+    if (units.length === 0) {
+      showError('Choose selected units, all encoders, or all decoders.');
+      populateLogoOptions(['Not used'], 'Not used');
+      return;
+    }
+    setBusy(true, 'refresh');
+    try {
+      const res = await fetch('/api/slate_status', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ips: units.map(u => u.ip)})
+      });
+      const data = await parseSlateResponse(res, 'Failed to load slate status');
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Failed to load slate status');
+      const results = data.results || {};
+      const firstOk = Object.values(results).find(r => r && r.ok);
+      populateLogoOptions(firstOk?.logo_options || ['Not used'], firstOk?.logo || 'Not used');
+      modeSelect.value = firstOk?.mode || 'off';
+      syncModeAvailability();
+      if (!preserveStatus) {
+        setStatusLines(units.map(unit => {
+          const r = results[unit.ip] || {};
+          return {ok: !!r.ok, text: r.ok ? `${unit.label}: ${r.logo || 'Not used'} / ${r.mode || 'off'}` : `${unit.label}: ${r.error || 'failed'}`};
+        }));
+      }
+    } catch (e) {
+      showError(e.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const closeModal = () => {
+    backdrop.style.display = 'none';
+    clearError();
+    setBusy(false);
+  };
+
+  openBtn.addEventListener('click', () => {
+    updateScopeLabels();
+    clearError();
+    setStatusLines([]);
+    backdrop.style.display = 'flex';
+    refreshSlateState();
+  });
+  closeBtn.addEventListener('click', closeModal);
+  backdrop.addEventListener('click', (e) => {
+    if (e.target === backdrop) closeModal();
+  });
+  [selectedRadio, encRadio, decRadio].forEach(radio => {
+    if (radio) radio.addEventListener('change', refreshSlateState);
+  });
+  document.addEventListener('change', (evt) => {
+    if (!evt.target?.classList?.contains('row-select')) return;
+    updateScopeLabels();
+    if (backdrop.style.display === 'flex' && currentScope() === 'selected') {
+      refreshSlateState();
+    }
+  });
+  logoSelect.addEventListener('change', syncModeAvailability);
+  refreshBtn.addEventListener('click', refreshSlateState);
+  fileInput.addEventListener('change', () => {
+    clearError();
+    const file = fileInput.files?.[0];
+    if (!file) {
+      clearPreview();
+      return;
+    }
+    if (!isAllowedSlateFile(file)) {
+      clearPreview();
+      fileInput.value = '';
+      showError('Slate upload only accepts .jpg, .jpeg, or .png files.');
+      return;
+    }
+    showPreview(file);
+  });
+
+  uploadBtn.addEventListener('click', async () => {
+    clearError();
+    const ips = targetIps();
+    const name = (nameInput?.value || '').trim();
+    const file = fileInput?.files?.[0];
+    if (ips.length === 0) return showError('Choose at least one target unit.');
+    if (!name) return showError('Enter a slate name.');
+    if (!file) return showError('Choose a slate image file.');
+    if (!isAllowedSlateFile(file)) return showError('Slate upload only accepts .jpg, .jpeg, or .png files.');
+    if (!await omniConfirm({
+      title: 'Upload Slate',
+      message: `Upload "${name}" to ${ips.length} unit(s)?`,
+      confirmText: 'Upload',
+      summary: [
+        {label: 'Slate', value: name},
+        {label: 'File', value: file.name},
+        {label: 'Targets', value: `${ips.length} unit(s)`}
+      ],
+      items: ips
+    })) return;
+    setBusy(true, 'upload');
+    setStatusLines([{text: `Uploading ${name} to ${ips.length} unit(s)...`}]);
+    try {
+      const form = new FormData();
+      form.append('ips', JSON.stringify(ips));
+      form.append('name', name);
+      form.append('file', file);
+      console.log('[SLATE] Upload start', {ips, name, file: file.name, size: file.size});
+      const res = await fetch('/api/slate_upload', {method: 'POST', body: form});
+      const data = await parseSlateResponse(res, 'Slate upload failed');
+      console.log('[SLATE] Upload response', {status: res.status, data});
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Slate upload failed');
+      const results = data.results || {};
+      setStatusLines(ips.map(ip => {
+        const r = results[ip] || {};
+        return {ok: !!r.ok, text: r.ok ? `${ip}: uploaded ${name}` : `${ip}: ${r.error || 'failed'} (${r.stage || 'upload'})`};
+      }));
+      await refreshSlateState({preserveStatus: true});
+      if (Array.from(logoSelect.options).some(opt => opt.value === name)) {
+        logoSelect.value = name;
+        if (modeSelect.value === 'off') modeSelect.value = 'auto';
+        syncModeAvailability();
+      }
+    } catch (e) {
+      console.warn('[SLATE] Upload failed', e);
+      showError(e.message || String(e));
+      setStatusLines([{ok: false, text: e.message || String(e)}]);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  deleteBtn.addEventListener('click', async () => {
+    clearError();
+    const ips = targetIps();
+    const logo = logoSelect.value || 'Not used';
+    if (ips.length === 0) return showError('Choose at least one target unit.');
+    if (!logo || logo === 'Not used') return showError('Select a slate logo to delete.');
+    if (!await omniConfirm({
+      title: 'Delete Slate',
+      message: `Delete slate "${logo}" from ${ips.length} unit(s)? Units using it will be set to Not used/off first.`,
+      confirmText: 'Delete',
+      danger: true,
+      summary: [
+        {label: 'Slate', value: logo},
+        {label: 'Targets', value: `${ips.length} unit(s)`}
+      ],
+      items: ips
+    })) return;
+    setBusy(true, 'delete');
+    setStatusLines([{text: `Deleting ${logo} from ${ips.length} unit(s)...`}]);
+    try {
+      console.log('[SLATE] Delete start', {ips, logo});
+      const res = await fetch('/api/slate_delete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ips, logo})
+      });
+      const data = await parseSlateResponse(res, 'Slate delete failed');
+      console.log('[SLATE] Delete response', {status: res.status, data});
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Slate delete failed');
+      const results = data.results || {};
+      setStatusLines(ips.map(ip => {
+        const r = results[ip] || {};
+        return {ok: !!r.ok, text: r.ok ? `${ip}: deleted ${logo}` : `${ip}: ${r.error || 'failed'} (${r.stage || 'delete'})`};
+      }));
+      await refreshSlateState({preserveStatus: true});
+    } catch (e) {
+      console.warn('[SLATE] Delete failed', e);
+      showError(e.message || String(e));
+      setStatusLines([{ok: false, text: e.message || String(e)}]);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  applyBtn.addEventListener('click', async () => {
+    clearError();
+    const ips = targetIps();
+    const logo = logoSelect.value || 'Not used';
+    const mode = modeSelect.value || 'off';
+    if (ips.length === 0) return showError('Choose at least one target unit.');
+    if (logo === 'Not used' && mode !== 'off') return showError('Slate Mode cannot be enabled when Slate Logo is Not used.');
+    if (!await omniConfirm({
+      title: 'Apply Slate Settings',
+      message: `Apply slate ${logo} / ${mode} to ${ips.length} unit(s)?`,
+      confirmText: 'Apply',
+      summary: [
+        {label: 'Slate', value: logo},
+        {label: 'Mode', value: mode},
+        {label: 'Targets', value: `${ips.length} unit(s)`}
+      ],
+      items: ips
+    })) return;
+    setBusy(true, 'apply');
+    try {
+      const res = await fetch('/api/slate_settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ips, logo, mode})
+      });
+      const data = await parseSlateResponse(res, 'Slate update failed');
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Slate update failed');
+      const results = data.results || {};
+      setStatusLines(ips.map(ip => {
+        const r = results[ip] || {};
+        return {ok: !!r.ok, text: r.ok ? `${ip}: applied ${logo} / ${mode}` : `${ip}: ${r.error || 'failed'}`};
+      }));
+      await refreshSlateState();
+    } catch (e) {
+      showError(e.message || String(e));
+    } finally {
+      setBusy(false);
+    }
   });
 }
 
@@ -1047,6 +1667,158 @@ function openFolderBrowser(startPath, targetSelector) {
   load(current);
 }
 
+function openFolderBrowser(startPath, targetSelector) {
+  const backdrop = $('#cfg_browser_backdrop');
+  const list = $('#cfg_browser_list');
+  const pathInput = $('#cfg_browser_path');
+  const selectBtn = $('#cfg_browser_select');
+  const upBtn = $('#cfg_browser_up');
+  const cancelBtn = $('#cfg_browser_cancel');
+  const goBtn = $('#cfg_browser_go');
+  const driveSelect = $('#cfg_browser_drive');
+  const homeBtn = $('#cfg_browser_home');
+  const homePath = startPath || '';
+
+  let current = startPath || '';
+  let parent = '';
+
+  const showError = (message) => {
+    list.innerHTML = '<div style="color:var(--danger);padding:12px;">Error: ' + (message || 'unknown') + '</div>';
+  };
+
+  const setBusy = () => {
+    list.innerHTML = '<div style="padding:20px;text-align:center;"><span class="spinner"></span></div>';
+  };
+
+  const updateDrives = (drives) => {
+    if (!driveSelect) return;
+    const prior = driveSelect.value;
+    driveSelect.innerHTML = '';
+    if (!Array.isArray(drives) || !drives.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'Drive';
+      driveSelect.appendChild(opt);
+      driveSelect.disabled = true;
+      return;
+    }
+    driveSelect.disabled = false;
+    drives.forEach(drive => {
+      const opt = document.createElement('option');
+      opt.value = drive;
+      opt.textContent = drive.replace(/\\$/, '');
+      driveSelect.appendChild(opt);
+    });
+    const active = drives.find(d => (current || '').toLowerCase().startsWith(d.toLowerCase()));
+    driveSelect.value = active || prior || drives[0];
+  };
+
+  async function load(path) {
+    setBusy();
+    try {
+      const requested = (path || '').trim();
+      const url = '/api/list_dir' + (requested ? '?path=' + encodeURIComponent(requested) : '');
+      const res = await fetch(url);
+      const j = await res.json();
+      if (!j.ok) {
+        showError(j.error || 'unknown');
+        pathInput.value = requested;
+        return;
+      }
+
+      current = j.path || requested || '';
+      parent = j.parent || '';
+      pathInput.value = current;
+      updateDrives(j.drives || []);
+
+      const folders = (j.entries || []).filter(ent => ent.is_dir);
+      list.innerHTML = '';
+      if (!folders.length) {
+        list.innerHTML = '<div style="padding:12px;opacity:.6;">No folders</div>';
+        return;
+      }
+
+      folders.forEach(ent => {
+        const row = document.createElement('div');
+        row.className = 'browser-item';
+        row.textContent = ent.name;
+        row.title = ent.path || ent.name;
+        row.addEventListener('click', () => {
+          list.querySelectorAll('.browser-item.selected').forEach(el => el.classList.remove('selected'));
+          row.classList.add('selected');
+          pathInput.value = ent.path || joinFolderPath(current, ent.name);
+        });
+        row.addEventListener('dblclick', () => load(ent.path || joinFolderPath(current, ent.name)));
+        list.appendChild(row);
+      });
+    } catch (e) {
+      showError(e.message || String(e));
+    }
+  }
+
+  function joinFolderPath(base, child) {
+    const normalized = (base || '').replace(/\//g, '\\');
+    if (/^[A-Za-z]:\\?$/.test(normalized)) return normalized.replace(/\\?$/, '\\') + child;
+    if (normalized.endsWith('\\')) return normalized + child;
+    if (!normalized) return child;
+    return normalized + '\\' + child;
+  }
+
+  if (upBtn) {
+    upBtn.onclick = (e) => {
+      e.preventDefault();
+      if (parent) load(parent);
+    };
+  }
+  if (goBtn) {
+    goBtn.onclick = (e) => {
+      e.preventDefault();
+      load(pathInput.value);
+    };
+  }
+  if (pathInput) {
+    pathInput.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        load(pathInput.value);
+      }
+    };
+  }
+  if (driveSelect) {
+    driveSelect.onchange = () => {
+      if (driveSelect.value) load(driveSelect.value);
+    };
+  }
+  if (homeBtn) {
+    homeBtn.onclick = (e) => {
+      e.preventDefault();
+      load(homePath);
+    };
+  }
+  if (selectBtn) {
+    selectBtn.onclick = (e) => {
+      e.preventDefault();
+      const target = document.querySelector(targetSelector);
+      if (target) target.value = pathInput.value;
+      backdrop.style.display = 'none';
+    };
+  }
+  if (cancelBtn) {
+    cancelBtn.onclick = (e) => {
+      e.preventDefault();
+      backdrop.style.display = 'none';
+    };
+  }
+  if (backdrop) {
+    backdrop.onclick = (e) => {
+      if (e.target === backdrop) backdrop.style.display = 'none';
+    };
+  }
+
+  backdrop.style.display = 'flex';
+  load(current);
+}
+
 // ===== Data Loading =====
 async function loadAdapters() {
   try {
@@ -1091,7 +1863,7 @@ async function loadFiles() {
         // Filter rows and update checkboxes
         const rows = Array.from($$('#units_table tr'));
         rows.forEach(row => {
-          const modelCell = row.cells[8];
+          const modelCell = row.cells[9];
           const model = modelCell ? modelCell.textContent.trim() : '';
           const checkbox = row.querySelector('input[type="checkbox"].row-select');
           const isCompatible = model && compatibleModels.some(m => model.toLowerCase().includes(m));
@@ -1132,6 +1904,8 @@ async function loadFiles() {
 // Status cache for preserving state across page navigations
 let unitStatusCache = {};
 let isFirstSession = true;
+let showInventoryExtraColumns = localStorage.getItem('showInventoryExtraColumns') !== 'false';
+let activeCodecSelectIp = '';
 
 function loadStatusCache() {
   try {
@@ -1147,6 +1921,212 @@ function saveStatusCache() {
     localStorage.setItem('unitStatusCache', JSON.stringify(unitStatusCache));
   } catch (e) {
     console.warn('[CACHE] Failed to save status cache:', e);
+  }
+}
+
+function applyInventoryExtraVisibility() {
+  document.querySelectorAll('.inventory-extra-col').forEach(el => {
+    el.classList.toggle('inventory-extra-hidden', !showInventoryExtraColumns);
+  });
+  const toggle = $('#inventory_extra_toggle');
+  const switchEl = $('#inventory_extra_switch');
+  const label = $('#inventory_extra_label');
+  if (toggle) toggle.checked = showInventoryExtraColumns;
+  if (switchEl) switchEl.classList.toggle('on', showInventoryExtraColumns);
+  if (label) label.textContent = showInventoryExtraColumns ? 'Hide Device Details' : 'Show Device Details';
+}
+
+function initInventoryExtraToggle() {
+  const label = document.querySelector('label[for="inventory_extra_toggle"]');
+  const toggle = $('#inventory_extra_toggle');
+  const switchEl = $('#inventory_extra_switch');
+  const flip = () => {
+    showInventoryExtraColumns = !showInventoryExtraColumns;
+    localStorage.setItem('showInventoryExtraColumns', showInventoryExtraColumns.toString());
+    applyInventoryExtraVisibility();
+  };
+  applyInventoryExtraVisibility();
+  if (label) label.addEventListener('click', (event) => { event.preventDefault(); flip(); });
+  if (toggle) toggle.addEventListener('change', flip);
+  if (switchEl) switchEl.addEventListener('click', (event) => { event.preventDefault(); flip(); });
+}
+
+function escapeAttr(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function omniConfirm(options = {}) {
+  const backdrop = $('#confirm_backdrop');
+  const titleEl = $('#confirm_title');
+  const messageEl = $('#confirm_message');
+  const summaryEl = $('#confirm_summary');
+  const listEl = $('#confirm_list');
+  const okBtn = $('#confirm_ok');
+  const cancelBtn = $('#confirm_cancel');
+  if (!backdrop || !okBtn || !cancelBtn) {
+    return Promise.resolve(window.confirm(options.message || options.title || 'Continue?'));
+  }
+
+  titleEl.textContent = options.title || 'Confirm Action';
+  messageEl.textContent = options.message || '';
+
+  const summary = options.summary || [];
+  if (summary.length) {
+    summaryEl.innerHTML = summary.map(row => `
+      <div class="confirm-summary-row">
+        <span>${escapeAttr(row.label || '')}</span>
+        <strong>${escapeAttr(row.value || '')}</strong>
+      </div>
+    `).join('');
+    summaryEl.style.display = 'block';
+  } else {
+    summaryEl.innerHTML = '';
+    summaryEl.style.display = 'none';
+  }
+
+  const items = options.items || [];
+  if (items.length) {
+    listEl.innerHTML = items.map(item => `<div>${escapeAttr(item)}</div>`).join('');
+    listEl.style.display = 'block';
+  } else {
+    listEl.innerHTML = '';
+    listEl.style.display = 'none';
+  }
+
+  okBtn.textContent = options.confirmText || 'Continue';
+  cancelBtn.textContent = options.cancelText || 'Cancel';
+  okBtn.classList.toggle('danger', !!options.danger);
+  okBtn.classList.toggle('secondary', false);
+  backdrop.style.display = 'flex';
+
+  return new Promise(resolve => {
+    const cleanup = (result) => {
+      backdrop.style.display = 'none';
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      backdrop.removeEventListener('click', onBackdrop);
+      document.removeEventListener('keydown', onKeydown);
+      resolve(result);
+    };
+    const onOk = () => cleanup(true);
+    const onCancel = () => cleanup(false);
+    const onBackdrop = (event) => {
+      if (event.target === backdrop) cleanup(false);
+    };
+    const onKeydown = (event) => {
+      if (event.key === 'Escape') cleanup(false);
+    };
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+    backdrop.addEventListener('click', onBackdrop);
+    document.addEventListener('keydown', onKeydown);
+    okBtn.focus();
+  });
+}
+
+const CODEC_OPTIONS = [
+  ['Colibri', 'VCx'],
+  ['VC2/LeGall', 'VC-2 Video'],
+  ['VC2/Haar', 'VC-2 PC application'],
+];
+
+function codecLabel(systemMode) {
+  const found = CODEC_OPTIONS.find(([value]) => value === systemMode);
+  return found ? found[1] : (systemMode || '');
+}
+
+function codecClass(systemMode) {
+  return systemMode === 'Colibri' ? 'codec-ok' : 'codec-bad';
+}
+
+function isLegacyCodecConfigurable(unit) {
+  const model = String(unit?.model || '').trim().toLowerCase();
+  return !!model && !model.startsWith('hw-omni');
+}
+
+function buildCodecCell(unit) {
+  const mode = unit.system_mode || '';
+  const configurable = unit.codec_configurable !== undefined ? !!unit.codec_configurable : isLegacyCodecConfigurable(unit);
+  if (!configurable) {
+    return `<span class="codec-pill ${codecClass(mode)}" data-system-mode="${escapeAttr(mode)}">${escapeAttr(codecLabel(mode) || 'Unknown')}</span>`;
+  }
+  const supported = Array.isArray(unit.supported_system_modes) && unit.supported_system_modes.length
+    ? unit.supported_system_modes
+    : CODEC_OPTIONS.map(([value]) => value);
+  const opts = supported.map(value => `<option value="${escapeAttr(value)}" ${value === mode ? 'selected' : ''}>${escapeAttr(codecLabel(value) || value)}</option>`).join('');
+  return `<select class="codec-select ${codecClass(mode)}" data-ip="${escapeAttr(unit.ip || '')}" data-last-value="${escapeAttr(mode)}" data-system-mode="${escapeAttr(mode)}">${opts}</select>`;
+}
+
+function getDeviceCodecModesFromUnits(units) {
+  return (units || []).map(unit => unit.system_mode).filter(Boolean);
+}
+
+function getDeviceCodecModesFromTable() {
+  return Array.from(document.querySelectorAll('#units_table .codec_cell [data-system-mode], #units_table .codec-select'))
+    .map(el => el.classList.contains('codec-select') ? (el.value || el.dataset.systemMode || el.dataset.lastValue) : el.dataset.systemMode)
+    .filter(Boolean);
+}
+
+function updateDeviceCodecMismatchWarning(modes) {
+  const warning = $('#device_codec_mismatch_warning');
+  if (!warning) return;
+  const unique = [...new Set((modes || []).filter(Boolean))];
+  if (unique.length > 1) {
+    warning.textContent = `Codec mismatch detected: ${unique.map(codecLabel).join(', ')}`;
+    warning.classList.remove('hidden');
+  } else {
+    warning.classList.add('hidden');
+  }
+}
+
+function isCodecSelectGuarded(select) {
+  if (!select) return false;
+  const ip = select.getAttribute('data-ip') || '';
+  return document.activeElement === select || (ip && activeCodecSelectIp === ip);
+}
+
+async function handleCodecSelectChange(select) {
+  const ip = select.getAttribute('data-ip');
+  const previous = select.getAttribute('data-last-value') || '';
+  const next = select.value;
+  if (!ip || next === previous) return;
+  if (!await omniConfirm({
+    title: 'Change Codec',
+    message: `Changing codec on ${ip} to ${codecLabel(next)} will reboot the unit.`,
+    confirmText: 'Change and Reboot',
+    danger: true,
+    summary: [
+      {label: 'Device', value: ip},
+      {label: 'New Codec', value: codecLabel(next)}
+    ]
+  })) {
+    select.value = previous;
+    return;
+  }
+  select.disabled = true;
+  try {
+    const res = await fetch('/api/codec', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ip, system_mode: next})
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Codec update failed');
+    select.setAttribute('data-last-value', data.system_mode || next);
+    select.dataset.systemMode = data.system_mode || next;
+    select.classList.toggle('codec-ok', (data.system_mode || next) === 'Colibri');
+    select.classList.toggle('codec-bad', (data.system_mode || next) !== 'Colibri');
+    updateDeviceCodecMismatchWarning(getDeviceCodecModesFromTable());
+    setStatus(ip, 'Rebooting', 's-rebooting', 120000);
+  } catch (err) {
+    select.value = previous;
+    alert('Codec update failed: ' + (err.message || err));
+  } finally {
+    select.disabled = false;
   }
 }
 
@@ -1170,10 +2150,14 @@ async function loadUnits() {
     const res = await fetch('/api/cache');
     const data = await res.json();
     const units = data.units || [];
+    updateUnitCounts(units);
+    updateDeviceCodecMismatchWarning(getDeviceCodecModesFromUnits(units));
     const tbody = $('#units_table');
     tbody.innerHTML = '';
     if (units.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="14" style="text-align:center;padding:40px;opacity:.6;">Scan to discover units</td></tr>';
+      updateUnitCounts([]);
+      updateDeviceCodecMismatchWarning([]);
+      tbody.innerHTML = '<tr><td colspan="16" style="text-align:center;padding:40px;opacity:.6;">Scan to discover units</td></tr>';
       const overlay = $('#loading_overlay');
       if (overlay) overlay.classList.add('hidden');
       return;
@@ -1209,8 +2193,11 @@ async function loadUnits() {
       
       // Restore cached status if available, otherwise show default
       const cached = unitStatusCache[u.ip] || {};
+      const activeUpgrade = activeUpgradeStatus.get(u.ip);
       let statusCellHtml;
-      if (cached.statusClass) {
+      if (activeUpgrade) {
+        statusCellHtml = `<td data-monitoring="1"><span class="status ${activeUpgrade.cls}">${activeUpgrade.text}</span></td>`;
+      } else if (cached.statusClass) {
         // Use cached status HTML
         statusCellHtml = `<td><span class="status ${cached.statusClass}">${cached.statusText}</span></td>`;
       } else if (isFirstSession) {
@@ -1222,19 +2209,20 @@ async function loadUnits() {
       tr.innerHTML = `
         <td><input type="checkbox" class="row-select" data-ip="${u.ip}" onclick="event.stopPropagation()"/></td>
         <td><a class="ip" onclick="window.open('http://${u.ip}', '_blank')">${u.ip || ''}</a></td>
-        <td>${u.mac || ''}</td>
+        <td><span class="mac-lldp" data-ip="${u.ip || ''}" onmouseenter="showLldpPopup(this, event)" onmouseleave="hideLldpPopup()">${u.mac || ''}</span></td>
         <td class="linkspeed_cell">${cached.linkspeedHtml || (u.linkspeed !== undefined && u.linkspeed !== null ? `<span style="color:${u.linkspeed === 1000 ? '#4ade80' : '#f87171'}">${u.linkspeed} Mbps</span>` : '')}</td>
-        <td>${u.hostname || ''}</td>
-        <td>${timezone || ''}</td>
-        <td>${ntpServer || ''}</td>
-        <td>${u.type || u.role || ''}</td>
-        <td>${u.model || ''}</td>
-        <td>${u.version || ''}</td>
-        <td><span class="pwd-pill ${passwordClass}">${passwordSource}</span></td>
+        <td class="codec_cell">${buildCodecCell(u)}</td>
+        <td>${escapeAttr(u.hostname || '')}</td>
+        <td class="inventory-extra-col">${timezone || ''}</td>
+        <td class="inventory-extra-col">${ntpServer || ''}</td>
+        <td class="inventory-extra-col">${u.type || u.role || ''}</td>
+        <td class="inventory-extra-col">${u.model || ''}</td>
+        <td class="inventory-extra-col">${u.version || ''}</td>
+        <td class="inventory-extra-col"><span class="pwd-pill ${passwordClass}">${passwordSource}</span></td>
         ${statusCellHtml}
         <td><button class="action-btn blink-btn" data-ip="${u.ip}" title="Blink LED">💡</button></td>
         ${previewCell}
-        <td class="usb_cell">${cached.usbHtml || ''}</td>
+        <td class="usb_cell inventory-extra-col">${cached.usbHtml || ''}</td>
       `;
         tr.setAttribute('data-ip', u.ip);
       tbody.appendChild(tr);
@@ -1255,11 +2243,13 @@ async function loadUnits() {
         fetchThumbnailStatus(u.ip);
       }
     });
+
     isFirstSession = false;
     // If polling is off, show N/A pills so users know status isn't live
     if (localStorage.getItem('pollUnits') !== 'true') {
       setStatusDisabled();
     }
+    applyInventoryExtraVisibility();
     
     // Hide loading overlay when done
     const overlay = $('#loading_overlay');
@@ -1353,6 +2343,13 @@ $('#scan_btn').addEventListener('click', async () => {
   }
 });
 
+$('#targets_clear').addEventListener('click', () => {
+  const input = $('#targets');
+  if (!input) return;
+  input.value = '';
+  input.focus();
+});
+
 $('#clear_units_btn').addEventListener('click', async () => {
   const wasPolling = pollInterval !== null;
   if (wasPolling) stopPolling();
@@ -1400,15 +2397,28 @@ $('#export_units_btn').addEventListener('click', async () => {
 });
 
 // --- Upgrade feedback helpers ---
+const activeUpgradeIps = new Set();
+const activeUpgradeStatus = new Map();
+
 function getRowByIp(ip){
   // #units_table is already the <tbody>; search its direct rows
   return Array.from($$('#units_table tr')).find(r => r.getAttribute('data-ip') === ip);
 }
 function setStatus(ip, text, cls, holdMs){
   const row = getRowByIp(ip); if(!row) { console.log('[STATUS] No row for', ip); return; }
-  const statusCell = row.cells[11]; if(!statusCell) { console.log('[STATUS] No status cell for', ip); return; }
+  const statusCell = row.cells[12]; if(!statusCell) { console.log('[STATUS] No status cell for', ip); return; }
   console.log(`[STATUS] Setting ${ip} to '${text}' (${cls}), holdMs=${holdMs}`);
+  if (activeUpgradeIps.has(ip)) {
+    activeUpgradeStatus.set(ip, {text, cls});
+  }
   statusCell.innerHTML = `<span class="status ${cls}">${text}</span>`;
+  if (activeUpgradeIps.has(ip)) {
+    statusCell.dataset.monitoring = '1';
+  }
+  if (cls === 's-rebooting' && holdMs && holdMs > 0) {
+    statusCell.dataset.rebootGraceUntil = String(Date.now() + holdMs);
+    delete pollResultHistory[ip];
+  }
   if(holdMs && holdMs>0){
     statusCell.dataset.holdUntil = String(Date.now() + holdMs);
   } else {
@@ -1430,9 +2440,9 @@ async function monitorUpgrade(ip, snapshotVersion, file = null){
     console.warn(`[MONITOR] WARNING: snapshotVersion is empty for ${ip}`);
   }
   
-  // Keep showing Uploading while device is still connected
+  // Keep showing Upgrading while device is still connected
   // We'll wait for actual connection loss before showing Rebooting
-  setStatus(ip, 'Uploading', 's-uploading', 0);
+  setStatus(ip, 'Upgrading', 's-upgrading', 0);
   
   console.log(`[MONITOR] Waiting for device to go offline...`);
   let connectionLost = false;
@@ -1475,11 +2485,17 @@ async function monitorUpgrade(ip, snapshotVersion, file = null){
   }
   
   if(!connectionLost){
-    console.warn(`[MONITOR] Device did not go offline within 5 minute timeout - ASKING USER TO REBOOT`);
+    console.warn(`[MONITOR] Device did not go offline within timeout - upload/upgrade status uncertain; asking user to reboot`);
     
     // Ask user if they want to reboot and retry
     return new Promise((resolve) => {
-      const result = confirm(`Device ${ip}: Did not complete the upgrade. Do you want to reboot the device and try again?`);
+      omniConfirm({
+        title: 'Upgrade Needs Reboot',
+        message: 'Upload/upgrade status is uncertain because the unit did not reboot. Reboot the device and try the upload again?',
+        confirmText: 'Reboot and Retry',
+        danger: true,
+        summary: [{label: 'Device', value: ip}]
+      }).then((result) => {
       
       if(!result){
         console.log(`[MONITOR] User declined reboot for ${ip}`);
@@ -1596,6 +2612,7 @@ async function monitorUpgrade(ip, snapshotVersion, file = null){
         setStatus(ip, 'Reboot error', 's-error', 30000);
         resolve();
       });
+      });
     });
   }
   
@@ -1672,8 +2689,8 @@ async function monitorUpgrade(ip, snapshotVersion, file = null){
   
   // Update version cell in table
   const row = getRowByIp(ip);
-  if(row && row.cells[9]){
-    row.cells[9].textContent = currentVersion || '(unknown)';
+  if(row && row.cells[10]){
+    row.cells[10].textContent = currentVersion || '(unknown)';
   }
   
   // Compare versions
@@ -1740,9 +2757,24 @@ $('#upgrade_btn').addEventListener('click', async () => {
     }
   }
   
-  // Show confirmation dialog with Cancel/OK
-  const confirmMsg = '[DEBUG] Selected IPs for upgrade:\n' + JSON.stringify(selected, null, 2) + '\n\nProceed with upgrade?';
-  if (!window.confirm(confirmMsg)) {
+  const selectedLabels = selected.map(ip => {
+    const row = getRowByIp(ip);
+    const host = (row?.cells?.[5]?.textContent || '').trim();
+    const model = (row?.cells?.[9]?.textContent || '').trim();
+    return [ip, host, model].filter(Boolean).join(' / ');
+  });
+  if (!await omniConfirm({
+    title: 'Start Firmware Upgrade',
+    message: 'Start firmware upgrade for the selected devices? Devices may reboot and be unavailable while the upgrade completes.',
+    confirmText: 'Start Upgrade',
+    danger: true,
+    summary: [
+      {label: 'Firmware', value: file},
+      {label: 'Firmware Type', value: fwType},
+      {label: 'Targets', value: `${selected.length} device(s)`}
+    ],
+    items: selectedLabels
+  })) {
     console.log('[UPGRADE] Upgrade cancelled by user.');
     return;
   }
@@ -1750,10 +2782,11 @@ $('#upgrade_btn').addEventListener('click', async () => {
   // Snapshot versions and mark Uploading
   const snapVersions = {};
   $('#scan_status').innerHTML = '<span class="spinner"></span> Uploading...';
-  selected.forEach(ip => {
+  selected.forEach((ip, index) => {
+    activeUpgradeIps.add(ip);
     const row = getRowByIp(ip);
     if(row){
-      const verCell = row.cells[9];
+      const verCell = row.cells[10];
       const ver = verCell ? verCell.textContent.trim() : '';
       snapVersions[ip] = ver;
       console.log(`[UPGRADE] Captured version for ${ip}: "${ver}"`);
@@ -1762,17 +2795,118 @@ $('#upgrade_btn').addEventListener('click', async () => {
         console.warn(`[UPGRADE] WARNING: Version is empty for ${ip} - may cause issues detecting upgrade success`);
       }
       
-      const statusCell = row.cells[11];
+      const statusCell = row.cells[12];
       if(statusCell){
-        statusCell.innerHTML = '<span class="status s-uploading">Uploading</span>';
         // Mark this row as under active upgrade monitoring so poller skips it
         statusCell.dataset.monitoring = '1';
         // Hold uploading state until we get the response (upload + upgrade in progress)
         statusCell.dataset.holdUntil = String(Date.now() + 120000);
+        setStatus(ip, `Queued ${index + 1}`, 's-uploading', 120000);
+        console.log(`[UPGRADE] Queued ${index + 1}/${selected.length}: ${ip}`);
       }
     }
   });
   
+  const totalStarted = selected.length;
+  let pendingCount = selected.length;
+  let successCount = 0;
+  let failedCount = 0;
+  let hasProgressed = false;
+  const renderUploadProgress = () => {
+    const prefix = hasProgressed ? 'Firmware upgrades in progress...' : 'Starting firmware upgrades...';
+    $('#scan_status').innerHTML = `${prefix} (${totalStarted} started, ${pendingCount} pending)`;
+  };
+  const finishUpgradeMonitor = (ok) => {
+    pendingCount = Math.max(0, pendingCount - 1);
+    if (ok) successCount++;
+    else failedCount++;
+    hasProgressed = true;
+    if (pendingCount > 0) {
+      renderUploadProgress();
+    } else if (failedCount > 0) {
+      $('#scan_status').innerHTML = `Firmware upgrades finished (${successCount} successful, ${failedCount} failed)`;
+    } else {
+      $('#scan_status').innerHTML = `Firmware upgrades complete (${successCount} completed successfully)`;
+    }
+  };
+  const finishMonitoredUnit = (row) => {
+    const ip = row?.getAttribute('data-ip') || '';
+    if (ip) {
+      activeUpgradeIps.delete(ip);
+      activeUpgradeStatus.delete(ip);
+    }
+    const statusCell = row && row.cells ? row.cells[12] : null;
+    if(statusCell){ delete statusCell.dataset.monitoring; }
+    const finalText = (statusCell?.textContent || '').toLowerCase();
+    finishUpgradeMonitor(
+      !finalText.includes('failed') &&
+      !finalText.includes('cancelled') &&
+      !finalText.includes('error') &&
+      !finalText.includes('no response') &&
+      !finalText.includes('unresponsive')
+    );
+  };
+  const monitorPromises = [];
+  const uploadAndStartMonitor = async (ip) => {
+    const row = getRowByIp(ip);
+    const snap = snapVersions[ip] || '';
+    if(row && row.cells && row.cells[12]){
+      delete row.cells[12].dataset.holdUntil;
+    }
+    console.log(`[UPGRADE] Upload slot starting ${ip}`);
+    setStatus(ip, 'Uploading', 's-uploading', 0);
+    try {
+      const res = await fetch('/api/upgrade', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({file, targets: [ip], concurrency: 1})
+      });
+      let data = {};
+      try { data = await res.json(); } catch(_) { data = {}; }
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      const uploadResult = (data.results || {})[ip];
+      if (uploadResult && !uploadResult.ok) {
+        activeUpgradeIps.delete(ip);
+        activeUpgradeStatus.delete(ip);
+        const statusCell = row && row.cells ? row.cells[12] : null;
+        if(statusCell){ delete statusCell.dataset.monitoring; }
+        const stage = uploadResult.stage || 'upload';
+        const error = uploadResult.error || 'failed';
+        setStatus(ip, `Upload ${stage}: ${error}`, 's-error', 30000);
+        finishUpgradeMonitor(false);
+        return;
+      }
+      setStatus(ip, 'Upgrading', 's-upgrading', 0);
+      const monitorPromise = monitorUpgrade(ip, snap, file).finally(() => finishMonitoredUnit(row));
+      monitorPromises.push(monitorPromise);
+    } catch (e) {
+      activeUpgradeIps.delete(ip);
+      activeUpgradeStatus.delete(ip);
+      const statusCell = row && row.cells ? row.cells[12] : null;
+      if(statusCell){ delete statusCell.dataset.monitoring; }
+      setStatus(ip, `Upload error: ${e.message}`, 's-error', 30000);
+      finishUpgradeMonitor(false);
+    }
+  };
+  renderUploadProgress();
+  let nextUploadIndex = 0;
+  const uploadWorker = async () => {
+    while (nextUploadIndex < selected.length) {
+      const ip = selected[nextUploadIndex++];
+      await uploadAndStartMonitor(ip);
+    }
+  };
+  const uploadSlots = Math.min(2, selected.length);
+  try {
+    await Promise.all(Array.from({length: uploadSlots}, uploadWorker));
+    await Promise.allSettled(monitorPromises);
+  } catch (e) {
+    $('#scan_status').innerHTML = 'Error: ' + e.message;
+  }
+  return;
+
   try {
     const res = await fetch('/api/upgrade', {
       method: 'POST',
@@ -1797,9 +2931,9 @@ $('#upgrade_btn').addEventListener('click', async () => {
       // Clear the uploading status from selected devices since upgrade was rejected
       selected.forEach(ip => {
         const row = getRowByIp(ip);
-        if(row && row.cells && row.cells[11]){
-          row.cells[11].innerHTML = '<span class="status s-idle">Idle</span>';
-          delete row.cells[11].dataset.monitoring;
+        if(row && row.cells && row.cells[12]){
+          row.cells[12].innerHTML = '<span class="status s-idle">Idle</span>';
+          delete row.cells[12].dataset.monitoring;
         }
       });
       return;
@@ -1809,10 +2943,26 @@ $('#upgrade_btn').addEventListener('click', async () => {
 
     const totalStarted = selected.length;
     let pendingCount = selected.length;
+    let successCount = 0;
+    let failedCount = 0;
     let hasProgressed = false;
     const renderUploadProgress = () => {
       const prefix = hasProgressed ? '⏳ Firmware upgrades in progress...' : '⏳ Starting firmware upgrades...';
       $('#scan_status').innerHTML = `${prefix} (${totalStarted} started, ${pendingCount} pending)`;
+    };
+
+    const finishUpgradeMonitor = (ok) => {
+      pendingCount = Math.max(0, pendingCount - 1);
+      if (ok) successCount++;
+      else failedCount++;
+      hasProgressed = true;
+      if (pendingCount > 0) {
+        renderUploadProgress();
+      } else if (failedCount > 0) {
+        $('#scan_status').innerHTML = `Firmware upgrades finished (${successCount} successful, ${failedCount} failed)`;
+      } else {
+        $('#scan_status').innerHTML = `Firmware upgrades complete (${successCount} completed successfully)`;
+      }
     };
 
     // Queue-style progress: started remains fixed, pending counts down as each monitor completes
@@ -1822,23 +2972,35 @@ $('#upgrade_btn').addEventListener('click', async () => {
       const snap = snapVersions[ip] || '';
       // Clear the uploadinghold so monitor can show Upgrading now
       const row = getRowByIp(ip);
-      if(row && row.cells && row.cells[11]){
-        delete row.cells[11].dataset.holdUntil;
+      if(row && row.cells && row.cells[12]){
+        delete row.cells[12].dataset.holdUntil;
+      }
+      const uploadResult = results[ip];
+      if (uploadResult && !uploadResult.ok) {
+        activeUpgradeStatus.delete(ip);
+        const statusCell = row && row.cells ? row.cells[12] : null;
+        if(statusCell){ delete statusCell.dataset.monitoring; }
+        const stage = uploadResult.stage || 'upload';
+        const error = uploadResult.error || 'failed';
+        setStatus(ip, `Upload ${stage}: ${error}`, 's-error', 30000);
+        finishUpgradeMonitor(false);
+        return;
       }
       // Monitor will show progression: Uploading -> Upgrading -> Rebooting -> success/no-change
       // Pass file name so retry can be triggered if device doesn't reboot
       monitorUpgrade(ip, snap, file).finally(()=>{
         // Clear monitoring flag after monitor completes
-        const statusCell = row && row.cells ? row.cells[11] : null;
+        const statusCell = row && row.cells ? row.cells[12] : null;
         if(statusCell){ delete statusCell.dataset.monitoring; }
 
-        pendingCount = Math.max(0, pendingCount - 1);
-        hasProgressed = true;
-        if (pendingCount > 0) {
-          renderUploadProgress();
-        } else {
-          $('#scan_status').innerHTML = `✅ Firmware upgrades complete (${totalStarted} completed successfully)`;
-        }
+        const finalText = (statusCell?.textContent || '').toLowerCase();
+        finishUpgradeMonitor(
+          !finalText.includes('failed') &&
+          !finalText.includes('cancelled') &&
+          !finalText.includes('error') &&
+          !finalText.includes('no response') &&
+          !finalText.includes('unresponsive')
+        );
       });
     });
   } catch (e) {
@@ -1853,6 +3015,14 @@ $('#reboot_btn').addEventListener('click', async () => {
   const selected = Array.from(allChecked).map(cb => cb.getAttribute('data-ip'));
   console.log(`[REBOOT] Selected device IPs:`, selected);
   if (selected.length === 0) return;
+  if (!await omniConfirm({
+    title: 'Reboot Selected Devices',
+    message: `Reboot ${selected.length} selected device(s)?`,
+    confirmText: 'Reboot',
+    danger: true,
+    summary: [{label: 'Targets', value: `${selected.length} device(s)`}],
+    items: selected
+  })) return;
   
   try {
     const resp = await fetch('/api/reboot', {
@@ -1886,7 +3056,14 @@ $('#remove_btn').addEventListener('click', async () => {
   console.log(`[REMOVE] Selected device IPs:`, selected);
   if (selected.length === 0) return;
   
-  if (!confirm(`Remove ${selected.length} selected device(s) from cache?`)) return;
+  if (!await omniConfirm({
+    title: 'Remove Selected Devices',
+    message: `Remove ${selected.length} selected device(s) from cache? This does not change the units themselves.`,
+    confirmText: 'Remove',
+    danger: true,
+    summary: [{label: 'Targets', value: `${selected.length} device(s)`}],
+    items: selected
+  })) return;
   
   try {
     const resp = await fetch('/api/remove_units', {
@@ -1929,8 +3106,13 @@ function sortTable(colIndex, dataAttr) {
   }
   
   rows.sort((a, b) => {
-    let aVal = a.cells[colIndex]?.textContent.trim() || '';
-    let bVal = b.cells[colIndex]?.textContent.trim() || '';
+    const cellValue = (row) => {
+      const cell = row.cells[colIndex];
+      const input = cell ? cell.querySelector('input') : null;
+      return (input ? input.value : cell?.textContent || '').trim();
+    };
+    let aVal = cellValue(a);
+    let bVal = cellValue(b);
     
     // Only try numeric sort if BOTH values are simple numbers (no dots except decimal point, no special chars)
     // This prevents IP addresses and version strings from being incorrectly parsed as numbers
@@ -1964,6 +3146,7 @@ let pollInterval = null;
 let pollToggle = null;
 let pollSwitch = null;
 let pollingEnabled = false;
+let pollUnitsRunning = false;
 // Track recent poll results per device to prevent flipping due to transient issues
 let pollResultHistory = {};
 
@@ -1971,7 +3154,7 @@ function setStatusDisabled() {
   // Set all non-monitored rows to N/A
   const rows = $$('#units_table tr');
   rows.forEach(r => {
-    const cell = r.cells && r.cells[11];
+    const cell = r.cells && r.cells[12];
     if (cell) {
       // Don't change status if this device is currently being monitored for upgrade
       if (cell.dataset?.monitoring === '1') {
@@ -2002,42 +3185,100 @@ function isPollResultStable(ip, newStatus) {
   return false;
 }
 
+function hasFullRebootReadyFeedback(data) {
+  const unit = data?.unit || {};
+  const version = String(unit.fw || unit.version || '').trim();
+  const codec = String(unit.system_mode || unit.codec || '').trim();
+  const hasLinkSpeed = unit.linkspeed !== undefined && unit.linkspeed !== null;
+  return !!data?.ok && !!version && !!codec && hasLinkSpeed;
+}
+
+function updatePolledUnitDetails(row, unit, ip) {
+  if (!row || !row.cells || !unit) return;
+  const unitIp = ip || unit.ip || row.getAttribute('data-ip');
+  const setTextIfChanged = (index, value) => {
+    const cell = row.cells[index];
+    if (value === undefined || value === null) return;
+    const text = String(value ?? '').trim();
+    if (cell && cell.textContent.trim() !== text) {
+      cell.textContent = text;
+    }
+  };
+  const firstPresent = (...keys) => {
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(unit, key)) return unit[key];
+    }
+    return undefined;
+  };
+
+  const linkSpeed = unit.linkspeed;
+  if (linkSpeed !== undefined && linkSpeed !== null) {
+    const lsCell = row.querySelector('.linkspeed_cell') || row.cells[3];
+    if (lsCell) {
+      const speed = Number(linkSpeed);
+      const display = Number.isFinite(speed) ? speed : String(linkSpeed).trim();
+      const color = speed === 1000 ? '#4ade80' : '#f87171';
+      const lsHtml = `<span style="color:${color}">${display} Mbps</span>`;
+      if (lsCell.innerHTML !== lsHtml) lsCell.innerHTML = lsHtml;
+      if (unitIp) {
+        if (!unitStatusCache[unitIp]) unitStatusCache[unitIp] = {};
+        unitStatusCache[unitIp].linkspeedHtml = lsHtml;
+      }
+    }
+  }
+
+  setTextIfChanged(5, firstPresent('hostname'));
+  setTextIfChanged(6, firstPresent('timezone', 'active_timezone'));
+  setTextIfChanged(7, firstPresent('ntp_server', 'ntpserver'));
+  setTextIfChanged(10, firstPresent('fw', 'version'));
+}
+
 async function pollUnits() {
   console.log('[POLL] pollUnits executing...');
-  if (!pollingEnabled || !pollInterval || (pollToggle && !pollToggle.checked)) {
+  if (!pollingEnabled || (pollToggle && !pollToggle.checked)) {
     console.log('[POLL] Skipping poll; polling disabled');
     return;
   }
+  if (pollUnitsRunning) {
+    console.log('[POLL] Previous poll still running; skipping this cycle');
+    return;
+  }
+  pollUnitsRunning = true;
+  try {
   const tbody = $('#units_table');
   const trs = tbody ? tbody.querySelectorAll('tr') : [];
-  console.log('[POLL] Table tbody:', tbody, 'rows found:', trs.length);
-  for (let tr of trs) {
-    console.log('[POLL] Row:', tr.innerHTML.substring(0, 50));
-  }
+  console.log('[POLL] Rows found:', trs.length);
   const units = Array.from($$('#units_table tr')).map(row => ({
     ip: row.getAttribute('data-ip'),
     el: row
-  }));
+  })).sort((a, b) => {
+    const aRebooting = (a.el?.cells?.[12]?.textContent || '').trim().toLowerCase() === 'rebooting';
+    const bRebooting = (b.el?.cells?.[12]?.textContent || '').trim().toLowerCase() === 'rebooting';
+    return Number(bRebooting) - Number(aRebooting);
+  });
   console.log(`[POLL] Found ${units.length} rows in table`);
   
   for (const u of units) {
-    console.log(`[POLL] Processing unit - ip: ${u.ip}, has cells: ${!!u.el.cells}, cell[10]: ${u.el.cells?.[10]?.innerHTML}`);
+    console.log(`[POLL] Processing unit - ip: ${u.ip}, has cells: ${!!u.el.cells}, statusCell: ${u.el.cells?.[12]?.innerHTML}`);
     // Skip rows without IP or without a status cell
-    if (!u.ip || !u.el || !u.el.cells || !u.el.cells[11]) {
-      console.log(`[POLL] Skipping - missing ip(${!!u.ip}) el(${!!u.el}) cells(${!!u.el?.cells}) cell10(${!!u.el?.cells?.[10]})`);
+    if (!u.ip || !u.el || !u.el.cells || !u.el.cells[12]) {
+      console.log(`[POLL] Skipping - missing ip(${!!u.ip}) el(${!!u.el}) cells(${!!u.el?.cells}) statusCell(${!!u.el?.cells?.[12]})`);
       continue;
     }
-    const statusCell = u.el.cells[11];
+    const statusCell = u.el.cells[12];
     // Skip rows under active upgrade monitoring
-    if (statusCell?.dataset?.monitoring === '1') {
+    if (activeUpgradeIps.has(u.ip) || statusCell?.dataset?.monitoring === '1') {
+      if (activeUpgradeIps.has(u.ip)) statusCell.dataset.monitoring = '1';
       console.log(`[POLL] Skipping ${u.ip} due to active monitoring`);
       continue;
     }
-    // Do not override active uploads or held statuses
+    // Do not override active uploads or held statuses. Rebooting rows still poll
+    // so they can return to Idle as soon as the unit comes back.
     const holdUntil = Number(statusCell?.dataset?.holdUntil||0);
-    if (holdUntil && Date.now() < holdUntil) continue;
+    const statusText = (statusCell?.textContent || '').trim().toLowerCase();
+    if (holdUntil && Date.now() < holdUntil && statusText !== 'rebooting') continue;
     try {
-      if (!pollingEnabled || !pollInterval || (pollToggle && !pollToggle.checked)) {
+      if (!pollingEnabled || (pollToggle && !pollToggle.checked)) {
         console.log('[POLL] Poll disabled mid-loop; break');
         break;
       }
@@ -2047,18 +3288,32 @@ async function pollUnits() {
         body: JSON.stringify({ip: u.ip})
       });
       const data = await res.json();
-      if (!pollingEnabled || !pollInterval || (pollToggle && !pollToggle.checked)) {
+      if (!pollingEnabled || (pollToggle && !pollToggle.checked)) {
         console.log('[POLL] Poll disabled after response; skip update');
         break;
       }
       console.log(`[POLL] ${u.ip}: ok=${data.ok}, response:`, data);
       console.log(`[POLL] ${u.ip}: data.unit=`, data.unit, '| linkspeed=', data.unit ? data.unit.linkspeed : 'NO_UNIT');
+      if (data.unit) updatePolledUnitDetails(u.el, data.unit, u.ip);
       
       // Determine new status
       const newStatus = (data.ok && !data.aliveOnly) ? 'idle' : 'disconnected';
+      const rebootGraceUntil = Number(statusCell?.dataset?.rebootGraceUntil || 0);
+      if (newStatus === 'idle' && rebootGraceUntil && Date.now() < rebootGraceUntil && !hasFullRebootReadyFeedback(data)) {
+        console.log(`[POLL] ${u.ip} partial response during reboot grace; keeping Rebooting`);
+        continue;
+      }
+      if (newStatus === 'disconnected' && rebootGraceUntil && Date.now() < rebootGraceUntil) {
+        console.log(`[POLL] ${u.ip} disconnected during reboot grace; keeping current status`);
+        continue;
+      }
+      if (newStatus === 'disconnected' && rebootGraceUntil && Date.now() >= rebootGraceUntil) {
+        delete statusCell.dataset.rebootGraceUntil;
+      }
       
-      // Check if this status is stable (consistent across polls)
-      if (!isPollResultStable(u.ip, newStatus)) {
+      // Positive responses are authoritative enough to clear reboot/disconnect
+      // immediately. Only debounce disconnected so brief reboot gaps do not flicker.
+      if (newStatus !== 'idle' && !isPollResultStable(u.ip, newStatus)) {
         console.log(`[POLL] ${u.ip} status=${newStatus} not stable yet, waiting for confirmation`);
         // Still update linkspeed even during stability wait — it's not a volatile field
         try {
@@ -2080,7 +3335,10 @@ async function pollUnits() {
       // Status is stable, update UI
       if (newStatus === 'idle') {
         console.log(`[POLL] ${u.ip} is IDLE (stable)`);
+        delete pollResultHistory[u.ip];
         statusCell.innerHTML = '<span class="status s-idle">Idle</span>';
+        delete statusCell.dataset.holdUntil;
+        delete statusCell.dataset.rebootGraceUntil;
         // Cache status
         unitStatusCache[u.ip] = {
           status: 'Idle',
@@ -2121,6 +3379,23 @@ async function pollUnits() {
             console.log(`[POLL][LS] ${u.ip} skipped — ls=${ls}, lsCell=${lsCell}`);
           }
         }catch(e){ console.warn('[POLL][LS] update error:', e); }
+        try {
+          const codecCell = u.el.querySelector('.codec_cell');
+          const unit = data.unit || {};
+          const codecSelect = codecCell ? codecCell.querySelector('.codec-select') : null;
+          if (codecCell && unit.system_mode && !isCodecSelectGuarded(codecSelect)) {
+            codecCell.innerHTML = buildCodecCell(unit);
+            updateDeviceCodecMismatchWarning(getDeviceCodecModesFromTable());
+          }
+        } catch(e) { console.warn('[POLL][CODEC] update error:', e); }
+        try {
+          const unit = data.unit || {};
+          const version = String(unit.fw || unit.version || '').trim();
+          const versionCell = u.el.cells && u.el.cells[10];
+          if (versionCell && version && versionCell.textContent.trim() !== version) {
+            versionCell.textContent = version;
+          }
+        } catch(e) { console.warn('[POLL][VERSION] update error:', e); }
       } else {
         console.log(`[POLL] ${u.ip} is DISCONNECTED (stable)`);
         statusCell.innerHTML = '<span class="status s-error">Disconnected</span>';
@@ -2165,6 +3440,9 @@ async function pollUnits() {
       }catch(err){}
       saveStatusCache();
     }
+  }
+  } finally {
+    pollUnitsRunning = false;
   }
 }
 
@@ -2402,6 +3680,115 @@ function hideHoverPreview() {
   }
 }
 
+const lldpInfoCache = new Map();
+let lldpHoverToken = 0;
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function normalizeLldpNeighbors(lldp) {
+  const interfaces = lldp?.neighbors?.interface || {};
+  const rows = [];
+  Object.entries(interfaces).forEach(([iface, info]) => {
+    const chassisMap = info?.chassis || {};
+    const chassisName = Object.keys(chassisMap)[0] || '';
+    const chassis = chassisMap[chassisName] || {};
+    const enabledCaps = Array.isArray(chassis.capability)
+      ? chassis.capability.filter(cap => cap?.enabled).map(cap => cap?.type).filter(Boolean).join(', ')
+      : '';
+    rows.push({
+      interfaceName: iface,
+      via: info?.via || '',
+      age: info?.age || '',
+      rid: info?.rid || '',
+      chassisName,
+      chassisId: chassis?.id?.value || '',
+      chassisIdType: chassis?.id?.type || '',
+      managementIp: chassis?.['mgmt-ip'] || '',
+      capability: enabledCaps,
+      description: chassis?.descr || '',
+      portId: info?.port?.id?.value || '',
+      portIdType: info?.port?.id?.type || '',
+      portDescription: info?.port?.descr || '',
+      ttl: info?.port?.ttl || '',
+    });
+  });
+  return rows;
+}
+
+function renderLldpPopup(ip, lldp) {
+  const rows = normalizeLldpNeighbors(lldp);
+  if (!rows.length) {
+    return `<h4>LLDP ${escapeHtml(ip)}</h4><div class="small">No LLDP neighbors reported.</div>`;
+  }
+  return `<h4>LLDP ${escapeHtml(ip)}</h4>` + rows.map(row => `
+    <div class="lldp-grid">
+      <div class="lldp-label">Interface</div><div class="lldp-value">${escapeHtml(row.interfaceName)}</div>
+      <div class="lldp-label">Switch</div><div class="lldp-value">${escapeHtml(row.chassisName)}</div>
+      <div class="lldp-label">Mgmt IP</div><div class="lldp-value">${escapeHtml(row.managementIp)}</div>
+      <div class="lldp-label">Chassis ID</div><div class="lldp-value">${escapeHtml(row.chassisId)} ${row.chassisIdType ? `(${escapeHtml(row.chassisIdType)})` : ''}</div>
+      <div class="lldp-label">Port</div><div class="lldp-value">${escapeHtml(row.portDescription || row.portId)}${row.portId && row.portDescription ? ` (${escapeHtml(row.portId)})` : ''}</div>
+      <div class="lldp-label">TTL / Age</div><div class="lldp-value">${escapeHtml(row.ttl)}${row.age ? ` / ${escapeHtml(row.age)}` : ''}</div>
+      <div class="lldp-label">Via</div><div class="lldp-value">${escapeHtml(row.via)}</div>
+      <div class="lldp-label">Capabilities</div><div class="lldp-value">${escapeHtml(row.capability)}</div>
+      <div class="lldp-label">Description</div><div class="lldp-value">${escapeHtml(row.description)}</div>
+    </div>
+  `).join('');
+}
+
+function positionLldpPopup(el) {
+  const popup = document.getElementById('lldp_popup');
+  if (!popup) return;
+  const rect = el.getBoundingClientRect();
+  const left = Math.min(window.innerWidth - popup.offsetWidth - 12, rect.right + 12);
+  popup.style.left = Math.max(12, left) + 'px';
+  popup.style.right = 'auto';
+  popup.style.top = Math.max(12, Math.min(window.innerHeight - popup.offsetHeight - 12, rect.top - 20)) + 'px';
+}
+
+async function showLldpPopup(el, evt) {
+  const ip = el.getAttribute('data-ip');
+  if (!ip) return;
+  const popup = document.getElementById('lldp_popup');
+  if (!popup) return;
+  const token = ++lldpHoverToken;
+  popup.innerHTML = `<h4>LLDP ${escapeHtml(ip)}</h4><div class="small">Loading...</div>`;
+  popup.style.display = 'block';
+  positionLldpPopup(el);
+
+  try {
+    if (!lldpInfoCache.has(ip)) {
+      const res = await fetch('/api/lldp', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ip})
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'LLDP lookup failed');
+      lldpInfoCache.set(ip, data.lldp || {});
+    }
+    if (token !== lldpHoverToken) return;
+    popup.innerHTML = renderLldpPopup(ip, lldpInfoCache.get(ip));
+    positionLldpPopup(el);
+  } catch (err) {
+    if (token !== lldpHoverToken) return;
+    popup.innerHTML = `<h4>LLDP ${escapeHtml(ip)}</h4><div class="small">${escapeHtml(err.message || err)}</div>`;
+    positionLldpPopup(el);
+  }
+}
+
+function hideLldpPopup() {
+  lldpHoverToken++;
+  const popup = document.getElementById('lldp_popup');
+  if (popup) popup.style.display = 'none';
+}
+
 function openPreviewWindow(url) {
   const width = 480;
   const height = 400;
@@ -2424,9 +3811,12 @@ function openPreviewWindow(url) {
   const elapsed = performance.now() - start;
   console.log(`[INIT] Data loading complete in ${elapsed.toFixed(0)}ms`);
   initTheme();
+  initDensity();
   initConfig();
   initPasswordSync();
   initSetNtp();
+  initSlateManager();
+  initInventoryExtraToggle();
   console.log('[INIT] About to call initPolling...');
   initPolling();
   console.log('[INIT] initPolling called');
@@ -2438,8 +3828,28 @@ function openPreviewWindow(url) {
     const ip = btn.getAttribute('data-ip');
     if (ip) blink(btn, ip);
   });
+  document.addEventListener('change', (e) => {
+    const select = e.target.closest('.codec-select');
+    if (select) handleCodecSelectChange(select);
+  });
+  document.addEventListener('focusin', (e) => {
+    const select = e.target.closest('.codec-select');
+    if (select) activeCodecSelectIp = select.getAttribute('data-ip') || '';
+  });
+  document.addEventListener('pointerdown', (e) => {
+    const select = e.target.closest('.codec-select');
+    if (select) activeCodecSelectIp = select.getAttribute('data-ip') || '';
+  });
+  document.addEventListener('focusout', (e) => {
+    const select = e.target.closest('.codec-select');
+    if (!select) return;
+    const ip = select.getAttribute('data-ip') || '';
+    setTimeout(() => {
+      if (activeCodecSelectIp === ip && document.activeElement !== select) activeCodecSelectIp = '';
+    }, 250);
+  });
 })();
 </script>
-<div class="version-footer">OmniSuite Version V0.9.1.1</div>
+<div class="version-footer">OmniSuite Version V1.0.1</div>
 </body>
 </html>

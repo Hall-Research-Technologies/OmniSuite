@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Omni Configure</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="icon" href="/ui/favicon.ico"/>
+  <link rel="stylesheet" href="/ui/matrix/matrix.css"/>
+  <style>
+    .tabs{display:flex;gap:0;}
+    .tab{padding:8px 16px;cursor:pointer;background:transparent;color:var(--muted);border:none;font-size:14px;font-weight:500;border-bottom:2px solid transparent;transition:all .16s;text-decoration:none;border-radius:6px 6px 0 0}
+    .tab:hover{color:var(--fg);background:rgba(30,144,255,.08)}
+    .tab.active{color:var(--accent);background:rgba(30,144,255,.08)}
+    .matrix-loading-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:50000;}
+    .matrix-loading-overlay.hidden{display:none!important;}
+    .matrix-loading-message{color:var(--text);text-align:center;padding:40px;font-size:18px;}
+    .matrix-loading-spinner{width:40px;height:40px;border:4px solid rgba(255,255,255,0.2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 20px;}
+    @keyframes spin{to{transform:rotate(360deg)}}
+  </style>
+  <script>
+    (function(){
+      const dark = localStorage.getItem('dark') !== 'false';
+      const compact = localStorage.getItem('viewDensity') === 'compact';
+      const apply = ()=>{
+        const target = document.body || document.documentElement;
+        if(!target) return;
+        target.classList.toggle('light', !dark);
+        target.classList.toggle('compact', compact);
+      };
+      if (document.body) apply();
+      else document.addEventListener('DOMContentLoaded', apply, {once:true});
+    })();
+  </script>
+</head>
+<body>
+  <div class="header">
+    <div class="left">
+      <img src="/ui/companylogo.png" alt="Company Logo" class="logo">
+      <h1>OmniSuite Configure</h1>
+    </div>
+    <div class="controls">
+      <div class="tabs">
+        <a href="/" class="tab">Device Info</a>
+        <a href="/matrix/configure" class="tab active">Configure</a>
+        <a href="/matrix" class="tab">A/V Matrix</a>
+        <a href="/matrix/usb" class="tab">USB Matrix</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="top">
+    <div class="row">
+      <button id="refreshBtn">Refresh</button>
+      <button id="reloadCacheBtn" style="margin-left:8px;">Reload Cache</button>
+      <div class="divider"></div>
+      <label for="configureFilterInput"><b>Filter Devices:</b></label>
+      <input type="text" id="configureFilterInput" placeholder="Type to filter encoders and decoders..." style="min-width:260px;width:260px;">
+      <button id="configureFilterClearBtn" type="button">Clear</button>
+    </div>
+  </div>
+
+  <div class="configure-area">
+    <div class="configure-section" id="encoders-section">
+      <div class="header">
+        <h3>Encoders</h3>
+        <div class="section-filter-controls">
+          <label class="toggle matrix-section-filter" data-section-group="encUnitInfo" data-section-label="Unit Information">
+            <input type="checkbox" class="section-filter-checkbox" data-section-group="encUnitInfo" style="display:none;">
+            <span class="label">Unit Information</span>
+            <span class="switch"><span class="knob"></span></span>
+          </label>
+          <label class="toggle matrix-section-filter" data-section-group="encInput" data-section-label="Input">
+            <input type="checkbox" class="section-filter-checkbox" data-section-group="encInput" style="display:none;">
+            <span class="label">Input</span>
+            <span class="switch"><span class="knob"></span></span>
+          </label>
+          <label class="toggle matrix-section-filter" data-section-group="encOutput" data-section-label="Session">
+            <input type="checkbox" class="section-filter-checkbox" data-section-group="encOutput" style="display:none;">
+            <span class="label">Session</span>
+            <span class="switch"><span class="knob"></span></span>
+          </label>
+          <label class="toggle matrix-section-filter" data-section-group="encEncoding" data-section-label="Encoding">
+            <input type="checkbox" class="section-filter-checkbox" data-section-group="encEncoding" style="display:none;">
+            <span class="label">Encoding</span>
+            <span class="switch"><span class="knob"></span></span>
+          </label>
+          <label class="toggle matrix-section-filter" data-section-group="encConfiguration" data-section-label="Configuration">
+            <input type="checkbox" class="section-filter-checkbox" data-section-group="encConfiguration" style="display:none;">
+            <span class="label">Configuration</span>
+            <span class="switch"><span class="knob"></span></span>
+          </label>
+          <button id="encBulkConfigExportBtn" type="button" title="Download config backup for all encoders">Export Encoder Configs</button>
+        </div>
+      </div>
+      <div class="tbl-wrap"><table id="encTbl" class="grid" aria-label="Encoders table"></table></div>
+    </div>
+
+    <div class="configure-section" id="decoders-section">
+      <div class="header">
+        <h3>Decoders</h3>
+        <div class="section-filter-controls">
+          <label class="toggle matrix-section-filter" data-section-group="decUnitInfo" data-section-label="Unit Information">
+            <input type="checkbox" class="section-filter-checkbox" data-section-group="decUnitInfo" style="display:none;">
+            <span class="label">Unit Information</span>
+            <span class="switch"><span class="knob"></span></span>
+          </label>
+          <label class="toggle matrix-section-filter" data-section-group="decOutput" data-section-label="Output">
+            <input type="checkbox" class="section-filter-checkbox" data-section-group="decOutput" style="display:none;">
+            <span class="label">Output</span>
+            <span class="switch"><span class="knob"></span></span>
+          </label>
+          <label class="toggle matrix-section-filter" data-section-group="decResolution" data-section-label="Resolution">
+            <input type="checkbox" class="section-filter-checkbox" data-section-group="decResolution" style="display:none;">
+            <span class="label">Resolution</span>
+            <span class="switch"><span class="knob"></span></span>
+          </label>
+          <label class="toggle matrix-section-filter" data-section-group="decFastSwitching" data-section-label="Fast Switching">
+            <input type="checkbox" class="section-filter-checkbox" data-section-group="decFastSwitching" style="display:none;">
+            <span class="label">Fast Switching</span>
+            <span class="switch"><span class="knob"></span></span>
+          </label>
+          <label class="toggle matrix-section-filter" data-section-group="decVideoWall" data-section-label="Video Wall">
+            <input type="checkbox" class="section-filter-checkbox" data-section-group="decVideoWall" style="display:none;">
+            <span class="label">Video Wall</span>
+            <span class="switch"><span class="knob"></span></span>
+          </label>
+          <label class="toggle matrix-section-filter" data-section-group="decConfiguration" data-section-label="Configuration">
+            <input type="checkbox" class="section-filter-checkbox" data-section-group="decConfiguration" style="display:none;">
+            <span class="label">Configuration</span>
+            <span class="switch"><span class="knob"></span></span>
+          </label>
+          <button id="decBulkConfigExportBtn" type="button" title="Download config backup for all decoders">Export Decoder Configs</button>
+        </div>
+      </div>
+      <div class="tbl-wrap"><table id="decTbl" class="grid" aria-label="Decoders table"></table></div>
+    </div>
+  </div>
+
+  <div id="matrix_loading_overlay" class="matrix-loading-overlay hidden">
+    <div class="matrix-loading-message">
+      <div class="matrix-loading-spinner"></div>
+      <div>Please wait while we build the device list...</div>
+    </div>
+  </div>
+
+  <script src="/ui/matrix/matrix.js?v=20260730-configure"></script>
+</body>
+</html>

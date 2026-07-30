@@ -37,34 +37,32 @@ function initStickyHeaders(){
 
 // ===== Theme Toggle =====
 function initTheme(){
-  const darkSwitch = document.getElementById('dark_switch');
-  const darkToggle = document.getElementById('dark_mode_toggle');
-
   const applyTheme = (isDark)=>{
     document.body.classList.toggle('light', !isDark);
-    if(darkSwitch) darkSwitch.classList.toggle('on', isDark);
-    if(darkToggle) darkToggle.checked = isDark;
   };
 
   applyTheme(localStorage.getItem('dark') !== 'false');
-
-  const label = document.getElementById('header_dark_label');
-  if(label){
-    const toggle = ()=>{
-      const nowDark = !document.body.classList.contains('light');
-      const nextDark = !nowDark;
-      applyTheme(nextDark);
-      localStorage.setItem('dark', nextDark.toString());
-    };
-    label.addEventListener('click', (e)=>{ e.preventDefault(); toggle(); });
-    if(darkToggle) darkToggle.addEventListener('change', ()=> toggle());
-    if(darkSwitch) darkSwitch.addEventListener('click', (e)=>{ e.preventDefault(); toggle(); });
-  }
 
   // Sync with other tabs/pages
   window.addEventListener('storage', (e)=>{
     if(e.key === 'dark'){
       applyTheme(e.newValue !== 'false');
+    }
+  });
+}
+
+// ===== View Density =====
+function initDensity(){
+  const applyDensity = (density)=>{
+    document.body.classList.toggle('compact', density === 'compact');
+  };
+
+  applyDensity(localStorage.getItem('viewDensity') || 'comfortable');
+
+  // Sync with other tabs/pages
+  window.addEventListener('storage', (e)=>{
+    if(e.key === 'viewDensity'){
+      applyDensity(e.newValue || 'comfortable');
     }
   });
 }
@@ -78,7 +76,15 @@ async function getJSON(u){
 async function postJSON(u, body){
   const r = await fetch(u, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   const t = await r.text();
-  if(!r.ok) throw new Error(t||r.statusText);
+  if(!r.ok){
+    try {
+      const data = JSON.parse(t);
+      throw new Error(data.error || data.message || t || r.statusText);
+    } catch(parseErr) {
+      if(parseErr instanceof SyntaxError) throw new Error(t || r.statusText);
+      throw parseErr;
+    }
+  }
   try { return JSON.parse(t);} catch { return {ok:false, error:t}; }
 }
 
@@ -102,6 +108,113 @@ function sortByIpAsc(arr){ return [...arr].sort((a,b)=>ipNum(a.ip)-ipNum(b.ip));
 
 let lastState = null;
 let isFirstSession = true;
+const usbActionQueues = new Map();
+const usbActionLatest = new Map();
+
+function enqueueUsbAction(rex, action){
+  const token = Symbol(`${rex}:${action.label || 'usb'}`);
+  usbActionLatest.set(rex, token);
+  const prior = usbActionQueues.get(rex) || Promise.resolve();
+  const run = prior.catch(()=>{}).then(async ()=>{
+    if(usbActionLatest.get(rex) !== token) return {ok:true, skipped:true};
+    try {
+      const res = await action.run();
+      if(usbActionLatest.get(rex) !== token) return {ok:true, skipped:true};
+      usbActionLatest.delete(rex);
+      return res;
+    } catch(err) {
+      if(usbActionLatest.get(rex) === token) usbActionLatest.delete(rex);
+      throw err;
+    }
+  }).finally(()=>{
+    if(usbActionQueues.get(rex) === run) usbActionQueues.delete(rex);
+  });
+  usbActionQueues.set(rex, run);
+  return run;
+}
+
+function ensureUsbPairing(rex){
+  if(!lastState) return null;
+  if(!lastState.pairings) lastState.pairings = {};
+  if(!lastState.pairings[rex]) lastState.pairings[rex] = {active: null, available: []};
+  if(!Array.isArray(lastState.pairings[rex].available)) lastState.pairings[rex].available = [];
+  return lastState.pairings[rex];
+}
+
+function applyOptimisticUsbPair(rex, lex){
+  const pairing = ensureUsbPairing(rex);
+  if(!pairing) return;
+  pairing.active = null;
+  pairing.available = [lex];
+  render(lastState);
+}
+
+function applyOptimisticUsbUnpair(rex, lex){
+  const pairing = ensureUsbPairing(rex);
+  if(!pairing) return;
+  if(pairing.active === lex) pairing.active = null;
+  pairing.available = (pairing.available || []).filter(ip => ip !== lex);
+  render(lastState);
+}
+
+function scheduleUsbVerifyRefresh(){
+  setTimeout(()=>{ refresh().catch(()=>{}); }, 700);
+  setTimeout(()=>{ refresh().catch(()=>{}); }, 2500);
+}
+
+function subnet24(ip){
+  const m = String(ip || '').trim().match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if(!m) return '';
+  return `${m[1]}.${m[2]}.${m[3]}`;
+}
+
+function isDifferentSubnet(rexIp, lexIp){
+  const rexSubnet = subnet24(rexIp);
+  const lexSubnet = subnet24(lexIp);
+  return !!rexSubnet && !!lexSubnet && rexSubnet !== lexSubnet;
+}
+
+function showUsbSubnetWarning(rexIp, lexIp){
+  return new Promise(resolve=>{
+    const existing = document.querySelector('.usb-confirm-backdrop');
+    if(existing) existing.remove();
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'usb-confirm-backdrop';
+    backdrop.innerHTML = `
+      <div class="usb-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="usb_subnet_title">
+        <h2 id="usb_subnet_title">USB Subnet Warning</h2>
+        <p>These units are on different control subnets. The web control path may be reachable across Layer 3, but USB pairing is a Layer 2 relationship and may not pass between subnets.</p>
+        <div class="usb-confirm-summary">
+          <div><span>REX</span><strong>${rexIp}</strong></div>
+          <div><span>LEX</span><strong>${lexIp}</strong></div>
+        </div>
+        <div class="usb-confirm-actions">
+          <button type="button" class="usb-confirm-cancel">Cancel</button>
+          <button type="button" class="usb-confirm-continue">Pair Anyway</button>
+        </div>
+      </div>`;
+
+    const onKey = (evt)=>{
+      if(evt.key === 'Escape'){
+        close(false);
+      }
+    };
+    const close = (value)=>{
+      document.removeEventListener('keydown', onKey);
+      backdrop.remove();
+      resolve(value);
+    };
+    backdrop.querySelector('.usb-confirm-cancel').addEventListener('click', ()=>close(false));
+    backdrop.querySelector('.usb-confirm-continue').addEventListener('click', ()=>close(true));
+    backdrop.addEventListener('click', evt=>{
+      if(evt.target === backdrop) close(false);
+    });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(backdrop);
+    backdrop.querySelector('.usb-confirm-cancel').focus();
+  });
+}
 
 async function refresh(){
   // Show loading overlay only on first session
@@ -182,32 +295,55 @@ function render(s){
       const lex = cell.getAttribute('data-lex');
       const isPaired = cell.getAttribute('data-paired') === 'true';
       const isActive = cell.getAttribute('data-active') === 'true';
+      const rexPairing = pairings[rex] || {active: null, available: []};
+      const existingLex = rexPairing.active || (rexPairing.available || [])[0] || '';
+      const hasExistingPair = !!existingLex;
       
       console.log(`Clicked cell: REX=${rex}, LEX=${lex}, isPaired=${isPaired}, isActive=${isActive}`);
       
       try {
         let res;
-        // If this cell is the currently active pairing, unpair it (clear route)
-        if(isActive){
-          console.log('Unpairing active route');
-          res = await postJSON('/api/usb_unpair', {rex, lex});
+        // Clicking any paired bubble unpairs that REX/LEX relationship.
+        if(isPaired){
+          console.log('Unpairing paired route');
+          res = await enqueueUsbAction(rex, {
+            label: `unpair:${lex}`,
+            run: () => postJSON('/api/usb_unpair', {rex, lex})
+          });
+          if(res.skipped) return;
           console.log('Unpair response:', res);
           if(!res.ok) throw new Error(res.error || 'Unpair failed');
-          toast('Route cleared', true);
+          applyOptimisticUsbUnpair(rex, lex);
+          toast('Pairing cleared', true);
         } else {
-          // Otherwise, pair this LEX to REX (exclusive mode will replace any existing pairing)
-          console.log('Pairing new route (will replace existing if any)');
-          res = await postJSON('/api/usb_pair', {rex, lex, makeActive: false});
+          console.log('Pairing new route');
+          if(isDifferentSubnet(rex, lex)){
+            const proceed = await showUsbSubnetWarning(rex, lex);
+            if(!proceed){
+              toast('Pairing cancelled');
+              return;
+            }
+          }
+          res = await enqueueUsbAction(rex, {
+            label: `pair:${lex}`,
+            run: () => postJSON('/api/usb_pair', {
+              rex,
+              lex,
+              makeActive: false,
+              replaceExisting: hasExistingPair
+            })
+          });
+          if(res.skipped) return;
           console.log('Pair response:', res);
           if(!res.ok) throw new Error(res.error || 'Pair failed');
-          toast('Route set', true);
+          applyOptimisticUsbPair(rex, lex);
+          toast(hasExistingPair ? `Pairing moved from ${existingLex}` : 'Pairing set', true);
         }
         
-        // Device needs 3-4 seconds to apply pairing configuration
-        setTimeout(()=>{ refresh().catch(()=>{}); }, 4000);
-      } catch(err){ 
+        scheduleUsbVerifyRefresh();
+      } catch(err){
         console.error('Pairing error:', err);
-        alert('Pairing error: '+err.message); 
+        toast('Pairing error: '+err.message);
       }
       e.stopPropagation();
     });
@@ -328,6 +464,7 @@ qs('#refreshBtn').onclick = async ()=>{
 
 initStickyHeaders();
 initTheme();
+initDensity();
 refresh();
 
 // Collapsible sections

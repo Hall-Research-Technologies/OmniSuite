@@ -15,6 +15,7 @@ import ipaddress
 import json
 import platform
 import socket
+import ssl
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -178,13 +179,16 @@ class WSClient:
         self.debug = debug
 
     def _ws_url(self, ip: str) -> str:
-        netloc = ip if self.ws_port == 80 else f"{ip}:{self.ws_port}"
-        return f"ws://{netloc}{self.ws_path}"
+        secure = self.ws_port in (443, 8443)
+        scheme = "wss" if secure else "ws"
+        netloc = ip if self.ws_port in (80, 443) else f"{ip}:{self.ws_port}"
+        return f"{scheme}://{netloc}{self.ws_path}"
 
     def call(self, ip: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         body = {"id": payload.get("id", "x"), "username": self.username, "password": self.password, **payload}
         url = self._ws_url(ip)
-        ws = create_connection(url, timeout=self.timeout, enable_multithread=True)
+        sslopt = {"cert_reqs": ssl.CERT_NONE, "check_hostname": False} if url.startswith("wss://") else None
+        ws = create_connection(url, timeout=self.timeout, enable_multithread=True, sslopt=sslopt)
         try:
             ws.send(json.dumps(body))
             raw = ws.recv()

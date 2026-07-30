@@ -22,10 +22,12 @@
     // Apply theme early to avoid flash; guard if body not ready yet
     (function(){
       const dark = localStorage.getItem('dark') !== 'false';
+      const compact = localStorage.getItem('viewDensity') === 'compact';
       const apply = ()=>{
         const target = document.body || document.documentElement;
         if(!target) return;
         target.classList.toggle('light', !dark);
+        target.classList.toggle('compact', compact);
       };
       if (document.body) {
         apply();
@@ -45,15 +47,11 @@
     </div>
     <div class="controls">
       <div class="tabs">
-        <a href="/" class="tab">Device Manager</a>
+        <a href="/" class="tab">Device Info</a>
+        <a href="/matrix/configure" class="tab">Configure</a>
         <a href="/matrix" class="tab active">A/V Matrix</a>
         <a href="/matrix/usb" class="tab">USB Matrix</a>
       </div>
-      <label class="toggle" id="header_dark_label">
-        <input type="checkbox" id="dark_mode_toggle" style="display:none;" />
-        <div class="label">Dark Mode</div>
-        <div id="dark_switch" class="switch on"><div class="knob"></div></div>
-      </label>
     </div>
   </div>
 
@@ -91,7 +89,7 @@
     <div class="matrix-wrap">
       <table id="matrix" class="matrix" aria-label="Routing matrix"></table>
     </div>
-    <div style="display:flex;gap:24px;margin:18px 0 8px 0;align-items:center;">
+    <div class="matrix-filter-row">
       <div>
         <label for="encFilterInput"><b>Filter Encoders:</b></label>
         <input type="text" id="encFilterInput" placeholder="Type to filter encoders..." style="margin-left:8px;min-width:110px;width:110px;">
@@ -105,30 +103,6 @@
     </div>
   </div>
 
-  <div class="collapsible" id="encoders-section">
-    <div class="header">
-      <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <polyline points="6 9 12 15 18 9"></polyline>
-      </svg>
-      <h3 style="margin:0;">Encoders</h3>
-    </div>
-    <div class="body">
-      <div class="tbl-wrap"><table id="encTbl" class="grid" aria-label="Encoders table"></table></div>
-    </div>
-  </div>
-
-  <div class="collapsible" id="decoders-section">
-    <div class="header">
-      <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <polyline points="6 9 12 15 18 9"></polyline>
-      </svg>
-      <h3 style="margin:0;">Decoders</h3>
-    </div>
-    <div class="body">
-      <div class="tbl-wrap"><table id="decTbl" class="grid" aria-label="Decoders table"></table></div>
-    </div>
-  </div>
-
   <!-- Loading Overlay -->
   <div id="matrix_loading_overlay" class="matrix-loading-overlay hidden">
     <div class="matrix-loading-message">
@@ -137,5 +111,5 @@
     </div>
   </div>
 
-  <script src="/ui/matrix/matrix.js"></script>
+  <script src="/ui/matrix/matrix.js?v=20260730-configure"></script>
 </body>

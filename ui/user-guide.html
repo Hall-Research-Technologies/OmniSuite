@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>OmniSuite User Guide</title>
+  <link rel="icon" href="/ui/favicon.ico"/>
+  <style>
+    :root{--bg:#1d232a;--card:#222a33;--panel:#262f39;--text:#e9eef5;--muted:#9aa7b4;--accent:#1e90ff;--border:rgba(255,255,255,.1);--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
+    .light{--bg:#f7f8fb;--card:#fff;--panel:#f2f5f8;--text:#0d1117;--muted:#5a6b7a;--border:rgba(0,0,0,.1)}
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif;font-size:15px;line-height:1.48}
+    a{color:#93c5fd}
+    code{background:var(--panel);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+    .page{max-width:1120px;margin:0 auto;padding:22px 22px 56px}
+    .header{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid var(--border);padding-bottom:14px;margin-bottom:18px}
+    .brand{display:flex;align-items:center;gap:12px}
+    .brand img{height:44px;border-radius:6px}
+    h1{margin:0;font-size:26px}
+    h2{margin:28px 0 10px;font-size:20px}
+    h3{margin:18px 0 8px;font-size:16px}
+    p{margin:8px 0;color:var(--text)}
+    .muted{color:var(--muted)}
+    .toc{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin:18px 0}
+    .toc a{display:block;border:1px solid var(--border);background:var(--card);border-radius:8px;padding:10px 12px;text-decoration:none;color:var(--text)}
+    .toc a:hover{border-color:rgba(30,144,255,.5)}
+    section{border:1px solid var(--border);background:var(--card);border-radius:10px;padding:16px 18px;margin:14px 0}
+    ul,ol{margin:8px 0 8px 22px;padding:0}
+    li{margin:5px 0}
+    table{width:100%;border-collapse:collapse;margin:10px 0;background:var(--panel)}
+    th,td{border:1px solid var(--border);padding:7px 9px;text-align:left;vertical-align:top}
+    th{background:rgba(30,144,255,.12)}
+    .note,.warn,.danger{border-radius:8px;padding:10px 12px;margin:12px 0}
+    .note{border:1px solid rgba(30,144,255,.35);background:rgba(30,144,255,.1)}
+    .warn{border:1px solid rgba(217,119,6,.45);background:rgba(217,119,6,.12)}
+    .danger{border:1px solid rgba(220,38,38,.45);background:rgba(220,38,38,.12)}
+    .pill{display:inline-block;border-radius:999px;padding:1px 8px;font-size:12px;font-weight:600}
+    .good{background:#14532d;color:#bbf7d0}
+    .bad{background:#7f1d1d;color:#fecaca}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+    .mini{border:1px solid var(--border);background:var(--panel);border-radius:8px;padding:12px}
+    .mini h3{margin-top:0}
+    .actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .btn{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:8px;background:var(--accent);color:white;padding:7px 11px;text-decoration:none;cursor:pointer}
+    .btn.secondary{background:var(--panel);color:var(--text)}
+    @media print{body{background:white;color:#111}.page{max-width:none;padding:0}.header,.toc .btn{display:none}section{break-inside:avoid;border-color:#ccc}.toc a,section,.mini{background:white;color:#111}a{color:#0645ad}}
+  </style>
+  <script>
+    (function(){
+      const dark = localStorage.getItem('dark') !== 'false';
+      const compact = localStorage.getItem('viewDensity') === 'compact';
+      const apply = () => {
+        const target = document.body || document.documentElement;
+        if (!target) return;
+        target.classList.toggle('light', !dark);
+        target.classList.toggle('compact', compact);
+      };
+      if (document.body) apply();
+      else document.addEventListener('DOMContentLoaded', apply, {once:true});
+    })();
+  </script>
+</head>
+<body>
+  <div class="page">
+    <div class="header">
+      <div class="brand">
+        <img src="/ui/companylogo.png" alt="Company Logo"/>
+        <div>
+          <h1>OmniSuite User Guide</h1>
+          <div class="muted">Configuration, discovery, firmware, routing, device setup, USB, and slate workflow</div>
+        </div>
+      </div>
+      <div class="actions">
+        <a class="btn secondary" href="/">Device Info</a>
+        <a class="btn secondary" href="/matrix/configure">Configure</a>
+        <a class="btn secondary" href="/matrix">A/V Matrix</a>
+        <a class="btn secondary" href="/matrix/usb">USB Matrix</a>
+        <button class="btn" onclick="window.print()">Print</button>
+      </div>
+    </div>
+
+    <div class="toc">
+      <a href="#configuration">1. Configuration Popup</a>
+      <a href="#launch-files">2. Files Created on Launch</a>
+      <a href="#scan">3. Scanning Units</a>
+      <a href="#device-info">4. Device Info Page</a>
+      <a href="#configure">5. Configure Page</a>
+      <a href="#av-matrix">6. A/V Matrix Page</a>
+      <a href="#usb-matrix">7. USB Matrix Page</a>
+      <a href="#popups">8. Configuration Popups</a>
+      <a href="#gotchas">9. Gotchas and Field Rules</a>
+    </div>
+
+    <section id="configuration">
+      <h2>1. Configuration Popup</h2>
+      <p>Open Configuration with the gear button on the Device Info page. This is the first place to check before scanning or sending writes.</p>
+      <table>
+        <tr><th>Setting</th><th>Purpose</th><th>Notes</th></tr>
+        <tr><td>Version</td><td>Shows the running OmniSuite version.</td><td>Read only. This is pulled from the app build/runtime version.</td></tr>
+        <tr><td>Theme</td><td>Switches the UI between Dark and Light.</td><td>Stored locally in the browser.</td></tr>
+        <tr><td>View</td><td>Switches between Comfortable and Compact spacing.</td><td>Compact is intended for laptops or larger systems where more columns need to fit.</td></tr>
+        <tr><td>Username</td><td>Device login username.</td><td>Most Omni units use <code>admin</code>.</td></tr>
+        <tr><td>Password</td><td>Primary device password.</td><td>The eye button reveals the stored value.</td></tr>
+        <tr><td>Fallback Password</td><td>Secondary password tried when the primary password fails.</td><td>Useful while normalizing mixed fleets.</td></tr>
+        <tr><td>WS Port</td><td>Selects HTTP/WebSocket or HTTPS/Secure WebSocket.</td><td>Use <code>80 (ws/http)</code> for normal Omni units. Use <code>443 (wss/https)</code> only when the unit's secure API path is working for the target action.</td></tr>
+        <tr><td>Timeout</td><td>Per-request device timeout in seconds.</td><td>Increase on slow networks. Too low can make reachable units appear failed.</td></tr>
+        <tr><td>Concurrency</td><td>Number of simultaneous scan/upgrade operations.</td><td>Higher is faster, but can make busy networks or units respond unevenly.</td></tr>
+        <tr><td>Firmware Path</td><td>Folder scanned for firmware files.</td><td>The folder button opens a browser for choosing the path.</td></tr>
+        <tr><td>TS Dump</td><td>Downloads a timestamped troubleshooting JSON file.</td><td>The dump contains current collected settings and status only. Passwords are masked, and option lists/raw detail blocks are omitted.</td></tr>
+      </table>
+      <div class="note">OmniSuite itself starts on port <code>8080</code>. If that port is already in use, it binds to the next available local port.</div>
+    </section>
+
+    <section id="launch-files">
+      <h2>2. Files Created on Launch</h2>
+      <p>OmniSuite keeps a small set of local working files so configuration, scan results, and exports survive a restart.</p>
+      <table>
+        <tr><th>File</th><th>Purpose</th><th>Safe to delete?</th></tr>
+        <tr><td><code>config.json</code></td><td>Stores Configuration popup values such as username, passwords, WS port, timeout, concurrency, and firmware path.</td><td>Yes, but the app returns to defaults and saved passwords/settings are lost.</td></tr>
+        <tr><td><code>units_cache.json</code></td><td>Legacy/current device cache used to repopulate the Device Info list quickly.</td><td>Yes. The unit list clears until you scan again.</td></tr>
+        <tr><td><code>scan_results.json</code></td><td>Unified scan cache used by Device Info, Configure, A/V Matrix, and USB Matrix. It includes discovered devices plus encoder/decoder route details.</td><td>Yes. The matrix and configure pages will need a new scan or cache reload.</td></tr>
+        <tr><td><code>units_view.csv</code></td><td>Generated inventory CSV used by the Inventory export button.</td><td>Yes. It is recreated on export.</td></tr>
+        <tr><td><code>launcher.log</code></td><td>Launcher startup and error log.</td><td>Yes. It is recreated if the launcher needs to log again.</td></tr>
+      </table>
+      <p>When running from source, these JSON/CSV files are stored beside the application files. In the packaged app, the launcher log is stored in the user log folder: Windows uses <code>%LOCALAPPDATA%\OmniSuite\logs\launcher.log</code>, macOS uses <code>~/Library/Logs/OmniSuite/launcher.log</code>, and Linux uses <code>~/.omnisuite/logs/launcher.log</code>.</p>
+      <div class="warn">Do not edit cache files while OmniSuite is running. Use Clear Units for a normal reset, or close OmniSuite before manually deleting cache/config files.</div>
+    </section>
+
+    <section id="scan">
+      <h2>3. Scanning Units</h2>
+      <ol>
+        <li>Choose the network adapter that is connected to the Omni control network.</li>
+        <li>Leave Targets blank to use the adapter's detected range, or type a specific range such as <code>192.168.100.1-254</code>, CIDR such as <code>192.168.100.0/24</code>, or comma-separated IPs.</li>
+        <li>Click Scan. Discovered units are cached and reused by Device Info, Configure, A/V Matrix, and USB Matrix.</li>
+        <li>Use the X inside the Targets field to clear manual input and return to the selected adapter range.</li>
+      </ol>
+      <div class="warn">On macOS and Linux builds, adapter discovery depends on OS interface data. If the adapter list looks wrong, use the Targets box to enter the intended subnet manually.</div>
+      <p>Scan results are merged into the existing list. Clear Units removes the current cache when you want a fresh list.</p>
+    </section>
+
+    <section id="device-info">
+      <h2>4. Device Info Page</h2>
+      <p>The Device Info page is the fleet overview and firmware workflow page.</p>
+      <div class="grid">
+        <div class="mini">
+          <h3>Inventory Table</h3>
+          <p>Shows IP, MAC, link speed, codec, hostname, timezone, NTP server, type, model, version, password state, status, blink, preview, and USB information.</p>
+          <p>Use Show/Hide Device Details to hide or show TimeZone, NTP Server, Type, Model, Version, Password, and USB columns.</p>
+        </div>
+        <div class="mini">
+          <h3>Polling</h3>
+          <p>Poll Units keeps status, version, hostname, timezone, NTP server, link speed, password state, and USB feedback fresh without another scan.</p>
+          <p>Open dropdowns and active edits are guarded so polling does not overwrite the field while you are working.</p>
+        </div>
+        <div class="mini">
+          <h3>LLDP Popup</h3>
+          <p>Hover over a MAC address to fetch and show LLDP neighbor data, including switch chassis, management IP, port ID, port description, age, TTL, and capabilities.</p>
+        </div>
+        <div class="mini">
+          <h3>Codec</h3>
+          <p><span class="pill good">VCx</span> is shown green. Other codec modes are shown red. If the discovered matrix has mixed codec modes, OmniSuite shows a mismatch warning.</p>
+          <p>Legacy units can change codec. Changing codec reboots the unit and requires confirmation.</p>
+        </div>
+      </div>
+
+      <h3>Firmware Upgrade</h3>
+      <ol>
+        <li>Select one or more units.</li>
+        <li>Select the firmware file from the firmware selector.</li>
+        <li>Click Upgrade Selected and confirm the custom upgrade dialog.</li>
+        <li>Rows move through queued/uploading/upgrading/rebooting/idle based on feedback and version polling.</li>
+      </ol>
+      <div class="warn">Some units can time out during upload and need a reboot before retry. The app avoids leaving the UI stuck in an old state, but the device is still the source of truth. Watch for the version to update after the unit returns.</div>
+
+      <h3>Footer Actions</h3>
+      <table>
+        <tr><th>Action</th><th>Use</th></tr>
+        <tr><td>Reboot Selected</td><td>Reboots selected units after confirmation.</td></tr>
+        <tr><td>Remove Selected</td><td>Removes selected units from the local cache. It does not factory reset or alter the unit.</td></tr>
+        <tr><td>Sync all Passwords</td><td>Moves discovered units to the chosen primary or fallback admin password when the current password is known.</td></tr>
+        <tr><td>Set NTP</td><td>Applies timezone and NTP server values to selected units or all units.</td></tr>
+        <tr><td>Slate Manager</td><td>Uploads slate images and assigns slate mode/logo to encoders or decoders.</td></tr>
+        <tr><td>Inventory</td><td>Exports the current inventory CSV, including HDCP settings, encoder Session 1/2 A/V multicast addresses, and decoder <code>ip_input1</code>/<code>ip_input3</code> route values when collected.</td></tr>
+      </table>
+    </section>
+
+    <section id="configure">
+      <h2>5. Configure Page</h2>
+      <p>The Configure page contains unit settings that are too wide for the routing matrix. It has a single search filter that applies to both encoders and decoders.</p>
+      <h3>Encoder Sections</h3>
+      <table>
+        <tr><th>Section</th><th>Fields</th><th>Notes</th></tr>
+        <tr><td>Unit Information</td><td>Model, FW, Serial, Video, Audio, hostname, codec where applicable</td><td>Hostname is editable here. Only letters, numbers, hyphen, and period are allowed.</td></tr>
+        <tr><td>Input</td><td>Input Auto-Switch, Active Input, EDID, HDCP Version</td><td>These are live controls and are queued per unit so fast edits are applied in order.</td></tr>
+        <tr><td>Session</td><td>Text link to Session popup</td><td>Configures the output sessions for that encoder.</td></tr>
+        <tr><td>Encoding</td><td>Text link to Encoding popup</td><td>Configures encoder stream properties for that encoder.</td></tr>
+        <tr><td>Configuration</td><td>Export / Import links plus Export Encoder Configs bulk button</td><td>Export downloads the unit's current JSON configuration. Import uploads a local <code>.json</code> configuration file to that unit after confirmation. The row shows an Importing spinner while the unit applies the file and reboots.</td></tr>
+      </table>
+      <h3>Decoder Sections</h3>
+      <table>
+        <tr><th>Section</th><th>Fields</th><th>Notes</th></tr>
+        <tr><td>Unit Information</td><td>Model, FW, Serial, <code>ip_input1</code>, <code>ip_input3</code>, hostname, codec where applicable</td><td>The IP address is clickable and opens the unit's web page.</td></tr>
+        <tr><td>Output</td><td>SAP Input, Input Session, HDCP Version, Video Input, Audio Input</td><td>If SAP Input is enabled, Video Input and Audio Input are feedback-only and cannot be selected manually.</td></tr>
+        <tr><td>Resolution</td><td>Stretch/Crop Mode, Resolution, Framerate</td><td>Video Wall enable forces decoder resolution to 1920x1080.</td></tr>
+        <tr><td>Fast Switching</td><td>Fast Switching, FS Timeout, FS Colorspace</td><td>Only supported models expose all fields.</td></tr>
+        <tr><td>Video Wall</td><td>Enable plus Configure button when enabled</td><td>The detailed video wall layout opens in a popup to keep the table usable.</td></tr>
+        <tr><td>Configuration</td><td>Export / Import links plus Export Decoder Configs bulk button</td><td>Exports are named with the unit IP, unit name, and a UTC timestamp. Bulk exports are bundled into a zip with a manifest. The row spinner clears after polling confirms the unit is back online.</td></tr>
+      </table>
+      <p>The section switches show or hide groups of columns. They do not disable the underlying device settings.</p>
+      <div class="warn">Configuration import is a device-level restore and can reboot the unit. On legacy units, OmniSuite applies the imported hostname again after reboot because some firmware imports restore other system fields but ignore hostname inside the JSON file.</div>
+    </section>
+
+    <section id="av-matrix">
+      <h2>6. A/V Matrix Page</h2>
+      <p>The A/V Matrix page is for routing. Encoders are columns. Decoders are rows. Click a matrix cell to route the selected encoder to the selected decoder.</p>
+      <table>
+        <tr><th>Mode</th><th>What it writes</th><th>Visual feedback</th></tr>
+        <tr><td>AV</td><td>Writes video and audio route together.</td><td>Blue outer ring and black inner dot.</td></tr>
+        <tr><td>Video</td><td>Writes the decoder video route.</td><td>Blue outer ring.</td></tr>
+        <tr><td>Audio</td><td>Writes the decoder audio route.</td><td>Black inner dot.</td></tr>
+      </table>
+      <div class="danger">Important: the matrix wires decoder video to <code>ip_input1</code> and decoder audio to <code>ip_input3</code>. When AV is selected, OmniSuite updates both fields. When Video or Audio is selected, it updates only the matching field.</div>
+      <p>Routes are queued per decoder. You can click multiple decoders quickly; each decoder keeps only the latest requested route while different decoders can process in parallel.</p>
+      <p>Use Lock Headers when the matrix is larger than the viewport. Use Preview to show or hide encoder preview behavior. Use the encoder and decoder filters to reduce the visible matrix without changing the discovered cache.</p>
+    </section>
+
+    <section id="usb-matrix">
+      <h2>7. USB Matrix Page</h2>
+      <p>The USB Matrix page pairs LEX and REX units. LEX units are local extenders, REX units are remote extenders.</p>
+      <ul>
+        <li>Click an empty pairing bubble to pair a LEX to a REX.</li>
+        <li>Click an existing paired bubble to unpair it.</li>
+        <li>Pairing feedback may take longer than the physical unit action because the UI waits for refreshed device state.</li>
+        <li>Auto-Refresh keeps the matrix current; adjust the interval for large systems.</li>
+      </ul>
+      <div class="warn">USB pairing is layer 2. The control GUI can reach devices across layer 3, but the USB pair itself should be on the same layer 2 network. OmniSuite warns when pairing units on different subnets.</div>
+      <p>LEX and REX detail tables expose USB type, host port, and filtering settings when supported by the unit.</p>
+    </section>
+
+    <section id="popups">
+      <h2>8. Configuration Popups</h2>
+      <h3>Session Popup</h3>
+      <p>Opened from an encoder's Session link on the Configure page. It displays a unit selector at the top so you can move between available encoders without closing the popup.</p>
+      <ul>
+        <li>Limited to Session 1 and Session 2.</li>
+        <li>Encoder, DSCP, Downmixing, Source, and Interface are dropdowns.</li>
+        <li>SAP Announce, Scrambling, Video, Audio, FEC, and AUX settings are saved from the popup.</li>
+        <li>Close returns to Configure without applying unsaved changes.</li>
+      </ul>
+
+      <h3>Encoding Popup</h3>
+      <p>Opened from an encoder's Encoding link on the Configure page. It also includes an encoder selector at the top.</p>
+      <ul>
+        <li>Shows encoder input, max bit rate, max bit depth, max subsampling, Force YUV, slate mode, slate logo, scaler, and thumbnail controls as supported.</li>
+        <li>Slate modes are <code>off</code>, <code>auto</code>, and <code>manual</code>.</li>
+        <li>Scaler resolution lists are dynamic per encoder. Encoder 1 and Encoder 2 may have different resolution options.</li>
+        <li>If Slate Logo is <code>Not used</code>, slate mode cannot be enabled.</li>
+      </ul>
+
+      <h3>Video Wall Popup</h3>
+      <p>Opened from a decoder's Video Wall Configure button. The popup has a decoder selector so you can navigate between available decoder units while it stays open.</p>
+      <ul>
+        <li>Polling is suspended for the edited video wall values while the popup is open.</li>
+        <li>Values are sent only when Save is clicked.</li>
+        <li>After Save, OmniSuite refreshes the selected decoder to verify feedback.</li>
+        <li>In pixels mode, display width and display height are hidden because they are not used.</li>
+        <li>Pixels mode offers incoming source resolution choices: 4K and 1080p. Width and height are populated read-only from that source choice, and the Video Wall Layout control calculates horizontal and vertical coordinates up to 5x5.</li>
+        <li>In inches or millimeters mode, do not apply the pixel math. Width, height, total display width, and total display height are handled as device measurement fields.</li>
+      </ul>
+
+      <h3>Slate Manager</h3>
+      <p>Opened from the Device Info footer. It uploads slate images and applies slate settings to selected units, all encoders, or all decoders.</p>
+      <ul>
+        <li>Only <code>.jpg</code>, <code>.jpeg</code>, and <code>.png</code> images are accepted.</li>
+        <li>Images are validated before upload. Use 720 or 1080 resolution assets.</li>
+        <li>A small thumbnail previews the proposed upload before it is sent.</li>
+        <li>Slate delete removes selected slate files from target units when supported by the unit API.</li>
+      </ul>
+    </section>
+
+    <section id="gotchas">
+      <h2>9. Gotchas and Field Rules</h2>
+      <table>
+        <tr><th>Area</th><th>Gotcha</th><th>Best practice</th></tr>
+        <tr><td>Live dropdowns and checkboxes</td><td>Writes are queued, but the device can still take time to report the new value.</td><td>Move down the list normally. If a field shows pending, let it finish before changing the same unit again.</td></tr>
+        <tr><td>Polling</td><td>Polling can otherwise overwrite open controls with device feedback.</td><td>OmniSuite guards active dropdowns, text fields, and video wall edits while you are interacting with them.</td></tr>
+        <tr><td>SAP Input</td><td>When SAP Input is enabled, decoder A/V input selection is controlled by session feedback.</td><td>Use Input Session for SAP routing. Video Input and Audio Input remain accurate but disabled.</td></tr>
+        <tr><td>Video Wall</td><td>Enabling Video Wall requires 1920x1080 decoder resolution.</td><td>OmniSuite sets 1920x1080 when Video Wall is enabled.</td></tr>
+        <tr><td>Codec</td><td>Changing codec reboots legacy units.</td><td>Confirm only when ready for the unit to go offline briefly.</td></tr>
+        <tr><td>Firmware upgrade</td><td>Some failed uploads leave fragments on the unit until reboot.</td><td>If upload times out, reboot the unit before retrying the same firmware.</td></tr>
+        <tr><td>USB pairing</td><td>USB data pairing is layer 2 even when GUI control is layer 3.</td><td>Keep LEX and REX on the same layer 2 path for real USB operation.</td></tr>
+        <tr><td>Hostname</td><td>Unsupported characters can be rejected by the unit.</td><td>Use only letters, numbers, hyphen, and period.</td></tr>
+      </table>
+    </section>
+  </div>
+</body>
+</html>

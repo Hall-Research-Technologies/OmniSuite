@@ -71,6 +71,24 @@
       background: var(--video) !important;
     }
     
+    body.compact .usb-cell{
+      width:72px;
+      height:28px;
+    }
+    body.compact .pair-badge{
+      padding:2px 6px;
+      border-radius:5px;
+      font-size:10px;
+    }
+    body.compact .lex-label,
+    body.compact .rex-label{
+      font-size:11px;
+    }
+    body.compact #poll_interval{
+      width:48px!important;
+      padding:3px 6px!important;
+    }
+
     /* USB loading overlay */
     .usb-loading-overlay{
       position:fixed;
@@ -102,15 +120,91 @@
     @keyframes spin{
       to{transform:rotate(360deg);}
     }
+    .usb-confirm-backdrop{
+      position:fixed;
+      inset:0;
+      z-index:60000;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding:24px;
+      background:rgba(0,0,0,.55);
+    }
+    .usb-confirm-dialog{
+      width:min(520px, 100%);
+      border:1px solid var(--border);
+      border-radius:8px;
+      background:var(--card);
+      color:var(--text);
+      box-shadow:0 18px 50px rgba(0,0,0,.35);
+      padding:22px;
+    }
+    .usb-confirm-dialog h2{
+      margin:0 0 12px;
+      font-size:20px;
+    }
+    .usb-confirm-dialog p{
+      margin:0;
+      color:var(--muted);
+      line-height:1.45;
+    }
+    .usb-confirm-summary{
+      margin:18px 0;
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:10px;
+    }
+    .usb-confirm-summary div{
+      border:1px solid var(--border);
+      border-radius:6px;
+      padding:10px;
+      background:var(--card);
+    }
+    .usb-confirm-summary span{
+      display:block;
+      margin-bottom:4px;
+      color:var(--muted);
+      font-size:12px;
+      text-transform:uppercase;
+    }
+    .usb-confirm-summary strong{
+      font-size:14px;
+    }
+    .usb-confirm-actions{
+      display:flex;
+      justify-content:flex-end;
+      gap:10px;
+    }
+    .usb-confirm-cancel,
+    .usb-confirm-continue{
+      border:0;
+      border-radius:8px;
+      padding:9px 14px;
+      color:#fff;
+      cursor:pointer;
+    }
+    .usb-confirm-cancel{
+      background:#6b7280;
+    }
+    .usb-confirm-continue{
+      background:var(--accent);
+    }
+    @media (max-width:560px){
+      .usb-confirm-summary{
+        grid-template-columns:1fr;
+      }
+    }
   </style>
   <script>
-    // Apply theme early to avoid flash; guard if body not ready yet
+    // Apply page preferences early to avoid flash; guard if body not ready yet
     (function(){
       const dark = localStorage.getItem('dark') !== 'false';
+      const compact = localStorage.getItem('viewDensity') === 'compact';
       const apply = ()=>{
         const target = document.body || document.documentElement;
         if(!target) return;
         target.classList.toggle('light', !dark);
+        target.classList.toggle('compact', compact);
       };
       if (document.body) {
         apply();
@@ -130,15 +224,11 @@
     </div>
     <div class="controls">
       <div class="tabs">
-        <a href="/" class="tab">Device Manager</a>
+        <a href="/" class="tab">Device Info</a>
+        <a href="/matrix/configure" class="tab">Configure</a>
         <a href="/matrix" class="tab">A/V Matrix</a>
         <a href="/matrix/usb" class="tab active">USB Matrix</a>
       </div>
-      <label class="toggle" id="header_dark_label">
-        <input type="checkbox" id="dark_mode_toggle" style="display:none;" />
-        <div class="label">Dark Mode</div>
-        <div id="dark_switch" class="switch on"><div class="knob"></div></div>
-      </label>
     </div>
   </div>
 

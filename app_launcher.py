@@ -92,7 +92,7 @@ def resolve_version() -> str:
 
 
 class AppWindow:
-    def __init__(self, root: tk.Tk, host: str = "127.0.0.1", port: int = 8088):
+    def __init__(self, root: tk.Tk, host: str = "127.0.0.1", port: int = 8080):
         self.root = root
         self.host = host
         self.port = self.find_available_port(port)

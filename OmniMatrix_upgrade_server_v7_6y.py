@@ -2,7 +2,7 @@
 # ...existing code...
 
 # All imports below here
-import os, sys, threading, urllib.request, webbrowser, logging, time, json, re, subprocess, socket, ssl, csv, tempfile, traceback, platform
+import os, sys, threading, urllib.request, webbrowser, logging, time, json, re, subprocess, socket, ssl, csv, tempfile, traceback, platform, io, zipfile
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, send_from_directory, Response
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -37,9 +37,10 @@ CWD = SCRIPT_DIR
 CACHE = CWD / "units_cache.json"
 SCAN_RESULTS = CWD / "scan_results.json"
 CSV_VIEW = CWD / "units_view.csv"
-PORT = int(os.getenv("OMNI_PORT", "8088"))
+PORT = int(os.getenv("OMNI_PORT", "8080"))
 log = logging.getLogger("omni_upgrade")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+_cache_io_lock = threading.Lock()
 
 
 def _windows_hidden_subprocess_kwargs() -> dict:
@@ -51,6 +52,19 @@ def _windows_hidden_subprocess_kwargs() -> dict:
         "startupinfo": startupinfo,
         "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
     }
+
+def _app_version() -> str:
+    env_version = (os.getenv("OMNI_VERSION") or "").strip()
+    if env_version:
+        return env_version
+    for candidate in (ASSET_DIR / "VERSION", CWD / "VERSION"):
+        try:
+            text = candidate.read_text(encoding="utf-8").strip()
+            if text:
+                return text
+        except Exception:
+            continue
+    return "V0.0.0"
 
 app = Flask(__name__)
 
@@ -107,7 +121,7 @@ CWD = SCRIPT_DIR
 CACHE = CWD / "units_cache.json"
 SCAN_RESULTS = CWD / "scan_results.json"
 CSV_VIEW = CWD / "units_view.csv"
-PORT = int(os.getenv("OMNI_PORT", "8088"))
+PORT = int(os.getenv("OMNI_PORT", "8080"))
 log = logging.getLogger("omni_upgrade")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -230,8 +244,51 @@ def _excel_safe_text(value: str) -> str:
     # Prevent Excel from parsing as formula or number.
     return "'" + text
 
+def _join_supported_versions(value) -> str:
+    if isinstance(value, list):
+        return "; ".join(str(v) for v in value if v is not None)
+    if value is None:
+        return ""
+    return str(value)
+
+def _merge_unit_records(base: dict, extra: dict) -> dict:
+    merged = dict(base or {})
+    for key, value in (extra or {}).items():
+        if value not in (None, "", []):
+            merged[key] = value
+    return merged
+
+def _units_for_export():
+    units = _load_cache()
+    scan_data = _load_scan_results_file() or {}
+    by_ip = {}
+    for collection_name in ("devices", "encoders", "decoders"):
+        for item in scan_data.get(collection_name) or []:
+            ip = (item or {}).get("ip")
+            if ip:
+                by_ip[ip] = _merge_unit_records(by_ip.get(ip, {}), item)
+    enriched = []
+    seen = set()
+    for unit in units:
+        ip = (unit or {}).get("ip")
+        enriched_unit = _merge_unit_records(unit, by_ip.get(ip, {}))
+        enriched.append(enriched_unit)
+        if ip:
+            seen.add(ip)
+    for ip, unit in by_ip.items():
+        if ip not in seen:
+            enriched.append(unit)
+    return enriched
+
 def _write_csv_atomic(units, target_path: Path, retries: int = 6, base_delay: float = 0.35) -> bool:
-    header = ["IP","MAC","Hostname","Type","Model","Version","SerialNumber"]
+    header = [
+        "IP","MAC","Hostname","Type","Model","Version","SerialNumber",
+        "Role","Codec","LinkSpeed","NTP Server","TimeZone",
+        "HDCP Support","HDCP Negotiated","HDCP Encrypted","HDCP Supported Versions",
+        "Session 1 Name","Session 1 Video MC","Session 1 Video Port","Session 1 Audio MC","Session 1 Audio Port",
+        "Session 2 Name","Session 2 Video MC","Session 2 Video Port","Session 2 Audio MC","Session 2 Audio Port",
+        "Decoder ip_input1 MC","Decoder ip_input1 Port","Decoder ip_input3 MC","Decoder ip_input3 Port",
+    ]
     for attempt in range(retries):
         tmp = None
         try:
@@ -248,6 +305,29 @@ def _write_csv_atomic(units, target_path: Path, retries: int = 6, base_delay: fl
                         u.get("model",""),
                         u.get("version",""),
                         _excel_safe_text(u.get("serialnumber","")),
+                        u.get("role",""),
+                        u.get("codec",""),
+                        u.get("linkspeed",""),
+                        u.get("ntp_server",""),
+                        u.get("active_timezone") or u.get("timezone",""),
+                        u.get("hdcp_support_version",""),
+                        u.get("hdcp_negotiated_version",""),
+                        u.get("hdcp_encrypted",""),
+                        _join_supported_versions(u.get("hdcp_supported_versions")),
+                        u.get("session1_name",""),
+                        u.get("session1_video_mcast") or u.get("v_mcast",""),
+                        u.get("session1_video_port") or u.get("v_port",""),
+                        u.get("session1_audio_mcast") or u.get("a_mcast",""),
+                        u.get("session1_audio_port") or u.get("a_port",""),
+                        u.get("session2_name",""),
+                        u.get("session2_video_mcast",""),
+                        u.get("session2_video_port",""),
+                        u.get("session2_audio_mcast",""),
+                        u.get("session2_audio_port",""),
+                        u.get("ip1_addr",""),
+                        u.get("ip1_port",""),
+                        u.get("ip3_addr",""),
+                        u.get("ip3_port",""),
                     ])
             os.replace(str(tmp), str(target_path))
             return True
@@ -268,7 +348,14 @@ def _write_csv_atomic(units, target_path: Path, retries: int = 6, base_delay: fl
     return False
 
 def _stream_csv_from_units(units):
-    header = ["IP","MAC","Hostname","Type","Model","Version","SerialNumber"]
+    header = [
+        "IP","MAC","Hostname","Type","Model","Version","SerialNumber",
+        "Role","Codec","LinkSpeed","NTP Server","TimeZone",
+        "HDCP Support","HDCP Negotiated","HDCP Encrypted","HDCP Supported Versions",
+        "Session 1 Name","Session 1 Video MC","Session 1 Video Port","Session 1 Audio MC","Session 1 Audio Port",
+        "Session 2 Name","Session 2 Video MC","Session 2 Video Port","Session 2 Audio MC","Session 2 Audio Port",
+        "Decoder ip_input1 MC","Decoder ip_input1 Port","Decoder ip_input3 MC","Decoder ip_input3 Port",
+    ]
     def gen():
         yield ",".join(header) + "\r\n"
         for u in units:
@@ -280,6 +367,29 @@ def _stream_csv_from_units(units):
                 u.get("model",""),
                 u.get("version",""),
                 _excel_safe_text(u.get("serialnumber","")),
+                u.get("role",""),
+                u.get("codec",""),
+                u.get("linkspeed",""),
+                u.get("ntp_server",""),
+                u.get("active_timezone") or u.get("timezone",""),
+                u.get("hdcp_support_version",""),
+                u.get("hdcp_negotiated_version",""),
+                u.get("hdcp_encrypted",""),
+                _join_supported_versions(u.get("hdcp_supported_versions")),
+                u.get("session1_name",""),
+                u.get("session1_video_mcast") or u.get("v_mcast",""),
+                u.get("session1_video_port") or u.get("v_port",""),
+                u.get("session1_audio_mcast") or u.get("a_mcast",""),
+                u.get("session1_audio_port") or u.get("a_port",""),
+                u.get("session2_name",""),
+                u.get("session2_video_mcast",""),
+                u.get("session2_video_port",""),
+                u.get("session2_audio_mcast",""),
+                u.get("session2_audio_port",""),
+                u.get("ip1_addr",""),
+                u.get("ip1_port",""),
+                u.get("ip3_addr",""),
+                u.get("ip3_port",""),
             ]
             def esc(x):
                 x = str(x)
@@ -292,32 +402,38 @@ def _stream_csv_from_units(units):
 def _load_cache():
     """Load devices from scan_results.json (new format) or units_cache.json (legacy)"""
     try:
-        # Try legacy format first (units_cache.json) - for testing
-        if CACHE.exists():
-            with open(CACHE, "r", encoding="utf-8") as f:
-                d = json.load(f)
-            if isinstance(d, list) and d:
-                log.info(f"[CACHE] Loaded {len(d)} units from units_cache.json (list format)")
-                return d
-            elif isinstance(d, dict) and "units" in d and d["units"]:
-                log.info(f"[CACHE] Loaded {len(d['units'])} units from units_cache.json (dict format)")
-                return d["units"]
-        # Fall back to new format (scan_results.json)
-        if SCAN_RESULTS.exists():
-            with open(SCAN_RESULTS, "r", encoding="utf-8") as f:
-                d = json.load(f)
-            devices = d.get("devices", [])
-            if isinstance(devices, list) and devices:
-                log.info(f"[CACHE] Loaded {len(devices)} units from scan_results.json")
-                return devices
+        with _cache_io_lock:
+            # Try legacy format first (units_cache.json) - for testing
+            if CACHE.exists():
+                with open(CACHE, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                if isinstance(d, list) and d:
+                    log.info(f"[CACHE] Loaded {len(d)} units from units_cache.json (list format)")
+                    return d
+                elif isinstance(d, dict) and "units" in d and d["units"]:
+                    log.info(f"[CACHE] Loaded {len(d['units'])} units from units_cache.json (dict format)")
+                    return d["units"]
+            # Fall back to new format (scan_results.json)
+            if SCAN_RESULTS.exists():
+                with open(SCAN_RESULTS, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                devices = d.get("devices", [])
+                if isinstance(devices, list) and devices:
+                    log.info(f"[CACHE] Loaded {len(devices)} units from scan_results.json")
+                    return devices
     except Exception as e:
         log.warning("_load_cache failed: %s", e)
     return []
 
 def _save_cache(units):
     try:
-        with open(CACHE, "w", encoding="utf-8") as f:
-            json.dump(units, f, indent=2)
+        with _cache_io_lock:
+            tmp_path = CACHE.with_suffix(CACHE.suffix + ".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(units, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, CACHE)
     except Exception as e:
         log.info("save cache failed: %s", e)
 
@@ -336,6 +452,24 @@ def _device_credentials(ip: str, cache_devices_map: dict = None):
     user = device.get("username") or app.config.get('USERNAME', 'admin')
     preferred_pwd = device.get("password") or app.config.get('PASSWORD', 'password')
     return user, preferred_pwd, device
+
+def _supports_decoder_fs_colorspace(model: str) -> bool:
+    m = (model or "").strip().lower()
+    return m in ("hw-omni-d4111", "at-omni-d4111", "hw-omni-d4511", "at-omni-d4511")
+
+CODEC_LABELS = {
+    "Colibri": "VCx",
+    "VC2/LeGall": "VC-2 Video",
+    "VC2/Haar": "VC-2 PC application",
+}
+CODEC_VALUES = set(CODEC_LABELS)
+
+def _codec_label(system_mode: str) -> str:
+    return CODEC_LABELS.get(system_mode or "", system_mode or "")
+
+def _is_codec_configurable_model(model: str) -> bool:
+    m = (model or "").strip().lower()
+    return bool(m) and not m.startswith("hw-omni")
 
 def _write_csv(units):
     _ = _write_csv_atomic(units, CSV_VIEW)
@@ -394,10 +528,69 @@ def _hydrate_matrix_from_scan(data):
     except Exception as e:
         log.info("hydrate matrix state failed: %s", e)
 
+def _first_present_string(*values):
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            return value
+        return str(value)
+    return None
+
+def _input_option_name(item):
+    if isinstance(item, dict):
+        for key in ("name", "input", "value", "id"):
+            value = item.get(key)
+            if value is not None:
+                return str(value)
+        return None
+    if item is None:
+        return None
+    return str(item)
+
+def _dedupe_input_options(values):
+    out = []
+    seen = set()
+    for item in values or []:
+        name = _input_option_name(item)
+        if name is None:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+def _extract_available_inputs(*containers, fallback=(), current=None):
+    options = ["notused"]
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for key in (
+            "available_inputs",
+            "inputs",
+            "input_options",
+            "available_input",
+            "supported_inputs",
+            "supported_input",
+            "available",
+        ):
+            value = container.get(key)
+            if isinstance(value, list):
+                options.extend(value)
+    if not options:
+        options.extend(fallback or [])
+    deduped = _dedupe_input_options(options)
+    if current and str(current).lower() not in {opt.lower() for opt in deduped}:
+        deduped.insert(0, str(current))
+    return deduped
+
 def _ws_get_decoder_inputs(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float, attempts: int = 5, delay: float = 0.5):
-    """Fetch decoder ip_input1/ip_input3 via WebSocket config_get with simple retry.
+    """Fetch decoder matrix input and SAP input session fields.
+
     Try primary password first, then fallback password if primary fails.
-    Returns dict: {ip1_addr, ip1_port, ip3_addr, ip3_port} or {} on failure.
+    Returns dict with route fields and optional SAP/session fields, or {} on failure.
     """
     fallback_pwd = app.config['FALLBACK_PASSWORD']
     passwords_to_try = [pwd]
@@ -416,12 +609,278 @@ def _ws_get_decoder_inputs(ip: str, user: str, pwd: str, ws_port: int, ws_path: 
                 lst = cfg if isinstance(cfg, list) else (cfg.get("ip_input") or [])
                 ip1 = next((e for e in lst if e.get("name") == "ip_input1"), {})
                 ip3 = next((e for e in lst if e.get("name") == "ip_input3"), {})
-                return {
+                enabled_ip_input_options = [
+                    e.get("name")
+                    for e in lst
+                    if isinstance(e, dict) and e.get("name") and e.get("enabled")
+                ]
+                all_ip_input_options = [
+                    e.get("name")
+                    for e in lst
+                    if isinstance(e, dict) and e.get("name")
+                ]
+                fields = {
                     "ip1_addr": ((ip1.get("multicast") or {}).get("address")),
                     "ip1_port": ip1.get("port"),
                     "ip3_addr": ((ip3.get("multicast") or {}).get("address")),
                     "ip3_port": ip3.get("port"),
                 }
+
+                # Best-effort HDMI output settings extraction from hdmi_output1.
+                try:
+                    hdmi_req = {"id":"hdmi_output-get","username":user,"password":attempt_pwd,"config_get":"hdmi_output"}
+                    hdmi_resp = _ws_send_recv(url, hdmi_req, timeout=min(timeout, 2.0))
+                    hdmi_cfg = (hdmi_resp or {}).get("config") or []
+                    hdmi_list = hdmi_cfg if isinstance(hdmi_cfg, list) else (hdmi_cfg.get("hdmi_output") or [])
+                    hdmi_output = next((entry for entry in hdmi_list if entry.get("name") == "hdmi_output1"), hdmi_list[0] if hdmi_list else {})
+                    sap = (hdmi_output or {}).get("sap_input") or {}
+                    output_cfg = (hdmi_output or {}).get("output") or {}
+                    hdcp = (output_cfg.get("hdcp") or (hdmi_output or {}).get("hdcp") or {})
+                    video = (hdmi_output or {}).get("video") or {}
+                    video_backup = (video.get("backup") or {}) if isinstance(video, dict) else {}
+                    video_output = (video.get("output") or {}) if isinstance(video, dict) else {}
+                    fsm = (video_output.get("fsm") or {}) if isinstance(video_output, dict) else {}
+                    audio = (hdmi_output or {}).get("audio") or {}
+                    audio_backup = (audio.get("backup") or {}) if isinstance(audio, dict) else {}
+
+                    fields["sap_input_enabled"] = sap.get("enabled")
+                    fields["input_session"] = sap.get("session")
+
+                    options = []
+                    for key in ("sessions", "available_sessions", "session_options", "available"):
+                        vals = sap.get(key)
+                        if isinstance(vals, list):
+                            for item in vals:
+                                if isinstance(item, dict):
+                                    name = item.get("name") or item.get("session") or item.get("value")
+                                else:
+                                    name = item
+                                if name:
+                                    options.append(str(name))
+                    if fields.get("input_session"):
+                        options.insert(0, str(fields.get("input_session")))
+                    deduped = []
+                    seen = set()
+                    for opt in options:
+                        if opt not in seen:
+                            seen.add(opt)
+                            deduped.append(opt)
+                    fields["input_session_options"] = deduped
+                    fields["hdcp_support_version"] = hdcp.get("support_version")
+                    fields["hdcp_supported_versions"] = hdcp.get("supported_versions") or []
+
+                    # Decoder control fields requested for matrix UI.
+                    fields["video_input"] = _first_present_string(
+                        video.get("input"),
+                        video_backup.get("input"),
+                        video_backup.get("active_input"),
+                    )
+                    fields["audio_input"] = _first_present_string(
+                        audio.get("input"),
+                        audio_backup.get("input"),
+                        audio_backup.get("active_input"),
+                    )
+                    fields["stretch_crop_mode"] = video_output.get("aspect_ratio")
+                    fields["resolution"] = video_output.get("resolution")
+                    fr_obj = (video_output.get("framerate") or {}) if isinstance(video_output, dict) else {}
+                    fr_mode = str(fr_obj.get("mode") or "").strip().lower()
+                    fr_val = fr_obj.get("framerate")
+                    if fr_mode == "auto":
+                        fields["framerate"] = "auto"
+                    elif isinstance(fr_val, (int, float)):
+                        fields["framerate"] = f"{int(fr_val)} Hz"
+                    else:
+                        fields["framerate"] = None
+                    fields["fast_switching_enabled"] = fsm.get("enabled")
+                    fields["fast_switching_timeout"] = fsm.get("timeout")
+                    fields["fast_switching_colorspace"] = fsm.get("colorspace")
+
+                    wall = (video_output.get("wall") or {}) if isinstance(video_output, dict) else {}
+                    input_selection = (wall.get("input_selection") or {}) if isinstance(wall, dict) else {}
+                    physical_size = (wall.get("physical_size") or {}) if isinstance(wall, dict) else {}
+                    edge_comp = (wall.get("edge_compensation") or {}) if isinstance(wall, dict) else {}
+                    wall_unit = str(wall.get("unit") or "").strip().lower() if isinstance(wall, dict) else ""
+
+                    def _coerce_num(v):
+                        if isinstance(v, bool):
+                            return None
+                        if isinstance(v, (int, float)):
+                            return float(v)
+                        if isinstance(v, str):
+                            s = v.strip()
+                            if not s:
+                                return None
+                            try:
+                                return float(s)
+                            except Exception:
+                                return None
+                        return None
+
+                    raw_grid_w = input_selection.get("width")
+                    raw_grid_h = input_selection.get("height")
+                    raw_grid_x = input_selection.get("x")
+                    raw_grid_y = input_selection.get("y")
+                    raw_total_w = physical_size.get("width")
+                    raw_total_h = physical_size.get("height")
+
+                    grid_w = _coerce_num(raw_grid_w)
+                    grid_h = _coerce_num(raw_grid_h)
+                    grid_x = _coerce_num(raw_grid_x)
+                    grid_y = _coerce_num(raw_grid_y)
+                    total_w = _coerce_num(raw_total_w)
+                    total_h = _coerce_num(raw_total_h)
+
+                    def _is_near_int(v, eps=1e-6):
+                        return v is not None and abs(v - round(v)) <= eps
+
+                    # Some units return raw grid coordinates, while others can surface
+                    # decimal display values in input_selection. Normalize both forms.
+                    looks_decimal_payload = any(
+                        (v is not None and not _is_near_int(v))
+                        for v in (grid_w, grid_h, grid_x, grid_y)
+                    )
+
+                    display_w = grid_w
+                    display_h = grid_h
+                    display_x = grid_x
+                    display_y = grid_y
+
+                    norm_grid_w = grid_w
+                    norm_grid_h = grid_h
+                    norm_grid_x = grid_x
+                    norm_grid_y = grid_y
+
+                    if grid_w is not None and grid_h is not None and grid_w > 0 and grid_h > 0 and (wall_unit == "pixels" or (total_w is not None and total_h is not None)):
+                        if wall_unit == "pixels":
+                            if looks_decimal_payload:
+                                display_w = int(round(float(grid_w) * 1920))
+                                display_h = int(round(float(grid_h) * 1080))
+                                display_x = int(round(float(grid_x) / float(grid_w))) if grid_x is not None and grid_w else None
+                                display_y = int(round(float(grid_y) / float(grid_h))) if grid_y is not None and grid_h else None
+                            else:
+                                display_w = int(round(float(grid_w)))
+                                display_h = int(round(float(grid_h)))
+                                display_x = int(round(float(grid_x))) if grid_x is not None else None
+                                display_y = int(round(float(grid_y))) if grid_y is not None else None
+
+                            if display_w and display_w > 0:
+                                norm_grid_w = max(1, int(round(3840 / float(display_w))))
+                            if display_h and display_h > 0:
+                                norm_grid_h = max(1, int(round(2160 / float(display_h))))
+                            if display_x is not None and display_w and display_w > 0:
+                                norm_grid_x = max(0, int(round(float(display_x) / float(display_w))))
+                            if display_y is not None and display_h and display_h > 0:
+                                norm_grid_y = max(0, int(round(float(display_y) / float(display_h))))
+                        elif looks_decimal_payload:
+                            display_w = round(float(grid_w), 4)
+                            display_h = round(float(grid_h), 4)
+                            display_x = round(float(grid_x), 4) if grid_x is not None else None
+                            display_y = round(float(grid_y), 4) if grid_y is not None else None
+
+                            # Keep raw grid fields normalized for downstream set operations.
+                            norm_base_w = total_w
+                            norm_base_h = total_h
+                            if norm_base_w and grid_w > 0:
+                                norm_grid_w = max(1, int(round(float(norm_base_w) / float(display_w))))
+                            if norm_base_h and grid_h > 0:
+                                norm_grid_h = max(1, int(round(float(norm_base_h) / float(display_h))))
+                            if display_x is not None and display_w and display_w > 0:
+                                norm_grid_x = max(0, int(round(float(display_x) / float(display_w))))
+                            if display_y is not None and display_h and display_h > 0:
+                                norm_grid_y = max(0, int(round(float(display_y) / float(display_h))))
+                        else:
+                            unit_w = round(float(total_w) / float(grid_w), 4)
+                            unit_h = round(float(total_h) / float(grid_h), 4)
+                            display_w = unit_w
+                            display_h = unit_h
+                            if grid_x is not None:
+                                display_x = round(float(unit_w) * float(grid_x), 4)
+                            if grid_y is not None:
+                                display_y = round(float(unit_h) * float(grid_y), 4)
+
+                    if norm_grid_w is not None:
+                        norm_grid_w = max(1, int(round(norm_grid_w)))
+                    if norm_grid_h is not None:
+                        norm_grid_h = max(1, int(round(norm_grid_h)))
+                    if norm_grid_x is not None:
+                        norm_grid_x = max(0, int(round(norm_grid_x)))
+                    if norm_grid_y is not None:
+                        norm_grid_y = max(0, int(round(norm_grid_y)))
+                    if norm_grid_w is not None and norm_grid_x is not None:
+                        norm_grid_x = min(norm_grid_w - 1, norm_grid_x)
+                    if norm_grid_h is not None and norm_grid_y is not None:
+                        norm_grid_y = min(norm_grid_h - 1, norm_grid_y)
+
+                    fields["video_wall_enabled"] = wall.get("enabled")
+                    fields["video_wall_unit"] = wall.get("unit")
+                    fields["video_wall_width"] = display_w
+                    fields["video_wall_height"] = display_h
+                    fields["video_wall_horizontal"] = display_x
+                    fields["video_wall_vertical"] = display_y
+                    fields["video_wall_rotation"] = wall.get("rotation")
+                    fields["video_wall_edge_mode"] = edge_comp.get("mode")
+                    fields["video_wall_edge_top"] = edge_comp.get("top")
+                    fields["video_wall_edge_bottom"] = edge_comp.get("bottom")
+                    fields["video_wall_edge_left"] = edge_comp.get("left")
+                    fields["video_wall_edge_right"] = edge_comp.get("right")
+                    fields["video_wall_total_width"] = total_w if total_w is not None else raw_total_w
+                    fields["video_wall_total_height"] = total_h if total_h is not None else raw_total_h
+                    fields["video_wall_grid_width"] = norm_grid_w if norm_grid_w is not None else (grid_w if grid_w is not None else raw_grid_w)
+                    fields["video_wall_grid_height"] = norm_grid_h if norm_grid_h is not None else (grid_h if grid_h is not None else raw_grid_h)
+                    fields["video_wall_grid_x"] = norm_grid_x if norm_grid_x is not None else (grid_x if grid_x is not None else raw_grid_x)
+                    fields["video_wall_grid_y"] = norm_grid_y if norm_grid_y is not None else (grid_y if grid_y is not None else raw_grid_y)
+
+                    ip_input_fallback = enabled_ip_input_options or all_ip_input_options
+                    fields["video_input_options"] = _extract_available_inputs(
+                        video,
+                        video_backup,
+                        fallback=ip_input_fallback,
+                        current=fields.get("video_input"),
+                    )
+                    fields["audio_input_options"] = _extract_available_inputs(
+                        audio,
+                        audio_backup,
+                        fallback=ip_input_fallback,
+                        current=fields.get("audio_input"),
+                    )
+                    fields["stretch_crop_mode_options"] = ["keep aspect ratio", "fullscreen", "16:9", "16:10", "4:3"]
+                    fields["resolution_options"] = [
+                        "input", "auto", "4096x2160", "3840x2160", "1920x1200", "1920x1080", "1680x1050",
+                        "1600x900", "1400x1050", "1440x900", "1280x1024", "1280x800", "1280x768", "1280x720", "1024x768"
+                    ]
+                    fields["framerate_options"] = ["auto", "60 Hz", "50 Hz", "30 Hz"]
+                    fields["fast_switching_colorspace_options"] = ["RGB", "YUV"]
+
+                    unit_options = ["pixels", "inches", "mm"]
+                    current_unit = fields.get("video_wall_unit")
+                    if current_unit and current_unit not in unit_options:
+                        unit_options.insert(0, current_unit)
+                    fields["video_wall_unit_options"] = list(dict.fromkeys(unit_options))
+
+                    rotation_options = [0, 90, 180, 270]
+                    current_rotation = fields.get("video_wall_rotation")
+                    if isinstance(current_rotation, int) and current_rotation not in rotation_options:
+                        rotation_options.insert(0, current_rotation)
+                    fields["video_wall_rotation_options"] = rotation_options
+
+                    edge_mode_options = ["none", "bezel compensation", "bezel_compensation"]
+                    current_edge_mode = fields.get("video_wall_edge_mode")
+                    if current_edge_mode and current_edge_mode not in edge_mode_options:
+                        edge_mode_options.insert(0, current_edge_mode)
+                    dedup_edge_modes = []
+                    seen_modes = set()
+                    for mode_opt in edge_mode_options:
+                        mode_key = str(mode_opt)
+                        if mode_key in seen_modes:
+                            continue
+                        seen_modes.add(mode_key)
+                        dedup_edge_modes.append(mode_key)
+                    fields["video_wall_edge_mode_options"] = dedup_edge_modes
+                except Exception:
+                    # Keep route fields even if HDMI output settings extraction is unavailable.
+                    pass
+
+                return fields
             except Exception:
                 if i < attempts-1:
                     time.sleep(delay)
@@ -431,6 +890,906 @@ def _ws_get_decoder_inputs(ip: str, user: str, pwd: str, ws_port: int, ws_path: 
     
     # All passwords and retries exhausted
     return {}
+
+def _ws_get_encoder_input_settings(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float, attempts: int = 3, delay: float = 0.3):
+    """Fetch encoder hdmi_input and edid list via WebSocket config_get with retry and fallback password."""
+    fallback_pwd = app.config['FALLBACK_PASSWORD']
+    passwords_to_try = [pwd]
+    if fallback_pwd != pwd:
+        passwords_to_try.append(fallback_pwd)
+
+    for attempt_pwd in passwords_to_try:
+        for i in range(max(1, attempts)):
+            try:
+                url = _ws_url(ip, ws_port, ws_path)
+                hdmi_req = {"id":"hdmi_input-get","username":user,"password":attempt_pwd,"config_get":"hdmi_input"}
+                edid_req = {"id":"edid-get","username":user,"password":attempt_pwd,"config_get":"edid"}
+
+                hdmi_resp = _ws_send_recv(url, hdmi_req, timeout=min(timeout, 2.5))
+                edid_resp = _ws_send_recv(url, edid_req, timeout=min(timeout, 2.5))
+                if not hdmi_resp or hdmi_resp.get("error"):
+                    raise ValueError("empty hdmi_input resp or error")
+
+                hdmi_cfg = (hdmi_resp or {}).get("config") or []
+                hdmi_list = hdmi_cfg if isinstance(hdmi_cfg, list) else (hdmi_cfg.get("hdmi_input") or [])
+                hdmi_input = next((entry for entry in hdmi_list if entry.get("name") == "hdmi_input1"), hdmi_list[0] if hdmi_list else {})
+
+                edid_cfg = (edid_resp or {}).get("config") or []
+                edid_list = edid_cfg if isinstance(edid_cfg, list) else (edid_cfg.get("edid") or [])
+
+                hdcp = hdmi_input.get("hdcp") or {}
+                cable_present = hdmi_input.get("cabledetect")
+                if cable_present is None:
+                    active_name = hdmi_input.get("active_input")
+                    for status in (hdmi_input.get("input_status") or []):
+                        if status.get("name") == active_name and status.get("cabledetect") is not None:
+                            cable_present = status.get("cabledetect")
+                            break
+                return {
+                    "input_auto_switch": hdmi_input.get("input_auto_switch"),
+                    "active_input": hdmi_input.get("active_input"),
+                    "input_status": hdmi_input.get("input_status") or [],
+                    "cable_present": cable_present,
+                    "edid": hdmi_input.get("edid"),
+                    "edid_options": [item.get("name") for item in edid_list if item.get("name")],
+                    "hdcp_encrypted": hdcp.get("encrypted"),
+                    "hdcp_negotiated_version": hdcp.get("negotiated_version"),
+                    "hdcp_support_version": hdcp.get("support_version"),
+                    "hdcp_supported_versions": hdcp.get("supported_versions") or [],
+                }
+            except Exception:
+                if i < attempts - 1:
+                    time.sleep(delay)
+                    continue
+                break
+
+    return {}
+
+def _ws_set_encoder_input_settings(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float, *, input_auto_switch=None, active_input=None, edid=None, hdcp_support_version=None):
+    """Set encoder hdmi_input1 settings and return fresh polled values."""
+    if input_auto_switch is None and active_input is None and edid is None and hdcp_support_version is None:
+        return {"ok": False, "error": "no settings provided"}
+
+    fallback_pwd = app.config['FALLBACK_PASSWORD']
+    passwords_to_try = [pwd]
+    if fallback_pwd != pwd:
+        passwords_to_try.append(fallback_pwd)
+
+    last_error = "set failed"
+    for attempt_pwd in passwords_to_try:
+        try:
+            url = _ws_url(ip, ws_port, ws_path)
+            current = _ws_send_recv(url, {
+                "id": "hdmi_input-get",
+                "username": user,
+                "password": attempt_pwd,
+                "config_get": "hdmi_input"
+            }, timeout=min(timeout, 2.5))
+            if not current or current.get("error"):
+                raise ValueError((current or {}).get("error") or "failed to fetch current hdmi_input")
+
+            current_cfg = (current or {}).get("config") or []
+            current_list = current_cfg if isinstance(current_cfg, list) else (current_cfg.get("hdmi_input") or [])
+            current_input = next((entry for entry in current_list if entry.get("name") == "hdmi_input1"), current_list[0] if current_list else None)
+            if not current_input:
+                raise ValueError("hdmi_input1 not found")
+
+            payload_cfg = {"name": current_input.get("name") or "hdmi_input1"}
+            if input_auto_switch is not None:
+                payload_cfg["input_auto_switch"] = bool(input_auto_switch)
+            if active_input is not None:
+                payload_cfg["active_input"] = active_input
+            if edid is not None:
+                payload_cfg["edid"] = edid
+            if hdcp_support_version is not None:
+                payload_cfg["hdcp"] = {"support_version": hdcp_support_version}
+
+            set_resp = _ws_send_recv(url, {
+                "id": "hdmi_input-set",
+                "username": user,
+                "password": attempt_pwd,
+                "config_set": {
+                    "name": "hdmi_input",
+                    "config": [payload_cfg]
+                }
+            }, timeout=max(timeout, 4.0))
+            if set_resp and set_resp.get("error"):
+                raise ValueError(set_resp.get("error"))
+
+            fields = _ws_get_encoder_input_settings(ip, user, attempt_pwd, ws_port, ws_path, timeout=max(timeout, 2.5), attempts=1, delay=0)
+            if not fields:
+                raise ValueError("failed to verify updated settings")
+            return {"ok": True, "fields": fields}
+        except Exception as e:
+            last_error = str(e)
+
+    return {"ok": False, "error": last_error}
+
+def _ws_get_encoder_output_settings(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float, attempts: int = 3, delay: float = 0.3):
+    """Fetch encoder output sessions used by the device Output page."""
+    fallback_pwd = app.config['FALLBACK_PASSWORD']
+    passwords_to_try = [pwd]
+    if fallback_pwd != pwd:
+        passwords_to_try.append(fallback_pwd)
+
+    for attempt_pwd in passwords_to_try:
+        for i in range(max(1, attempts)):
+            try:
+                url = _ws_url(ip, ws_port, ws_path)
+                resp = _ws_send_recv(url, {
+                    "id": "sessions-get",
+                    "username": user,
+                    "password": attempt_pwd,
+                    "config_get": "sessions",
+                }, timeout=min(timeout, 4.0))
+                if not resp or resp.get("error"):
+                    raise ValueError((resp or {}).get("error_message") or (resp or {}).get("error") or "sessions-get failed")
+                cfg = resp.get("config") or []
+                sessions = cfg if isinstance(cfg, list) else (cfg.get("sessions") or [])
+                if not isinstance(sessions, list):
+                    raise ValueError("invalid sessions response")
+                return {"sessions": sessions}
+            except Exception:
+                if i < attempts - 1:
+                    time.sleep(delay)
+                    continue
+                break
+    return {}
+
+def _encoder_session_matrix_fields(sessions):
+    fields = {}
+    if not isinstance(sessions, list):
+        return fields
+    session1 = next((s for s in sessions if (s.get("name") or "").lower() == "session1"), sessions[0] if sessions else None)
+    if session1:
+        video_stream = ((session1.get("video") or {}).get("stream") or {})
+        audio_stream = ((session1.get("audio") or {}).get("stream") or {})
+        fields.update({
+            "v_mcast": video_stream.get("destination_address"),
+            "v_port": video_stream.get("destination_port"),
+            "a_mcast": audio_stream.get("destination_address"),
+            "a_port": audio_stream.get("destination_port"),
+        })
+    for idx, session in enumerate(sessions[:2], start=1):
+        video_stream = ((session.get("video") or {}).get("stream") or {})
+        audio_stream = ((session.get("audio") or {}).get("stream") or {})
+        fields.update({
+            f"session{idx}_name": session.get("name") or f"session{idx}",
+            f"session{idx}_video_mcast": video_stream.get("destination_address"),
+            f"session{idx}_video_port": video_stream.get("destination_port"),
+            f"session{idx}_audio_mcast": audio_stream.get("destination_address"),
+            f"session{idx}_audio_port": audio_stream.get("destination_port"),
+        })
+    return {k: v for k, v in fields.items() if v is not None}
+
+def _ws_set_encoder_output_settings(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float, sessions):
+    """Set encoder output sessions and return fresh sessions."""
+    if not isinstance(sessions, list):
+        return {"ok": False, "error": "sessions array required"}
+
+    fallback_pwd = app.config['FALLBACK_PASSWORD']
+    passwords_to_try = [pwd]
+    if fallback_pwd != pwd:
+        passwords_to_try.append(fallback_pwd)
+
+    last_error = "sessions-set failed"
+    for attempt_pwd in passwords_to_try:
+        try:
+            url = _ws_url(ip, ws_port, ws_path)
+            current = _ws_send_recv(url, {
+                "id": "sessions-get",
+                "username": user,
+                "password": attempt_pwd,
+                "config_get": "sessions",
+            }, timeout=min(timeout, 4.0))
+            if not current or current.get("error"):
+                raise ValueError((current or {}).get("error_message") or (current or {}).get("error") or "sessions-get failed")
+
+            current_cfg = current.get("config") or []
+            current_sessions = current_cfg if isinstance(current_cfg, list) else (current_cfg.get("sessions") or [])
+            if not isinstance(current_sessions, list):
+                current_sessions = []
+
+            incoming_by_name = {s.get("name"): s for s in sessions if isinstance(s, dict) and s.get("name")}
+            merged_sessions = []
+            for existing in current_sessions:
+                if not isinstance(existing, dict):
+                    continue
+                name = existing.get("name")
+                incoming = incoming_by_name.get(name)
+                merged_sessions.append(json.loads(json.dumps(incoming if incoming is not None else existing)))
+
+            existing_names = {s.get("name") for s in merged_sessions if isinstance(s, dict)}
+            for incoming in sessions:
+                if isinstance(incoming, dict) and incoming.get("name") not in existing_names:
+                    merged_sessions.append(json.loads(json.dumps(incoming)))
+
+            set_resp = _ws_send_recv(url, {
+                "id": "sessions-set",
+                "username": user,
+                "password": attempt_pwd,
+                "config_set": {
+                    "name": "sessions",
+                    "config": merged_sessions,
+                },
+            }, timeout=max(timeout, 6.0))
+            if set_resp and set_resp.get("error"):
+                raise ValueError(set_resp.get("error_message") or set_resp.get("error") or "sessions-set failed")
+
+            fields = _ws_get_encoder_output_settings(ip, user, attempt_pwd, ws_port, ws_path, timeout=max(timeout, 4.0), attempts=1, delay=0)
+            if not fields:
+                raise ValueError("failed to verify updated sessions")
+            return {"ok": True, **fields}
+        except Exception as e:
+            last_error = str(e)
+
+    return {"ok": False, "error": last_error}
+
+def _ws_get_encoder_encoding_settings(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float, attempts: int = 3, delay: float = 0.3):
+    """Fetch encoder Encoding page VC2 properties."""
+    fallback_pwd = app.config['FALLBACK_PASSWORD']
+    passwords_to_try = [pwd]
+    if fallback_pwd != pwd:
+        passwords_to_try.append(fallback_pwd)
+
+    for attempt_pwd in passwords_to_try:
+        for i in range(max(1, attempts)):
+            try:
+                url = _ws_url(ip, ws_port, ws_path)
+                vc2_resp = _ws_send_recv(url, {
+                    "id": "vc2-get",
+                    "username": user,
+                    "password": attempt_pwd,
+                    "config_get": "vc2",
+                }, timeout=min(timeout, 4.0))
+                if not vc2_resp or vc2_resp.get("error"):
+                    raise ValueError((vc2_resp or {}).get("error_message") or (vc2_resp or {}).get("error") or "vc2-get failed")
+
+                vc2_cfg = vc2_resp.get("config") or []
+                encoders = vc2_cfg if isinstance(vc2_cfg, list) else (vc2_cfg.get("vc2") or [])
+                if not isinstance(encoders, list):
+                    raise ValueError("invalid vc2 response")
+
+                input_options = []
+                try:
+                    hdmi_resp = _ws_send_recv(url, {
+                        "id": "hdmi_input-get",
+                        "username": user,
+                        "password": attempt_pwd,
+                        "config_get": "hdmi_input",
+                    }, timeout=min(timeout, 3.0))
+                    hdmi_cfg = (hdmi_resp or {}).get("config") or []
+                    hdmi_list = hdmi_cfg if isinstance(hdmi_cfg, list) else (hdmi_cfg.get("hdmi_input") or [])
+                    input_options = [entry.get("name") for entry in hdmi_list if isinstance(entry, dict) and entry.get("name")]
+                except Exception:
+                    input_options = []
+
+                return {"encoders": encoders, "input_options": input_options}
+            except Exception:
+                if i < attempts - 1:
+                    time.sleep(delay)
+                    continue
+                break
+    return {}
+
+def _ws_set_encoder_encoding_settings(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float, encoders):
+    """Set encoder Encoding page VC2 properties and return fresh VC2 config."""
+    if not isinstance(encoders, list):
+        return {"ok": False, "error": "encoders array required"}
+
+    fallback_pwd = app.config['FALLBACK_PASSWORD']
+    passwords_to_try = [pwd]
+    if fallback_pwd != pwd:
+        passwords_to_try.append(fallback_pwd)
+
+    last_error = "vc2-set failed"
+    for attempt_pwd in passwords_to_try:
+        try:
+            url = _ws_url(ip, ws_port, ws_path)
+            current = _ws_send_recv(url, {
+                "id": "vc2-get",
+                "username": user,
+                "password": attempt_pwd,
+                "config_get": "vc2",
+            }, timeout=min(timeout, 4.0))
+            if not current or current.get("error"):
+                raise ValueError((current or {}).get("error_message") or (current or {}).get("error") or "vc2-get failed")
+
+            current_cfg = current.get("config") or []
+            current_encoders = current_cfg if isinstance(current_cfg, list) else (current_cfg.get("vc2") or [])
+            if not isinstance(current_encoders, list):
+                current_encoders = []
+
+            incoming_by_name = {e.get("name"): e for e in encoders if isinstance(e, dict) and e.get("name")}
+            merged_encoders = []
+            for existing in current_encoders:
+                if not isinstance(existing, dict):
+                    continue
+                name = existing.get("name")
+                incoming = incoming_by_name.get(name)
+                merged_encoders.append(json.loads(json.dumps(incoming if incoming is not None else existing)))
+
+            existing_names = {e.get("name") for e in merged_encoders if isinstance(e, dict)}
+            for incoming in encoders:
+                if isinstance(incoming, dict) and incoming.get("name") not in existing_names:
+                    merged_encoders.append(json.loads(json.dumps(incoming)))
+
+            set_resp = _ws_send_recv(url, {
+                "id": "vc2-set",
+                "username": user,
+                "password": attempt_pwd,
+                "config_set": {
+                    "name": "vc2",
+                    "config": merged_encoders,
+                },
+            }, timeout=max(timeout, 6.0))
+            if set_resp and set_resp.get("error"):
+                raise ValueError(set_resp.get("error_message") or set_resp.get("error") or "vc2-set failed")
+
+            fields = _ws_get_encoder_encoding_settings(ip, user, attempt_pwd, ws_port, ws_path, timeout=max(timeout, 4.0), attempts=1, delay=0)
+            if not fields:
+                raise ValueError("failed to verify updated encoding settings")
+            return {"ok": True, **fields}
+        except Exception as e:
+            last_error = str(e)
+
+    return {"ok": False, "error": last_error}
+
+def _ws_get_logo_library(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float):
+    fallback_pwd = app.config['FALLBACK_PASSWORD']
+    passwords_to_try = [pwd]
+    if fallback_pwd != pwd:
+        passwords_to_try.append(fallback_pwd)
+
+    last_error = "logo_library-get failed"
+    for attempt_pwd in passwords_to_try:
+        try:
+            url = _ws_url(ip, ws_port, ws_path)
+            resp = _ws_send_recv(url, {
+                "id": "logo_library-get",
+                "username": user,
+                "password": attempt_pwd,
+                "config_get": "logo_library",
+            }, timeout=min(timeout, 4.0))
+            if not resp or resp.get("error"):
+                raise ValueError((resp or {}).get("error_message") or (resp or {}).get("error") or "logo_library-get failed")
+            cfg = resp.get("config") or []
+            logos = cfg if isinstance(cfg, list) else (cfg.get("logo_library") or [])
+            if not isinstance(logos, list):
+                logos = []
+            return {"ok": True, "logos": logos, "password": attempt_pwd}
+        except Exception as e:
+            last_error = str(e)
+    return {"ok": False, "error": last_error, "logos": []}
+
+def _slate_logo_options(logos, current_logo=None):
+    names = ["Not used"]
+    for logo in logos or []:
+        name = logo.get("name") if isinstance(logo, dict) else str(logo or "")
+        if name and name not in names:
+            names.append(name)
+    if current_logo and current_logo not in names:
+        names.append(current_logo)
+    return names
+
+def _ws_get_decoder_slate_settings(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float):
+    fallback_pwd = app.config['FALLBACK_PASSWORD']
+    passwords_to_try = [pwd]
+    if fallback_pwd != pwd:
+        passwords_to_try.append(fallback_pwd)
+
+    last_error = "hdmi_output-get failed"
+    for attempt_pwd in passwords_to_try:
+        try:
+            url = _ws_url(ip, ws_port, ws_path)
+            resp = _ws_send_recv(url, {
+                "id": "hdmi_output-get",
+                "username": user,
+                "password": attempt_pwd,
+                "config_get": "hdmi_output",
+            }, timeout=min(timeout, 4.0))
+            if not resp or resp.get("error"):
+                raise ValueError((resp or {}).get("error_message") or (resp or {}).get("error") or "hdmi_output-get failed")
+            cfg = resp.get("config") or []
+            outputs = cfg if isinstance(cfg, list) else (cfg.get("hdmi_output") or [])
+            output = next((o for o in outputs if isinstance(o, dict) and o.get("name") == "hdmi_output1"), outputs[0] if outputs else {})
+            slate = (((output or {}).get("video") or {}).get("generator") or {}).get("slate") or {}
+            logo = slate.get("logo") or ""
+            return {"ok": True, "mode": slate.get("mode") or "off", "logo": logo or "Not used", "raw_logo": logo, "password": attempt_pwd}
+        except Exception as e:
+            last_error = str(e)
+    return {"ok": False, "error": last_error}
+
+def _ws_set_decoder_slate_settings(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float, mode: str, logo: str):
+    logo = "" if logo == "Not used" else (logo or "")
+    mode = "off" if not logo else (mode or "auto")
+    fallback_pwd = app.config['FALLBACK_PASSWORD']
+    passwords_to_try = [pwd]
+    if fallback_pwd != pwd:
+        passwords_to_try.append(fallback_pwd)
+
+    last_error = "hdmi_output-set failed"
+    for attempt_pwd in passwords_to_try:
+        try:
+            url = _ws_url(ip, ws_port, ws_path)
+            current = _ws_send_recv(url, {
+                "id": "hdmi_output-get",
+                "username": user,
+                "password": attempt_pwd,
+                "config_get": "hdmi_output",
+            }, timeout=min(timeout, 4.0))
+            if not current or current.get("error"):
+                raise ValueError((current or {}).get("error_message") or (current or {}).get("error") or "hdmi_output-get failed")
+
+            current_cfg = current.get("config") or []
+            outputs = current_cfg if isinstance(current_cfg, list) else (current_cfg.get("hdmi_output") or [])
+            current_output = next((o for o in outputs if isinstance(o, dict) and o.get("name") == "hdmi_output1"), outputs[0] if outputs else None)
+            if not current_output:
+                raise ValueError("hdmi_output1 not found")
+
+            payload_cfg = json.loads(json.dumps(current_output))
+            video_cfg = payload_cfg.setdefault("video", {})
+            generator_cfg = video_cfg.setdefault("generator", {})
+            slate_cfg = generator_cfg.setdefault("slate", {})
+            slate_cfg["mode"] = mode
+            slate_cfg["logo"] = logo
+
+            set_resp = _ws_send_recv(url, {
+                "id": "hdmi_output-set",
+                "username": user,
+                "password": attempt_pwd,
+                "config_set": {
+                    "name": "hdmi_output",
+                    "config": [payload_cfg],
+                },
+            }, timeout=max(timeout, 5.0))
+            if set_resp and set_resp.get("error"):
+                raise ValueError(set_resp.get("error_message") or set_resp.get("error") or "hdmi_output-set failed")
+            return _ws_get_decoder_slate_settings(ip, user, attempt_pwd, ws_port, ws_path, timeout)
+        except Exception as e:
+            last_error = str(e)
+    return {"ok": False, "error": last_error}
+
+def _ws_set_encoder_slate_settings(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float, mode: str, logo: str):
+    fields = _ws_get_encoder_encoding_settings(ip, user, pwd, ws_port, ws_path, timeout=timeout, attempts=1, delay=0)
+    if not fields:
+        return {"ok": False, "error": "failed to fetch encoder encoding settings"}
+    logo = "" if logo == "Not used" else (logo or "")
+    mode = "off" if not logo else (mode or "auto")
+    encoders = json.loads(json.dumps(fields.get("encoders") or []))
+    for encoder in encoders:
+        if not isinstance(encoder, dict):
+            continue
+        slate = encoder.setdefault("slate", {})
+        slate["mode"] = mode
+        slate["logo"] = logo
+    return _ws_set_encoder_encoding_settings(ip, user, pwd, ws_port, ws_path, timeout, encoders)
+
+def _upload_urls(ip: str):
+    http_urls = [f"http://{ip}/upload/", f"http://{ip}/upload"]
+    https_urls = [f"https://{ip}/upload/", f"https://{ip}/upload"]
+    if app.config.get('WS_PORT') in (443, 8443):
+        return https_urls + http_urls
+    return http_urls + https_urls
+
+def _http_upload_logo(ip: str, file_path: Path, timeout: float = 60.0):
+    urls = _upload_urls(ip)
+    last_err = None
+    for url in urls:
+        try:
+            with open(file_path, "rb") as fh:
+                files = {"Upgrade file": (file_path.name, fh, "application/octet-stream")}
+                if url.startswith("https://"):
+                    r = requests.post(url, files=files, timeout=timeout, verify=False)
+                else:
+                    r = requests.post(url, files=files, timeout=timeout)
+            if 200 <= r.status_code < 300:
+                uploaded = (r.text or "").strip().strip('"')
+                return {"ok": True, "url": url, "uploaded": uploaded, "status": r.status_code}
+            last_err = f"HTTP {r.status_code}"
+        except Exception as e:
+            last_err = str(e)
+    return {"ok": False, "error": last_err or "upload failed"}
+
+def _ws_add_logo(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float, uploaded_file: str, logo_name: str):
+    fallback_pwd = app.config['FALLBACK_PASSWORD']
+    passwords_to_try = [pwd]
+    if fallback_pwd != pwd:
+        passwords_to_try.append(fallback_pwd)
+
+    last_error = "add_logo failed"
+    for attempt_pwd in passwords_to_try:
+        try:
+            url = _ws_url(ip, ws_port, ws_path)
+            resp = _ws_send_recv(url, {
+                "id": "add_logo-method",
+                "username": user,
+                "password": attempt_pwd,
+                "method": {
+                    "add_logo": {
+                        "file": uploaded_file,
+                        "name": logo_name,
+                    }
+                }
+            }, timeout=max(timeout, 8.0))
+            if resp and resp.get("error"):
+                raise ValueError(resp.get("error_message") or resp.get("error") or "add_logo failed")
+            return {"ok": True, "password": attempt_pwd, "response": resp}
+        except Exception as e:
+            last_error = str(e)
+    return {"ok": False, "error": last_error}
+
+def _ws_delete_logo(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float, logo_name: str):
+    fallback_pwd = app.config['FALLBACK_PASSWORD']
+    passwords_to_try = [pwd]
+    if fallback_pwd != pwd:
+        passwords_to_try.append(fallback_pwd)
+
+    last_error = "delete_logo failed"
+    for attempt_pwd in passwords_to_try:
+        try:
+            url = _ws_url(ip, ws_port, ws_path)
+            resp = _ws_send_recv(url, {
+                "id": "delete_logo-method",
+                "username": user,
+                "password": attempt_pwd,
+                "method": {
+                    "delete_logo": {
+                        "name": logo_name,
+                    }
+                }
+            }, timeout=max(timeout, 8.0))
+            if resp and resp.get("error"):
+                raise ValueError(resp.get("error_message") or resp.get("error") or "delete_logo failed")
+            return {"ok": True, "password": attempt_pwd, "response": resp}
+        except Exception as e:
+            last_error = str(e)
+    return {"ok": False, "error": last_error}
+
+def _ws_set_decoder_input_settings(
+    ip: str,
+    user: str,
+    pwd: str,
+    ws_port: int,
+    ws_path: str,
+    timeout: float,
+    *,
+    sap_input_enabled=None,
+    input_session=None,
+    video_input=None,
+    audio_input=None,
+    stretch_crop_mode=None,
+    resolution=None,
+    framerate=None,
+    fast_switching_enabled=None,
+    fast_switching_timeout=None,
+    fast_switching_colorspace=None,
+    hdcp_support_version=None,
+    video_wall_enabled=None,
+    video_wall_unit=None,
+    video_wall_total_width=None,
+    video_wall_total_height=None,
+    video_wall_width=None,
+    video_wall_height=None,
+    video_wall_horizontal=None,
+    video_wall_vertical=None,
+    video_wall_grid_width=None,
+    video_wall_grid_height=None,
+    video_wall_grid_x=None,
+    video_wall_grid_y=None,
+    video_wall_rotation=None,
+    video_wall_edge_mode=None,
+    video_wall_edge_top=None,
+    video_wall_edge_bottom=None,
+    video_wall_edge_left=None,
+    video_wall_edge_right=None,
+):
+    """Set decoder hdmi_output1 sap_input fields and return fresh polled values."""
+    if all(v is None for v in (
+        sap_input_enabled,
+        input_session,
+        video_input,
+        audio_input,
+        stretch_crop_mode,
+        resolution,
+        framerate,
+        fast_switching_enabled,
+        fast_switching_timeout,
+        fast_switching_colorspace,
+        hdcp_support_version,
+        video_wall_enabled,
+        video_wall_unit,
+        video_wall_total_width,
+        video_wall_total_height,
+        video_wall_width,
+        video_wall_height,
+        video_wall_horizontal,
+        video_wall_vertical,
+        video_wall_grid_width,
+        video_wall_grid_height,
+        video_wall_grid_x,
+        video_wall_grid_y,
+        video_wall_rotation,
+        video_wall_edge_mode,
+        video_wall_edge_top,
+        video_wall_edge_bottom,
+        video_wall_edge_left,
+        video_wall_edge_right,
+    )):
+        return {"ok": False, "error": "no settings provided"}
+
+    fallback_pwd = app.config['FALLBACK_PASSWORD']
+    passwords_to_try = [pwd]
+    if fallback_pwd != pwd:
+        passwords_to_try.append(fallback_pwd)
+
+    last_error = "set failed"
+    for attempt_pwd in passwords_to_try:
+        try:
+            url = _ws_url(ip, ws_port, ws_path)
+            current = _ws_send_recv(url, {
+                "id": "hdmi_output-get",
+                "username": user,
+                "password": attempt_pwd,
+                "config_get": "hdmi_output"
+            }, timeout=min(timeout, 2.5))
+            if not current or current.get("error"):
+                raise ValueError((current or {}).get("error") or "failed to fetch current hdmi_output")
+
+            current_cfg = (current or {}).get("config") or []
+            current_list = current_cfg if isinstance(current_cfg, list) else (current_cfg.get("hdmi_output") or [])
+            current_output = next((entry for entry in current_list if entry.get("name") == "hdmi_output1"), current_list[0] if current_list else None)
+            if not current_output:
+                raise ValueError("hdmi_output1 not found")
+
+            # Update a deep copy of current config to avoid unintentionally dropping sibling keys.
+            payload_cfg = json.loads(json.dumps(current_output)) if current_output else {}
+            if not isinstance(payload_cfg, dict):
+                payload_cfg = {}
+            payload_cfg["name"] = current_output.get("name") or "hdmi_output1"
+
+            sap_payload = dict((payload_cfg.get("sap_input") or {}))
+            if sap_input_enabled is not None:
+                sap_payload["enabled"] = bool(sap_input_enabled)
+            if input_session is not None:
+                sap_payload["session"] = input_session
+            payload_cfg["sap_input"] = sap_payload
+
+            video_cfg = payload_cfg.get("video") or {}
+            if not isinstance(video_cfg, dict):
+                video_cfg = {}
+            video_backup_cfg = video_cfg.get("backup") or {}
+            if not isinstance(video_backup_cfg, dict):
+                video_backup_cfg = {}
+            if video_input is not None:
+                video_cfg["input"] = video_input
+            video_cfg["backup"] = video_backup_cfg
+
+            video_output_cfg = video_cfg.get("output") or {}
+            if not isinstance(video_output_cfg, dict):
+                video_output_cfg = {}
+            if stretch_crop_mode is not None:
+                video_output_cfg["aspect_ratio"] = stretch_crop_mode
+            if resolution is not None:
+                video_output_cfg["resolution"] = resolution
+            if framerate is not None:
+                fr_value = str(framerate).strip().lower()
+                fr_cfg = video_output_cfg.get("framerate") or {}
+                if not isinstance(fr_cfg, dict):
+                    fr_cfg = {}
+                if fr_value == "auto":
+                    fr_cfg["mode"] = "auto"
+                else:
+                    fr_num = None
+                    for token in str(framerate).replace("hz", "").replace("Hz", "").split():
+                        try:
+                            fr_num = int(float(token))
+                            break
+                        except Exception:
+                            continue
+                    if fr_num is not None:
+                        fr_cfg["mode"] = "fixed"
+                        fr_cfg["framerate"] = fr_num
+                video_output_cfg["framerate"] = fr_cfg
+
+            fsm_cfg = video_output_cfg.get("fsm") or {}
+            if not isinstance(fsm_cfg, dict):
+                fsm_cfg = {}
+            if fast_switching_enabled is not None:
+                fsm_cfg["enabled"] = bool(fast_switching_enabled)
+            if fast_switching_timeout is not None:
+                try:
+                    fsm_cfg["timeout"] = int(fast_switching_timeout)
+                except Exception:
+                    pass
+            if fast_switching_colorspace is not None:
+                fsm_cfg["colorspace"] = fast_switching_colorspace
+            video_output_cfg["fsm"] = fsm_cfg
+
+            wall_cfg = video_output_cfg.get("wall") or {}
+            if not isinstance(wall_cfg, dict):
+                wall_cfg = {}
+
+            if video_wall_enabled is not None:
+                wall_cfg["enabled"] = bool(video_wall_enabled)
+            if video_wall_unit is not None:
+                wall_cfg["unit"] = str(video_wall_unit)
+            if video_wall_rotation is not None:
+                try:
+                    wall_cfg["rotation"] = int(video_wall_rotation)
+                except Exception:
+                    pass
+
+            physical_size_cfg = wall_cfg.get("physical_size") or {}
+            if not isinstance(physical_size_cfg, dict):
+                physical_size_cfg = {}
+            if video_wall_total_width is not None:
+                try:
+                    physical_size_cfg["width"] = float(video_wall_total_width)
+                except Exception:
+                    pass
+            if video_wall_total_height is not None:
+                try:
+                    physical_size_cfg["height"] = float(video_wall_total_height)
+                except Exception:
+                    pass
+            wall_cfg["physical_size"] = physical_size_cfg
+
+            input_selection_cfg = wall_cfg.get("input_selection") or {}
+            if not isinstance(input_selection_cfg, dict):
+                input_selection_cfg = {}
+
+            def _to_float(v):
+                try:
+                    return float(v)
+                except Exception:
+                    return None
+
+            current_total_w = _to_float(physical_size_cfg.get("width"))
+            current_total_h = _to_float(physical_size_cfg.get("height"))
+            effective_wall_unit = str(wall_cfg.get("unit") or "").strip().lower()
+            physical_wall_unit = effective_wall_unit in ("inches", "mm")
+            raw_width_from_display = None
+            raw_height_from_display = None
+
+            if video_wall_width is not None:
+                vw = _to_float(video_wall_width)
+                if vw is not None:
+                    if physical_wall_unit and current_total_w and current_total_w > 0 and vw > 0:
+                        raw_width_from_display = max(1, int(round(current_total_w / vw)))
+                        input_selection_cfg["width"] = raw_width_from_display
+                    else:
+                        input_selection_cfg["width"] = vw
+            if video_wall_height is not None:
+                vh = _to_float(video_wall_height)
+                if vh is not None:
+                    if physical_wall_unit and current_total_h and current_total_h > 0 and vh > 0:
+                        raw_height_from_display = max(1, int(round(current_total_h / vh)))
+                        input_selection_cfg["height"] = raw_height_from_display
+                    else:
+                        input_selection_cfg["height"] = vh
+            if video_wall_horizontal is not None:
+                vx = _to_float(video_wall_horizontal)
+                if vx is not None:
+                    if physical_wall_unit:
+                        display_width = _to_float(video_wall_width)
+                        if (display_width is None or display_width <= 0) and current_total_w and raw_width_from_display:
+                            display_width = current_total_w / raw_width_from_display
+                        input_selection_cfg["x"] = max(0, int(round(vx / display_width))) if display_width and display_width > 0 else vx
+                    else:
+                        input_selection_cfg["x"] = vx
+            if video_wall_vertical is not None:
+                vy = _to_float(video_wall_vertical)
+                if vy is not None:
+                    if physical_wall_unit:
+                        display_height = _to_float(video_wall_height)
+                        if (display_height is None or display_height <= 0) and current_total_h and raw_height_from_display:
+                            display_height = current_total_h / raw_height_from_display
+                        input_selection_cfg["y"] = max(0, int(round(vy / display_height))) if display_height and display_height > 0 else vy
+                    else:
+                        input_selection_cfg["y"] = vy
+            if video_wall_grid_width is not None:
+                try:
+                    grid_w = int(float(video_wall_grid_width))
+                    input_selection_cfg["width"] = grid_w
+                except Exception:
+                    pass
+            if video_wall_grid_height is not None:
+                try:
+                    grid_h = int(float(video_wall_grid_height))
+                    input_selection_cfg["height"] = grid_h
+                except Exception:
+                    pass
+            if video_wall_grid_x is not None:
+                try:
+                    grid_x = int(float(video_wall_grid_x))
+                    input_selection_cfg["x"] = grid_x
+                except Exception:
+                    pass
+            if video_wall_grid_y is not None:
+                try:
+                    grid_y = int(float(video_wall_grid_y))
+                    input_selection_cfg["y"] = grid_y
+                except Exception:
+                    pass
+            wall_cfg["input_selection"] = input_selection_cfg
+
+            edge_comp_cfg = wall_cfg.get("edge_compensation") or {}
+            if not isinstance(edge_comp_cfg, dict):
+                edge_comp_cfg = {}
+            if video_wall_edge_mode is not None:
+                edge_comp_cfg["mode"] = str(video_wall_edge_mode).strip()
+            if video_wall_edge_top is not None:
+                try:
+                    edge_comp_cfg["top"] = float(video_wall_edge_top)
+                except Exception:
+                    pass
+            if video_wall_edge_bottom is not None:
+                try:
+                    edge_comp_cfg["bottom"] = float(video_wall_edge_bottom)
+                except Exception:
+                    pass
+            if video_wall_edge_left is not None:
+                try:
+                    edge_comp_cfg["left"] = float(video_wall_edge_left)
+                except Exception:
+                    pass
+            if video_wall_edge_right is not None:
+                try:
+                    edge_comp_cfg["right"] = float(video_wall_edge_right)
+                except Exception:
+                    pass
+            wall_cfg["edge_compensation"] = edge_comp_cfg
+
+            video_output_cfg["wall"] = wall_cfg
+            video_cfg["output"] = video_output_cfg
+            payload_cfg["video"] = video_cfg
+
+            output_cfg = payload_cfg.get("output") or {}
+            if not isinstance(output_cfg, dict):
+                output_cfg = {}
+
+            hdcp_cfg = output_cfg.get("hdcp") or payload_cfg.get("hdcp") or {}
+            if not isinstance(hdcp_cfg, dict):
+                hdcp_cfg = {}
+            if hdcp_support_version is not None:
+                hdcp_cfg["support_version"] = hdcp_support_version
+            output_cfg["hdcp"] = hdcp_cfg
+            payload_cfg["output"] = output_cfg
+            # Keep legacy root location updated for older firmware variants.
+            payload_cfg["hdcp"] = hdcp_cfg
+
+            audio_cfg = payload_cfg.get("audio") or {}
+            if not isinstance(audio_cfg, dict):
+                audio_cfg = {}
+            audio_backup_cfg = audio_cfg.get("backup") or {}
+            if not isinstance(audio_backup_cfg, dict):
+                audio_backup_cfg = {}
+            if audio_input is not None:
+                audio_cfg["input"] = audio_input
+            audio_cfg["backup"] = audio_backup_cfg
+            payload_cfg["audio"] = audio_cfg
+
+            set_resp = _ws_send_recv(url, {
+                "id": "hdmi_output-set",
+                "username": user,
+                "password": attempt_pwd,
+                "config_set": {
+                    "name": "hdmi_output",
+                    "config": [payload_cfg]
+                }
+            }, timeout=max(timeout, 4.0))
+            if set_resp and set_resp.get("error"):
+                raise ValueError(set_resp.get("error"))
+
+            fields = _ws_get_decoder_inputs(ip, user, attempt_pwd, ws_port, ws_path, timeout=max(timeout, 2.5), attempts=1, delay=0)
+            if not fields:
+                raise ValueError("failed to verify updated settings")
+            return {"ok": True, "fields": fields}
+        except Exception as e:
+            last_error = str(e)
+
+    return {"ok": False, "error": last_error}
 
 def _update_scan_results_decoder(ip: str, fields: dict):
     """Persist updated decoder multicast fields into scan_results.json."""
@@ -683,6 +2042,13 @@ def matrix_index():
         return send_file(str(idx), mimetype="text/html; charset=utf-8")
     return "<h1>Matrix UI not found</h1>", 404
 
+@app.route("/matrix/configure")
+def matrix_configure():
+    idx = ASSET_DIR / "ui" / "matrix" / "configure.html"
+    if idx.exists():
+        return send_file(str(idx), mimetype="text/html; charset=utf-8")
+    return "<h1>Configure UI not found</h1>", 404
+
 @app.route("/matrix/usb")
 def usb_matrix_index():
     idx = ASSET_DIR / "ui" / "matrix" / "usb.html"
@@ -690,14 +2056,29 @@ def usb_matrix_index():
         return send_file(str(idx), mimetype="text/html; charset=utf-8")
     return "<h1>USB Matrix UI not found</h1>", 404
 
+@app.route("/help")
+def user_guide():
+    idx = ASSET_DIR / "ui" / "user-guide.html"
+    if idx.exists():
+        resp = send_file(str(idx), mimetype="text/html; charset=utf-8")
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        return resp
+    return "<h1>User guide not found</h1>", 404
+
 @app.route("/")
 def index():
     idx = ASSET_DIR / "ui" / "index.html"
-    if idx.exists(): return send_file(str(idx), mimetype="text/html; charset=utf-8")
+    if idx.exists():
+        resp = send_file(str(idx), mimetype="text/html; charset=utf-8")
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        return resp
     return "<h1>Omni Upgrade Server</h1><p>UI not found (ui/index.html). Backend API available.</p>"
 
 @app.route("/ui/<path:filename>")
-def ui_files(filename): return send_from_directory(ASSET_DIR / "ui", filename)
+def ui_files(filename):
+    resp = send_from_directory(ASSET_DIR / "ui", filename)
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
 
 # ---------------- adapters ----------------
 import ipaddress as _ipa
@@ -752,6 +2133,76 @@ def _adapters_psutil(active_only=True):
                 except Exception: pass
     return out
 
+def _adapter_entry(name: str, ip: str, mask: str):
+    if not ip or not mask:
+        return None
+    if ip.startswith("169.254.") or not _is_private_ipv4(ip):
+        return None
+    try:
+        net = _ipa.IPv4Network(f"{ip}/{mask}", strict=False)
+        cidr = f"{net.network_address}/{net.prefixlen}"
+        scan = f"{str(net.network_address).rsplit('.',1)[0]}.1-254" if net.prefixlen <= 24 else cidr
+        return {"name": name or f"iface {ip}", "ip": ip, "netmask": str(net.netmask), "cidr": cidr, "scan": scan}
+    except Exception:
+        return None
+
+def _adapters_ip_addr(active_only=True):
+    out = []
+    if platform.system().lower() != "linux":
+        return out
+    cmd = ["ip", "-o", "-4", "addr", "show"]
+    if active_only:
+        cmd.append("up")
+    try:
+        txt = subprocess.check_output(cmd, text=True, encoding="utf-8", errors="ignore")
+    except Exception:
+        return out
+    for line in txt.splitlines():
+        m = re.match(r"\d+:\s+([^:\s]+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)", line)
+        if not m:
+            continue
+        name, ip, prefix = m.groups()
+        try:
+            mask = str(_ipa.IPv4Network(f"0.0.0.0/{prefix}").netmask)
+        except Exception:
+            continue
+        entry = _adapter_entry(name, ip, mask)
+        if entry:
+            out.append(entry)
+    return out
+
+def _adapters_ifconfig(active_only=True):
+    out = []
+    if platform.system().lower() not in ("darwin", "linux"):
+        return out
+    try:
+        txt = subprocess.check_output(["ifconfig"], text=True, encoding="utf-8", errors="ignore")
+    except Exception:
+        return out
+    for block in re.split(r"\n(?=\S)", txt):
+        first = block.splitlines()[0] if block.splitlines() else ""
+        name = first.split(":", 1)[0].strip()
+        if not name:
+            continue
+        if active_only and "status: inactive" in block.lower():
+            continue
+        m = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+)\s+(?:netmask\s+)?(0x[0-9a-fA-F]+|\d+\.\d+\.\d+\.\d+)", block)
+        if not m:
+            continue
+        ip, raw_mask = m.groups()
+        if raw_mask.lower().startswith("0x"):
+            try:
+                mask_int = int(raw_mask, 16)
+                mask = ".".join(str((mask_int >> shift) & 0xff) for shift in (24, 16, 8, 0))
+            except Exception:
+                continue
+        else:
+            mask = raw_mask
+        entry = _adapter_entry(name, ip, mask)
+        if entry:
+            out.append(entry)
+    return out
+
 def _adapters_route_print():
     out = []
     try:
@@ -778,6 +2229,8 @@ def api_adapters():
     try:
         res = _adapters_windows(active_only=not include_all)
         if not res: res = _adapters_psutil(active_only=not include_all)
+        if not res: res = _adapters_ip_addr(active_only=not include_all)
+        if not res: res = _adapters_ifconfig(active_only=not include_all)
         if not res: res = _adapters_route_print()
         return jsonify({"ok": True, "adapters": res})
     except Exception as e:
@@ -796,7 +2249,8 @@ def api_config():
             "ws_port": app.config.get('WS_PORT', 80),
             "timeout": app.config.get('TIMEOUT', 4.5),
             "concurrency": app.config.get('UPLOAD_CONCURRENCY', 6),
-            "firmware_path": app.config.get('FIRMWARE_PATH', '')
+            "firmware_path": app.config.get('FIRMWARE_PATH', ''),
+            "app_version": _app_version(),
         })
     
     data = request.get_json(silent=True) or {}
@@ -1525,6 +2979,8 @@ def api_list_dir():
     """List directories in a given path for folder browser modal"""
     try:
         path_arg = request.args.get("path", "").strip()
+        if platform.system() == "Windows" and re.match(r"^[A-Za-z]:$", path_arg or ""):
+            path_arg = path_arg + "\\"
         if not path_arg:
             # Root of firmware path
             base = Path(CWD)
@@ -1546,10 +3002,27 @@ def api_list_dir():
                     })
         except PermissionError:
             return jsonify({"ok": False, "error": "Permission denied"}), 403
-        
+
+        drives = []
+        if platform.system() == "Windows":
+            for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+                root = f"{letter}:\\"
+                if Path(root).exists():
+                    drives.append(root)
+
+        parent = ""
+        try:
+            parent_path = base.parent
+            if parent_path != base:
+                parent = str(parent_path)
+        except Exception:
+            parent = ""
+
         return jsonify({
             "ok": True,
             "path": str(base),
+            "parent": parent,
+            "drives": drives,
             "entries": entries
         })
     except Exception as e:
@@ -1652,7 +3125,7 @@ def _ws_send_recv_with_fallback(ip: str, payload: dict, timeout: float, ws_port:
         except Exception as e:
             log.error(f"[FALLBACK] Fallback password also failed on {ip}: {e}")
             return {"error": f"Authentication failed with both primary and fallback passwords: {e}"}
-    
+
     # Primary password worked, return original response
     return resp
 
@@ -1673,6 +3146,432 @@ def api_login():
         return jsonify({"ok": True, "resp": resp})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
+
+@app.route("/api/lldp", methods=["POST"])
+def api_lldp():
+    data = request.get_json(silent=True) or {}
+    ip = (data.get("ip") or "").strip()
+    if not ip:
+        return jsonify({"ok": False, "error": "ip required"}), 400
+
+    user, preferred_pwd, _device = _device_credentials(ip)
+    ws_port = app.config['WS_PORT']
+    ws_path = app.config['WS_PATH']
+    timeout = min(float(app.config.get('TIMEOUT', 4.5)), 3.0)
+    payload = {
+        "id": "lldp-get",
+        "username": user,
+        "password": preferred_pwd,
+        "config_get": "lldp",
+    }
+    try:
+        resp = _ws_send_recv_with_fallback(ip, payload, timeout, ws_port, ws_path, preferred_pwd)
+        if not resp or resp.get("error"):
+            return jsonify({"ok": False, "error": (resp or {}).get("error") or "LLDP request failed"}), 502
+        return jsonify({"ok": True, "lldp": resp.get("config") or {}, "raw": resp})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+def _systeminfo_edit_payload(si_cfg: dict, hostname: str = None, system_mode: str = None):
+    buttons = si_cfg.get("buttons") or {}
+    buttons_cfg = {
+        "enabled": bool(buttons.get("enabled", True)),
+    }
+    for key in ("infoenabled", "updownenabled", "menuenabled"):
+        if key in buttons:
+            buttons_cfg[key] = bool(buttons.get(key))
+
+    leds = si_cfg.get("leds") or {}
+    payload = {
+        "description": si_cfg.get("description", "") or "",
+        "location": si_cfg.get("location", "") or "",
+        "hostname": hostname if hostname is not None else (si_cfg.get("hostname", "") or ""),
+        "ntpserver": si_cfg.get("ntpserver") or si_cfg.get("ntp_server") or si_cfg.get("ntpServer") or "",
+        "buttons": buttons_cfg,
+        "leds": {
+            "enabled": bool(leds.get("enabled", True)),
+        },
+        "system_mode": system_mode if system_mode is not None else (si_cfg.get("system_mode", "Colibri") or "Colibri"),
+    }
+    if isinstance(si_cfg.get("lcd"), dict):
+        payload["lcd"] = si_cfg.get("lcd")
+    return payload
+
+def _update_hostname_cache(ip: str, hostname: str, used_password: str = None):
+    if HAS_MATRIX and omni_matrix_logic:
+        for table_name in ("_encoders", "_decoders"):
+            table = getattr(omni_matrix_logic, table_name, None)
+            if isinstance(table, dict) and ip in table:
+                table[ip]["hostname"] = hostname
+                table[ip]["host"] = hostname
+    units = _load_cache() or []
+    changed = False
+    for unit in units:
+        if (unit or {}).get("ip") != ip:
+            continue
+        if unit.get("hostname") != hostname:
+            unit["hostname"] = hostname
+            changed = True
+        if used_password and unit.get("password") != used_password:
+            unit["password"] = used_password
+            changed = True
+        details = unit.setdefault("details", {})
+        si_details = details.setdefault("systeminfo", {"config": {}})
+        si_cfg = si_details.setdefault("config", {})
+        if si_cfg.get("hostname") != hostname:
+            si_cfg["hostname"] = hostname
+            changed = True
+    if changed:
+        _save_cache(units)
+
+    if SCAN_RESULTS.exists():
+        try:
+            with open(SCAN_RESULTS, "r", encoding="utf-8") as f:
+                scan_data = json.load(f)
+            scan_changed = False
+            for key in ("devices", "encoders", "decoders"):
+                arr = scan_data.get(key)
+                if not isinstance(arr, list):
+                    continue
+                for device in arr:
+                    if (device or {}).get("ip") != ip:
+                        continue
+                    if device.get("hostname") != hostname:
+                        device["hostname"] = hostname
+                        scan_changed = True
+                    details = device.setdefault("details", {})
+                    si_details = details.setdefault("systeminfo", {"config": {}})
+                    si_cfg = si_details.setdefault("config", {})
+                    if si_cfg.get("hostname") != hostname:
+                        si_cfg["hostname"] = hostname
+                        scan_changed = True
+            if scan_changed:
+                with open(SCAN_RESULTS, "w", encoding="utf-8") as f:
+                    json.dump(scan_data, f, indent=2)
+        except Exception as e:
+            log.warning("[HOSTNAME] Failed to update scan_results.json: %s", e)
+
+def _update_codec_cache(ip: str, system_mode: str, supported_modes=None, used_password: str = None):
+    codec = _codec_label(system_mode)
+    supported_modes = supported_modes if isinstance(supported_modes, list) else []
+    units = _load_cache() or []
+    changed = False
+    for unit in units:
+        if (unit or {}).get("ip") != ip:
+            continue
+        for key, value in (
+            ("system_mode", system_mode),
+            ("codec", codec),
+            ("supported_system_modes", supported_modes),
+            ("codec_configurable", _is_codec_configurable_model(unit.get("model"))),
+        ):
+            if unit.get(key) != value:
+                unit[key] = value
+                changed = True
+        if used_password and unit.get("password") != used_password:
+            unit["password"] = used_password
+            changed = True
+        si_cfg = unit.setdefault("details", {}).setdefault("systeminfo", {"config": {}}).setdefault("config", {})
+        if si_cfg.get("system_mode") != system_mode:
+            si_cfg["system_mode"] = system_mode
+            changed = True
+        if supported_modes and si_cfg.get("supported_system_modes") != supported_modes:
+            si_cfg["supported_system_modes"] = supported_modes
+            changed = True
+    if changed:
+        _save_cache(units)
+
+    if SCAN_RESULTS.exists():
+        try:
+            with open(SCAN_RESULTS, "r", encoding="utf-8") as f:
+                scan_data = json.load(f)
+            scan_changed = False
+            for key in ("devices", "encoders", "decoders"):
+                arr = scan_data.get(key)
+                if not isinstance(arr, list):
+                    continue
+                for device in arr:
+                    if (device or {}).get("ip") != ip:
+                        continue
+                    for field, value in (
+                        ("system_mode", system_mode),
+                        ("codec", codec),
+                        ("supported_system_modes", supported_modes),
+                        ("codec_configurable", _is_codec_configurable_model(device.get("model"))),
+                    ):
+                        if device.get(field) != value:
+                            device[field] = value
+                            scan_changed = True
+                    si_cfg = device.setdefault("details", {}).setdefault("systeminfo", {"config": {}}).setdefault("config", {})
+                    if si_cfg.get("system_mode") != system_mode:
+                        si_cfg["system_mode"] = system_mode
+                        scan_changed = True
+                    if supported_modes and si_cfg.get("supported_system_modes") != supported_modes:
+                        si_cfg["supported_system_modes"] = supported_modes
+                        scan_changed = True
+            if scan_changed:
+                with open(SCAN_RESULTS, "w", encoding="utf-8") as f:
+                    json.dump(scan_data, f, indent=2)
+        except Exception as e:
+            log.warning("[CODEC] Failed to update scan_results.json: %s", e)
+
+def _update_firmware_cache(ip: str, firmware_version: str):
+    firmware_version = (firmware_version or "").strip()
+    if not ip or not firmware_version:
+        return
+
+    units = _load_cache() or []
+    changed = False
+    for unit in units:
+        if (unit or {}).get("ip") != ip:
+            continue
+        for key in ("version", "firmwareversion"):
+            if unit.get(key) != firmware_version:
+                unit[key] = firmware_version
+                changed = True
+        si_cfg = unit.setdefault("details", {}).setdefault("systeminfo", {"config": {}}).setdefault("config", {})
+        if si_cfg.get("firmwareversion") != firmware_version:
+            si_cfg["firmwareversion"] = firmware_version
+            changed = True
+    if changed:
+        _save_cache(units)
+
+    if SCAN_RESULTS.exists():
+        try:
+            with open(SCAN_RESULTS, "r", encoding="utf-8") as f:
+                scan_data = json.load(f)
+            scan_changed = False
+            for key in ("devices", "encoders", "decoders"):
+                arr = scan_data.get(key)
+                if not isinstance(arr, list):
+                    continue
+                for device in arr:
+                    if (device or {}).get("ip") != ip:
+                        continue
+                    for field in ("version", "firmwareversion"):
+                        if device.get(field) != firmware_version:
+                            device[field] = firmware_version
+                            scan_changed = True
+                    si_cfg = device.setdefault("details", {}).setdefault("systeminfo", {"config": {}}).setdefault("config", {})
+                    if si_cfg.get("firmwareversion") != firmware_version:
+                        si_cfg["firmwareversion"] = firmware_version
+                        scan_changed = True
+            if scan_changed:
+                with open(SCAN_RESULTS, "w", encoding="utf-8") as f:
+                    json.dump(scan_data, f, indent=2)
+        except Exception as e:
+            log.warning("[POLL] Failed to update cached firmware version: %s", e)
+
+def _update_poll_detail_cache(ip: str, updates: dict):
+    if not ip or not isinstance(updates, dict):
+        return
+
+    updates = {k: v for k, v in updates.items() if v is not None}
+    if not updates:
+        return
+
+    def apply_updates(unit):
+        if not isinstance(unit, dict) or unit.get("ip") != ip:
+            return False
+        changed = False
+        for key, value in updates.items():
+            if unit.get(key) != value:
+                unit[key] = value
+                changed = True
+
+        details = unit.setdefault("details", {})
+        si_cfg = details.setdefault("systeminfo", {"config": {}}).setdefault("config", {})
+        tz_cfg = details.setdefault("timezone", {"config": {}}).setdefault("config", {})
+
+        for key in ("hostname", "ntpserver", "ntp_server", "version", "firmwareversion"):
+            if key in updates and si_cfg.get(key) != updates[key]:
+                si_cfg[key] = updates[key]
+                changed = True
+        if "hostname" in updates and si_cfg.get("hostname") != updates["hostname"]:
+            si_cfg["hostname"] = updates["hostname"]
+            changed = True
+        if "ntpserver" in updates and si_cfg.get("ntp_server") != updates["ntpserver"]:
+            si_cfg["ntp_server"] = updates["ntpserver"]
+            changed = True
+        if "ntp_server" in updates and si_cfg.get("ntpserver") != updates["ntp_server"]:
+            si_cfg["ntpserver"] = updates["ntp_server"]
+            changed = True
+        if "timezone" in updates:
+            for key in ("timezone", "active_timezone"):
+                if tz_cfg.get(key) != updates["timezone"]:
+                    tz_cfg[key] = updates["timezone"]
+                    changed = True
+        if "active_timezone" in updates:
+            for key in ("timezone", "active_timezone"):
+                if tz_cfg.get(key) != updates["active_timezone"]:
+                    tz_cfg[key] = updates["active_timezone"]
+                    changed = True
+        return changed
+
+    units = _load_cache() or []
+    changed = False
+    for unit in units:
+        changed = apply_updates(unit) or changed
+    if changed:
+        _save_cache(units)
+
+    if SCAN_RESULTS.exists():
+        try:
+            with open(SCAN_RESULTS, "r", encoding="utf-8") as f:
+                scan_data = json.load(f)
+            scan_changed = False
+            for key in ("devices", "encoders", "decoders"):
+                arr = scan_data.get(key)
+                if isinstance(arr, list):
+                    for device in arr:
+                        scan_changed = apply_updates(device) or scan_changed
+            if scan_changed:
+                with open(SCAN_RESULTS, "w", encoding="utf-8") as f:
+                    json.dump(scan_data, f, indent=2)
+        except Exception as e:
+            log.warning("[POLL] Failed to update cached poll details: %s", e)
+
+@app.route("/api/hostname", methods=["POST"])
+def api_hostname():
+    data = request.get_json(silent=True) or {}
+    ip = (data.get("ip") or "").strip()
+    hostname = (data.get("hostname") or "").strip()
+    if not ip:
+        return jsonify({"ok": False, "error": "ip required"}), 400
+    if not hostname:
+        return jsonify({"ok": False, "error": "hostname required"}), 400
+    if not re.fullmatch(r"[A-Za-z0-9.-]+", hostname):
+        return jsonify({"ok": False, "error": "hostname may only contain letters, numbers, hyphen, and period"}), 400
+
+    cache_devices = _load_cache() or []
+    cache_map = {d.get("ip"): d for d in cache_devices if d.get("ip")}
+    user, preferred_pwd, _device = _device_credentials(ip, cache_map)
+    ws_port = app.config['WS_PORT']
+    ws_path = app.config['WS_PATH']
+    timeout = app.config['TIMEOUT']
+    last_error = "hostname update failed"
+
+    for pwd_try in _password_candidates(preferred_pwd):
+        try:
+            url = _ws_url(ip, ws_port, ws_path)
+            si_resp = _ws_send_recv(url, {
+                "id": "systeminfo-get",
+                "username": user,
+                "password": pwd_try,
+                "config_get": "systeminfo"
+            }, timeout=min(timeout, 4.0))
+            if not si_resp or si_resp.get("error"):
+                last_error = (si_resp or {}).get("error") or "systeminfo-get failed"
+                continue
+
+            si_cfg = (si_resp or {}).get("config") or {}
+            if not isinstance(si_cfg, dict):
+                si_cfg = {}
+            old_hostname = (si_cfg.get("hostname") or "").strip()
+            if old_hostname == hostname:
+                _update_hostname_cache(ip, hostname, pwd_try)
+                return jsonify({"ok": True, "changed": False, "hostname": hostname})
+
+            set_resp = _ws_send_recv(url, {
+                "id": "systeminfo-set",
+                "username": user,
+                "password": pwd_try,
+                "config_set": {
+                    "name": "systeminfo",
+                    "config": _systeminfo_edit_payload(si_cfg, hostname)
+                }
+            }, timeout=max(timeout, 6.0))
+            if not set_resp or set_resp.get("error"):
+                last_error = (set_resp or {}).get("error") or "systeminfo-set failed"
+                continue
+
+            verify_resp = _ws_send_recv(url, {
+                "id": "systeminfo-get-verify",
+                "username": user,
+                "password": pwd_try,
+                "config_get": "systeminfo"
+            }, timeout=min(timeout, 4.0))
+            verify_cfg = (verify_resp or {}).get("config") or {}
+            verified_hostname = (verify_cfg.get("hostname") or "").strip() if isinstance(verify_cfg, dict) else ""
+            if verified_hostname != hostname:
+                last_error = f"verification returned hostname '{verified_hostname}'"
+                continue
+
+            _update_hostname_cache(ip, hostname, pwd_try)
+            return jsonify({"ok": True, "changed": True, "hostname": hostname})
+        except Exception as e:
+            last_error = str(e)
+
+    return jsonify({"ok": False, "error": last_error}), 502
+
+@app.route("/api/codec", methods=["POST"])
+def api_codec():
+    data = request.get_json(silent=True) or {}
+    ip = (data.get("ip") or "").strip()
+    system_mode = (data.get("system_mode") or "").strip()
+    if not ip:
+        return jsonify({"ok": False, "error": "ip required"}), 400
+    if system_mode not in CODEC_VALUES:
+        return jsonify({"ok": False, "error": "unsupported codec mode"}), 400
+
+    cache_devices = _load_cache() or []
+    cache_map = {d.get("ip"): d for d in cache_devices if d.get("ip")}
+    user, preferred_pwd, device = _device_credentials(ip, cache_map)
+    model = (device or {}).get("model") or ""
+    if model and not _is_codec_configurable_model(model):
+        return jsonify({"ok": False, "error": "codec is not configurable on HW-OMNI units"}), 400
+
+    ws_port = app.config['WS_PORT']
+    ws_path = app.config['WS_PATH']
+    timeout = app.config['TIMEOUT']
+    last_error = "codec update failed"
+
+    for pwd_try in _password_candidates(preferred_pwd):
+        try:
+            url = _ws_url(ip, ws_port, ws_path)
+            si_resp = _ws_send_recv(url, {
+                "id": "systeminfo-get",
+                "username": user,
+                "password": pwd_try,
+                "config_get": "systeminfo"
+            }, timeout=min(timeout, 4.0))
+            if not si_resp or si_resp.get("error"):
+                last_error = (si_resp or {}).get("error") or "systeminfo-get failed"
+                continue
+
+            si_cfg = (si_resp or {}).get("config") or {}
+            if not isinstance(si_cfg, dict):
+                si_cfg = {}
+            live_model = si_cfg.get("model") or model
+            if not _is_codec_configurable_model(live_model):
+                return jsonify({"ok": False, "error": "codec is not configurable on HW-OMNI units"}), 400
+            supported_modes = si_cfg.get("supported_system_modes") or []
+            if isinstance(supported_modes, list) and supported_modes and system_mode not in supported_modes:
+                return jsonify({"ok": False, "error": "codec mode not supported by unit"}), 400
+            old_mode = (si_cfg.get("system_mode") or "").strip()
+            if old_mode == system_mode:
+                _update_codec_cache(ip, system_mode, supported_modes, pwd_try)
+                return jsonify({"ok": True, "changed": False, "system_mode": system_mode, "codec": _codec_label(system_mode), "supported_system_modes": supported_modes})
+
+            set_resp = _ws_send_recv(url, {
+                "id": "systeminfo-set",
+                "username": user,
+                "password": pwd_try,
+                "config_set": {
+                    "name": "systeminfo",
+                    "config": _systeminfo_edit_payload(si_cfg, system_mode=system_mode)
+                }
+            }, timeout=max(timeout, 6.0))
+            if not set_resp or set_resp.get("error"):
+                last_error = (set_resp or {}).get("error") or "systeminfo-set failed"
+                continue
+
+            _update_codec_cache(ip, system_mode, supported_modes, pwd_try)
+            return jsonify({"ok": True, "changed": True, "system_mode": system_mode, "codec": _codec_label(system_mode), "supported_system_modes": supported_modes})
+        except Exception as e:
+            last_error = str(e)
+
+    return jsonify({"ok": False, "error": last_error}), 502
 
 # ---------------- scan ----------------
 def _expand_targets(spec: str):
@@ -1770,6 +3669,8 @@ def _probe_one(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout
     model = cfg.get("model") or ""
     version = cfg.get("firmwareversion") or ""
     hostname = cfg.get("hostname") or ""
+    system_mode = cfg.get("system_mode") or ""
+    supported_system_modes = cfg.get("supported_system_modes") or []
     serialnumber = board.get("serialnumber") or ""
     ntp_server = (cfg.get("ntpserver") or cfg.get("ntp_server") or cfg.get("ntpServer") or "").strip()
     timezone_cfg = (timezone_resp or {}).get("config") or {}
@@ -1809,8 +3710,25 @@ def _probe_one(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout
                         "a_mcast": audio_stream.get("destination_address"),
                         "a_port": audio_stream.get("destination_port")
                     }
+                for idx, session in enumerate((sessions or [])[:2], start=1):
+                    video_stream = ((session.get("video") or {}).get("stream") or {})
+                    audio_stream = ((session.get("audio") or {}).get("stream") or {})
+                    matrix_data.update({
+                        f"session{idx}_name": session.get("name") or f"session{idx}",
+                        f"session{idx}_video_mcast": video_stream.get("destination_address"),
+                        f"session{idx}_video_port": video_stream.get("destination_port"),
+                        f"session{idx}_audio_mcast": audio_stream.get("destination_address"),
+                        f"session{idx}_audio_port": audio_stream.get("destination_port"),
+                    })
         except Exception as e:
             log.debug("[SCAN] %s - sessions fetch failed: %s", ip, e)
+        try:
+            enc_input = _ws_get_encoder_input_settings(ip, user, pwd, ws_port, ws_path, timeout=min(timeout, 1.5), attempts=1, delay=0)
+            for key in ("hdcp_encrypted", "hdcp_negotiated_version", "hdcp_support_version", "hdcp_supported_versions"):
+                if enc_input.get(key) is not None:
+                    matrix_data[key] = enc_input.get(key)
+        except Exception as e:
+            log.debug("[SCAN] %s - encoder HDCP fetch failed: %s", ip, e)
     elif role == "decoder":
         # Get decoder ip_input configuration
         try:
@@ -1831,6 +3749,13 @@ def _probe_one(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout
                 }
         except Exception as e:
             log.debug("[SCAN] %s - ip_input fetch failed: %s", ip, e)
+        try:
+            dec_fields = _ws_get_decoder_inputs(ip, user, pwd, ws_port, ws_path, timeout=min(timeout, 1.5), attempts=1, delay=0)
+            for key in ("hdcp_support_version", "hdcp_supported_versions"):
+                if dec_fields.get(key) is not None:
+                    matrix_data[key] = dec_fields.get(key)
+        except Exception as e:
+            log.debug("[SCAN] %s - decoder HDCP fetch failed: %s", ip, e)
     
     # Fetch link speed via net-get
     linkspeed = None
@@ -1859,6 +3784,10 @@ def _probe_one(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout
         "model": model,
         "version": version,
         "hostname": hostname,
+        "system_mode": system_mode,
+        "codec": _codec_label(system_mode),
+        "supported_system_modes": supported_system_modes if isinstance(supported_system_modes, list) else [],
+        "codec_configurable": _is_codec_configurable_model(model),
         "timezone": timezone,
         "active_timezone": active_timezone,
         "ntp_server": ntp_server,
@@ -2043,30 +3972,94 @@ def api_state_matrix():
 
     def _merge_enc(e):
         src = sr_enc_map.get(e.get("ip")) or {}
+        e_si = (((e.get("details") or {}).get("systeminfo") or {}).get("config") or {})
+        src_si = (((src.get("details") or {}).get("systeminfo") or {}).get("config") or {})
+        system_mode = e.get("system_mode") or src.get("system_mode") or e_si.get("system_mode") or src_si.get("system_mode")
         return {
             "ip": e.get("ip"),
             "host": e.get("hostname") or e.get("host"),
             "model": e.get("model"),
+            "system_mode": system_mode,
+            "codec": e.get("codec") or src.get("codec") or _codec_label(system_mode),
+            "supported_system_modes": e.get("supported_system_modes") or src.get("supported_system_modes") or e_si.get("supported_system_modes") or src_si.get("supported_system_modes") or [],
+            "codec_configurable": e.get("codec_configurable") if e.get("codec_configurable") is not None else _is_codec_configurable_model(e.get("model")),
             "fw": e.get("version") or e.get("fw"),
             "serial": e.get("serialnumber") or e.get("serial"),
             "v_mcast": e.get("v_mcast") or src.get("v_mcast"),
             "v_port": e.get("v_port") or src.get("v_port"),
             "a_mcast": e.get("a_mcast") or src.get("a_mcast"),
             "a_port": e.get("a_port") or src.get("a_port"),
+            "input_auto_switch": e.get("input_auto_switch") if e.get("input_auto_switch") is not None else src.get("input_auto_switch"),
+            "active_input": e.get("active_input") or src.get("active_input"),
+            "input_status": e.get("input_status") or src.get("input_status") or [],
+            "cable_present": e.get("cable_present") if e.get("cable_present") is not None else src.get("cable_present"),
+            "edid": e.get("edid") or src.get("edid"),
+            "edid_options": e.get("edid_options") or src.get("edid_options") or [],
+            "hdcp_encrypted": e.get("hdcp_encrypted") if e.get("hdcp_encrypted") is not None else src.get("hdcp_encrypted"),
+            "hdcp_negotiated_version": e.get("hdcp_negotiated_version") or src.get("hdcp_negotiated_version"),
+            "hdcp_support_version": e.get("hdcp_support_version") or src.get("hdcp_support_version"),
+            "hdcp_supported_versions": e.get("hdcp_supported_versions") or src.get("hdcp_supported_versions") or [],
         }
 
     def _merge_dec(d):
         src = sr_dec_map.get(d.get("ip")) or {}
+        d_si = (((d.get("details") or {}).get("systeminfo") or {}).get("config") or {})
+        src_si = (((src.get("details") or {}).get("systeminfo") or {}).get("config") or {})
+        system_mode = d.get("system_mode") or src.get("system_mode") or d_si.get("system_mode") or src_si.get("system_mode")
         return {
             "ip": d.get("ip"),
             "host": d.get("hostname") or d.get("host"),
             "model": d.get("model"),
+            "system_mode": system_mode,
+            "codec": d.get("codec") or src.get("codec") or _codec_label(system_mode),
+            "supported_system_modes": d.get("supported_system_modes") or src.get("supported_system_modes") or d_si.get("supported_system_modes") or src_si.get("supported_system_modes") or [],
+            "codec_configurable": d.get("codec_configurable") if d.get("codec_configurable") is not None else _is_codec_configurable_model(d.get("model")),
             "fw": d.get("version") or d.get("fw"),
             "serial": d.get("serialnumber") or d.get("serial"),
             "ip1_addr": d.get("ip1_addr") or src.get("ip1_addr"),
             "ip1_port": d.get("ip1_port") or src.get("ip1_port"),
             "ip3_addr": d.get("ip3_addr") or src.get("ip3_addr"),
             "ip3_port": d.get("ip3_port") or src.get("ip3_port"),
+            "sap_input_enabled": d.get("sap_input_enabled") if d.get("sap_input_enabled") is not None else src.get("sap_input_enabled"),
+            "input_session": d.get("input_session") or src.get("input_session"),
+            "input_session_options": d.get("input_session_options") or src.get("input_session_options") or [],
+            "hdcp_support_version": d.get("hdcp_support_version") or src.get("hdcp_support_version"),
+            "hdcp_supported_versions": d.get("hdcp_supported_versions") or src.get("hdcp_supported_versions") or [],
+            "video_input": d.get("video_input") or src.get("video_input"),
+            "audio_input": d.get("audio_input") or src.get("audio_input"),
+            "video_input_options": d.get("video_input_options") or src.get("video_input_options") or [],
+            "audio_input_options": d.get("audio_input_options") or src.get("audio_input_options") or [],
+            "stretch_crop_mode": d.get("stretch_crop_mode") or src.get("stretch_crop_mode"),
+            "stretch_crop_mode_options": d.get("stretch_crop_mode_options") or src.get("stretch_crop_mode_options") or [],
+            "resolution": d.get("resolution") or src.get("resolution"),
+            "resolution_options": d.get("resolution_options") or src.get("resolution_options") or [],
+            "framerate": d.get("framerate") or src.get("framerate"),
+            "framerate_options": d.get("framerate_options") or src.get("framerate_options") or [],
+            "fast_switching_enabled": d.get("fast_switching_enabled") if d.get("fast_switching_enabled") is not None else src.get("fast_switching_enabled"),
+            "fast_switching_timeout": d.get("fast_switching_timeout") if d.get("fast_switching_timeout") is not None else src.get("fast_switching_timeout"),
+            "fast_switching_colorspace": d.get("fast_switching_colorspace") or src.get("fast_switching_colorspace"),
+            "fast_switching_colorspace_options": d.get("fast_switching_colorspace_options") or src.get("fast_switching_colorspace_options") or [],
+            "video_wall_enabled": d.get("video_wall_enabled") if d.get("video_wall_enabled") is not None else src.get("video_wall_enabled"),
+            "video_wall_unit": d.get("video_wall_unit") or src.get("video_wall_unit"),
+            "video_wall_unit_options": d.get("video_wall_unit_options") or src.get("video_wall_unit_options") or [],
+            "video_wall_total_width": d.get("video_wall_total_width") if d.get("video_wall_total_width") is not None else src.get("video_wall_total_width"),
+            "video_wall_total_height": d.get("video_wall_total_height") if d.get("video_wall_total_height") is not None else src.get("video_wall_total_height"),
+            "video_wall_grid_width": d.get("video_wall_grid_width") if d.get("video_wall_grid_width") is not None else src.get("video_wall_grid_width"),
+            "video_wall_grid_height": d.get("video_wall_grid_height") if d.get("video_wall_grid_height") is not None else src.get("video_wall_grid_height"),
+            "video_wall_grid_x": d.get("video_wall_grid_x") if d.get("video_wall_grid_x") is not None else src.get("video_wall_grid_x"),
+            "video_wall_grid_y": d.get("video_wall_grid_y") if d.get("video_wall_grid_y") is not None else src.get("video_wall_grid_y"),
+            "video_wall_width": d.get("video_wall_width") if d.get("video_wall_width") is not None else src.get("video_wall_width"),
+            "video_wall_height": d.get("video_wall_height") if d.get("video_wall_height") is not None else src.get("video_wall_height"),
+            "video_wall_horizontal": d.get("video_wall_horizontal") if d.get("video_wall_horizontal") is not None else src.get("video_wall_horizontal"),
+            "video_wall_vertical": d.get("video_wall_vertical") if d.get("video_wall_vertical") is not None else src.get("video_wall_vertical"),
+            "video_wall_rotation": d.get("video_wall_rotation") if d.get("video_wall_rotation") is not None else src.get("video_wall_rotation"),
+            "video_wall_rotation_options": d.get("video_wall_rotation_options") or src.get("video_wall_rotation_options") or [],
+            "video_wall_edge_mode": d.get("video_wall_edge_mode") or src.get("video_wall_edge_mode"),
+            "video_wall_edge_mode_options": d.get("video_wall_edge_mode_options") or src.get("video_wall_edge_mode_options") or [],
+            "video_wall_edge_top": d.get("video_wall_edge_top") if d.get("video_wall_edge_top") is not None else src.get("video_wall_edge_top"),
+            "video_wall_edge_bottom": d.get("video_wall_edge_bottom") if d.get("video_wall_edge_bottom") is not None else src.get("video_wall_edge_bottom"),
+            "video_wall_edge_left": d.get("video_wall_edge_left") if d.get("video_wall_edge_left") is not None else src.get("video_wall_edge_left"),
+            "video_wall_edge_right": d.get("video_wall_edge_right") if d.get("video_wall_edge_right") is not None else src.get("video_wall_edge_right"),
         }
 
     enc_mapped = [_merge_enc(e) for e in enc]
@@ -2090,14 +4083,38 @@ def api_state_matrix():
         if mstate:
             routes = mstate.get("routes") or routes
             log.info(f"[API/STATE] Routes from list_state: {routes}")
+            live_encs = {e.get("ip"): e for e in (mstate.get("encoders") or [])}
             live_decs = {d.get("ip"): d for d in (mstate.get("decoders") or [])}
+            for i,e in enumerate(enc_mapped):
+                live = live_encs.get(e.get("ip"))
+                if not live:
+                    continue
+                for k in ("input_auto_switch","active_input","input_status","cable_present","edid","edid_options","hdcp_encrypted","hdcp_negotiated_version","hdcp_support_version","hdcp_supported_versions"):
+                    if live.get(k) is not None:
+                        enc_mapped[i][k] = live.get(k)
             for i,d in enumerate(dec_mapped):
                 live = live_decs.get(d.get("ip"))
                 if not live:
                     continue
                 # prefer live decoder input fields so refresh doesn't revert UI
                 log.info(f"[API/STATE] Overlaying live decoder {d.get('ip')}: {live}")
-                for k in ("ip1_addr","ip1_port","ip3_addr","ip3_port"):
+                for k in (
+                    "ip1_addr","ip1_port","ip3_addr","ip3_port",
+                    "sap_input_enabled","input_session","input_session_options",
+                    "hdcp_support_version","hdcp_supported_versions",
+                    "video_input","audio_input","video_input_options","audio_input_options",
+                    "stretch_crop_mode","stretch_crop_mode_options",
+                    "resolution","resolution_options",
+                    "framerate","framerate_options",
+                    "fast_switching_enabled","fast_switching_timeout","fast_switching_colorspace","fast_switching_colorspace_options",
+                    "video_wall_enabled","video_wall_unit","video_wall_unit_options",
+                    "video_wall_total_width","video_wall_total_height",
+                    "video_wall_grid_width","video_wall_grid_height","video_wall_grid_x","video_wall_grid_y",
+                    "video_wall_width","video_wall_height","video_wall_horizontal","video_wall_vertical",
+                    "video_wall_rotation","video_wall_rotation_options",
+                    "video_wall_edge_mode","video_wall_edge_mode_options",
+                    "video_wall_edge_top","video_wall_edge_bottom","video_wall_edge_left","video_wall_edge_right",
+                ):
                     if live.get(k) is not None:
                         dec_mapped[i][k] = live.get(k)
     
@@ -2246,10 +4263,540 @@ def api_route_matrix():
 
     # Note: Decoder inputs will be fetched by the polling system (every 5 seconds)
     # No need to fetch them here - route response returns immediately
-    
+
     # Return immediately with basic decoder info
     dec_payload = {"ip": decoder}
     return jsonify({"ok": bool(ok), "decoder": dec_payload})
+
+@app.route("/api/poll_encoders", methods=["POST"])
+def api_poll_encoders():
+    """Poll encoders for current input settings and dropdown option lists."""
+    if not HAS_MATRIX:
+        return jsonify({"ok": False, "error": "matrix logic unavailable"}), 500
+
+    data = request.get_json(silent=True) or {}
+    encoder_ips = data.get("encoders") or []
+    if not encoder_ips:
+        return jsonify({"ok": False, "error": "encoders array required"}), 400
+
+    default_user = app.config['USERNAME']
+    default_pwd = app.config['PASSWORD']
+    ws_port = app.config['WS_PORT']
+    ws_path = app.config['WS_PATH']
+    timeout = app.config['TIMEOUT']
+
+    cache_devices = {d.get("ip"): d for d in _load_cache()}
+    results = {}
+    updated_count = 0
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        def poll_encoder(ip):
+            try:
+                device = cache_devices.get(ip, {})
+                user = device.get("username") or default_user
+                pwd = device.get("password") or default_pwd
+                fields = _ws_get_encoder_input_settings(ip, user, pwd, ws_port, ws_path, timeout=4, attempts=1, delay=0)
+                if not isinstance(fields, dict):
+                    fields = {}
+
+                url = _ws_url(ip, ws_port, ws_path)
+                try:
+                    sysinfo_resp = _ws_send_recv(url, {
+                        "id": "systeminfo-get",
+                        "username": user,
+                        "password": pwd,
+                        "config_get": "systeminfo"
+                    }, timeout=min(timeout, 2.0))
+                    sysinfo_cfg = (sysinfo_resp or {}).get("config") or {}
+                    if isinstance(sysinfo_cfg, dict):
+                        if "hostname" in sysinfo_cfg:
+                            fields["hostname"] = (sysinfo_cfg.get("hostname") or "").strip()
+                            fields["host"] = fields["hostname"]
+                        version = (sysinfo_cfg.get("firmwareversion") or sysinfo_cfg.get("version") or "").strip()
+                        if version:
+                            fields["version"] = version
+                            fields["firmwareversion"] = version
+                            fields["fw"] = version
+                except Exception as e:
+                    log.debug("[POLL_ENCODERS] %s systeminfo refresh failed: %s", ip, e)
+
+                try:
+                    session_fields = _ws_get_encoder_output_settings(ip, user, pwd, ws_port, ws_path, timeout=4, attempts=1, delay=0)
+                    sessions = session_fields.get("sessions") or []
+                    fields.update(_encoder_session_matrix_fields(sessions))
+                except Exception as e:
+                    log.debug("[POLL_ENCODERS] %s sessions refresh failed: %s", ip, e)
+
+                if fields and (
+                    fields.get("edid_options") or fields.get("hdcp_supported_versions") or fields.get("edid") or
+                    fields.get("hdcp_support_version") or fields.get("hostname") or fields.get("v_mcast") or fields.get("a_mcast")
+                ):
+                    return (ip, fields, True)
+                return (ip, {"error": "failed to fetch"}, False)
+            except Exception as e:
+                return (ip, {"error": str(e)}, False)
+
+        for ip, fields, success in executor.map(poll_encoder, encoder_ips):
+            results[ip] = fields
+            if success:
+                if ip in omni_matrix_logic._encoders:
+                    omni_matrix_logic._encoders[ip].update(fields)
+                updated_count += 1
+
+    if updated_count > 0:
+        try:
+            units = _load_cache() or []
+            enc_fields = {ip: fields for ip, fields in results.items() if isinstance(fields, dict) and "error" not in fields}
+            for u in units:
+                fields = enc_fields.get(u.get("ip"))
+                if not fields:
+                    continue
+                u.update({
+                    "hostname": fields.get("hostname") or u.get("hostname"),
+                    "host": fields.get("host") or fields.get("hostname") or u.get("host"),
+                    "version": fields.get("version") or u.get("version"),
+                    "firmwareversion": fields.get("firmwareversion") or u.get("firmwareversion"),
+                    "input_auto_switch": fields.get("input_auto_switch"),
+                    "active_input": fields.get("active_input"),
+                    "input_status": fields.get("input_status") or [],
+                    "cable_present": fields.get("cable_present"),
+                    "edid": fields.get("edid"),
+                    "edid_options": fields.get("edid_options") or [],
+                    "hdcp_encrypted": fields.get("hdcp_encrypted"),
+                    "hdcp_negotiated_version": fields.get("hdcp_negotiated_version"),
+                    "hdcp_support_version": fields.get("hdcp_support_version"),
+                    "hdcp_supported_versions": fields.get("hdcp_supported_versions") or [],
+                    "v_mcast": fields.get("v_mcast") or u.get("v_mcast"),
+                    "v_port": fields.get("v_port") or u.get("v_port"),
+                    "a_mcast": fields.get("a_mcast") or u.get("a_mcast"),
+                    "a_port": fields.get("a_port") or u.get("a_port"),
+                    "session1_name": fields.get("session1_name") or u.get("session1_name"),
+                    "session1_video_mcast": fields.get("session1_video_mcast") or u.get("session1_video_mcast"),
+                    "session1_video_port": fields.get("session1_video_port") or u.get("session1_video_port"),
+                    "session1_audio_mcast": fields.get("session1_audio_mcast") or u.get("session1_audio_mcast"),
+                    "session1_audio_port": fields.get("session1_audio_port") or u.get("session1_audio_port"),
+                    "session2_name": fields.get("session2_name") or u.get("session2_name"),
+                    "session2_video_mcast": fields.get("session2_video_mcast") or u.get("session2_video_mcast"),
+                    "session2_video_port": fields.get("session2_video_port") or u.get("session2_video_port"),
+                    "session2_audio_mcast": fields.get("session2_audio_mcast") or u.get("session2_audio_mcast"),
+                    "session2_audio_port": fields.get("session2_audio_port") or u.get("session2_audio_port"),
+                })
+            _save_cache(units)
+        except Exception as e:
+            log.error(f"[POLL_ENCODERS] Failed to save cache: {e}")
+
+    return jsonify({"ok": True, "results": results, "updated": updated_count})
+
+@app.route("/api/encoder_input", methods=["POST"])
+def api_set_encoder_input():
+    """Set encoder hdmi_input1 EDID and/or HDCP support version."""
+    data = request.get_json(silent=True) or {}
+    ip = (data.get("encoder") or data.get("ip") or "").strip()
+    if not ip:
+        return jsonify({"ok": False, "error": "encoder ip required"}), 400
+
+    input_auto_switch = data.get("input_auto_switch") if "input_auto_switch" in data else None
+    active_input = data.get("active_input") if "active_input" in data else None
+    edid = data.get("edid") if "edid" in data else None
+    hdcp_support_version = data.get("hdcp_support_version") if "hdcp_support_version" in data else None
+    if input_auto_switch is None and active_input is None and edid is None and hdcp_support_version is None:
+        return jsonify({"ok": False, "error": "one or more encoder input fields required"}), 400
+
+    cache_devices = {d.get("ip"): d for d in _load_cache()}
+    device = cache_devices.get(ip, {})
+    user = device.get("username") or app.config['USERNAME']
+    pwd = device.get("password") or app.config['PASSWORD']
+    ws_port = app.config['WS_PORT']
+    ws_path = app.config['WS_PATH']
+    timeout = app.config['TIMEOUT']
+
+    result = _ws_set_encoder_input_settings(
+        ip, user, pwd, ws_port, ws_path, timeout,
+        input_auto_switch=input_auto_switch,
+        active_input=active_input,
+        edid=edid,
+        hdcp_support_version=hdcp_support_version,
+    )
+    if not result.get("ok"):
+        return jsonify(result), 500
+
+    fields = result.get("fields") or {}
+    if HAS_MATRIX and ip in omni_matrix_logic._encoders:
+        omni_matrix_logic._encoders[ip].update(fields)
+
+    try:
+        units = _load_cache() or []
+        for u in units:
+            if u.get("ip") == ip:
+                u.update({
+                    "input_auto_switch": fields.get("input_auto_switch"),
+                    "active_input": fields.get("active_input"),
+                    "input_status": fields.get("input_status") or [],
+                    "cable_present": fields.get("cable_present"),
+                    "edid": fields.get("edid"),
+                    "edid_options": fields.get("edid_options") or [],
+                    "hdcp_encrypted": fields.get("hdcp_encrypted"),
+                    "hdcp_negotiated_version": fields.get("hdcp_negotiated_version"),
+                    "hdcp_support_version": fields.get("hdcp_support_version"),
+                    "hdcp_supported_versions": fields.get("hdcp_supported_versions") or [],
+                })
+                break
+        _save_cache(units)
+    except Exception as e:
+        log.error(f"[ENCODER_INPUT] Failed to save cache: {e}")
+
+    return jsonify({"ok": True, "encoder": {"ip": ip, **fields}})
+
+@app.route("/api/encoder_output", methods=["GET", "POST"])
+def api_encoder_output():
+    """Get or set encoder Output page session properties."""
+    data = request.get_json(silent=True) or {}
+    ip = (
+        request.args.get("encoder")
+        or request.args.get("ip")
+        or data.get("encoder")
+        or data.get("ip")
+        or ""
+    ).strip()
+    if not ip:
+        return jsonify({"ok": False, "error": "encoder ip required"}), 400
+
+    cache_devices = {d.get("ip"): d for d in _load_cache()}
+    device = cache_devices.get(ip, {})
+    user = device.get("username") or app.config['USERNAME']
+    pwd = device.get("password") or app.config['PASSWORD']
+    ws_port = app.config['WS_PORT']
+    ws_path = app.config['WS_PATH']
+    timeout = app.config['TIMEOUT']
+
+    if request.method == "GET":
+        fields = _ws_get_encoder_output_settings(ip, user, pwd, ws_port, ws_path, timeout=timeout, attempts=1, delay=0)
+        if not fields:
+            return jsonify({"ok": False, "error": "failed to fetch encoder output settings"}), 500
+        return jsonify({"ok": True, "encoder": ip, **fields})
+
+    sessions = data.get("sessions")
+    result = _ws_set_encoder_output_settings(ip, user, pwd, ws_port, ws_path, timeout, sessions)
+    if not result.get("ok"):
+        return jsonify(result), 500
+    return jsonify({"ok": True, "encoder": ip, "sessions": result.get("sessions") or []})
+
+@app.route("/api/encoder_encoding", methods=["GET", "POST"])
+def api_encoder_encoding():
+    """Get or set encoder Encoding page VC2 properties."""
+    data = request.get_json(silent=True) or {}
+    ip = (
+        request.args.get("encoder")
+        or request.args.get("ip")
+        or data.get("encoder")
+        or data.get("ip")
+        or ""
+    ).strip()
+    if not ip:
+        return jsonify({"ok": False, "error": "encoder ip required"}), 400
+
+    cache_devices = {d.get("ip"): d for d in _load_cache()}
+    device = cache_devices.get(ip, {})
+    user = device.get("username") or app.config['USERNAME']
+    pwd = device.get("password") or app.config['PASSWORD']
+    ws_port = app.config['WS_PORT']
+    ws_path = app.config['WS_PATH']
+    timeout = app.config['TIMEOUT']
+
+    if request.method == "GET":
+        fields = _ws_get_encoder_encoding_settings(ip, user, pwd, ws_port, ws_path, timeout=timeout, attempts=1, delay=0)
+        if not fields:
+            return jsonify({"ok": False, "error": "failed to fetch encoder encoding settings"}), 500
+        return jsonify({"ok": True, "encoder": ip, **fields})
+
+    encoders = data.get("encoders")
+    result = _ws_set_encoder_encoding_settings(ip, user, pwd, ws_port, ws_path, timeout, encoders)
+    if not result.get("ok"):
+        return jsonify(result), 500
+    return jsonify({
+        "ok": True,
+        "encoder": ip,
+        "encoders": result.get("encoders") or [],
+        "input_options": result.get("input_options") or [],
+    })
+
+@app.route("/api/slate_status", methods=["POST"])
+def api_slate_status():
+    data = request.get_json(silent=True) or {}
+    ips = data.get("ips") or []
+    if isinstance(ips, str):
+        ips = [ips]
+    ips = [str(ip).strip() for ip in ips if str(ip).strip()]
+    if not ips:
+        return jsonify({"ok": False, "error": "ips required"}), 400
+
+    cache_map = {d.get("ip"): d for d in (_load_cache() or []) if d.get("ip")}
+    ws_port = app.config['WS_PORT']
+    ws_path = app.config['WS_PATH']
+    timeout = app.config['TIMEOUT']
+    results = {}
+
+    for ip in ips:
+        user, preferred_pwd, device = _device_credentials(ip, cache_map)
+        role = (device.get("type") or device.get("role") or "").strip().lower()
+        target = "encoder" if "encoder" in role else "decoder" if "decoder" in role else "unknown"
+        try:
+            logo_result = _ws_get_logo_library(ip, user, preferred_pwd, ws_port, ws_path, timeout)
+            if target == "encoder":
+                enc_fields = _ws_get_encoder_encoding_settings(ip, user, preferred_pwd, ws_port, ws_path, timeout=timeout, attempts=1, delay=0)
+                encoders = enc_fields.get("encoders") or []
+                slate = ((encoders[0] or {}).get("slate") or {}) if encoders else {}
+                raw_logo = slate.get("logo") or ""
+                results[ip] = {
+                    "ok": True,
+                    "ip": ip,
+                    "target": target,
+                    "mode": slate.get("mode") or "off",
+                    "logo": raw_logo or "Not used",
+                    "logos": logo_result.get("logos") or [],
+                    "logo_options": _slate_logo_options(logo_result.get("logos") or [], raw_logo),
+                }
+            elif target == "decoder":
+                slate_result = _ws_get_decoder_slate_settings(ip, user, preferred_pwd, ws_port, ws_path, timeout)
+                if not slate_result.get("ok"):
+                    raise ValueError(slate_result.get("error") or "failed to fetch decoder slate")
+                raw_logo = slate_result.get("raw_logo") or ""
+                results[ip] = {
+                    "ok": True,
+                    "ip": ip,
+                    "target": target,
+                    "mode": slate_result.get("mode") or "off",
+                    "logo": slate_result.get("logo") or "Not used",
+                    "logos": logo_result.get("logos") or [],
+                    "logo_options": _slate_logo_options(logo_result.get("logos") or [], raw_logo),
+                }
+            else:
+                results[ip] = {"ok": False, "ip": ip, "target": target, "error": "unit role is not encoder or decoder"}
+        except Exception as e:
+            results[ip] = {"ok": False, "ip": ip, "target": target, "error": str(e)}
+
+    return jsonify({"ok": True, "results": results})
+
+@app.route("/api/slate_settings", methods=["POST"])
+def api_slate_settings():
+    data = request.get_json(silent=True) or {}
+    ips = data.get("ips") or []
+    if isinstance(ips, str):
+        ips = [ips]
+    ips = [str(ip).strip() for ip in ips if str(ip).strip()]
+    mode = (data.get("mode") or "off").strip()
+    logo = (data.get("logo") or "").strip()
+    if mode not in ("off", "auto", "manual"):
+        return jsonify({"ok": False, "error": "mode must be off, auto, or manual"}), 400
+    if logo == "Not used":
+        mode = "off"
+    if not ips:
+        return jsonify({"ok": False, "error": "ips required"}), 400
+
+    cache_map = {d.get("ip"): d for d in (_load_cache() or []) if d.get("ip")}
+    ws_port = app.config['WS_PORT']
+    ws_path = app.config['WS_PATH']
+    timeout = app.config['TIMEOUT']
+    results = {}
+
+    def job(ip):
+        user, preferred_pwd, device = _device_credentials(ip, cache_map)
+        role = (device.get("type") or device.get("role") or "").strip().lower()
+        if "encoder" in role:
+            res = _ws_set_encoder_slate_settings(ip, user, preferred_pwd, ws_port, ws_path, timeout, mode, logo)
+            return {"ip": ip, "target": "encoder", **res}
+        if "decoder" in role:
+            res = _ws_set_decoder_slate_settings(ip, user, preferred_pwd, ws_port, ws_path, timeout, mode, logo)
+            return {"ip": ip, "target": "decoder", **res}
+        return {"ip": ip, "target": "unknown", "ok": False, "error": "unit role is not encoder or decoder"}
+
+    with ThreadPoolExecutor(max_workers=min(6, max(1, len(ips)))) as ex:
+        futs = {ex.submit(job, ip): ip for ip in ips}
+        for fut in as_completed(futs):
+            ip = futs[fut]
+            try:
+                results[ip] = fut.result()
+            except Exception as e:
+                results[ip] = {"ip": ip, "ok": False, "error": str(e)}
+
+    return jsonify({"ok": True, "results": results})
+
+@app.route("/api/slate_delete", methods=["POST"])
+def api_slate_delete():
+    data = request.get_json(silent=True) or {}
+    ips = data.get("ips") or []
+    if isinstance(ips, str):
+        ips = [ips]
+    ips = [str(ip).strip() for ip in ips if str(ip).strip()]
+    logo = (data.get("logo") or "").strip()
+    if not ips:
+        return jsonify({"ok": False, "error": "ips required"}), 400
+    if not logo or logo == "Not used":
+        return jsonify({"ok": False, "error": "select a slate logo to delete"}), 400
+
+    cache_map = {d.get("ip"): d for d in (_load_cache() or []) if d.get("ip")}
+    ws_port = app.config['WS_PORT']
+    ws_path = app.config['WS_PATH']
+    timeout = app.config['TIMEOUT']
+    results = {}
+
+    def job(ip):
+        user, preferred_pwd, device = _device_credentials(ip, cache_map)
+        role = (device.get("type") or device.get("role") or "").strip().lower()
+        try:
+            if "encoder" in role:
+                status = _ws_get_encoder_encoding_settings(ip, user, preferred_pwd, ws_port, ws_path, timeout=timeout, attempts=1, delay=0)
+                encoders = status.get("encoders") or []
+                if any(((enc or {}).get("slate") or {}).get("logo") == logo for enc in encoders if isinstance(enc, dict)):
+                    unset = _ws_set_encoder_slate_settings(ip, user, preferred_pwd, ws_port, ws_path, timeout, "off", "Not used")
+                    if not unset.get("ok"):
+                        return {"ip": ip, "target": "encoder", "ok": False, "stage": "unset", "error": unset.get("error") or "failed to clear slate use"}
+            elif "decoder" in role:
+                status = _ws_get_decoder_slate_settings(ip, user, preferred_pwd, ws_port, ws_path, timeout)
+                if status.get("raw_logo") == logo:
+                    unset = _ws_set_decoder_slate_settings(ip, user, preferred_pwd, ws_port, ws_path, timeout, "off", "Not used")
+                    if not unset.get("ok"):
+                        return {"ip": ip, "target": "decoder", "ok": False, "stage": "unset", "error": unset.get("error") or "failed to clear slate use"}
+            else:
+                return {"ip": ip, "target": "unknown", "ok": False, "error": "unit role is not encoder or decoder"}
+
+            delete_result = _ws_delete_logo(ip, user, preferred_pwd, ws_port, ws_path, timeout, logo)
+            if not delete_result.get("ok"):
+                return {"ip": ip, "ok": False, "stage": "delete", "error": delete_result.get("error") or "delete_logo failed"}
+            logos = _ws_get_logo_library(ip, user, delete_result.get("password") or preferred_pwd, ws_port, ws_path, timeout)
+            return {
+                "ip": ip,
+                "ok": True,
+                "stage": "done",
+                "logo": logo,
+                "logo_options": _slate_logo_options(logos.get("logos") or []),
+            }
+        except Exception as e:
+            return {"ip": ip, "ok": False, "stage": "exception", "error": str(e)}
+
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(ips)))) as ex:
+        futs = {ex.submit(job, ip): ip for ip in ips}
+        for fut in as_completed(futs):
+            ip = futs[fut]
+            try:
+                results[ip] = fut.result()
+            except Exception as e:
+                results[ip] = {"ip": ip, "ok": False, "stage": "exception", "error": str(e)}
+
+    return jsonify({"ok": True, "results": results})
+
+@app.route("/api/slate_upload", methods=["POST"])
+def api_slate_upload():
+    raw_ips = request.form.get("ips") or "[]"
+    try:
+        ips = json.loads(raw_ips)
+    except Exception:
+        ips = raw_ips.split(",")
+    ips = [str(ip).strip() for ip in ips if str(ip).strip()]
+    logo_name = (request.form.get("name") or "").strip()
+    upload_file = request.files.get("file")
+    if not ips:
+        return jsonify({"ok": False, "error": "ips required"}), 400
+    if not logo_name:
+        return jsonify({"ok": False, "error": "logo name required"}), 400
+    if not re.fullmatch(r"[A-Za-z0-9_. -]+", logo_name):
+        return jsonify({"ok": False, "error": "logo name may only contain letters, numbers, space, underscore, hyphen, and period"}), 400
+    if not upload_file or not upload_file.filename:
+        return jsonify({"ok": False, "error": "file required"}), 400
+
+    suffix = Path(upload_file.filename).suffix or ".png"
+    if suffix.lower() not in (".jpg", ".jpeg", ".png"):
+        return jsonify({"ok": False, "error": "Slate upload only accepts .jpg, .jpeg, or .png files."}), 400
+    tmp_path = None
+    try:
+        log.info("[SLATE] Upload request: name=%s filename=%s targets=%s", logo_name, upload_file.filename, ips)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp_path = Path(tmp.name)
+            upload_file.save(tmp)
+        try:
+            from PIL import Image
+        except Exception:
+            return jsonify({"ok": False, "error": "Slate image validation requires Pillow. Install Pillow to validate and convert slate images."}), 400
+
+        allowed_sizes = {(1280, 720), (1920, 1080)}
+        with Image.open(tmp_path) as img:
+            width, height = img.size
+            if (width, height) not in allowed_sizes:
+                return jsonify({
+                    "ok": False,
+                    "error": f"Slate image must be 1280x720 or 1920x1080. Uploaded image is {width}x{height}."
+                }), 400
+            if tmp_path.suffix.lower() != ".png":
+                png_path = tmp_path.with_suffix(".png")
+                img.convert("RGBA").save(png_path, "PNG")
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                tmp_path = png_path
+                log.info("[SLATE] Converted uploaded slate to PNG: %s", tmp_path)
+        log.info("[SLATE] Validated slate image resolution: %sx%s", width, height)
+
+        cache_map = {d.get("ip"): d for d in (_load_cache() or []) if d.get("ip")}
+        ws_port = app.config['WS_PORT']
+        ws_path = app.config['WS_PATH']
+        timeout = app.config['TIMEOUT']
+        results = {}
+
+        def job(ip):
+            lock = _lock_for_ip(ip)
+            if not lock.acquire(blocking=False):
+                return {"ip": ip, "ok": False, "stage": "throttle", "error": "another upload in progress"}
+            try:
+                user, preferred_pwd, _device = _device_credentials(ip, cache_map)
+                log.info("[SLATE] %s uploading logo file %s as %s", ip, upload_file.filename, logo_name)
+                up = _http_upload_logo(ip, tmp_path, timeout=90.0)
+                if not up.get("ok"):
+                    log.warning("[SLATE] %s HTTP upload failed: %s", ip, up)
+                    return {"ip": ip, "ok": False, "stage": "upload", "error": up.get("error") or "upload failed"}
+                uploaded = up.get("uploaded") or ""
+                log.info("[SLATE] %s HTTP upload ok: uploaded=%s", ip, uploaded)
+                if not uploaded:
+                    uploaded = _get_latest_upload(ip, user, preferred_pwd, ws_port, ws_path, timeout)
+                    log.info("[SLATE] %s detected latest upload: %s", ip, uploaded)
+                add = _ws_add_logo(ip, user, preferred_pwd, ws_port, ws_path, timeout, uploaded, logo_name)
+                if not add.get("ok"):
+                    log.warning("[SLATE] %s add_logo failed: %s", ip, add)
+                    return {"ip": ip, "ok": False, "stage": "add_logo", "error": add.get("error") or "add_logo failed"}
+                log.info("[SLATE] %s add_logo ok: %s", ip, logo_name)
+                logos = _ws_get_logo_library(ip, user, add.get("password") or preferred_pwd, ws_port, ws_path, timeout)
+                return {
+                    "ip": ip,
+                    "ok": True,
+                    "stage": "done",
+                    "uploaded": uploaded,
+                    "logo": logo_name,
+                    "logo_options": _slate_logo_options(logos.get("logos") or [], logo_name),
+                }
+            finally:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
+
+        with ThreadPoolExecutor(max_workers=min(4, max(1, len(ips)))) as ex:
+            futs = {ex.submit(job, ip): ip for ip in ips}
+            for fut in as_completed(futs):
+                ip = futs[fut]
+                try:
+                    results[ip] = fut.result()
+                except Exception as e:
+                    results[ip] = {"ip": ip, "ok": False, "stage": "exception", "error": str(e)}
+        return jsonify({"ok": True, "results": results})
+    except Exception as e:
+        log.exception("[SLATE] upload failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if tmp_path:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 @app.route("/api/clear", methods=["POST"])
 def api_clear_matrix():
@@ -2323,6 +4870,15 @@ def api_cache_dup():
                         if unit.get("details", {}).get("systeminfo", {}).get("config"):
                             unit["details"]["systeminfo"]["config"]["firmwareversion"] = fw
                         updated = True
+                    system_mode = cfg.get("system_mode")
+                    if system_mode and system_mode != unit.get("system_mode"):
+                        unit["system_mode"] = system_mode
+                        unit["codec"] = _codec_label(system_mode)
+                        unit["supported_system_modes"] = cfg.get("supported_system_modes") or unit.get("supported_system_modes") or []
+                        unit["codec_configurable"] = _is_codec_configurable_model(cfg.get("model") or unit.get("model"))
+                        if unit.get("details", {}).get("systeminfo", {}).get("config"):
+                            unit["details"]["systeminfo"]["config"]["system_mode"] = system_mode
+                        updated = True
             except Exception as e:
                 log.info(f"[STARTUP] {ip}: verification failed: {e}")
         
@@ -2341,6 +4897,12 @@ def api_cache_dup():
     units_with_password_source = []
     for unit in units:
         unit_copy = dict(unit or {})
+        si_cfg = (((unit_copy.get("details") or {}).get("systeminfo") or {}).get("config") or {})
+        system_mode = unit_copy.get("system_mode") or si_cfg.get("system_mode") or ""
+        unit_copy["system_mode"] = system_mode
+        unit_copy["codec"] = unit_copy.get("codec") or _codec_label(system_mode)
+        unit_copy["supported_system_modes"] = unit_copy.get("supported_system_modes") or si_cfg.get("supported_system_modes") or []
+        unit_copy["codec_configurable"] = unit_copy.get("codec_configurable") if unit_copy.get("codec_configurable") is not None else _is_codec_configurable_model(unit_copy.get("model"))
         used_pwd = unit_copy.get("password") or primary_pwd
         unit_copy["password_source"] = "Primary" if used_pwd == primary_pwd else "Fallback"
         units_with_password_source.append(unit_copy)
@@ -2407,7 +4969,7 @@ def api_remove_units():
 
 @app.route("/api/export_csv", methods=["POST"])
 def api_export_csv_dup():
-    units = _load_cache()
+    units = _units_for_export()
     _write_csv(units)
     return jsonify({"ok": True, "count": len(units), "path": str(CSV_VIEW)})
 
@@ -2420,8 +4982,390 @@ def api_download_csv_dup():
             pass
         except Exception:
             pass
-    units = _load_cache()
+    units = _units_for_export()
     return _stream_csv_from_units(units)
+
+def _mask_sensitive(value):
+    if isinstance(value, dict):
+        masked = {}
+        for key, item in value.items():
+            if str(key).lower() in ("password", "fallback_password", "pass", "pwd"):
+                masked[key] = "***"
+            else:
+                masked[key] = _mask_sensitive(item)
+        return masked
+    if isinstance(value, list):
+        return [_mask_sensitive(item) for item in value]
+    return value
+
+def _ts_settings_only(value):
+    """Return current settings/status only; omit option lists and raw bulky blocks."""
+    option_key_fragments = (
+        "options",
+        "supported_versions",
+        "supported_system_modes",
+        "available_sessions",
+        "available_inputs",
+        "supported_inputs",
+    )
+    raw_block_keys = {"details", "license", "scan_results"}
+    sensitive_keys = {"password", "fallback_password", "pass", "pwd"}
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            key_text = str(key)
+            key_l = key_text.lower()
+            if key_l in sensitive_keys:
+                out[key] = "***"
+                continue
+            if key_l in raw_block_keys:
+                continue
+            if any(fragment in key_l for fragment in option_key_fragments):
+                continue
+            cleaned = _ts_settings_only(item)
+            if cleaned in (None, "", [], {}):
+                continue
+            out[key] = cleaned
+        return out
+    if isinstance(value, list):
+        cleaned_list = [_ts_settings_only(item) for item in value]
+        return [item for item in cleaned_list if item not in (None, "", [], {})]
+    return value
+
+@app.route("/api/ts_export", methods=["GET"])
+def api_ts_export():
+    """Download a troubleshooting JSON bundle of current collected settings."""
+    scan_data = _load_scan_results_file() or {}
+    cache_units = _load_cache()
+    units = _ts_settings_only(_units_for_export())
+    payload = {
+        "ok": True,
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "app_version": _app_version(),
+        "note": "Passwords are masked. Option lists and raw scan/detail blocks are omitted; this export contains current collected settings and status only.",
+        "config": {
+            "username": app.config.get("USERNAME", "admin"),
+            "ws_port": app.config.get("WS_PORT", 80),
+            "timeout": app.config.get("TIMEOUT", 4.5),
+            "concurrency": app.config.get("UPLOAD_CONCURRENCY", 6),
+            "firmware_path": app.config.get("FIRMWARE_PATH", ""),
+        },
+        "summary": {
+            "cache_units": len(cache_units),
+            "scan_devices": len(scan_data.get("devices") or []),
+            "scan_encoders": len(scan_data.get("encoders") or []),
+            "scan_decoders": len(scan_data.get("decoders") or []),
+        },
+        "units": units,
+    }
+    body = json.dumps(_ts_settings_only(payload), indent=2, sort_keys=True)
+    filename_stamp = time.strftime("%Y%m%d-%H%M%S")
+    return Response(
+        body,
+        mimetype="application/json",
+        headers={"Content-Disposition": f"attachment; filename=omnisuite-ts-{filename_stamp}.json"},
+    )
+
+def _safe_filename_part(value: str) -> str:
+    text = (value or "").strip()
+    text = re.sub(r"[^A-Za-z0-9._-]+", "-", text)
+    text = text.strip(".-_")
+    return text or "unit"
+
+def _unit_config_filename(unit: dict) -> str:
+    ip = _safe_filename_part((unit or {}).get("ip", "").replace(":", "-"))
+    base = _safe_filename_part((unit or {}).get("hostname") or (unit or {}).get("model") or "configuration")
+    stamp = time.strftime("%Y-%m-%dT%H-%M-%SZ", time.gmtime())
+    return f"{ip}_{base}-configuration_{stamp}.json"
+
+def _ws_export_unit_config(ip: str):
+    user, preferred_pwd, device = _device_credentials(ip)
+    url = _ws_url(ip, app.config["WS_PORT"], app.config["WS_PATH"])
+    last_error = "export_config failed"
+    for pwd_try in _password_candidates(preferred_pwd):
+        try:
+            resp = _ws_send_recv(url, {
+                "id": "export_config-method",
+                "username": user,
+                "password": pwd_try,
+                "method": {"export_config": {"name": "current"}},
+            }, timeout=max(float(app.config.get("TIMEOUT", 4.5)), 10.0))
+            if not resp or resp.get("error"):
+                last_error = (resp or {}).get("error_message") or (resp or {}).get("error") or "export_config failed"
+                continue
+            config = (resp or {}).get("configuration")
+            reply = (resp or {}).get("reply")
+            if config is None and isinstance(reply, dict):
+                config = reply.get("configuration")
+            if config is None:
+                config = (resp or {}).get("config")
+            if config is None:
+                last_error = "export_config returned no configuration"
+                continue
+            return {"ok": True, "ip": ip, "unit": device or {"ip": ip}, "configuration": config, "used_password": pwd_try}
+        except Exception as e:
+            last_error = str(e)
+    return {"ok": False, "ip": ip, "error": last_error}
+
+def _ws_import_unit_config(ip: str, uploaded_file: str):
+    user, preferred_pwd, _device = _device_credentials(ip)
+    url = _ws_url(ip, app.config["WS_PORT"], app.config["WS_PATH"])
+    last_error = "import_config_file failed"
+    attempts = []
+    for pwd_try in _password_candidates(preferred_pwd):
+        for attempt in range(1, 5):
+            ws = None
+            sent = False
+            try:
+                sslopt = None
+                if url.startswith("wss://") and not app.config['WS_STRICT']:
+                    sslopt = {"cert_reqs": ssl.CERT_NONE}
+                ws = websocket.create_connection(url, timeout=max(float(app.config.get("TIMEOUT", 4.5)), 15.0), sslopt=sslopt)
+                ws.send(json.dumps({
+                    "id": "import_config_file-method",
+                    "username": user,
+                    "password": pwd_try,
+                    "method": {"import_config_file": {"name": "current", "file": uploaded_file}},
+                }))
+                sent = True
+                raw = ws.recv()
+                try:
+                    resp = json.loads(raw)
+                except Exception:
+                    resp = {"raw": raw}
+                if not resp or resp.get("error"):
+                    last_error = (resp or {}).get("error_message") or (resp or {}).get("error") or "import_config_file failed"
+                    attempts.append({"url": url, "attempt": attempt, "error": str(last_error)})
+                    error_text = str(last_error).lower()
+                    if "auth" in error_text or "password" in error_text or "unauthorized" in error_text:
+                        break
+                    time.sleep(0.6 * attempt)
+                    continue
+                return {"ok": True, "ip": ip, "reply": resp.get("reply") or resp.get("config") or resp, "used_password": pwd_try}
+            except Exception as e:
+                last_error = str(e)
+                attempts.append({"url": url, "attempt": attempt, "error": last_error})
+                if sent:
+                    return {
+                        "ok": True,
+                        "ip": ip,
+                        "pending": True,
+                        "reply": {"message": "import command sent; device closed the connection while applying configuration"},
+                        "used_password": pwd_try,
+                    }
+                time.sleep(0.6 * attempt)
+            finally:
+                try:
+                    if ws is not None:
+                        ws.close()
+                except Exception:
+                    pass
+    return {"ok": False, "ip": ip, "error": last_error, "attempts": attempts}
+
+def _set_unit_hostname_direct(ip: str, hostname: str):
+    hostname = (hostname or "").strip()
+    if not hostname or not re.fullmatch(r"[A-Za-z0-9.-]+", hostname):
+        return {"ok": False, "ip": ip, "error": "invalid hostname in imported configuration"}
+
+    user, preferred_pwd, _device = _device_credentials(ip)
+    ws_port = app.config['WS_PORT']
+    ws_path = app.config['WS_PATH']
+    timeout = app.config['TIMEOUT']
+    url = _ws_url(ip, ws_port, ws_path)
+    last_error = "hostname update failed"
+
+    for pwd_try in _password_candidates(preferred_pwd):
+        try:
+            si_resp = _ws_send_recv(url, {
+                "id": "systeminfo-get",
+                "username": user,
+                "password": pwd_try,
+                "config_get": "systeminfo"
+            }, timeout=min(timeout, 4.0))
+            if not si_resp or si_resp.get("error"):
+                last_error = (si_resp or {}).get("error") or "systeminfo-get failed"
+                continue
+
+            si_cfg = (si_resp or {}).get("config") or {}
+            if not isinstance(si_cfg, dict):
+                si_cfg = {}
+            current = (si_cfg.get("hostname") or "").strip()
+            if current == hostname:
+                _update_hostname_cache(ip, hostname, pwd_try)
+                return {"ok": True, "changed": False, "hostname": hostname}
+
+            set_resp = _ws_send_recv(url, {
+                "id": "systeminfo-set",
+                "username": user,
+                "password": pwd_try,
+                "config_set": {
+                    "name": "systeminfo",
+                    "config": _systeminfo_edit_payload(si_cfg, hostname)
+                }
+            }, timeout=max(timeout, 6.0))
+            if not set_resp or set_resp.get("error"):
+                last_error = (set_resp or {}).get("error") or "systeminfo-set failed"
+                continue
+
+            verify_resp = _ws_send_recv(url, {
+                "id": "systeminfo-get-verify",
+                "username": user,
+                "password": pwd_try,
+                "config_get": "systeminfo"
+            }, timeout=min(timeout, 4.0))
+            verify_cfg = (verify_resp or {}).get("config") or {}
+            verified = (verify_cfg.get("hostname") or "").strip() if isinstance(verify_cfg, dict) else ""
+            if verified != hostname:
+                last_error = f"verification returned hostname '{verified}'"
+                continue
+
+            _update_hostname_cache(ip, hostname, pwd_try)
+            return {"ok": True, "changed": True, "hostname": hostname}
+        except Exception as e:
+            last_error = str(e)
+
+    return {"ok": False, "ip": ip, "error": last_error}
+
+def _config_import_finalizer(ip: str, imported_config: dict):
+    sysinfo = (imported_config or {}).get("systeminfo") or {}
+    desired_hostname = (sysinfo.get("hostname") or "").strip() if isinstance(sysinfo, dict) else ""
+    if not desired_hostname:
+        return
+
+    # Legacy units apply most config sections from import, but can ignore hostname.
+    # Wait for the import reboot, then restore hostname through the normal systeminfo path.
+    for attempt in range(1, 41):
+        time.sleep(3)
+        try:
+            result = _set_unit_hostname_direct(ip, desired_hostname)
+            if result.get("ok"):
+                log.info("[CONFIG_IMPORT] %s hostname finalizer: %s", ip, result)
+                return
+            log.info("[CONFIG_IMPORT] %s hostname finalizer attempt %s failed: %s", ip, attempt, result.get("error"))
+        except Exception as e:
+            log.info("[CONFIG_IMPORT] %s hostname finalizer attempt %s waiting: %s", ip, attempt, e)
+    log.warning("[CONFIG_IMPORT] %s hostname finalizer gave up after timeout", ip)
+
+def _config_export_units_for_role(role: str):
+    role = (role or "all").strip().lower()
+    units = _units_for_export()
+    if role in ("encoder", "encoders"):
+        return [u for u in units if "encoder" in str(u.get("role") or u.get("type") or "").lower()]
+    if role in ("decoder", "decoders"):
+        return [u for u in units if "decoder" in str(u.get("role") or u.get("type") or "").lower()]
+    return units
+
+@app.route("/api/unit_config/export", methods=["GET"])
+def api_unit_config_export():
+    ip = (request.args.get("ip") or "").strip()
+    if not ip:
+        return jsonify({"ok": False, "error": "ip required"}), 400
+    result = _ws_export_unit_config(ip)
+    if not result.get("ok"):
+        return jsonify(result), 502
+    body = json.dumps(result.get("configuration"), indent=2, sort_keys=True)
+    filename = _unit_config_filename(result.get("unit") or {"ip": ip})
+    return Response(
+        body,
+        mimetype="application/json",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+@app.route("/api/unit_config/export_bulk", methods=["GET"])
+def api_unit_config_export_bulk():
+    role = (request.args.get("role") or "all").strip().lower()
+    ips_arg = (request.args.get("ips") or "").strip()
+    if ips_arg:
+        wanted = {ip.strip() for ip in ips_arg.split(",") if ip.strip()}
+        units = [u for u in _units_for_export() if u.get("ip") in wanted]
+    else:
+        units = _config_export_units_for_role(role)
+    if not units:
+        return jsonify({"ok": False, "error": "no units found for export"}), 404
+
+    zip_buffer = io.BytesIO()
+    manifest = {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "role": role, "results": []}
+    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for unit in units:
+            ip = unit.get("ip")
+            if not ip:
+                continue
+            result = _ws_export_unit_config(ip)
+            entry = {"ip": ip, "ok": bool(result.get("ok"))}
+            if result.get("ok"):
+                filename = _unit_config_filename(result.get("unit") or unit)
+                zf.writestr(filename, json.dumps(result.get("configuration"), indent=2, sort_keys=True))
+                entry["file"] = filename
+            else:
+                entry["error"] = result.get("error") or "export failed"
+            manifest["results"].append(entry)
+        zf.writestr("manifest.json", json.dumps(manifest, indent=2, sort_keys=True))
+
+    zip_buffer.seek(0)
+    stamp = time.strftime("%Y-%m-%dT%H-%M-%SZ", time.gmtime())
+    zip_role = _safe_filename_part(role or "all")
+    return Response(
+        zip_buffer.getvalue(),
+        mimetype="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=omnisuite-{zip_role}-configs_{stamp}.zip"},
+    )
+
+@app.route("/api/unit_config/import", methods=["POST"])
+def api_unit_config_import():
+    ip = (request.form.get("ip") or "").strip()
+    upload_file = request.files.get("file")
+    if not ip:
+        return jsonify({"ok": False, "error": "ip required"}), 400
+    if not upload_file or not upload_file.filename:
+        return jsonify({"ok": False, "error": "json file required"}), 400
+    if Path(upload_file.filename).suffix.lower() != ".json":
+        return jsonify({"ok": False, "error": "config import only accepts .json files"}), 400
+
+    tmp_path = None
+    imported_config = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
+            tmp_path = Path(tmp.name)
+            upload_file.save(tmp)
+        try:
+            with open(tmp_path, "r", encoding="utf-8") as fh:
+                imported_config = json.load(fh)
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"invalid json: {e}"}), 400
+
+        lock = _lock_for_ip(ip)
+        if not lock.acquire(blocking=False):
+            return jsonify({"ok": False, "ip": ip, "stage": "throttle", "error": "another upload is already in progress for this unit"}), 409
+        try:
+            up = _http_upload_file(ip, tmp_path, field="Import Config", timeout=90.0)
+            if not up.get("ok"):
+                return jsonify({"ok": False, "ip": ip, "stage": "upload", "error": up.get("error") or "upload failed"}), 502
+            imported = _ws_import_unit_config(ip, up.get("uploaded") or "")
+        finally:
+            lock.release()
+        if not imported.get("ok"):
+            imported["stage"] = "import"
+            return jsonify(imported), 502
+        if isinstance(imported_config, dict):
+            threading.Thread(
+                target=_config_import_finalizer,
+                args=(ip, imported_config),
+                daemon=True,
+            ).start()
+        return jsonify({
+            "ok": True,
+            "ip": ip,
+            "uploaded": up.get("uploaded"),
+            "pending": True,
+            "reply": imported.get("reply"),
+            "finalizer": bool(isinstance(imported_config, dict) and ((imported_config.get("systeminfo") or {}).get("hostname")))
+        })
+    finally:
+        if tmp_path and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
 
 # --- upload/reset/poll (same as previous)
 def _choose_field(model: str, filename: str) -> str:
@@ -2467,31 +5411,72 @@ def _lock_for_ip(ip: str):
             _upload_locks[ip] = threading.Lock()
         return _upload_locks[ip]
 
-def _http_upload_one_variant(ip: str, file_path: Path, field: str, timeout: float=60.0):
-    urls = [
-        f"http://{ip}/upload/",
-        f"http://{ip}/upload",
-        f"https://{ip}/upload/",
-        f"https://{ip}/upload",
-    ]
-    last_err = None
-    for url in urls:
+def _http_upload_firmware(ip: str, file_path: Path, timeout: float=900.0):
+    """Upload firmware the same way the unit's own Upgrade page does."""
+    field = "Upgrade file"
+    last_error = None
+    for url in _upload_urls(ip):
         try:
-            # Force a fixed upload filename to prevent device-side indexing
-            # Multipart format: (filename, fileobj, content_type)
-            files = {field: ("0000000001", open(file_path, "rb"), "application/octet-stream")}
-            if url.startswith("https://"):
-                r = requests.post(url, files=files, timeout=timeout, verify=False)
-            else:
-                r = requests.post(url, files=files, timeout=timeout)
-            if 200 <= r.status_code < 300:
-                return {"ok": True, "url": url, "field": field, "status": r.status_code}
+            with open(file_path, "rb") as f:
+                files = {field: (file_path.name, f, "application/octet-stream")}
+                kwargs = {"timeout": (10.0, timeout)}
+                if url.startswith("https://"):
+                    kwargs["verify"] = False
+                r = requests.post(url, files=files, **kwargs)
+            uploaded = (r.text or "").strip().strip('"')
+            if 200 <= r.status_code < 300 and uploaded:
+                return {"ok": True, "url": url, "field": field, "status": r.status_code, "uploaded": uploaded}
+            last_error = {
+                "ok": False,
+                "url": url,
+                "field": field,
+                "status": r.status_code,
+                "error": uploaded or r.reason or "upload failed",
+            }
+        except requests.exceptions.Timeout as e:
+            return {
+                "ok": False,
+                "url": url,
+                "field": field,
+                "stage": "timeout",
+                "error": f"upload timed out; device may still be writing the file ({e})",
+            }
         except Exception as e:
-            last_err = str(e)
-    return {"ok": False, "error": last_err or "upload failed", "field": field}
+            last_error = {"ok": False, "url": url, "field": field, "error": str(e)}
+    return last_error or {"ok": False, "field": field, "error": "upload failed"}
 
-def _http_upload_file(ip: str, file_path: Path, field: str, timeout: float=60.0):
-    return _http_upload_one_variant(ip, file_path, field, timeout=timeout)
+def _http_upload_file(ip: str, file_path: Path, field: str=None, timeout: float=900.0):
+    field_name = field or "Upgrade file"
+    last_error = None
+    for url in _upload_urls(ip):
+        try:
+            with open(file_path, "rb") as f:
+                files = {field_name: (file_path.name, f, "application/octet-stream")}
+                kwargs = {"timeout": (10.0, timeout)}
+                if url.startswith("https://"):
+                    kwargs["verify"] = False
+                r = requests.post(url, files=files, **kwargs)
+            uploaded = (r.text or "").strip().strip('"')
+            if 200 <= r.status_code < 300 and uploaded:
+                return {"ok": True, "url": url, "field": field_name, "status": r.status_code, "uploaded": uploaded}
+            last_error = {
+                "ok": False,
+                "url": url,
+                "field": field_name,
+                "status": r.status_code,
+                "error": uploaded or r.reason or "upload failed",
+            }
+        except requests.exceptions.Timeout as e:
+            return {
+                "ok": False,
+                "url": url,
+                "field": field_name,
+                "stage": "timeout",
+                "error": f"upload timed out; device may still be writing the file ({e})",
+            }
+        except Exception as e:
+            last_error = {"ok": False, "url": url, "field": field_name, "error": str(e)}
+    return last_error or {"ok": False, "field": field_name, "error": "upload failed"}
 
 def _get_latest_upload(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float) -> str:
     """Get the most recently uploaded file in /var/uploads on the device"""
@@ -2607,38 +5592,41 @@ def _ws_upgrade(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeou
     if url.startswith("wss://") and not app.config['WS_STRICT']:
         sslopt = {"cert_reqs": ssl.CERT_NONE}
     
+    ws = None
+    sent = False
     try:
         log.info("[UPGRADE_CMD] Opening WebSocket to: %s", url)
-        resp = _ws_send_recv(url, payload, timeout)
-        log.info("[UPGRADE_CMD] Upgrade response received: %s", resp)
-        
-        # Check for error response
-        if isinstance(resp, dict):
-            if resp.get("error"):
-                log.error("[UPGRADE_CMD] Device returned error: %s", resp["error"])
-                return {"ok": False, "error": resp["error"], "resp": resp}
-        
-        return {"ok": True, "resp": resp}
-    except Exception as e:
-        # Devices often reboot immediately after receiving the upgrade command, which
-        # can close the websocket before we read a response. Fire the command again
-        # without waiting for an ack and treat that as success so UI feedback relies
-        # on post-upgrade polling instead of this transient error.
-        log.warning("[UPGRADE_CMD] First attempt exception: %s (this may be normal if device is rebooting)", e)
+        ws = websocket.create_connection(url, timeout=max(timeout, 8.0), sslopt=sslopt)
+        ws.send(json.dumps(payload))
+        sent = True
+        log.info("[UPGRADE_CMD] Upgrade command sent; waiting briefly for an immediate error")
         try:
-            log.info("[UPGRADE_CMD] Retrying without waiting for response...")
-            ws = websocket.create_connection(url, timeout=timeout, sslopt=sslopt)
-            ws.send(json.dumps(payload))
-            log.info("[UPGRADE_CMD] Command sent, closing socket...")
+            resp = ws.recv()
             try:
-                ws.close()
+                obj = json.loads(resp)
             except Exception:
-                pass
-            log.info("[UPGRADE_CMD] Upgrade command sent (no ack), device likely rebooting")
-            return {"ok": True, "resp": {"warning": "no_ack", "error": str(e)}}
-        except Exception as e2:
-            log.error("[UPGRADE_CMD] Retry also failed: %s", e2, exc_info=True)
-            return {"ok": False, "error": str(e2), "root_error": str(e)}
+                obj = {"raw": resp}
+            log.info("[UPGRADE_CMD] Upgrade response received: %s", obj)
+            if isinstance(obj, dict) and obj.get("error"):
+                err = obj.get("error_message") or obj.get("error") or "upgrade command failed"
+                log.error("[UPGRADE_CMD] Device returned error: %s", err)
+                return {"ok": False, "error": err, "resp": obj}
+            return {"ok": True, "resp": obj}
+        except Exception as recv_err:
+            log.info("[UPGRADE_CMD] No upgrade response after send; treating as expected: %s", recv_err)
+            return {"ok": True, "resp": {"warning": "no_ack", "error": str(recv_err)}}
+    except Exception as e:
+        if sent:
+            log.info("[UPGRADE_CMD] Socket failed after send; treating as expected upgrade reboot: %s", e)
+            return {"ok": True, "resp": {"warning": "sent_then_closed", "error": str(e)}}
+        log.error("[UPGRADE_CMD] Failed before sending upgrade command: %s", e, exc_info=True)
+        return {"ok": False, "error": str(e)}
+    finally:
+        try:
+            if ws is not None:
+                ws.close()
+        except Exception:
+            pass
 
 # --- /api/poll endpoint ---
 @app.route("/api/poll", methods=["POST"])
@@ -2663,10 +5651,19 @@ def api_poll():
         ws_path = app.config['WS_PATH']
         timeout = app.config['TIMEOUT']
         url = _ws_url(ip, ws_port, ws_path)
+        cache_updates = {}
 
         # Query device directly for fresh firmware version (bypass cache which may be stale after upgrade)
         # Only do this if reasonable - don't hammer devices with constant WebSocket queries
         fresh_version = ""
+        fresh_system_mode = ""
+        fresh_supported_modes = []
+        fresh_hostname = ""
+        fresh_ntp = ""
+        fresh_timezone = ""
+        has_fresh_hostname = False
+        has_fresh_ntp = False
+        has_fresh_timezone = False
         try:
             # Get systeminfo directly from device (fresh, not cached) - use very short timeout
             sysinfo_resp = _ws_send_recv(url, 
@@ -2677,22 +5674,76 @@ def api_poll():
                 # Try multiple locations where version might be
                 sysinfo_cfg = (sysinfo_resp or {}).get("config") or {}
                 fresh_version = (sysinfo_cfg.get("firmwareversion") or sysinfo_cfg.get("version") or "").strip()
-                
+                fresh_system_mode = (sysinfo_cfg.get("system_mode") or "").strip()
+                fresh_supported_modes = sysinfo_cfg.get("supported_system_modes") or []
+                if "hostname" in sysinfo_cfg:
+                    fresh_hostname = (sysinfo_cfg.get("hostname") or "").strip()
+                    has_fresh_hostname = True
+                if "ntpserver" in sysinfo_cfg or "ntp_server" in sysinfo_cfg:
+                    fresh_ntp = (sysinfo_cfg.get("ntpserver") or sysinfo_cfg.get("ntp_server") or "").strip()
+                    has_fresh_ntp = True
+
                 # If not found in config, check other locations
                 if not fresh_version:
                     fresh_version = (sysinfo_resp.get("firmwareversion") or sysinfo_resp.get("version") or "").strip()
-                
+                if not has_fresh_hostname and "hostname" in sysinfo_resp:
+                    fresh_hostname = (sysinfo_resp.get("hostname") or "").strip()
+                    has_fresh_hostname = True
+                if not has_fresh_ntp and ("ntpserver" in sysinfo_resp or "ntp_server" in sysinfo_resp):
+                    fresh_ntp = (sysinfo_resp.get("ntpserver") or sysinfo_resp.get("ntp_server") or "").strip()
+                    has_fresh_ntp = True
+
                 if fresh_version:
                     log.info(f"[POLL] {ip} fresh firmware version from device: '{fresh_version}'")
         except Exception as e:
             # Silently skip fresh query on timeout or error - cached version is good enough
             pass
-        
+        try:
+            timezone_resp = _ws_send_recv(url,
+                {"id":"timezone-get","username":user,"password":pwd,"config_get":"timezone"},
+                timeout=min(timeout, 1.0))
+            if timezone_resp and not timezone_resp.get("error"):
+                timezone_cfg = (timezone_resp or {}).get("config") or {}
+                if "timezone" in timezone_cfg or "active_timezone" in timezone_cfg:
+                    fresh_timezone = (timezone_cfg.get("timezone") or timezone_cfg.get("active_timezone") or "").strip()
+                    has_fresh_timezone = True
+                if not has_fresh_timezone and ("timezone" in timezone_resp or "active_timezone" in timezone_resp):
+                    fresh_timezone = (timezone_resp.get("timezone") or timezone_resp.get("active_timezone") or "").strip()
+                    has_fresh_timezone = True
+        except Exception:
+            pass
+
         # Use fresh version if available, otherwise use cached
         if fresh_version:
             status["fw"] = fresh_version
             status["version"] = fresh_version
+            cache_updates["version"] = fresh_version
+            cache_updates["firmwareversion"] = fresh_version
+            cached_version = (device.get("version") or device.get("firmwareversion") or "").strip()
+            if fresh_version != cached_version:
+                _update_firmware_cache(ip, fresh_version)
             log.info(f"[POLL] {ip} updated from device: '{fresh_version}'")
+        if has_fresh_hostname:
+            status["hostname"] = fresh_hostname
+            cache_updates["hostname"] = fresh_hostname
+        if has_fresh_ntp:
+            status["ntpserver"] = fresh_ntp
+            status["ntp_server"] = fresh_ntp
+            cache_updates["ntpserver"] = fresh_ntp
+            cache_updates["ntp_server"] = fresh_ntp
+        if has_fresh_timezone:
+            status["timezone"] = fresh_timezone
+            status["active_timezone"] = fresh_timezone
+            cache_updates["timezone"] = fresh_timezone
+            cache_updates["active_timezone"] = fresh_timezone
+        if fresh_system_mode:
+            status["system_mode"] = fresh_system_mode
+            status["codec"] = _codec_label(fresh_system_mode)
+            status["supported_system_modes"] = fresh_supported_modes if isinstance(fresh_supported_modes, list) else []
+            status["codec_configurable"] = _is_codec_configurable_model(status.get("model") or device.get("model"))
+            cached_modes = device.get("supported_system_modes") if isinstance(device.get("supported_system_modes"), list) else []
+            if fresh_system_mode != (device.get("system_mode") or "").strip() or (fresh_supported_modes and fresh_supported_modes != cached_modes):
+                _update_codec_cache(ip, fresh_system_mode, fresh_supported_modes)
         
         log.info(f"[POLL] {ip} final version: '{status.get('fw', '')}'")
 
@@ -2716,6 +5767,7 @@ def api_poll():
                             break
                 if link_speed is not None:
                     status["linkspeed"] = link_speed
+                    cache_updates["linkspeed"] = link_speed
                     log.info(f"[POLL] {ip} linkspeed: {link_speed}")
                 else:
                     log.info(f"[POLL] {ip} net-get returned no linkspeed field")
@@ -2723,6 +5775,9 @@ def api_poll():
                 log.info(f"[POLL] {ip} net-get error or empty response: {net_resp}")
         except Exception as e:
             log.info(f"[POLL] {ip} net-get failed: {e}")
+
+        if cache_updates:
+            _update_poll_detail_cache(ip, cache_updates)
 
         # If status is disconnected, return ok:False
         if status.get("status") == "disconnected":
@@ -2790,10 +5845,38 @@ def api_poll_decoders():
                 device = cache_devices.get(ip, {})
                 user = device.get("username") or default_user
                 pwd = device.get("password") or default_pwd
+                model = device.get("model")
+                if not model and HAS_MATRIX:
+                    model = (omni_matrix_logic._decoders.get(ip) or {}).get("model")
                 
                 # Use reasonable timeout for polling - give devices time to respond
                 fields = _ws_get_decoder_inputs(ip, user, pwd, ws_port, ws_path, timeout=4, attempts=1, delay=0)
-                if fields and any(fields.get(k) for k in ("ip1_addr", "ip1_port", "ip3_addr", "ip3_port")):
+                if not isinstance(fields, dict):
+                    fields = {}
+                url = _ws_url(ip, ws_port, ws_path)
+                try:
+                    sysinfo_resp = _ws_send_recv(url, {
+                        "id": "systeminfo-get",
+                        "username": user,
+                        "password": pwd,
+                        "config_get": "systeminfo"
+                    }, timeout=min(timeout, 2.0))
+                    sysinfo_cfg = (sysinfo_resp or {}).get("config") or {}
+                    if isinstance(sysinfo_cfg, dict):
+                        if "hostname" in sysinfo_cfg:
+                            fields["hostname"] = (sysinfo_cfg.get("hostname") or "").strip()
+                            fields["host"] = fields["hostname"]
+                        version = (sysinfo_cfg.get("firmwareversion") or sysinfo_cfg.get("version") or "").strip()
+                        if version:
+                            fields["version"] = version
+                            fields["firmwareversion"] = version
+                            fields["fw"] = version
+                except Exception as e:
+                    log.debug("[POLL_DECODERS] %s systeminfo refresh failed: %s", ip, e)
+                if fields and not _supports_decoder_fs_colorspace(model):
+                    fields["fast_switching_colorspace"] = None
+                    fields["fast_switching_colorspace_options"] = []
+                if fields and any(fields.get(k) is not None for k in ("ip1_addr", "ip1_port", "ip3_addr", "ip3_port", "hostname", "version")):
                     return (ip, fields, True)
                 else:
                     return (ip, {"error": "failed to fetch"}, False)
@@ -2818,13 +5901,209 @@ def api_poll_decoders():
             dec_fields = {ip: fields for ip, fields in results.items() if isinstance(fields, dict) and "error" not in fields}
             for u in units:
                 if u.get("ip") in dec_fields:
-                    u.update({k: v for k, v in dec_fields[u.get("ip")].items() if k in ("ip1_addr", "ip1_port", "ip3_addr", "ip3_port")})
+                    u.update({
+                        k: v
+                        for k, v in dec_fields[u.get("ip")].items()
+                        if k in (
+                            "hostname", "host", "version", "firmwareversion", "fw",
+                            "ip1_addr", "ip1_port", "ip3_addr", "ip3_port",
+                            "sap_input_enabled", "input_session", "input_session_options",
+                            "hdcp_support_version", "hdcp_supported_versions",
+                            "video_input", "audio_input", "video_input_options", "audio_input_options",
+                            "stretch_crop_mode", "stretch_crop_mode_options",
+                            "resolution", "resolution_options",
+                            "framerate", "framerate_options",
+                            "fast_switching_enabled", "fast_switching_timeout", "fast_switching_colorspace", "fast_switching_colorspace_options",
+                            "video_wall_enabled", "video_wall_unit", "video_wall_unit_options",
+                            "video_wall_total_width", "video_wall_total_height",
+                            "video_wall_grid_width", "video_wall_grid_height", "video_wall_grid_x", "video_wall_grid_y",
+                            "video_wall_width", "video_wall_height", "video_wall_horizontal", "video_wall_vertical",
+                            "video_wall_rotation", "video_wall_rotation_options",
+                            "video_wall_edge_mode", "video_wall_edge_mode_options",
+                            "video_wall_edge_top", "video_wall_edge_bottom", "video_wall_edge_left", "video_wall_edge_right",
+                        )
+                    })
             _save_cache(units)
             log.info(f"[POLL_DECODERS] Updated {updated_count} decoders, saved to cache")
         except Exception as e:
             log.error(f"[POLL_DECODERS] Failed to save cache: {e}")
     
     return jsonify({"ok": True, "results": results, "updated": updated_count})
+
+@app.route("/api/decoder_input", methods=["POST"])
+def api_set_decoder_input():
+    """Set decoder hdmi_output1 SAP Input enable and/or session selection."""
+    data = request.get_json(silent=True) or {}
+    ip = (data.get("decoder") or data.get("ip") or "").strip()
+    if not ip:
+        return jsonify({"ok": False, "error": "decoder ip required"}), 400
+
+    sap_input_enabled = data.get("sap_input_enabled") if "sap_input_enabled" in data else None
+    input_session = data.get("input_session") if "input_session" in data else None
+    video_input = data.get("video_input") if "video_input" in data else None
+    audio_input = data.get("audio_input") if "audio_input" in data else None
+    stretch_crop_mode = data.get("stretch_crop_mode") if "stretch_crop_mode" in data else None
+    resolution = data.get("resolution") if "resolution" in data else None
+    framerate = data.get("framerate") if "framerate" in data else None
+    fast_switching_enabled = data.get("fast_switching_enabled") if "fast_switching_enabled" in data else None
+    fast_switching_timeout = data.get("fast_switching_timeout") if "fast_switching_timeout" in data else None
+    fast_switching_colorspace = data.get("fast_switching_colorspace") if "fast_switching_colorspace" in data else None
+    hdcp_support_version = data.get("hdcp_support_version") if "hdcp_support_version" in data else None
+    video_wall_enabled = data.get("video_wall_enabled") if "video_wall_enabled" in data else None
+    video_wall_unit = data.get("video_wall_unit") if "video_wall_unit" in data else None
+    video_wall_total_width = data.get("video_wall_total_width") if "video_wall_total_width" in data else None
+    video_wall_total_height = data.get("video_wall_total_height") if "video_wall_total_height" in data else None
+    video_wall_width = data.get("video_wall_width") if "video_wall_width" in data else None
+    video_wall_height = data.get("video_wall_height") if "video_wall_height" in data else None
+    video_wall_horizontal = data.get("video_wall_horizontal") if "video_wall_horizontal" in data else None
+    video_wall_vertical = data.get("video_wall_vertical") if "video_wall_vertical" in data else None
+    video_wall_grid_width = data.get("video_wall_grid_width") if "video_wall_grid_width" in data else None
+    video_wall_grid_height = data.get("video_wall_grid_height") if "video_wall_grid_height" in data else None
+    video_wall_grid_x = data.get("video_wall_grid_x") if "video_wall_grid_x" in data else None
+    video_wall_grid_y = data.get("video_wall_grid_y") if "video_wall_grid_y" in data else None
+    video_wall_rotation = data.get("video_wall_rotation") if "video_wall_rotation" in data else None
+    video_wall_edge_mode = data.get("video_wall_edge_mode") if "video_wall_edge_mode" in data else None
+    video_wall_edge_top = data.get("video_wall_edge_top") if "video_wall_edge_top" in data else None
+    video_wall_edge_bottom = data.get("video_wall_edge_bottom") if "video_wall_edge_bottom" in data else None
+    video_wall_edge_left = data.get("video_wall_edge_left") if "video_wall_edge_left" in data else None
+    video_wall_edge_right = data.get("video_wall_edge_right") if "video_wall_edge_right" in data else None
+
+    if all(v is None for v in (
+        sap_input_enabled,
+        input_session,
+        video_input,
+        audio_input,
+        stretch_crop_mode,
+        resolution,
+        framerate,
+        fast_switching_enabled,
+        fast_switching_timeout,
+        fast_switching_colorspace,
+        hdcp_support_version,
+        video_wall_enabled,
+        video_wall_unit,
+        video_wall_total_width,
+        video_wall_total_height,
+        video_wall_width,
+        video_wall_height,
+        video_wall_horizontal,
+        video_wall_vertical,
+        video_wall_grid_width,
+        video_wall_grid_height,
+        video_wall_grid_x,
+        video_wall_grid_y,
+        video_wall_rotation,
+        video_wall_edge_mode,
+        video_wall_edge_top,
+        video_wall_edge_bottom,
+        video_wall_edge_left,
+        video_wall_edge_right,
+    )):
+        return jsonify({"ok": False, "error": "one or more decoder input fields required"}), 400
+
+    cache_devices = {d.get("ip"): d for d in _load_cache()}
+    device = cache_devices.get(ip, {})
+    user = device.get("username") or app.config['USERNAME']
+    pwd = device.get("password") or app.config['PASSWORD']
+    ws_port = app.config['WS_PORT']
+    ws_path = app.config['WS_PATH']
+    timeout = app.config['TIMEOUT']
+
+    result = _ws_set_decoder_input_settings(
+        ip, user, pwd, ws_port, ws_path, timeout,
+        sap_input_enabled=sap_input_enabled,
+        input_session=input_session,
+        video_input=video_input,
+        audio_input=audio_input,
+        stretch_crop_mode=stretch_crop_mode,
+        resolution=resolution,
+        framerate=framerate,
+        fast_switching_enabled=fast_switching_enabled,
+        fast_switching_timeout=fast_switching_timeout,
+        fast_switching_colorspace=fast_switching_colorspace,
+        hdcp_support_version=hdcp_support_version,
+        video_wall_enabled=video_wall_enabled,
+        video_wall_unit=video_wall_unit,
+        video_wall_total_width=video_wall_total_width,
+        video_wall_total_height=video_wall_total_height,
+        video_wall_width=video_wall_width,
+        video_wall_height=video_wall_height,
+        video_wall_horizontal=video_wall_horizontal,
+        video_wall_vertical=video_wall_vertical,
+        video_wall_grid_width=video_wall_grid_width,
+        video_wall_grid_height=video_wall_grid_height,
+        video_wall_grid_x=video_wall_grid_x,
+        video_wall_grid_y=video_wall_grid_y,
+        video_wall_rotation=video_wall_rotation,
+        video_wall_edge_mode=video_wall_edge_mode,
+        video_wall_edge_top=video_wall_edge_top,
+        video_wall_edge_bottom=video_wall_edge_bottom,
+        video_wall_edge_left=video_wall_edge_left,
+        video_wall_edge_right=video_wall_edge_right,
+    )
+    if not result.get("ok"):
+        return jsonify(result), 500
+
+    fields = result.get("fields") or {}
+    if HAS_MATRIX and ip in omni_matrix_logic._decoders:
+        omni_matrix_logic._decoders[ip].update(fields)
+
+    try:
+        units = _load_cache() or []
+        for u in units:
+            if u.get("ip") == ip:
+                u.update({
+                    "ip1_addr": fields.get("ip1_addr"),
+                    "ip1_port": fields.get("ip1_port"),
+                    "ip3_addr": fields.get("ip3_addr"),
+                    "ip3_port": fields.get("ip3_port"),
+                    "sap_input_enabled": fields.get("sap_input_enabled"),
+                    "input_session": fields.get("input_session"),
+                    "input_session_options": fields.get("input_session_options") or [],
+                    "hdcp_support_version": fields.get("hdcp_support_version"),
+                    "hdcp_supported_versions": fields.get("hdcp_supported_versions") or [],
+                    "video_input": fields.get("video_input"),
+                    "audio_input": fields.get("audio_input"),
+                    "video_input_options": fields.get("video_input_options") or [],
+                    "audio_input_options": fields.get("audio_input_options") or [],
+                    "stretch_crop_mode": fields.get("stretch_crop_mode"),
+                    "stretch_crop_mode_options": fields.get("stretch_crop_mode_options") or [],
+                    "resolution": fields.get("resolution"),
+                    "resolution_options": fields.get("resolution_options") or [],
+                    "framerate": fields.get("framerate"),
+                    "framerate_options": fields.get("framerate_options") or [],
+                    "fast_switching_enabled": fields.get("fast_switching_enabled"),
+                    "fast_switching_timeout": fields.get("fast_switching_timeout"),
+                    "fast_switching_colorspace": fields.get("fast_switching_colorspace"),
+                    "fast_switching_colorspace_options": fields.get("fast_switching_colorspace_options") or [],
+                    "video_wall_enabled": fields.get("video_wall_enabled"),
+                    "video_wall_unit": fields.get("video_wall_unit"),
+                    "video_wall_unit_options": fields.get("video_wall_unit_options") or [],
+                    "video_wall_total_width": fields.get("video_wall_total_width"),
+                    "video_wall_total_height": fields.get("video_wall_total_height"),
+                    "video_wall_grid_width": fields.get("video_wall_grid_width"),
+                    "video_wall_grid_height": fields.get("video_wall_grid_height"),
+                    "video_wall_grid_x": fields.get("video_wall_grid_x"),
+                    "video_wall_grid_y": fields.get("video_wall_grid_y"),
+                    "video_wall_width": fields.get("video_wall_width"),
+                    "video_wall_height": fields.get("video_wall_height"),
+                    "video_wall_horizontal": fields.get("video_wall_horizontal"),
+                    "video_wall_vertical": fields.get("video_wall_vertical"),
+                    "video_wall_rotation": fields.get("video_wall_rotation"),
+                    "video_wall_rotation_options": fields.get("video_wall_rotation_options") or [],
+                    "video_wall_edge_mode": fields.get("video_wall_edge_mode"),
+                    "video_wall_edge_mode_options": fields.get("video_wall_edge_mode_options") or [],
+                    "video_wall_edge_top": fields.get("video_wall_edge_top"),
+                    "video_wall_edge_bottom": fields.get("video_wall_edge_bottom"),
+                    "video_wall_edge_left": fields.get("video_wall_edge_left"),
+                    "video_wall_edge_right": fields.get("video_wall_edge_right"),
+                })
+                break
+        _save_cache(units)
+    except Exception as e:
+        log.error(f"[DECODER_INPUT] Failed to save cache: {e}")
+
+    return jsonify({"ok": True, "decoder": {"ip": ip, **fields}})
 
 
 @app.route("/api/debug/latest_upload", methods=["POST"])
@@ -2903,8 +6182,8 @@ def api_upgrade():
         default_pwd = data.get("password") or app.config['PASSWORD']
         ws_port = app.config['WS_PORT']; ws_path = app.config['WS_PATH']
         timeout = app.config['TIMEOUT']
-        conc = int(data.get("concurrency") or app.config.get('UPLOAD_CONCURRENCY', 6))
-        conc = max(1, min(16, conc))
+        conc = int(data.get("concurrency") or app.config.get('UPLOAD_CONCURRENCY', 2))
+        conc = max(1, min(2, conc))
 
         # Load full device cache to access model and password per device
         cache_devices = _load_cache()
@@ -2942,33 +6221,25 @@ def api_upgrade():
                 # Get device-specific password from cache, fall back to default if not stored
                 device = cache_map.get(ip, {})
                 device_pwd = device.get("password") or default_pwd
-                model = (device.get("model") or "").lower().strip()
-                field = _choose_field(model, file_name)
-                
-                # Clean up old upload files first to prevent disk filling
-                # Note: Direct shell commands via WebSocket not supported on current device firmware
-                # Files will accumulate in /var/uploads; manual cleanup may be needed if disk fills
-                log.info("[UPGRADE] Skipping cleanup - device firmware does not support shell commands via WebSocket")
-                
-                log.info("[UPGRADE] Uploading to %s (field=%s, file_size=%.1fMB)", ip, field, file_path.stat().st_size / (1024*1024))
-                up = _http_upload_file(ip, file_path, field=field, timeout=90.0)
+                log.info("[UPGRADE] Uploading to %s (field=Upgrade file, file_size=%.1fMB)", ip, file_path.stat().st_size / (1024*1024))
+                up = _http_upload_file(ip, file_path, timeout=900.0)
                 if not up.get("ok"):
-                    return {"ip": ip, "ok": False, "stage": "upload", "error": up.get("error") or "upload failed"}
-                
-                log.info("[UPGRADE] Upload successful, initiating upgrade on %s", ip)
+                    return {
+                        "ip": ip,
+                        "ok": False,
+                        "stage": up.get("stage") or "upload",
+                        "error": up.get("error") or "upload failed",
+                    }
+
+                uploaded_file = up.get("uploaded") or ""
+                log.info("[UPGRADE] Upload successful on %s, device returned: %s", ip, uploaded_file)
                 time.sleep(2.0)  # Give device more time to finalize file write
-                
-                # Verify we can detect the uploaded file before sending upgrade command
-                log.info("[UPGRADE] Detecting uploaded file on %s...", ip)
-                detected_file = _get_latest_upload(ip, user, device_pwd, ws_port, ws_path, timeout)
-                log.info("[UPGRADE] Detected file path: %s", detected_file)
-                time.sleep(0.5)  # Additional settle time
-                
-                if not detected_file or "/var/uploads/" not in detected_file:
-                    log.error("[UPGRADE] Failed to detect uploaded file, not sending upgrade command")
-                    return {"ip": ip, "ok": False, "stage": "detection", "error": f"could not detect uploaded file (got: {detected_file})"}
-                
-                ws = _ws_upgrade(ip, user, device_pwd, ws_port, ws_path, timeout=timeout, file_path=detected_file)
+
+                if not uploaded_file:
+                    log.error("[UPGRADE] Upload completed but no filename was returned; not sending upgrade command")
+                    return {"ip": ip, "ok": False, "stage": "upload", "error": "upload completed but device returned no filename"}
+
+                ws = _ws_upgrade(ip, user, device_pwd, ws_port, ws_path, timeout=timeout, file_path=uploaded_file)
                 log.info("[UPGRADE] Upgrade response for %s: %s", ip, ws)
                 if not ws.get("ok"):
                     return {"ip": ip, "ok": False, "stage": "ws", "error": ws.get("error")}
@@ -3256,6 +6527,7 @@ def api_usb_pair():
     rex_ip = data.get("rex")
     lex_ip = data.get("lex")
     make_active = data.get("makeActive", False)
+    replace_existing = bool(data.get("replaceExisting", False))
     
     if not rex_ip or not lex_ip:
         return jsonify({"ok": False, "error": "rex and lex IPs required"}), 400
@@ -3295,7 +6567,7 @@ def api_usb_pair():
         if not lex_mac:
             return jsonify({"ok": False, "error": "Could not get LEX MAC address"}), 500
         
-        log.info("USB pair: LEX %s (MAC: %s) -> REX %s (exclusive - will replace existing pairings)", lex_ip, lex_mac, rex_ip)
+        log.info("USB pair: LEX %s (MAC: %s) -> REX %s", lex_ip, lex_mac, rex_ip)
         
         # Get current paired devices from REX
         rex_url = _ws_url(rex_ip, ws_port, ws_path)
@@ -3307,11 +6579,32 @@ def api_usb_pair():
         }, timeout=timeout)
         
         rex_cfg = (rex_usb or {}).get("config") or {}
-        # Clear existing paired devices - exclusive pairing
-        paired_devices = {}
-        
-        # Add only the new LEX
+        paired_devices = dict(rex_cfg.get("paired_devices") or {})
         lex_mac_upper = lex_mac.upper()
+        existing_other_pairings = []
+        for paired_mac, paired_info in paired_devices.items():
+            paired_host_ip = ""
+            if isinstance(paired_info, dict):
+                paired_host_ip = paired_info.get("host_ipaddress") or paired_info.get("ipaddress") or ""
+            if str(paired_mac).upper() != lex_mac_upper and paired_host_ip != lex_ip:
+                existing_other_pairings.append(paired_host_ip or str(paired_mac))
+        if existing_other_pairings and not replace_existing:
+            return jsonify({
+                "ok": False,
+                "error": "REX already has paired LEX device(s); unpair existing devices before pairing another.",
+                "existing": existing_other_pairings,
+            }), 409
+        if existing_other_pairings and replace_existing:
+            log.info("USB pair: replacing existing REX pairings on %s: %s", rex_ip, existing_other_pairings)
+            paired_devices = {}
+
+        # Add or refresh the requested LEX. When replacing, the device receives
+        # only the selected LEX because observed firmware treats paired_devices
+        # as a replacement set.
+        if make_active:
+            for info in paired_devices.values():
+                if isinstance(info, dict):
+                    info["linked"] = False
         paired_devices[lex_mac_upper] = {
             "host_hostname": lex_hostname or "",
             "host_ipaddress": lex_ip,
@@ -3322,35 +6615,10 @@ def api_usb_pair():
             "revision": lex_cfg.get("revision", ""),
             "type": "LEX",
             "vendor": lex_cfg.get("vendor", ""),
-            "typeL": "Host end"
+            "typeL": "Host end",
+            "linked": bool(make_active),
         }
-        
-        # Step 1: Clear existing pairings first
-        clear_payload = {
-            "id": "usb_icron-set",
-            "username": user,
-            "password": pwd,
-            "config_set": {
-                "name": "usb_icron",
-                "config": {
-                    "paired_devices": {}
-                }
-            }
-        }
-        
-        log.info("Step 1: Clearing existing pairings on REX %s", rex_ip)
-        clear_response = _ws_send_recv(rex_url, clear_payload, timeout=timeout)
-        log.info("Clear response: %s", json.dumps(clear_response, indent=2))
-        
-        if not clear_response or clear_response.get("error"):
-            error_msg = clear_response.get("error", "Unknown error") if clear_response else "No response"
-            return jsonify({"ok": False, "error": f"Clear failed: {error_msg}"}), 500
-        
-        # Step 2: Wait a moment for device to process the clear
-        import time
-        time.sleep(0.5)
-        
-        # Step 3: Set new pairing
+
         pairing_payload = {
             "id": "usb_icron-set",
             "username": user,
@@ -3362,8 +6630,8 @@ def api_usb_pair():
                 }
             }
         }
-        
-        log.info("Step 2: Setting new pairing on REX %s: %s", rex_ip, json.dumps(pairing_payload, indent=2))
+
+        log.info("Setting USB pairings on REX %s: %s", rex_ip, json.dumps(pairing_payload, indent=2))
         
         response = _ws_send_recv(rex_url, pairing_payload, timeout=timeout)
         
@@ -3787,7 +7055,7 @@ def main():
 
     def _select_bind_port(preferred_port: int, bind_host: str) -> int:
         candidates = [preferred_port]
-        candidates.extend(p for p in range(8088, 8101) if p != preferred_port)
+        candidates.extend(p for p in range(preferred_port + 1, preferred_port + 101))
         for candidate in candidates:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:

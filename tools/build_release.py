@@ -128,6 +128,8 @@ def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
         "PIL.ImageTk",
         "--hidden-import",
         "pystray",
+        "--hidden-import",
+        "psutil",
         "--collect-submodules",
         "PIL",
         "--collect-data",
