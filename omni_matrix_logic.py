@@ -110,6 +110,18 @@ _poll = {"enabled": False, "interval": 3}
 # --- Cache file logic ---
 _cache_file = _data_dir / "units_cache.json"
 
+def _infer_unit_role(unit: Dict[str, Any]) -> str:
+    role_text = " ".join(str(unit.get(k) or "") for k in ("role", "type", "model")).strip().lower()
+    if "encoder" in role_text or role_text == "enc" or "-e" in role_text:
+        return "encoder"
+    if "decoder" in role_text or role_text == "dec" or "-d" in role_text:
+        return "decoder"
+    if any(unit.get(k) is not None for k in ("ip1_addr", "ip3_addr", "sap_input_enabled", "video_wall_enabled")):
+        return "decoder"
+    if any(unit.get(k) is not None for k in ("v_mcast", "a_mcast", "session1_video_mcast", "session1_audio_mcast")):
+        return "encoder"
+    return ""
+
 def _ensure_ws():
     global _ws
     with _state_lock:
@@ -125,6 +137,7 @@ def _ensure_ws():
 
 def _load_cache():
     import traceback
+    _units = []
     if os.path.exists(_cache_file):
         try:
             with open(_cache_file, "r", encoding="utf-8") as f:
@@ -132,11 +145,30 @@ def _load_cache():
             if isinstance(data, list):
                 _units = data
                 print(f"[CACHE] Loaded {len(_units)} units from {_cache_file} (list format)")
+                scan_file = _cache_file.with_name("scan_results.json")
+                if scan_file.exists() and _units:
+                    try:
+                        with open(scan_file, "r", encoding="utf-8") as f:
+                            scan_data = json.load(f)
+                        scan_units = scan_data.get("devices", [])
+                        if isinstance(scan_units, list) and scan_units:
+                            by_ip = {u.get("ip"): dict(u) for u in scan_units if u.get("ip")}
+                            for unit in _units:
+                                ip = unit.get("ip")
+                                if not ip:
+                                    continue
+                                merged = dict(by_ip.get(ip, {}))
+                                merged.update(unit)
+                                by_ip[ip] = merged
+                            _units = list(by_ip.values())
+                            print(f"[CACHE] Merged cache with scan_results: {len(_units)} units")
+                    except Exception as e:
+                        print(f"[CACHE] scan_results merge skipped: {e}")
             _encoders.clear()
             _decoders.clear()
             for u in _units:
                 ip = u.get('ip')
-                role = (u.get('role') or '').lower()
+                role = _infer_unit_role(u)
                 if role == 'encoder' and ip:
                     _encoders[ip] = u
                 elif role == 'decoder' and ip:
@@ -166,8 +198,12 @@ def _save_cache():
             merged.update(u)
             by_ip[ip] = merged
 
-        with open(_cache_file, "w", encoding="utf-8") as f:
+        tmp_path = _cache_file.with_suffix(_cache_file.suffix + ".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(list(by_ip.values()), f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, _cache_file)
     except Exception as e:
         print(f"[CACHE] Failed to save cache: {e}")
 
@@ -350,8 +386,13 @@ def set_route(decoder_ip: str, encoder_ip: str, mode: str = "av", decoder_user: 
     try:
         _, info = user.classify_device(decoder_ip, ws_dec, int(_args["hdmi_index"]), bool(_args["debug"]))
         if info:
-            _decoders[decoder_ip] = info
-            print(f"[DEBUG set_route] Updated decoder {decoder_ip} info: {info}")
+            merged = dict(d or {})
+            merged.update({k: v for k, v in info.items() if v is not None})
+            merged["role"] = "decoder"
+            if "decoder" not in str(merged.get("type") or "").lower():
+                merged["type"] = "Decoder"
+            _decoders[decoder_ip] = merged
+            print(f"[DEBUG set_route] Updated decoder {decoder_ip} info: {merged}")
     except Exception as ex:
         print(f"[DEBUG set_route] classify_device failed: {ex}")
         pass

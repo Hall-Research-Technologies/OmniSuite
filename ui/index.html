@@ -320,7 +320,7 @@
     <h3>Configuration</h3>
     <div class="modal-row">
       <label>Version</label>
-      <input id="cfg_app_version" type="text" value="V1.0.1" readonly style="flex:1;"/>
+      <input id="cfg_app_version" type="text" value="V1.0.4" readonly style="flex:1;"/>
     </div>
     <div class="modal-row">
       <label>Theme</label>
@@ -2198,12 +2198,16 @@ async function loadUnits(fallbackUnits = null) {
       // Restore cached status if available, otherwise show default
       const cached = unitStatusCache[u.ip] || {};
       const activeUpgrade = activeUpgradeStatus.get(u.ip);
+      const pollingWillRefresh = localStorage.getItem('pollUnits') === 'true';
+      const cachedLooksDisconnected = String(cached.statusText || '').toLowerCase() === 'disconnected' || cached.statusClass === 's-error';
       let statusCellHtml;
       if (activeUpgrade) {
         statusCellHtml = `<td data-monitoring="1"><span class="status ${activeUpgrade.cls}">${activeUpgrade.text}</span></td>`;
-      } else if (cached.statusClass) {
+      } else if (cached.statusClass && !(pollingWillRefresh && cachedLooksDisconnected)) {
         // Use cached status HTML
         statusCellHtml = `<td><span class="status ${cached.statusClass}">${cached.statusText}</span></td>`;
+      } else if (pollingWillRefresh) {
+        statusCellHtml = '<td><span class="status s-na">N/A</span></td>';
       } else if (isFirstSession) {
         statusCellHtml = '<td><span class="status s-error">Disconnected</span></td>';
       } else {

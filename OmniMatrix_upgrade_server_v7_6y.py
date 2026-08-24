@@ -59,6 +59,7 @@ PORT = int(os.getenv("OMNI_PORT", "8080"))
 log = logging.getLogger("omni_upgrade")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 _cache_io_lock = threading.Lock()
+_usb_route_lock = threading.RLock()
 
 
 def _windows_hidden_subprocess_kwargs() -> dict:
@@ -155,6 +156,8 @@ def _configure_matrix_logic_from_app():
     if not HAS_MATRIX:
         return
     try:
+        omni_matrix_logic._data_dir = CWD
+        omni_matrix_logic._cache_file = CACHE
         omni_matrix_logic.configure(
             username=app.config.get('USERNAME', 'admin'),
             password=app.config.get('PASSWORD', 'Atlona'),
@@ -164,6 +167,18 @@ def _configure_matrix_logic_from_app():
         )
     except Exception as e:
         log.info("matrix_logic configure failed: %s", e)
+
+def _infer_unit_role(unit: dict) -> str:
+    role_text = " ".join(str((unit or {}).get(k) or "") for k in ("role", "type", "model")).strip().lower()
+    if "encoder" in role_text or role_text == "enc" or "-e" in role_text:
+        return "encoder"
+    if "decoder" in role_text or role_text == "dec" or "-d" in role_text:
+        return "decoder"
+    if any((unit or {}).get(k) is not None for k in ("ip1_addr", "ip3_addr", "sap_input_enabled", "video_wall_enabled")):
+        return "decoder"
+    if any((unit or {}).get(k) is not None for k in ("v_mcast", "a_mcast", "session1_video_mcast", "session1_audio_mcast")):
+        return "encoder"
+    return ""
 
 # Early config loading functions (needed before app init)
 def _load_config():
@@ -428,16 +443,39 @@ def _load_cache():
     """Load devices from scan_results.json (new format) or units_cache.json (legacy)"""
     try:
         with _cache_io_lock:
+            cache_units = []
             # Try legacy format first (units_cache.json) - for testing
             if CACHE.exists():
                 with open(CACHE, "r", encoding="utf-8") as f:
                     d = json.load(f)
                 if isinstance(d, list) and d:
                     log.info(f"[CACHE] Loaded {len(d)} units from units_cache.json (list format)")
-                    return d
+                    cache_units = d
                 elif isinstance(d, dict) and "units" in d and d["units"]:
                     log.info(f"[CACHE] Loaded {len(d['units'])} units from units_cache.json (dict format)")
-                    return d["units"]
+                    cache_units = d["units"]
+            if cache_units:
+                if SCAN_RESULTS.exists():
+                    try:
+                        with open(SCAN_RESULTS, "r", encoding="utf-8") as f:
+                            scan_data = json.load(f)
+                        scan_units = scan_data.get("devices", [])
+                        if isinstance(scan_units, list) and scan_units:
+                            by_ip = {u.get("ip"): dict(u) for u in scan_units if u.get("ip")}
+                            for unit in cache_units:
+                                ip = unit.get("ip")
+                                if not ip:
+                                    continue
+                                merged = dict(by_ip.get(ip, {}))
+                                merged.update(unit)
+                                by_ip[ip] = merged
+                            merged_units = list(by_ip.values())
+                            if len(merged_units) > len(cache_units):
+                                log.info("[CACHE] Merged %d cache units with scan_results to %d units", len(cache_units), len(merged_units))
+                            return merged_units
+                    except Exception as e:
+                        log.info("[CACHE] scan_results merge skipped: %s", e)
+                return cache_units
             # Fall back to new format (scan_results.json)
             if SCAN_RESULTS.exists():
                 with open(SCAN_RESULTS, "r", encoding="utf-8") as f:
@@ -491,6 +529,14 @@ CODEC_VALUES = set(CODEC_LABELS)
 
 def _codec_label(system_mode: str) -> str:
     return CODEC_LABELS.get(system_mode or "", system_mode or "")
+
+def _norm_usb_mac(mac: str) -> str:
+    return re.sub(r"[^0-9A-F]", "", str(mac or "").upper())
+
+def _unit_system_mode(unit: dict) -> str:
+    unit = unit or {}
+    si_cfg = (((unit.get("details") or {}).get("systeminfo") or {}).get("config") or {})
+    return (unit.get("system_mode") or si_cfg.get("system_mode") or "").strip()
 
 def _is_codec_configurable_model(model: str) -> bool:
     m = (model or "").strip().lower()
@@ -869,10 +915,13 @@ def _ws_get_decoder_inputs(ip: str, user: str, pwd: str, ws_port: int, ws_path: 
                         current=fields.get("audio_input"),
                     )
                     fields["stretch_crop_mode_options"] = ["keep aspect ratio", "fullscreen", "16:9", "16:10", "4:3"]
-                    fields["resolution_options"] = [
-                        "input", "auto", "4096x2160", "3840x2160", "1920x1200", "1920x1080", "1680x1050",
+                    resolution_options = [
+                        "auto", "4096x2160", "3840x2160", "1920x1200", "1920x1080", "1680x1050",
                         "1600x900", "1400x1050", "1440x900", "1280x1024", "1280x800", "1280x768", "1280x720", "1024x768"
                     ]
+                    if not fields.get("fast_switching_enabled") and not fields.get("video_wall_enabled"):
+                        resolution_options.insert(0, "input")
+                    fields["resolution_options"] = resolution_options
                     fields["framerate_options"] = ["auto", "60 Hz", "50 Hz", "30 Hz"]
                     fields["fast_switching_colorspace_options"] = ["RGB", "YUV"]
 
@@ -1552,6 +1601,40 @@ def _ws_set_decoder_input_settings(
     for attempt_pwd in passwords_to_try:
         try:
             url = _ws_url(ip, ws_port, ws_path)
+            requested_fields = {}
+            for key, value in (
+                ("sap_input_enabled", sap_input_enabled),
+                ("input_session", input_session),
+                ("video_input", video_input),
+                ("audio_input", audio_input),
+                ("stretch_crop_mode", stretch_crop_mode),
+                ("resolution", resolution),
+                ("framerate", framerate),
+                ("fast_switching_enabled", fast_switching_enabled),
+                ("fast_switching_timeout", fast_switching_timeout),
+                ("fast_switching_colorspace", fast_switching_colorspace),
+                ("hdcp_support_version", hdcp_support_version),
+                ("video_wall_enabled", video_wall_enabled),
+                ("video_wall_unit", video_wall_unit),
+                ("video_wall_total_width", video_wall_total_width),
+                ("video_wall_total_height", video_wall_total_height),
+                ("video_wall_width", video_wall_width),
+                ("video_wall_height", video_wall_height),
+                ("video_wall_horizontal", video_wall_horizontal),
+                ("video_wall_vertical", video_wall_vertical),
+                ("video_wall_grid_width", video_wall_grid_width),
+                ("video_wall_grid_height", video_wall_grid_height),
+                ("video_wall_grid_x", video_wall_grid_x),
+                ("video_wall_grid_y", video_wall_grid_y),
+                ("video_wall_rotation", video_wall_rotation),
+                ("video_wall_edge_mode", video_wall_edge_mode),
+                ("video_wall_edge_top", video_wall_edge_top),
+                ("video_wall_edge_bottom", video_wall_edge_bottom),
+                ("video_wall_edge_left", video_wall_edge_left),
+                ("video_wall_edge_right", video_wall_edge_right),
+            ):
+                if value is not None:
+                    requested_fields[key] = value
             current = _ws_send_recv(url, {
                 "id": "hdmi_output-get",
                 "username": user,
@@ -1595,8 +1678,34 @@ def _ws_set_decoder_input_settings(
                 video_output_cfg = {}
             if stretch_crop_mode is not None:
                 video_output_cfg["aspect_ratio"] = stretch_crop_mode
+            fsm_cfg = video_output_cfg.get("fsm") or {}
+            if not isinstance(fsm_cfg, dict):
+                fsm_cfg = {}
+            wall_cfg = video_output_cfg.get("wall") or {}
+            if not isinstance(wall_cfg, dict):
+                wall_cfg = {}
             if resolution is not None:
-                video_output_cfg["resolution"] = resolution
+                resolution_value = str(resolution).strip()
+                if resolution_value.lower() == "input":
+                    effective_fsm_enabled = bool(fsm_cfg.get("enabled"))
+                    if fast_switching_enabled is not None:
+                        effective_fsm_enabled = bool(fast_switching_enabled)
+                    if effective_fsm_enabled:
+                        return {
+                            "ok": False,
+                            "error": "Resolution 'input' requires Fast Switching to be disabled",
+                            "status_code": 400,
+                        }
+                    effective_wall_enabled = bool(wall_cfg.get("enabled"))
+                    if video_wall_enabled is not None:
+                        effective_wall_enabled = bool(video_wall_enabled)
+                    if effective_wall_enabled:
+                        return {
+                            "ok": False,
+                            "error": "Resolution 'input' requires Video Wall to be disabled",
+                            "status_code": 400,
+                        }
+                video_output_cfg["resolution"] = resolution_value
             if framerate is not None:
                 fr_value = str(framerate).strip().lower()
                 fr_cfg = video_output_cfg.get("framerate") or {}
@@ -1617,9 +1726,6 @@ def _ws_set_decoder_input_settings(
                         fr_cfg["framerate"] = fr_num
                 video_output_cfg["framerate"] = fr_cfg
 
-            fsm_cfg = video_output_cfg.get("fsm") or {}
-            if not isinstance(fsm_cfg, dict):
-                fsm_cfg = {}
             if fast_switching_enabled is not None:
                 fsm_cfg["enabled"] = bool(fast_switching_enabled)
             if fast_switching_timeout is not None:
@@ -1630,10 +1736,6 @@ def _ws_set_decoder_input_settings(
             if fast_switching_colorspace is not None:
                 fsm_cfg["colorspace"] = fast_switching_colorspace
             video_output_cfg["fsm"] = fsm_cfg
-
-            wall_cfg = video_output_cfg.get("wall") or {}
-            if not isinstance(wall_cfg, dict):
-                wall_cfg = {}
 
             if video_wall_enabled is not None:
                 wall_cfg["enabled"] = bool(video_wall_enabled)
@@ -1809,7 +1911,8 @@ def _ws_set_decoder_input_settings(
 
             fields = _ws_get_decoder_inputs(ip, user, attempt_pwd, ws_port, ws_path, timeout=max(timeout, 2.5), attempts=1, delay=0)
             if not fields:
-                raise ValueError("failed to verify updated settings")
+                log.warning("[DECODER_INPUT] %s set acknowledged but verify read failed; returning requested fields", ip)
+                return {"ok": True, "fields": requested_fields, "warning": "verify_failed"}
             return {"ok": True, "fields": fields}
         except Exception as e:
             last_error = str(e)
@@ -3974,8 +4077,8 @@ def api_state_matrix():
     units = _load_cache()
     if units:
         log.info(f"[API/STATE] Loaded {len(units)} units from cache for matrix")
-        enc = [u for u in units if (u.get("type") or u.get("role") or "").lower().startswith("enc")]
-        dec = [u for u in units if (u.get("type") or u.get("role") or "").lower().startswith("dec")]
+        enc = [u for u in units if _infer_unit_role(u) == "encoder"]
+        dec = [u for u in units if _infer_unit_role(u) == "decoder"]
     else:
         # Fall back to scan_results format
         data = _load_scan_results_file() or {}
@@ -3983,17 +4086,17 @@ def api_state_matrix():
         dec = data.get("decoders") or []
         if not enc and not dec:
             devs = data.get("devices") or []
-            enc = [u for u in devs if u.get("role") == "encoder"]
-            dec = [u for u in devs if u.get("role") == "decoder"]
+            enc = [u for u in devs if _infer_unit_role(u) == "encoder"]
+            dec = [u for u in devs if _infer_unit_role(u) == "decoder"]
     # Enrich cache-loaded units with scan_results multicast info if missing
     scan_data = _load_scan_results_file() or {}
     sr_enc_map = {e.get("ip"): e for e in (scan_data.get("encoders") or [])}
     if not sr_enc_map:
         # derive from devices if encoders list absent
-        sr_enc_map = {u.get("ip"): u for u in (scan_data.get("devices") or []) if (u or {}).get("role") == "encoder"}
+        sr_enc_map = {u.get("ip"): u for u in (scan_data.get("devices") or []) if _infer_unit_role(u) == "encoder"}
     sr_dec_map = {d.get("ip"): d for d in (scan_data.get("decoders") or [])}
     if not sr_dec_map:
-        sr_dec_map = {u.get("ip"): u for u in (scan_data.get("devices") or []) if (u or {}).get("role") == "decoder"}
+        sr_dec_map = {u.get("ip"): u for u in (scan_data.get("devices") or []) if _infer_unit_role(u) == "decoder"}
 
     def _merge_enc(e):
         src = sr_enc_map.get(e.get("ip")) or {}
@@ -4146,62 +4249,22 @@ def api_state_matrix():
     if dec_mapped:
         log.info(f"[API/STATE] Sample decoder after overlay: {dec_mapped[0]}")
 
-    # Filter out offline units - check reachability in parallel with short timeout
-    if enc_mapped or dec_mapped:
-        try:
-            online_ips = set()
-            units_to_check = [(u.get("ip"), u) for u in enc_mapped + dec_mapped if u.get("ip")]
-            
-            if units_to_check:
-                # Get credentials from cache
-                cache_devices = _load_cache() or []
-                cache_map = {d.get("ip"): d for d in cache_devices if d.get("ip")}
-                default_user = app.config['USERNAME']
-                default_pwd = app.config['PASSWORD']
-                ws_port = app.config['WS_PORT']
-                ws_path = app.config['WS_PATH']
-                
-                # Check reachability in parallel with very short timeout
-                def check_online(ip):
-                    try:
-                        # Get device-specific password from cache or use default
-                        device = cache_map.get(ip, {})
-                        user = device.get("username") or default_user
-                        pwd = device.get("password") or default_pwd
-                        
-                        url = _ws_url(ip, ws_port, ws_path)
-                        # Very short timeout (0.5s) - just need to know if device is reachable
-                        response = _ws_send_recv(url, 
-                            {"id": "ping", "username": user, "password": pwd, "config_get": "dummy"},
-                            timeout=0.5)
-                        
-                        # If we got any response back, unit is online
-                        if response:
-                            return True
-                    except Exception as e:
-                        log.debug(f"[API/STATE] {ip} reachability check failed: {e}")
-                    return False
-                
-                # Check all units in parallel
-                with ThreadPoolExecutor(max_workers=4) as executor:
-                    results = {ip: future for ip, future in 
-                              zip([ip for ip, _ in units_to_check],
-                                  executor.map(check_online, [ip for ip, _ in units_to_check]))}
-                
-                # Build set of online IPs
-                for ip, is_online in results.items():
-                    if is_online:
-                        online_ips.add(ip)
-                        log.debug(f"[API/STATE] {ip} is ONLINE")
-                    else:
-                        log.debug(f"[API/STATE] {ip} is OFFLINE - filtering out")
-                
-                # Filter to only online units
-                enc_mapped = [e for e in enc_mapped if e.get("ip") in online_ips]
-                dec_mapped = [d for d in dec_mapped if d.get("ip") in online_ips]
-                log.info(f"[API/STATE] Filtered to {len(enc_mapped)} encoders, {len(dec_mapped)} decoders (online only)")
-        except Exception as e:
-            log.warning(f"[API/STATE] Offline filtering failed: {e} - returning all units")
+    routes = {}
+    for dec in dec_mapped:
+        dec_ip = dec.get("ip")
+        if not dec_ip:
+            continue
+        for enc in enc_mapped:
+            if (
+                dec.get("ip1_addr") == enc.get("v_mcast")
+                and int(dec.get("ip1_port") or 0) == int(enc.get("v_port") or 0)
+            ):
+                routes[dec_ip] = enc.get("ip")
+                break
+
+    # Do not filter discovered units based on a transient reachability probe.
+    # Control pages must remain driven by the cache/discovery list so a unit that
+    # missed one poll can still be selected and controlled.
 
     return jsonify({"ok": True, "encoders": enc_mapped, "decoders": dec_mapped, "routes": routes, "poll": {}})
 
@@ -4222,8 +4285,29 @@ def api_route_matrix():
     
     cache_devices = _load_cache() or []
     cache_map = {d.get("ip"): d for d in cache_devices if d.get("ip")}
+    try:
+        omni_matrix_logic._load_cache()
+    except Exception as e:
+        log.warning("[ROUTE] matrix_logic cache reload failed: %s", e)
     decoder_user, decoder_pref_pwd, _ = _device_credentials(decoder, cache_map)
     encoder_user, encoder_pref_pwd, _ = _device_credentials(encoder, cache_map)
+    timeout = app.config['TIMEOUT']
+
+    route_encoder = omni_matrix_logic._encoders.get(encoder) or cache_map.get(encoder)
+    route_decoder = omni_matrix_logic._decoders.get(decoder) or cache_map.get(decoder)
+    if not route_encoder:
+        return jsonify({"ok": False, "error": f"Encoder {encoder} not found in current state"}), 200
+    if not route_decoder:
+        return jsonify({"ok": False, "error": f"Decoder {decoder} not found in current state"}), 200
+    encoder_mode = _unit_system_mode(route_encoder)
+    decoder_mode = _unit_system_mode(route_decoder)
+    if encoder_mode and decoder_mode and encoder_mode != decoder_mode:
+        return jsonify({
+            "ok": False,
+            "error": f"Codec mismatch: encoder {_codec_label(encoder_mode)} cannot route to decoder {_codec_label(decoder_mode)}",
+            "encoder_codec": _codec_label(encoder_mode),
+            "decoder_codec": _codec_label(decoder_mode),
+        }), 200
 
     decoder_candidates = _password_candidates(decoder_pref_pwd)
     encoder_candidates = _password_candidates(encoder_pref_pwd)
@@ -4278,19 +4362,38 @@ def api_route_matrix():
             log.warning("[ROUTE] set_route attempts failed: %s", route_errors[-1])
     if not ok:
         # Try to provide a more specific error message
-        enc = omni_matrix_logic._encoders.get(encoder)
-        dec = omni_matrix_logic._decoders.get(decoder)
+        enc = route_encoder
+        dec = route_decoder
         if not enc:
-            return jsonify({"ok": False, "error": f"Encoder {encoder} not found or offline"}), 400
+            return jsonify({"ok": False, "error": f"Encoder {encoder} not found in current state"}), 200
         if not dec:
-            return jsonify({"ok": False, "error": f"Decoder {decoder} not found or offline"}), 400
-        return jsonify({"ok": False, "error": "Route command failed (device may be offline, unreachable, or password mismatch)"}), 500
+            return jsonify({"ok": False, "error": f"Decoder {decoder} not found in current state"}), 200
+        detail = route_errors[-1] if route_errors else ""
+        message = "Route command failed (device may be offline, unreachable, password mismatch, or unsupported AV route)"
+        if detail:
+            message = f"{message}: {detail}"
+        return jsonify({"ok": False, "error": message}), 200
 
     # Note: Decoder inputs will be fetched by the polling system (every 5 seconds)
     # No need to fetch them here - route response returns immediately
 
-    # Return immediately with basic decoder info
     dec_payload = {"ip": decoder}
+    try:
+        fields = _ws_get_decoder_inputs(decoder, decoder_user, used_decoder_pwd or decoder_pref_pwd, app.config['WS_PORT'], app.config['WS_PATH'], timeout=4, attempts=1, delay=0)
+        if fields:
+            dec_payload.update(fields)
+            if HAS_MATRIX and decoder in omni_matrix_logic._decoders:
+                omni_matrix_logic._decoders[decoder].update(fields)
+            units = _load_cache() or []
+            for unit in units:
+                if unit.get("ip") == decoder:
+                    unit.update(fields)
+                    unit["role"] = "decoder"
+                    unit["type"] = "Decoder"
+                    break
+            _save_cache(units)
+    except Exception as e:
+        log.info("[ROUTE] post-route decoder refresh failed for %s: %s", decoder, e)
     return jsonify({"ok": bool(ok), "decoder": dec_payload})
 
 @app.route("/api/poll_encoders", methods=["POST"])
@@ -4443,7 +4546,8 @@ def api_set_encoder_input():
         hdcp_support_version=hdcp_support_version,
     )
     if not result.get("ok"):
-        return jsonify(result), 500
+        status_code = int(result.pop("status_code", 500) or 500)
+        return jsonify(result), status_code
 
     fields = result.get("fields") or {}
     if HAS_MATRIX and ip in omni_matrix_logic._encoders:
@@ -5677,6 +5781,7 @@ def api_poll():
         timeout = app.config['TIMEOUT']
         url = _ws_url(ip, ws_port, ws_path)
         cache_updates = {}
+        device_contact_ok = status.get("status") != "disconnected"
 
         # Query device directly for fresh firmware version (bypass cache which may be stale after upgrade)
         # Only do this if reasonable - don't hammer devices with constant WebSocket queries
@@ -5696,6 +5801,8 @@ def api_poll():
                 timeout=0.5)  # Short timeout - device may be busy
             
             if sysinfo_resp:
+                if not sysinfo_resp.get("error"):
+                    device_contact_ok = True
                 # Try multiple locations where version might be
                 sysinfo_cfg = (sysinfo_resp or {}).get("config") or {}
                 fresh_version = (sysinfo_cfg.get("firmwareversion") or sysinfo_cfg.get("version") or "").strip()
@@ -5728,6 +5835,7 @@ def api_poll():
                 {"id":"timezone-get","username":user,"password":pwd,"config_get":"timezone"},
                 timeout=min(timeout, 1.0))
             if timezone_resp and not timezone_resp.get("error"):
+                device_contact_ok = True
                 timezone_cfg = (timezone_resp or {}).get("config") or {}
                 if "timezone" in timezone_cfg or "active_timezone" in timezone_cfg:
                     fresh_timezone = (timezone_cfg.get("timezone") or timezone_cfg.get("active_timezone") or "").strip()
@@ -5778,6 +5886,7 @@ def api_poll():
                 {"id": "net-get", "username": user, "password": pwd, "config_get": "net"},
                 timeout=min(timeout, 2.0))
             if net_resp and not net_resp.get("error"):
+                device_contact_ok = True
                 net_cfg = net_resp.get("config") or []
                 # Use eth1 if present, otherwise first entry with a linkspeed value
                 link_speed = None
@@ -5803,6 +5912,13 @@ def api_poll():
 
         if cache_updates:
             _update_poll_detail_cache(ip, cache_updates)
+
+        # poll_unit_status can report "disconnected" from a short ping/TCP check
+        # even when the device responds to the detailed WebSocket reads above.
+        # Treat any successful device response as authoritative reachability so
+        # polling does not mark controllable units offline.
+        if status.get("status") == "disconnected" and device_contact_ok:
+            status["status"] = "connected"
 
         # If status is disconnected, return ok:False
         if status.get("status") == "disconnected":
@@ -6077,52 +6193,29 @@ def api_set_decoder_input():
         units = _load_cache() or []
         for u in units:
             if u.get("ip") == ip:
-                u.update({
-                    "ip1_addr": fields.get("ip1_addr"),
-                    "ip1_port": fields.get("ip1_port"),
-                    "ip3_addr": fields.get("ip3_addr"),
-                    "ip3_port": fields.get("ip3_port"),
-                    "sap_input_enabled": fields.get("sap_input_enabled"),
-                    "input_session": fields.get("input_session"),
-                    "input_session_options": fields.get("input_session_options") or [],
-                    "hdcp_support_version": fields.get("hdcp_support_version"),
-                    "hdcp_supported_versions": fields.get("hdcp_supported_versions") or [],
-                    "video_input": fields.get("video_input"),
-                    "audio_input": fields.get("audio_input"),
-                    "video_input_options": fields.get("video_input_options") or [],
-                    "audio_input_options": fields.get("audio_input_options") or [],
-                    "stretch_crop_mode": fields.get("stretch_crop_mode"),
-                    "stretch_crop_mode_options": fields.get("stretch_crop_mode_options") or [],
-                    "resolution": fields.get("resolution"),
-                    "resolution_options": fields.get("resolution_options") or [],
-                    "framerate": fields.get("framerate"),
-                    "framerate_options": fields.get("framerate_options") or [],
-                    "fast_switching_enabled": fields.get("fast_switching_enabled"),
-                    "fast_switching_timeout": fields.get("fast_switching_timeout"),
-                    "fast_switching_colorspace": fields.get("fast_switching_colorspace"),
-                    "fast_switching_colorspace_options": fields.get("fast_switching_colorspace_options") or [],
-                    "video_wall_enabled": fields.get("video_wall_enabled"),
-                    "video_wall_unit": fields.get("video_wall_unit"),
-                    "video_wall_unit_options": fields.get("video_wall_unit_options") or [],
-                    "video_wall_total_width": fields.get("video_wall_total_width"),
-                    "video_wall_total_height": fields.get("video_wall_total_height"),
-                    "video_wall_grid_width": fields.get("video_wall_grid_width"),
-                    "video_wall_grid_height": fields.get("video_wall_grid_height"),
-                    "video_wall_grid_x": fields.get("video_wall_grid_x"),
-                    "video_wall_grid_y": fields.get("video_wall_grid_y"),
-                    "video_wall_width": fields.get("video_wall_width"),
-                    "video_wall_height": fields.get("video_wall_height"),
-                    "video_wall_horizontal": fields.get("video_wall_horizontal"),
-                    "video_wall_vertical": fields.get("video_wall_vertical"),
-                    "video_wall_rotation": fields.get("video_wall_rotation"),
-                    "video_wall_rotation_options": fields.get("video_wall_rotation_options") or [],
-                    "video_wall_edge_mode": fields.get("video_wall_edge_mode"),
-                    "video_wall_edge_mode_options": fields.get("video_wall_edge_mode_options") or [],
-                    "video_wall_edge_top": fields.get("video_wall_edge_top"),
-                    "video_wall_edge_bottom": fields.get("video_wall_edge_bottom"),
-                    "video_wall_edge_left": fields.get("video_wall_edge_left"),
-                    "video_wall_edge_right": fields.get("video_wall_edge_right"),
-                })
+                for key in (
+                    "ip1_addr", "ip1_port", "ip3_addr", "ip3_port",
+                    "sap_input_enabled", "input_session", "input_session_options",
+                    "hdcp_support_version", "hdcp_supported_versions",
+                    "video_input", "audio_input", "video_input_options", "audio_input_options",
+                    "stretch_crop_mode", "stretch_crop_mode_options",
+                    "resolution", "resolution_options",
+                    "framerate", "framerate_options",
+                    "fast_switching_enabled", "fast_switching_timeout",
+                    "fast_switching_colorspace", "fast_switching_colorspace_options",
+                    "video_wall_enabled", "video_wall_unit", "video_wall_unit_options",
+                    "video_wall_total_width", "video_wall_total_height",
+                    "video_wall_grid_width", "video_wall_grid_height",
+                    "video_wall_grid_x", "video_wall_grid_y",
+                    "video_wall_width", "video_wall_height",
+                    "video_wall_horizontal", "video_wall_vertical",
+                    "video_wall_rotation", "video_wall_rotation_options",
+                    "video_wall_edge_mode", "video_wall_edge_mode_options",
+                    "video_wall_edge_top", "video_wall_edge_bottom",
+                    "video_wall_edge_left", "video_wall_edge_right",
+                ):
+                    if key in fields:
+                        u[key] = fields.get(key)
                 break
         _save_cache(units)
     except Exception as e:
@@ -6461,25 +6554,6 @@ def api_usb_state():
                 if not role:
                     return None
                 
-                # Parse paired_devices for actual pairing info (REX only)
-                active_lex = None
-                available_lex = []
-                if role == "REX":
-                    paired_devices = usb_cfg.get("paired_devices") or {}
-                    found_devices = usb_cfg.get("found_devices") or {}
-                    
-                    log.info("Device %s paired_devices: %s", ip, paired_devices)
-                    
-                    for mac, info in paired_devices.items():
-                        peer_ip = info.get("host_ipaddress", "") or info.get("ipaddress", "")
-                        if peer_ip:
-                            # Check if currently linked/active
-                            is_linked = info.get("linked", False)
-                            if is_linked:
-                                active_lex = peer_ip
-                            else:
-                                    available_lex.append(peer_ip)
-                
                 return {
                     "ip": ip,
                     "host": hostname,
@@ -6490,21 +6564,23 @@ def api_usb_state():
                     "protocol": usb_cfg.get("protocol", ""),
                     "host_port": usb_cfg.get("usbhostport-current") or usb_cfg.get("usbhostport", ""),
                     "filter": usb_cfg.get("usbfiltering", ""),
-                    "active_lex": active_lex,
-                    "available_lex": available_lex,
+                    "paired_devices": usb_cfg.get("paired_devices") or {},
                     "found_count": len(usb_cfg.get("found_devices") or {}),
                 }
             except Exception as e:
                 log.info("USB query failed for %s: %s", ip, e)
                 return None
         
-        # Query devices in parallel
+        # Query devices in parallel, then resolve REX peer entries back to the
+        # control IPs used by the UI. Firmware may report peer USB IPs or MACs.
+        usb_results = []
         with ThreadPoolExecutor(max_workers=min(8, len(units))) as ex:
             futures = {ex.submit(get_usb_info, u): u for u in units}
             for fut in as_completed(futures):
                 result = fut.result()
                 if not result:
                     continue
+                usb_results.append(result)
                 
                 role = result.get("role", "")
                 if role == "LEX":
@@ -6530,22 +6606,298 @@ def api_usb_state():
                         "host_port": result["host_port"],
                         "filter": result.get("filter", ""),
                     })
-                    pairings[rex_ip] = {
-                        "active": result.get("active_lex"),
-                        "available": result.get("available_lex", []),
-                    }
+
+        lex_by_control_ip = {l.get("ip"): l.get("ip") for l in lex_units if l.get("ip")}
+        lex_by_usb_ip = {l.get("usb_ip"): l.get("ip") for l in lex_units if l.get("usb_ip") and l.get("ip")}
+        lex_by_mac = {_norm_usb_mac(l.get("mac")): l.get("ip") for l in lex_units if l.get("mac") and l.get("ip")}
+        rex_by_control_ip = {r.get("ip"): r.get("ip") for r in rex_units if r.get("ip")}
+        rex_by_usb_ip = {r.get("usb_ip"): r.get("ip") for r in rex_units if r.get("usb_ip") and r.get("ip")}
+        rex_by_mac = {_norm_usb_mac(r.get("mac")): r.get("ip") for r in rex_units if r.get("mac") and r.get("ip")}
+
+        def resolve_lex_peer(mac, info):
+            info = info if isinstance(info, dict) else {}
+            candidates = [
+                info.get("host_ipaddress"),
+                info.get("control_ipaddress"),
+                info.get("ipaddress"),
+                info.get("ip"),
+            ]
+            for candidate in candidates:
+                if candidate in lex_by_control_ip:
+                    return candidate
+                if candidate in lex_by_usb_ip:
+                    return lex_by_usb_ip[candidate]
+            mac_key = _norm_usb_mac(info.get("macaddress") or mac)
+            if mac_key and mac_key in lex_by_mac:
+                return lex_by_mac[mac_key]
+            return ""
+
+        def resolve_rex_peer(mac, info):
+            info = info if isinstance(info, dict) else {}
+            candidates = [
+                info.get("host_ipaddress"),
+                info.get("control_ipaddress"),
+                info.get("ipaddress"),
+                info.get("ip"),
+            ]
+            for candidate in candidates:
+                if candidate in rex_by_control_ip:
+                    return candidate
+                if candidate in rex_by_usb_ip:
+                    return rex_by_usb_ip[candidate]
+            mac_key = _norm_usb_mac(info.get("macaddress") or mac)
+            if mac_key and mac_key in rex_by_mac:
+                return rex_by_mac[mac_key]
+            return ""
+
+        rex_pairings = {}
+        for result in usb_results:
+            if result.get("role") != "REX":
+                continue
+            rex_ip = result["ip"]
+            active_lex = None
+            available_lex = []
+            paired_devices = result.get("paired_devices") or {}
+            log.info("Device %s paired_devices: %s", rex_ip, paired_devices)
+            for mac, info in paired_devices.items():
+                peer_ip = resolve_lex_peer(mac, info)
+                if not peer_ip:
+                    continue
+                if isinstance(info, dict) and info.get("linked", False):
+                    active_lex = peer_ip
+                elif peer_ip not in available_lex:
+                    available_lex.append(peer_ip)
+            rex_pairings[rex_ip] = {"active": active_lex, "available": available_lex}
+
+        lex_pairings = {}
+        for result in usb_results:
+            if result.get("role") != "LEX":
+                continue
+            lex_ip = result["ip"]
+            for mac, info in (result.get("paired_devices") or {}).items():
+                rex_ip = resolve_rex_peer(mac, info)
+                if not rex_ip:
+                    continue
+                pairing = lex_pairings.setdefault(rex_ip, {"active": None, "available": []})
+                if isinstance(info, dict) and info.get("linked", False):
+                    pairing["active"] = lex_ip
+                elif lex_ip not in pairing["available"]:
+                    pairing["available"].append(lex_ip)
+
+        pairings = dict(rex_pairings)
+        for rex_ip, lex_pairing in lex_pairings.items():
+            current = pairings.get(rex_ip) or {"active": None, "available": []}
+            if not current.get("active") and not current.get("available"):
+                pairings[rex_ip] = lex_pairing
+
+        pairing_conflicts = {}
+        for rex_ip, lex_pairing in lex_pairings.items():
+            rex_pairing = rex_pairings.get(rex_ip) or {"active": None, "available": []}
+            rex_peers = set(([rex_pairing.get("active")] if rex_pairing.get("active") else []) + (rex_pairing.get("available") or []))
+            lex_peers = set(([lex_pairing.get("active")] if lex_pairing.get("active") else []) + (lex_pairing.get("available") or []))
+            if rex_peers and lex_peers and rex_peers != lex_peers:
+                pairing_conflicts[rex_ip] = {"rex_side": rex_pairing, "lex_side": lex_pairing}
         
         return jsonify({
             "ok": True,
             "lex": lex_units,
             "rex": rex_units,
-            "pairings": pairings
+            "pairings": pairings,
+            "pairings_rex_side": rex_pairings,
+            "pairings_lex_side": lex_pairings,
+            "pairing_conflicts": pairing_conflicts,
         })
     except Exception as e:
         log.exception("usb_state error")
         return jsonify({"ok": False, "error": str(e)}), 500
 
+def _usb_get_config(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float) -> dict:
+    url = _ws_url(ip, ws_port, ws_path)
+    usb = _ws_send_recv(url, {
+        "id": "usb_icron-get",
+        "username": user,
+        "password": pwd,
+        "config_get": "usb_icron",
+    }, timeout=timeout)
+    return (usb or {}).get("config") or {}
+
+def _same_subnet24(ip_a: str, ip_b: str) -> bool:
+    a = str(ip_a or "").strip().split(".")
+    b = str(ip_b or "").strip().split(".")
+    return len(a) == 4 and len(b) == 4 and a[:3] == b[:3]
+
+def _usb_pairing_from_rex_cfg(rex_cfg: dict, lex_mac: str, lex_ip: str) -> dict:
+    lex_mac_key = _norm_usb_mac(lex_mac)
+    active = None
+    available = []
+    for mac, info in (rex_cfg.get("paired_devices") or {}).items():
+        info = info if isinstance(info, dict) else {}
+        peer_ip = info.get("host_ipaddress") or info.get("control_ipaddress") or info.get("ip") or ""
+        if not peer_ip and _norm_usb_mac(info.get("macaddress") or mac) == lex_mac_key:
+            peer_ip = lex_ip
+        if not peer_ip:
+            continue
+        if info.get("linked", False):
+            active = peer_ip
+        elif peer_ip not in available:
+            available.append(peer_ip)
+    return {"active": active, "available": available}
+
+def _usb_rex_has_lex(rex_cfg: dict, lex_mac: str, lex_ip: str) -> bool:
+    lex_mac_key = _norm_usb_mac(lex_mac)
+    for mac, info in (rex_cfg.get("paired_devices") or {}).items():
+        info = info if isinstance(info, dict) else {}
+        if _norm_usb_mac(mac) == lex_mac_key or _norm_usb_mac(info.get("macaddress")) == lex_mac_key:
+            return True
+        if (info.get("host_ipaddress") or info.get("control_ipaddress") or info.get("ip")) == lex_ip:
+            return True
+    return False
+
+def _usb_rex_has_active_lex(rex_cfg: dict, lex_mac: str, lex_ip: str) -> bool:
+    lex_mac_key = _norm_usb_mac(lex_mac)
+    for mac, info in (rex_cfg.get("paired_devices") or {}).items():
+        info = info if isinstance(info, dict) else {}
+        matched = (
+            _norm_usb_mac(mac) == lex_mac_key
+            or _norm_usb_mac(info.get("macaddress")) == lex_mac_key
+            or (info.get("host_ipaddress") or info.get("control_ipaddress") or info.get("ip")) == lex_ip
+        )
+        if matched:
+            return bool(info.get("linked", False))
+    return False
+
+def _usb_rex_has_any_lex(rex_cfg: dict, lex_refs: list[dict]) -> bool:
+    return any(_usb_rex_has_lex(rex_cfg, ref.get("mac", ""), ref.get("ip", "")) for ref in lex_refs)
+
+def _usb_cfg_has_peer(device_cfg: dict, peer_mac: str, peer_ip: str) -> bool:
+    peer_mac_key = _norm_usb_mac(peer_mac)
+    for mac, info in (device_cfg.get("paired_devices") or {}).items():
+        info = info if isinstance(info, dict) else {}
+        if _norm_usb_mac(mac) == peer_mac_key or _norm_usb_mac(info.get("macaddress")) == peer_mac_key:
+            return True
+        if (info.get("host_ipaddress") or info.get("control_ipaddress") or info.get("ip")) == peer_ip:
+            return True
+    return False
+
+def _usb_remove_peer_from_paired_devices(paired_devices: dict, peer_mac: str, peer_ip: str) -> dict:
+    peer_mac_key = _norm_usb_mac(peer_mac)
+    filtered = {}
+    for mac, info in (paired_devices or {}).items():
+        info = info if isinstance(info, dict) else info
+        info_mac = _norm_usb_mac(info.get("macaddress")) if isinstance(info, dict) else ""
+        info_ip = ""
+        if isinstance(info, dict):
+            info_ip = info.get("host_ipaddress") or info.get("control_ipaddress") or info.get("ip") or info.get("ipaddress") or ""
+        if _norm_usb_mac(mac) == peer_mac_key or info_mac == peer_mac_key or info_ip == peer_ip:
+            continue
+        filtered[mac] = info
+    return filtered
+
+def _usb_set_paired_devices(ip: str, paired_devices: dict, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float, op_id: str) -> dict:
+    url = _ws_url(ip, ws_port, ws_path)
+    return _ws_send_recv(url, {
+        "id": op_id,
+        "username": user,
+        "password": pwd,
+        "config_set": {
+            "name": "usb_icron",
+            "config": {"paired_devices": paired_devices},
+        },
+    }, timeout=timeout) or {}
+
+def _usb_write_peer_membership(ip: str, paired_devices: dict, peer_mac: str, peer_ip: str, should_exist: bool, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float, op_id: str) -> tuple[dict, dict]:
+    response = {}
+    last_cfg = {}
+    for attempt in range(1, 4):
+        response = _usb_set_paired_devices(ip, paired_devices, user, pwd, ws_port, ws_path, timeout, op_id)
+        if response.get("error"):
+            return response, last_cfg
+        for delay in (0.35, 0.8, 1.4):
+            time.sleep(delay)
+            last_cfg = _usb_get_config(ip, user, pwd, ws_port, ws_path, max(timeout, 2.5))
+            if _usb_cfg_has_peer(last_cfg, peer_mac, peer_ip) == should_exist:
+                return response, last_cfg
+        log.info("[USB] %s peer membership verify attempt %s did not match yet; retrying write", ip, attempt)
+    return response, last_cfg
+
+def _usb_get_cached_usb_units() -> list[dict]:
+    all_devices = _load_cache() or []
+    usb_models = ["hw-omni-e4521", "hw-omni-d4521", "hw-omni-e4511", "hw-omni-d4511", "4521", "4511"]
+    return [
+        dev for dev in all_devices
+        if dev.get("ip") and any(m in (dev.get("model") or "").lower() for m in usb_models)
+    ]
+
+def _usb_get_device_hostname(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float) -> str:
+    try:
+        sysinfo = _ws_send_recv(_ws_url(ip, ws_port, ws_path), {
+            "id": "systeminfo-get",
+            "username": user,
+            "password": pwd,
+            "config_get": "systeminfo",
+        }, timeout=timeout)
+        return ((sysinfo or {}).get("config") or {}).get("hostname", "")
+    except Exception:
+        return ""
+
+def _usb_write_and_verify_rex_pairing(rex_ip: str, payload: dict, lex_mac: str, lex_ip: str, should_exist: bool, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float, require_active: bool = False) -> tuple[dict, dict]:
+    rex_url = _ws_url(rex_ip, ws_port, ws_path)
+    response = {}
+    last_cfg = {}
+    for attempt in range(1, 4):
+        response = _ws_send_recv(rex_url, payload, timeout=timeout) or {}
+        if response.get("error"):
+            return response, last_cfg
+        for delay in (0.35, 0.8, 1.4):
+            time.sleep(delay)
+            last_cfg = _usb_get_config(rex_ip, user, pwd, ws_port, ws_path, max(timeout, 2.5))
+            if should_exist and require_active:
+                if _usb_rex_has_active_lex(last_cfg, lex_mac, lex_ip):
+                    return response, last_cfg
+            elif _usb_rex_has_lex(last_cfg, lex_mac, lex_ip) == should_exist:
+                return response, last_cfg
+        log.info("[USB] %s verify attempt %s did not match yet; retrying write", rex_ip, attempt)
+    return response, last_cfg
+
+def _usb_write_and_verify_rex_unpairs(rex_ip: str, payload: dict, previous_lex_refs: list[dict], user: str, pwd: str, ws_port: int, ws_path: str, timeout: float) -> tuple[dict, dict]:
+    rex_url = _ws_url(rex_ip, ws_port, ws_path)
+    response = {}
+    last_cfg = {}
+    for attempt in range(1, 4):
+        response = _ws_send_recv(rex_url, payload, timeout=timeout) or {}
+        if response.get("error"):
+            return response, last_cfg
+        for delay in (0.35, 0.8, 1.4):
+            time.sleep(delay)
+            last_cfg = _usb_get_config(rex_ip, user, pwd, ws_port, ws_path, max(timeout, 2.5))
+            if not _usb_rex_has_any_lex(last_cfg, previous_lex_refs):
+                return response, last_cfg
+        log.info("[USB] %s unpair verify attempt %s did not match yet; retrying write", rex_ip, attempt)
+    return response, last_cfg
+
+def _usb_rex_pair_count_for_lex(lex_mac: str, lex_ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float) -> tuple[int, list[str]]:
+    all_devices = _usb_get_cached_usb_units()
+    rex_ips = []
+    for dev in all_devices:
+        ip = dev.get("ip")
+        if ip:
+            try:
+                cfg = _usb_get_config(ip, user, pwd, ws_port, ws_path, min(timeout, 2.5))
+                if (cfg.get("type") or "").upper() == "REX" and _usb_rex_has_lex(cfg, lex_mac, lex_ip):
+                    rex_ips.append(ip)
+            except Exception as e:
+                log.info("[USB] Pair count query skipped %s: %s", ip, e)
+    return len(set(rex_ips)), sorted(set(rex_ips), key=lambda value: tuple(int(part) for part in value.split(".") if part.isdigit()))
+
+def _with_usb_route_lock(fn):
+    def wrapped(*args, **kwargs):
+        with _usb_route_lock:
+            return fn(*args, **kwargs)
+    wrapped.__name__ = fn.__name__
+    return wrapped
+
 @app.route("/api/usb_pair", methods=["POST"])
+@_with_usb_route_lock
 def api_usb_pair():
     """Pair a LEX to a REX (add to available list or set as active)"""
     data = request.get_json(silent=True) or {}
@@ -6556,6 +6908,11 @@ def api_usb_pair():
     
     if not rex_ip or not lex_ip:
         return jsonify({"ok": False, "error": "rex and lex IPs required"}), 400
+    if not _same_subnet24(rex_ip, lex_ip):
+        return jsonify({
+            "ok": False,
+            "error": f"Cross-subnet USB pairing is not allowed: REX {rex_ip} and LEX {lex_ip} must be on the same /24 subnet",
+        }), 400
     
     try:
         user = app.config['USERNAME']
@@ -6606,13 +6963,45 @@ def api_usb_pair():
         rex_cfg = (rex_usb or {}).get("config") or {}
         paired_devices = dict(rex_cfg.get("paired_devices") or {})
         lex_mac_upper = lex_mac.upper()
+        rex_mac = (rex_cfg.get("macaddress") or "").upper()
+        if not rex_mac:
+            return jsonify({"ok": False, "error": "Could not get REX MAC address"}), 500
+        rex_hostname = _usb_get_device_hostname(rex_ip, user, pwd, ws_port, ws_path, timeout)
+        rex_entry = {
+            "host_hostname": rex_hostname or "",
+            "host_ipaddress": rex_ip,
+            "ipaddress": rex_cfg.get("ipaddress", ""),
+            "macaddress": rex_mac,
+            "product": rex_cfg.get("product", "USB Over Network"),
+            "protocol": rex_cfg.get("protocol", "IP"),
+            "revision": rex_cfg.get("revision", ""),
+            "type": "REX",
+            "vendor": rex_cfg.get("vendor", ""),
+            "typeL": "Device end",
+            "linked": bool(make_active),
+            "paired": True,
+        }
+        current_rex_has_lex = _usb_rex_has_lex(rex_cfg, lex_mac_upper, lex_ip)
+        selected_lex_has_rex = _usb_cfg_has_peer(lex_cfg, rex_mac, rex_ip)
+        selected_lex_pair_count = len(lex_cfg.get("paired_devices") or {})
+        if not selected_lex_has_rex and selected_lex_pair_count >= 5:
+            return jsonify({
+                "ok": False,
+                "error": f"LEX {lex_ip} is already paired to 5 REX units",
+                "paired_count": selected_lex_pair_count,
+            }), 409
         existing_other_pairings = []
+        previous_lex_refs = []
         for paired_mac, paired_info in paired_devices.items():
             paired_host_ip = ""
             if isinstance(paired_info, dict):
-                paired_host_ip = paired_info.get("host_ipaddress") or paired_info.get("ipaddress") or ""
+                paired_host_ip = paired_info.get("host_ipaddress") or paired_info.get("control_ipaddress") or paired_info.get("ip") or paired_info.get("ipaddress") or ""
             if str(paired_mac).upper() != lex_mac_upper and paired_host_ip != lex_ip:
                 existing_other_pairings.append(paired_host_ip or str(paired_mac))
+                previous_lex_refs.append({
+                    "ip": paired_host_ip,
+                    "mac": paired_info.get("macaddress") if isinstance(paired_info, dict) else paired_mac,
+                })
         if existing_other_pairings and not replace_existing:
             return jsonify({
                 "ok": False,
@@ -6621,7 +7010,90 @@ def api_usb_pair():
             }), 409
         if existing_other_pairings and replace_existing:
             log.info("USB pair: replacing existing REX pairings on %s: %s", rex_ip, existing_other_pairings)
-            paired_devices = {}
+            unpair_payload = {
+                "id": "usb_icron-unpair-before-pair",
+                "username": user,
+                "password": pwd,
+                "config_set": {
+                    "name": "usb_icron",
+                    "config": {
+                        "paired_devices": {
+                            mac: info for mac, info in paired_devices.items()
+                            if _norm_usb_mac(mac) == _norm_usb_mac(lex_mac_upper)
+                        }
+                    }
+                }
+            }
+            unpair_response, unpaired_cfg = _usb_write_and_verify_rex_unpairs(
+                rex_ip, unpair_payload, previous_lex_refs,
+                user, pwd, ws_port, ws_path, timeout,
+            )
+            if unpair_response and unpair_response.get("error"):
+                error_msg = unpair_response.get("error", "Unknown error")
+                return jsonify({
+                    "ok": False,
+                    "error": f"Previous LEX unpair failed before pairing new LEX: {error_msg}",
+                    "response": unpair_response,
+                }), 500
+            if _usb_rex_has_any_lex(unpaired_cfg, previous_lex_refs):
+                return jsonify({
+                    "ok": False,
+                    "error": "Previous LEX unpair was sent but REX still reports the old pairing",
+                    "response": unpair_response,
+                }), 200
+            paired_devices = dict(unpaired_cfg.get("paired_devices") or {})
+
+        # Keep the LEX side in sync too. A REX route change must remove this
+        # REX from every non-selected LEX before adding it to the selected LEX.
+        lex_cleanup_errors = []
+        for usb_unit in _usb_get_cached_usb_units():
+            unit_ip = usb_unit.get("ip")
+            if not unit_ip or unit_ip == lex_ip:
+                continue
+            try:
+                unit_cfg = _usb_get_config(unit_ip, user, pwd, ws_port, ws_path, min(timeout, 2.5))
+            except Exception as e:
+                log.info("[USB] LEX cleanup read skipped %s: %s", unit_ip, e)
+                continue
+            if (unit_cfg.get("type") or "").upper() != "LEX":
+                continue
+            if not _usb_cfg_has_peer(unit_cfg, rex_mac, rex_ip):
+                continue
+            cleaned = _usb_remove_peer_from_paired_devices(unit_cfg.get("paired_devices") or {}, rex_mac, rex_ip)
+            cleanup_response, cleanup_cfg = _usb_write_peer_membership(
+                unit_ip, cleaned, rex_mac, rex_ip, False,
+                user, pwd, ws_port, ws_path, timeout,
+                "usb_icron-unpair-rex-from-old-lex",
+            )
+            if cleanup_response.get("error") or _usb_cfg_has_peer(cleanup_cfg, rex_mac, rex_ip):
+                lex_cleanup_errors.append(unit_ip)
+        if lex_cleanup_errors:
+            return jsonify({
+                "ok": False,
+                "error": "Previous LEX unpair was sent but one or more LEX units still report the REX pairing",
+                "lex_units": lex_cleanup_errors,
+            }), 200
+
+        selected_lex_devices = dict(lex_cfg.get("paired_devices") or {})
+        selected_lex_devices = _usb_remove_peer_from_paired_devices(selected_lex_devices, rex_mac, rex_ip)
+        selected_lex_devices[rex_mac] = rex_entry
+        lex_pair_response, verified_lex_cfg = _usb_write_peer_membership(
+            lex_ip, selected_lex_devices, rex_mac, rex_ip, True,
+            user, pwd, ws_port, ws_path, timeout,
+            "usb_icron-pair-rex-to-lex",
+        )
+        if lex_pair_response.get("error"):
+            return jsonify({
+                "ok": False,
+                "error": f"Selected LEX pair update failed: {lex_pair_response.get('error')}",
+                "response": lex_pair_response,
+            }), 500
+        if not _usb_cfg_has_peer(verified_lex_cfg, rex_mac, rex_ip):
+            return jsonify({
+                "ok": False,
+                "error": "Selected LEX pair update was sent but LEX did not report the REX pairing",
+                "response": lex_pair_response,
+            }), 200
 
         # Add or refresh the requested LEX. When replacing, the device receives
         # only the selected LEX because observed firmware treats paired_devices
@@ -6642,6 +7114,7 @@ def api_usb_pair():
             "vendor": lex_cfg.get("vendor", ""),
             "typeL": "Host end",
             "linked": bool(make_active),
+            "paired": True,
         }
 
         pairing_payload = {
@@ -6658,15 +7131,35 @@ def api_usb_pair():
 
         log.info("Setting USB pairings on REX %s: %s", rex_ip, json.dumps(pairing_payload, indent=2))
         
-        response = _ws_send_recv(rex_url, pairing_payload, timeout=timeout)
+        response, verified_cfg = _usb_write_and_verify_rex_pairing(
+            rex_ip, pairing_payload, lex_mac_upper, lex_ip, True,
+            user, pwd, ws_port, ws_path, timeout,
+            require_active=bool(make_active),
+        )
         
         log.info("Pairing response from REX %s: %s", rex_ip, json.dumps(response, indent=2))
         
-        if response and not response.get("error"):
-            return jsonify({"ok": True, "message": "Pairing successful", "response": response})
-        else:
-            error_msg = response.get("error", "Unknown error") if response else "No response"
+        if response and response.get("error"):
+            error_msg = response.get("error", "Unknown error")
             return jsonify({"ok": False, "error": error_msg, "response": response}), 500
+        if bool(make_active) and not _usb_rex_has_active_lex(verified_cfg, lex_mac_upper, lex_ip):
+            return jsonify({
+                "ok": False,
+                "error": "Pair command was sent but REX did not report the requested LEX as active",
+                "response": response,
+            }), 200
+        if not _usb_rex_has_lex(verified_cfg, lex_mac_upper, lex_ip):
+            return jsonify({
+                "ok": False,
+                "error": "Pair command was sent but REX did not report the requested LEX pairing",
+                "response": response,
+            }), 200
+        return jsonify({
+            "ok": True,
+            "message": "Pairing successful",
+            "response": response,
+            "pairing": _usb_pairing_from_rex_cfg(verified_cfg, lex_mac_upper, lex_ip),
+        })
         
     except Exception as e:
         log.exception("usb_pair error")
@@ -6676,6 +7169,7 @@ def api_usb_pair():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route("/api/usb_unpair", methods=["POST"])
+@_with_usb_route_lock
 def api_usb_unpair():
     """Unpair a LEX from a REX (remove from available/active)"""
     data = request.get_json(silent=True) or {}
@@ -6720,6 +7214,9 @@ def api_usb_unpair():
         
         rex_cfg = (rex_usb or {}).get("config") or {}
         paired_devices = dict(rex_cfg.get("paired_devices", {}))
+        rex_mac = (rex_cfg.get("macaddress") or "").upper()
+        if not rex_mac:
+            return jsonify({"ok": False, "error": "Could not get REX MAC address"}), 500
         
         # Remove the LEX from paired devices
         lex_mac_upper = lex_mac.upper()
@@ -6744,15 +7241,48 @@ def api_usb_unpair():
         
         log.info("Sending unpair command to REX %s: %s", rex_ip, json.dumps(unpair_payload, indent=2))
         
-        response = _ws_send_recv(rex_url, unpair_payload, timeout=timeout)
+        response, verified_cfg = _usb_write_and_verify_rex_pairing(
+            rex_ip, unpair_payload, lex_mac_upper, lex_ip, False,
+            user, pwd, ws_port, ws_path, timeout,
+        )
         
         log.info("Unpair response from REX %s: %s", rex_ip, json.dumps(response, indent=2))
         
-        if response and not response.get("error"):
-            return jsonify({"ok": True, "message": "Unpairing successful", "response": response})
-        else:
-            error_msg = response.get("error", "Unknown error") if response else "No response"
+        if response and response.get("error"):
+            error_msg = response.get("error", "Unknown error")
             return jsonify({"ok": False, "error": error_msg, "response": response}), 500
+        if _usb_rex_has_lex(verified_cfg, lex_mac_upper, lex_ip):
+            return jsonify({
+                "ok": False,
+                "error": "Unpair command was sent but REX still reports the LEX pairing",
+                "response": response,
+            }), 200
+
+        lex_devices = dict(lex_cfg.get("paired_devices") or {})
+        cleaned_lex_devices = _usb_remove_peer_from_paired_devices(lex_devices, rex_mac, rex_ip)
+        lex_response, verified_lex_cfg = _usb_write_peer_membership(
+            lex_ip, cleaned_lex_devices, rex_mac, rex_ip, False,
+            user, pwd, ws_port, ws_path, timeout,
+            "usb_icron-unpair-rex-from-lex",
+        )
+        if lex_response.get("error"):
+            return jsonify({
+                "ok": False,
+                "error": f"LEX unpair update failed: {lex_response.get('error')}",
+                "response": lex_response,
+            }), 500
+        if _usb_cfg_has_peer(verified_lex_cfg, rex_mac, rex_ip):
+            return jsonify({
+                "ok": False,
+                "error": "LEX unpair update was sent but LEX still reports the REX pairing",
+                "response": lex_response,
+            }), 200
+        return jsonify({
+            "ok": True,
+            "message": "Unpairing successful",
+            "response": response,
+            "pairing": _usb_pairing_from_rex_cfg(verified_cfg, lex_mac_upper, lex_ip),
+        })
         
     except Exception as e:
         log.exception("usb_unpair error")

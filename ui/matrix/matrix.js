@@ -296,6 +296,23 @@ function markLiveControl(control, state){
   control.classList.toggle('failed-write', state === 'failed');
 }
 
+let matrixRenderDeferred = false;
+
+function requestMatrixRender(force=false){
+  if(!lastState) return;
+  if(!force && isMatrixEditActive()){
+    matrixRenderDeferred = true;
+    return;
+  }
+  matrixRenderDeferred = false;
+  render(lastState);
+}
+
+function flushDeferredMatrixRender(){
+  if(!matrixRenderDeferred || isMatrixEditActive()) return;
+  requestMatrixRender(true);
+}
+
 function getLiveDevice(kind, ip){
   const listKey = kind === 'encoder' ? '_rawEncoders' : '_rawDecoders';
   const viewKey = kind === 'encoder' ? 'encoders' : 'decoders';
@@ -333,7 +350,7 @@ function enqueueLiveWrite({kind, ip, field, value, control, payload, endpoint, s
       liveWriteLatest.delete(key);
       liveWritePrevious.delete(key);
       markLiveControl(control, '');
-      render(lastState);
+      requestMatrixRender();
       if(successMessage) toast(successMessage, true);
     } catch(err) {
       if(liveWriteLatest.get(key) !== token) return;
@@ -346,7 +363,7 @@ function enqueueLiveWrite({kind, ip, field, value, control, payload, endpoint, s
       }
       markLiveControl(control, 'failed');
       setTimeout(()=>markLiveControl(control, ''), 2500);
-      render(lastState);
+      requestMatrixRender();
       toast((failureMessage || 'Update failed') + ': ' + err.message, false);
     }
   }).finally(() => {
@@ -463,7 +480,7 @@ function setConfigImportBusy(ip, busy) {
     configImportBusy.delete(ip);
     stopConfigImportPoll(ip);
   }
-  if (lastState && !isMatrixEditActive()) render(lastState);
+  if (lastState) requestMatrixRender();
 }
 
 function clearConfigImportBusyOnPoll(ip) {
@@ -491,8 +508,8 @@ async function pollConfigImportUnit(ip) {
     pollRole('/api/poll_encoders', 'encoders', syncEncoderFields),
     pollRole('/api/poll_decoders', 'decoders', syncDecoderFields),
   ]);
-  if (changed.some(r => r.status === 'fulfilled' && r.value) && lastState && !isMatrixEditActive()) {
-    render(lastState);
+  if (changed.some(r => r.status === 'fulfilled' && r.value) && lastState) {
+    requestMatrixRender();
   }
 }
 
@@ -675,7 +692,7 @@ function initSectionFilterControls() {
     const toggle = () => {
       sectionColumnVisibility[key] = !isSectionVisible(key);
       saveSectionColumnVisibility();
-      render(lastState);
+      requestMatrixRender();
     };
     label.addEventListener('click', event => {
       event.preventDefault();
@@ -722,7 +739,7 @@ async function refresh(){
     const decoders = rawDecoders.filter(d => deviceMatchesFilter(d, usingConfigureFilter ? configureFilterValue : decFilterValue, 'dec'));
     lastState = {...s, encoders, decoders, _rawEncoders: rawEncoders, _rawDecoders: rawDecoders};
     resolvePendingRoutes(lastState);
-    render(lastState);
+    requestMatrixRender();
   } finally {
     // Hide loading overlay when done
     if (overlay) overlay.classList.add('hidden');
@@ -754,8 +771,8 @@ async function pollDecoderInputs(decoderIpsOverride = null, options = {}){
       }
       // Re-render with updated inputs
       resolvePendingRoutes(lastState);
-      if (changed && (force || !isMatrixEditActive())) {
-        render(lastState);
+      if (changed) {
+        requestMatrixRender(force);
       }
       console.log(`[POLL] Updated ${data.updated || 0} decoders`);
     }
@@ -815,8 +832,8 @@ async function pollEncoderInputs(){
       for (const [ip, fields] of Object.entries(data.results)) {
         changed = syncEncoderFields(ip, fields) || changed;
       }
-      if (changed && !isMatrixEditActive()) {
-        render(lastState);
+      if (changed) {
+        requestMatrixRender();
       }
       console.log(`[POLL] Updated ${data.updated || 0} encoders`);
     }
@@ -997,6 +1014,16 @@ function updateCodecMismatchWarning(encoders, decoders) {
   }
 }
 
+function routeCodecCompatible(encoder, decoder) {
+  const encMode = String(encoder?.system_mode || '').trim();
+  const decMode = String(decoder?.system_mode || '').trim();
+  return !encMode || !decMode || encMode === decMode;
+}
+
+function routeCodecMismatchMessage(encoder, decoder) {
+  return `Codec mismatch: encoder ${codecLabel(encoder?.system_mode) || 'Unknown'} cannot route to decoder ${codecLabel(decoder?.system_mode) || 'Unknown'}`;
+}
+
 function isValidHostname(value) {
   return /^[A-Za-z0-9.-]+$/.test(value);
 }
@@ -1023,7 +1050,27 @@ function isMatrixEditActive() {
   if (openVideoWallConfigDecoderIp) return true;
   if (activeCodecSelectIp) return true;
   if (!active?.classList) return false;
-  return active.classList.contains('matrix-hostname-edit') || active.classList.contains('codec-select');
+  if (active.closest('.encoder-output-modal:not(.hidden), .video-wall-modal:not(.hidden), .video-wall-config-modal:not(.hidden)')) return true;
+  if (active.matches('[data-path], .modal-unit-select')) return true;
+  return active.matches([
+    '.matrix-hostname-edit',
+    '.codec-select',
+    '.enc-auto-switch-toggle',
+    '.enc-active-input-select',
+    '.enc-edid-select',
+    '.enc-hdcp-select',
+    '.dec-sap-input-toggle',
+    '.dec-input-session-select',
+    '.dec-hdcp-select',
+    '.dec-video-input-select',
+    '.dec-audio-input-select',
+    '.dec-stretch-crop-select',
+    '.dec-resolution-select',
+    '.dec-framerate-select',
+    '.dec-fsm-enabled-toggle',
+    '.dec-fsm-timeout-input',
+    '.dec-fsm-colorspace-select'
+  ].join(','));
 }
 
 function handleMatrixHostnameKey(event) {
@@ -1061,7 +1108,7 @@ async function submitMatrixHostnameEdit(input) {
     input.defaultValue = savedHostname;
     input.value = savedHostname;
     toast('Hostname updated', true);
-    render(lastState);
+    requestMatrixRender();
   } catch (err) {
     input.value = previousHostname;
     toast('Hostname update failed: ' + (err.message || err), false);
@@ -2039,12 +2086,19 @@ function buildDecoderInputSection(decoder) {
   const videoInputOptions = buildInputSelectOptions(decoder.video_input_options, decoder.video_input, 'video', decoder);
   const audioInputOptions = buildInputSelectOptions(decoder.audio_input_options, decoder.audio_input, 'audio', decoder);
   const stretchCropOptions = buildSelectOptions(decoder.stretch_crop_mode_options, decoder.stretch_crop_mode, 'No modes');
-  const resolutionOptions = buildSelectOptions(decoder.resolution_options, decoder.resolution, 'No resolutions');
+  const fastSwitchingEnabled = !!decoder.fast_switching_enabled;
+  const videoWallEnabled = !!decoder.video_wall_enabled;
+  const decoderResolutionOptions = (Array.isArray(decoder.resolution_options) ? decoder.resolution_options : [])
+    .filter(opt => (!fastSwitchingEnabled && !videoWallEnabled) || String(opt).trim().toLowerCase() !== 'input');
+  const decoderResolution = (fastSwitchingEnabled || videoWallEnabled) && String(decoder.resolution || '').trim().toLowerCase() === 'input'
+    ? 'auto'
+    : decoder.resolution;
+  const resolutionOptions = buildSelectOptions(decoderResolutionOptions, decoderResolution, 'No resolutions');
   const framerateOptions = buildSelectOptions(decoder.framerate_options, decoder.framerate, 'No rates');
   const fsmColorOptions = buildSelectOptions(decoder.fast_switching_colorspace_options, decoder.fast_switching_colorspace, 'No colorspaces');
-  const fsmChecked = decoder.fast_switching_enabled ? 'checked' : '';
+  const fsmChecked = fastSwitchingEnabled ? 'checked' : '';
   const fsmTimeout = decoder.fast_switching_timeout ?? '';
-  const vwEnabled = !!decoder.video_wall_enabled;
+  const vwEnabled = videoWallEnabled;
   const vwEnabledChecked = vwEnabled ? 'checked' : '';
   const vwUnitOptions = buildSelectOptions(decoder.video_wall_unit_options, decoder.video_wall_unit, 'No units');
   const vwRotationOptions = buildSelectOptions(decoder.video_wall_rotation_options, decoder.video_wall_rotation, 'No rotation');
@@ -2201,6 +2255,7 @@ function attachQueuedToggle(selector, options) {
 const liveFieldControlSelectors = {
   'encoder:input_auto_switch': ['.enc-auto-switch-toggle', 'data-enc-ip'],
   'encoder:active_input': ['.enc-active-input-select', 'data-enc-ip'],
+  'encoder:edid': ['.enc-edid-select', 'data-enc-ip'],
   'encoder:hdcp_support_version': ['.enc-hdcp-select', 'data-enc-ip'],
   'decoder:sap_input_enabled': ['.dec-sap-input-toggle', 'data-dec-ip'],
   'decoder:input_session': ['.dec-input-session-select', 'data-dec-ip'],
@@ -2239,6 +2294,7 @@ function render(s){
   const rows = dec.map(d=>{
     const checkedGroup = selectedDecoders.has(d.ip) ? 'checked' : '';
     const cells = enc.map(e=>{
+      const codecCompatible = routeCodecCompatible(e, d);
       const pending = pendingRoutes.get(d.ip);
       const videoMatch = (pending && (pending.mode === 'video' || pending.mode === 'av')) ?
         (e.ip === pending.encoderIp) :
@@ -2248,9 +2304,12 @@ function render(s){
         audioMatchesEncoder(d, e);
       const checked = videoMatch ? 'checked' : '';
       const audioCls = audioMatch ? ' audio-on' : '';
-      return `<td class="cell" data-dec="${d.ip}" data-enc="${e.ip}">
+      const disabledCls = codecCompatible ? '' : ' codec-blocked';
+      const disabledAttr = codecCompatible ? '' : ' disabled';
+      const title = codecCompatible ? '' : ` title="${escAttr(routeCodecMismatchMessage(e, d))}"`;
+      return `<td class="cell${disabledCls}" data-dec="${d.ip}" data-enc="${e.ip}"${title}>
                 <span class="radio-wrap">
-                  <input type="radio" name="video-${d.ip}" ${checked} aria-label="Route video ${d.ip} -> ${e.ip}" data-preview-url="http://${e.ip}/thumbnail/thumbnail1.jpg"/>
+                  <input type="radio" name="video-${d.ip}" ${checked}${disabledAttr} aria-label="Route video ${d.ip} -> ${e.ip}" data-preview-url="http://${e.ip}/thumbnail/thumbnail1.jpg"/>
                   <span class="dot${audioCls}" aria-hidden="true"></span>
                 </span>
               </td>`;
@@ -2271,11 +2330,31 @@ function render(s){
       const dec = cell.getAttribute('data-dec');
       const enc = cell.getAttribute('data-enc');
       const mode = routeMode;
+      const encoderUnit = (lastState?._rawEncoders || lastState?.encoders || []).find(e => e.ip === enc);
+      const decoderUnit = (lastState?._rawDecoders || lastState?.decoders || []).find(d => d.ip === dec);
+      if (!routeCodecCompatible(encoderUnit, decoderUnit)) {
+        toast(routeCodecMismatchMessage(encoderUnit, decoderUnit), false);
+        e.stopPropagation();
+        return;
+      }
 
       // If any group checkboxes are checked, do group routing
       const checkedDecoders = Array.from(document.querySelectorAll('.group-checkbox:checked')).map(cb => cb.getAttribute('data-dec-ip'));
       const groupRoute = checkedDecoders.length > 1 && checkedDecoders.includes(dec);
-      const targets = groupRoute ? checkedDecoders : [dec];
+      const requestedTargets = groupRoute ? checkedDecoders : [dec];
+      const targets = requestedTargets.filter(targetDec => {
+        const targetUnit = (lastState?._rawDecoders || lastState?.decoders || []).find(d => d.ip === targetDec);
+        return routeCodecCompatible(encoderUnit, targetUnit);
+      });
+      const blockedTargets = requestedTargets.filter(targetDec => !targets.includes(targetDec));
+      if (!targets.length) {
+        toast('No route applied: selected decoder codec does not match the encoder codec', false);
+        e.stopPropagation();
+        return;
+      }
+      if (blockedTargets.length) {
+        toast(`Skipped ${blockedTargets.length} decoder(s) with codec mismatch`, false);
+      }
 
       targets.forEach(targetDec => recordPendingRoute(targetDec, enc, mode));
 
@@ -2316,7 +2395,7 @@ function render(s){
             applied++;
           }
         });
-        if (updated) render(lastState);
+        if (updated) requestMatrixRender();
         if (errors.length > 0) {
           toast('Some routes failed: ' + errors.join('; '), false);
         } else if (applied > 0) {
@@ -2446,7 +2525,7 @@ function render(s){
         syncCodecFields(ip, res.system_mode || next, res.supported_system_modes || null);
         activeCodecSelectIp = '';
         toast('Codec updated; unit will reboot', true);
-        render(lastState);
+        requestMatrixRender();
       } catch (err) {
         select.value = previous;
         toast('Codec update failed: ' + err.message, false);
@@ -2510,7 +2589,7 @@ function render(s){
       try {
         await refreshVideoWallDecoder(decoderIp);
       } catch (err) {
-        render(lastState);
+        requestMatrixRender();
         toast('Video wall refresh failed: ' + err.message, false);
       }
     });
@@ -2538,21 +2617,15 @@ function render(s){
     failureMessage: 'Active input update failed',
   });
 
-  document.querySelectorAll('.enc-edid-select').forEach(select => {
-    select.addEventListener('change', async () => {
-      const encoderIp = select.getAttribute('data-enc-ip');
-      const prevValue = (lastState._rawEncoders || lastState.encoders || []).find(e => e.ip === encoderIp)?.edid || '';
-      try {
-        const res = await postJSON('/api/encoder_input', {encoder: encoderIp, edid: select.value});
-        if (!res.ok) throw new Error(res.error || 'Failed to set EDID');
-        syncEncoderFields(encoderIp, res.encoder || {});
-        render(lastState);
-        toast('EDID updated', true);
-      } catch (err) {
-        select.value = prevValue;
-        toast('EDID update failed: ' + err.message, false);
-      }
-    });
+  attachQueuedSelect('.enc-edid-select', {
+    kind: 'encoder',
+    ipAttr: 'data-enc-ip',
+    field: 'edid',
+    endpoint: '/api/encoder_input',
+    payload: (ip, value) => ({encoder: ip, edid: value}),
+    sync: (ip, res) => syncEncoderFields(ip, res.encoder || {}),
+    successMessage: 'EDID updated',
+    failureMessage: 'EDID update failed',
   });
 
   attachQueuedSelect('.enc-hdcp-select', {
@@ -2751,7 +2824,7 @@ function render(s){
         const res = await postJSON('/api/decoder_input', payload);
         if (!res.ok) throw new Error(res.error || 'Failed to set video wall enable');
         syncDecoderFields(decoderIp, res.decoder || {});
-        render(lastState);
+        requestMatrixRender();
         toast('Video wall enable updated', true);
       } catch (err) {
         toggle.checked = prevValue;
@@ -2911,6 +2984,10 @@ initPreviewToggle();
 initTheme();
 initDensity();
 initSectionFilterControls();
+
+document.addEventListener('focusout', () => {
+  setTimeout(flushDeferredMatrixRender, 150);
+});
 
 // Set up polling with preference sync
 let matrixPollingEnabled = localStorage.getItem('pollUnits') === 'true';

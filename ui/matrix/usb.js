@@ -108,6 +108,27 @@ function sortByIpAsc(arr){ return [...arr].sort((a,b)=>ipNum(a.ip)-ipNum(b.ip));
 
 let lastState = null;
 let isFirstSession = true;
+let usbRenderDeferred = false;
+
+function isUsbLiveFieldActive() {
+  const active = document.activeElement;
+  return !!(active && active.closest && active.closest('#lexTbl, #rexTbl') && active.matches('select,textarea,input[type="text"],input[type="number"]'));
+}
+
+function requestUsbRender(force = false) {
+  if (!lastState) return;
+  if (!force && isUsbLiveFieldActive()) {
+    usbRenderDeferred = true;
+    return;
+  }
+  usbRenderDeferred = false;
+  render(lastState);
+}
+
+function flushDeferredUsbRender() {
+  if (!usbRenderDeferred || isUsbLiveFieldActive()) return;
+  requestUsbRender(true);
+}
 const usbActionQueues = new Map();
 const usbActionLatest = new Map();
 
@@ -146,7 +167,17 @@ function applyOptimisticUsbPair(rex, lex){
   if(!pairing) return;
   pairing.active = null;
   pairing.available = [lex];
-  render(lastState);
+  requestUsbRender(true);
+}
+
+function applyConfirmedUsbPairing(rex, pairing){
+  if(!pairing) return false;
+  const target = ensureUsbPairing(rex);
+  if(!target) return false;
+  target.active = pairing.active || null;
+  target.available = Array.isArray(pairing.available) ? pairing.available : [];
+  requestUsbRender(true);
+  return true;
 }
 
 function applyOptimisticUsbUnpair(rex, lex){
@@ -154,12 +185,27 @@ function applyOptimisticUsbUnpair(rex, lex){
   if(!pairing) return;
   if(pairing.active === lex) pairing.active = null;
   pairing.available = (pairing.available || []).filter(ip => ip !== lex);
-  render(lastState);
+  requestUsbRender(true);
 }
 
 function scheduleUsbVerifyRefresh(){
   setTimeout(()=>{ refresh().catch(()=>{}); }, 700);
   setTimeout(()=>{ refresh().catch(()=>{}); }, 2500);
+  setTimeout(()=>{ refresh().catch(()=>{}); }, 6000);
+}
+
+function usbLexPeerCounts(pairings){
+  const counts = {};
+  Object.values(pairings || {}).forEach(pairing => {
+    if(!pairing) return;
+    const peers = [];
+    if(pairing.active) peers.push(pairing.active);
+    (pairing.available || []).forEach(ip => peers.push(ip));
+    [...new Set(peers)].forEach(ip => {
+      counts[ip] = (counts[ip] || 0) + 1;
+    });
+  });
+  return counts;
 }
 
 function subnet24(ip){
@@ -172,48 +218,6 @@ function isDifferentSubnet(rexIp, lexIp){
   const rexSubnet = subnet24(rexIp);
   const lexSubnet = subnet24(lexIp);
   return !!rexSubnet && !!lexSubnet && rexSubnet !== lexSubnet;
-}
-
-function showUsbSubnetWarning(rexIp, lexIp){
-  return new Promise(resolve=>{
-    const existing = document.querySelector('.usb-confirm-backdrop');
-    if(existing) existing.remove();
-
-    const backdrop = document.createElement('div');
-    backdrop.className = 'usb-confirm-backdrop';
-    backdrop.innerHTML = `
-      <div class="usb-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="usb_subnet_title">
-        <h2 id="usb_subnet_title">USB Subnet Warning</h2>
-        <p>These units are on different control subnets. The web control path may be reachable across Layer 3, but USB pairing is a Layer 2 relationship and may not pass between subnets.</p>
-        <div class="usb-confirm-summary">
-          <div><span>REX</span><strong>${rexIp}</strong></div>
-          <div><span>LEX</span><strong>${lexIp}</strong></div>
-        </div>
-        <div class="usb-confirm-actions">
-          <button type="button" class="usb-confirm-cancel">Cancel</button>
-          <button type="button" class="usb-confirm-continue">Pair Anyway</button>
-        </div>
-      </div>`;
-
-    const onKey = (evt)=>{
-      if(evt.key === 'Escape'){
-        close(false);
-      }
-    };
-    const close = (value)=>{
-      document.removeEventListener('keydown', onKey);
-      backdrop.remove();
-      resolve(value);
-    };
-    backdrop.querySelector('.usb-confirm-cancel').addEventListener('click', ()=>close(false));
-    backdrop.querySelector('.usb-confirm-continue').addEventListener('click', ()=>close(true));
-    backdrop.addEventListener('click', evt=>{
-      if(evt.target === backdrop) close(false);
-    });
-    document.addEventListener('keydown', onKey);
-    document.body.appendChild(backdrop);
-    backdrop.querySelector('.usb-confirm-cancel').focus();
-  });
 }
 
 async function refresh(){
@@ -229,7 +233,7 @@ async function refresh(){
     s.rex = sortByIpAsc(s.rex||[]);
     console.log('After sorting - LEX:', s.lex.length, 'REX:', s.rex.length);
     lastState = s;
-    render(s);
+    requestUsbRender();
   } catch(err) {
     console.error('Refresh error:', err);
     toast('Refresh error: '+err.message);
@@ -244,6 +248,7 @@ function render(s){
   console.log('Render called with:', s);
   const lex = s.lex||[], rex = s.rex||[];
   const pairings = s.pairings||{}; // {rex_ip: {active: lex_ip, available: [lex_ip1, lex_ip2, ...]}}
+  const lexPeerCounts = usbLexPeerCounts(pairings);
   console.log('LEX units:', lex.length, lex);
   console.log('REX units:', rex.length, rex);
   console.log('Pairings:', pairings);
@@ -255,7 +260,7 @@ function render(s){
     `<th class="enc-head"><div class="col-header"><span class="lex-label"><a href="http://${l.ip}" target="_blank" style="color:inherit;text-decoration:none;cursor:pointer;" title="Open ${l.ip} in new tab">${l.ip}</a></span><small class="enc-host">${l.host||''}</small></div></th>`
   ).join('') + '</tr>';
   
-  // Build rows: each REX row can have up to 4 LEX paired, only 1 active
+  // Build rows: each REX can select one LEX; each LEX can feed up to 5 REX.
   const rows = rex.map(r=>{
     const rexPairing = pairings[r.ip] || {active: null, available: []};
     const activeLex = rexPairing.active;
@@ -265,17 +270,20 @@ function render(s){
       const isActive = activeLex === l.ip;
       const isAvailable = (availableLex || []).includes(l.ip);
       const isPaired = isActive || isAvailable;
+      const subnetBlocked = !isPaired && isDifferentSubnet(r.ip, l.ip);
       
-      // Check if REX already has 4 LEX paired (can't add more)
-      const pairCount = (availableLex || []).length + (activeLex ? 1 : 0);
-      const canPair = pairCount < 4 || isPaired;
+      const canPair = isPaired || (!subnetBlocked && (lexPeerCounts[l.ip] || 0) < 5);
       
       const checked = isPaired ? 'checked' : '';
       const innerCls = isActive ? ' audio-on' : '';
       const disabledAttr = canPair ? '' : 'disabled';
       const disabledClass = canPair ? '' : ' disabled';
+      let titleText = '';
+      if(subnetBlocked) titleText = `${r.ip} and ${l.ip} are on different subnets`;
+      else if(!canPair) titleText = `${l.ip} is already paired to 5 REX units`;
+      const titleAttr = titleText ? ` title="${titleText}"` : '';
       
-      return `<td class="cell${disabledClass}" data-rex="${r.ip}" data-lex="${l.ip}" data-active="${isActive}" data-paired="${isPaired}">
+      return `<td class="cell${disabledClass}" data-rex="${r.ip}" data-lex="${l.ip}" data-active="${isActive}" data-paired="${isPaired}"${titleAttr}>
                 <span class="radio-wrap">
                   <input type="radio" name="usb-${r.ip}" ${checked} ${disabledAttr} aria-label="USB pair ${r.ip} ↔ ${l.ip}"/>
                   <span class="dot${innerCls}" aria-hidden="true"></span>
@@ -313,17 +321,12 @@ function render(s){
           if(res.skipped) return;
           console.log('Unpair response:', res);
           if(!res.ok) throw new Error(res.error || 'Unpair failed');
-          applyOptimisticUsbUnpair(rex, lex);
+          if(!applyConfirmedUsbPairing(rex, res.pairing)){
+            applyOptimisticUsbUnpair(rex, lex);
+          }
           toast('Pairing cleared', true);
         } else {
           console.log('Pairing new route');
-          if(isDifferentSubnet(rex, lex)){
-            const proceed = await showUsbSubnetWarning(rex, lex);
-            if(!proceed){
-              toast('Pairing cancelled');
-              return;
-            }
-          }
           res = await enqueueUsbAction(rex, {
             label: `pair:${lex}`,
             run: () => postJSON('/api/usb_pair', {
@@ -336,7 +339,9 @@ function render(s){
           if(res.skipped) return;
           console.log('Pair response:', res);
           if(!res.ok) throw new Error(res.error || 'Pair failed');
-          applyOptimisticUsbPair(rex, lex);
+          if(!applyConfirmedUsbPairing(rex, res.pairing)){
+            applyOptimisticUsbPair(rex, lex);
+          }
           toast(hasExistingPair ? `Pairing moved from ${existingLex}` : 'Pairing set', true);
         }
         
@@ -369,13 +374,7 @@ function render(s){
       const filterDropdown = `<select class="filter-select" data-device="${l.ip}" style="padding:4px;border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:4px;">
         ${filterOptions.map(opt => `<option value="${opt}" ${opt===currentFilter?'selected':''}>${opt}</option>`).join('')}
       </select>`;
-      // Count how many REX devices have this LEX in their pairing info
-      let peerCount = 0;
-      for (const rexIp in pairings) {
-        const p = pairings[rexIp];
-        if (p.active === l.ip) peerCount++;
-        else if (p.available && p.available.includes(l.ip)) peerCount++;
-      }
+      const peerCount = lexPeerCounts[l.ip] || 0;
       return `<tr><td>${l.ip}</td><td>${l.host||''}</td><td>${l.usb_ip||''}</td><td>${l.mac||''}</td><td>${l.revision||''}</td><td>${l.protocol||''}</td><td>${typeDropdown}</td><td>${portDropdown}</td><td>${filterDropdown}</td><td>${peerCount}</td></tr>`;
     }).join('');
   
@@ -465,6 +464,9 @@ qs('#refreshBtn').onclick = async ()=>{
 initStickyHeaders();
 initTheme();
 initDensity();
+document.addEventListener('focusout', () => {
+  setTimeout(flushDeferredUsbRender, 150);
+});
 refresh();
 
 // Collapsible sections
@@ -500,7 +502,7 @@ function stopPolling() {
 }
 
 // Load saved settings
-const savedAutoRefresh = localStorage.getItem('usbAutoRefresh') === 'true';
+const savedAutoRefresh = localStorage.getItem('usbAutoRefresh') !== 'false';
 const savedInterval = localStorage.getItem('usbPollInterval') || '5';
 pollToggle.checked = savedAutoRefresh;
 pollIntervalInput.value = savedInterval;

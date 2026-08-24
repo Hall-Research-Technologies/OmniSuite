@@ -100,6 +100,9 @@ body.compact .video-wall-config-card{padding:10px;width:min(92vw,340px)}
 .matrix-hostname-edit-compact{width:112px;padding:2px 5px;font-size:11px}
 
 .cell{ width:28px; height:28px; position:relative; }
+.cell.codec-blocked{opacity:.35;cursor:not-allowed}
+.cell.codec-blocked .radio-wrap{pointer-events:none}
+.cell.codec-blocked input{cursor:not-allowed}
 .radio-wrap{
   position:relative;
   display:inline-block;
