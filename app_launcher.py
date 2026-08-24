@@ -15,7 +15,7 @@ from pathlib import Path
 
 try:
     import tkinter as tk
-    from tkinter import messagebox
+    from tkinter import messagebox, ttk
     from PIL import Image, ImageTk
     if sys.platform == "darwin":
         pystray = None
@@ -196,10 +196,17 @@ class AppWindow:
         button_frame = tk.Frame(frame, bg="#000000")
         button_frame.pack(pady=16)
 
-        self.open_button = tk.Button(button_frame, text="Open Browser", command=self.open_browser, width=14, bg="#2196F3", fg="white", font=("Helvetica", 10, "bold"), relief="flat", padx=10, pady=6, cursor="hand2", state="disabled")
+        if sys.platform == "win32":
+            self.open_button = tk.Button(button_frame, text="Open Browser", command=self.open_browser, width=14, bg="#2196F3", fg="white", font=("Helvetica", 10, "bold"), relief="flat", padx=10, pady=6, cursor="hand2", state="disabled")
+        else:
+            self.open_button = ttk.Button(button_frame, text="Open Browser", command=self.open_browser, width=14, state="disabled")
         self.open_button.grid(row=0, column=0, padx=6)
 
-        tk.Button(button_frame, text="Exit", command=self.on_close, width=14, bg="#f44336", fg="white", font=("Helvetica", 10, "bold"), relief="flat", padx=10, pady=6, cursor="hand2").grid(row=0, column=1, padx=6)
+        if sys.platform == "win32":
+            exit_button = tk.Button(button_frame, text="Exit", command=self.on_close, width=14, bg="#f44336", fg="white", font=("Helvetica", 10, "bold"), relief="flat", padx=10, pady=6, cursor="hand2")
+        else:
+            exit_button = ttk.Button(button_frame, text="Exit", command=self.on_close, width=14)
+        exit_button.grid(row=0, column=1, padx=6)
 
         tk.Label(frame, text="The server will run until you click Exit", font=("Helvetica", 9), fg="#999999", bg="#000000").pack(pady=(12, 12))
 
