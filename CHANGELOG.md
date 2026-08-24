@@ -1,5 +1,10 @@
 # Changelog
 
+## V1.0.5 - 2026-08-24
+
+- Rebuilt the OmniSuite release after V1.0.4 artifacts were not created.
+- Included the launcher update that uses native Tk buttons on non-Windows platforms to avoid unsupported themed button options.
+
 ## V1.0.4 - 2026-08-24
 
 - Hardened USB pairing so route changes unpair stale LEX relationships before pairing the selected LEX, verify both sides, and serialize rapid multi-REX updates.
@@ -15,4 +20,3 @@
 ## V1.0.3 - 2026-08-21
 
 - Fixed macOS scan persistence for packaged OmniSuite builds.
-
