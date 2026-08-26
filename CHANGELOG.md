@@ -1,5 +1,14 @@
 # Changelog
 
+## V1.0.6 - 2026-08-26
+
+- Fixed Video Wall configurator writes so inches and millimeters are sent to decoders as physical values instead of being converted into grid coordinates.
+- Fixed Video Wall configurator readback so physical values that are whole numbers are still displayed as configured dimensions, not mistaken for grid counts.
+- Added one-time live Video Wall setting loads on Matrix page load and decoder selection without adding an auto-refresh loop.
+- Updated the Video Wall Layout picker to open with the configured grid size and highlight the unit's current selected display.
+- Normalized Video Wall edge compensation mode writes to the device-accepted `bezel compensation` spelling.
+- Added regression tests for physical-unit video wall payloads, physical-unit readback, and edge mode normalization.
+
 ## V1.0.5 - 2026-08-24
 
 - Rebuilt the OmniSuite release after V1.0.4 artifacts were not created.

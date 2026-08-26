@@ -842,7 +842,7 @@ def _ws_get_decoder_inputs(ip: str, user: str, pwd: str, ws_port: int, ws_path: 
                                 norm_grid_x = max(0, int(round(float(display_x) / float(display_w))))
                             if display_y is not None and display_h and display_h > 0:
                                 norm_grid_y = max(0, int(round(float(display_y) / float(display_h))))
-                        elif looks_decimal_payload:
+                        elif wall_unit in ("inches", "mm"):
                             display_w = round(float(grid_w), 4)
                             display_h = round(float(grid_h), 4)
                             display_x = round(float(grid_x), 4) if grid_x is not None else None
@@ -937,7 +937,7 @@ def _ws_get_decoder_inputs(ip: str, user: str, pwd: str, ws_port: int, ws_path: 
                         rotation_options.insert(0, current_rotation)
                     fields["video_wall_rotation_options"] = rotation_options
 
-                    edge_mode_options = ["none", "bezel compensation", "bezel_compensation"]
+                    edge_mode_options = ["none", "bezel compensation"]
                     current_edge_mode = fields.get("video_wall_edge_mode")
                     if current_edge_mode and current_edge_mode not in edge_mode_options:
                         edge_mode_options.insert(0, current_edge_mode)
@@ -1772,49 +1772,22 @@ def _ws_set_decoder_input_settings(
                 except Exception:
                     return None
 
-            current_total_w = _to_float(physical_size_cfg.get("width"))
-            current_total_h = _to_float(physical_size_cfg.get("height"))
-            effective_wall_unit = str(wall_cfg.get("unit") or "").strip().lower()
-            physical_wall_unit = effective_wall_unit in ("inches", "mm")
-            raw_width_from_display = None
-            raw_height_from_display = None
-
             if video_wall_width is not None:
                 vw = _to_float(video_wall_width)
                 if vw is not None:
-                    if physical_wall_unit and current_total_w and current_total_w > 0 and vw > 0:
-                        raw_width_from_display = max(1, int(round(current_total_w / vw)))
-                        input_selection_cfg["width"] = raw_width_from_display
-                    else:
-                        input_selection_cfg["width"] = vw
+                    input_selection_cfg["width"] = vw
             if video_wall_height is not None:
                 vh = _to_float(video_wall_height)
                 if vh is not None:
-                    if physical_wall_unit and current_total_h and current_total_h > 0 and vh > 0:
-                        raw_height_from_display = max(1, int(round(current_total_h / vh)))
-                        input_selection_cfg["height"] = raw_height_from_display
-                    else:
-                        input_selection_cfg["height"] = vh
+                    input_selection_cfg["height"] = vh
             if video_wall_horizontal is not None:
                 vx = _to_float(video_wall_horizontal)
                 if vx is not None:
-                    if physical_wall_unit:
-                        display_width = _to_float(video_wall_width)
-                        if (display_width is None or display_width <= 0) and current_total_w and raw_width_from_display:
-                            display_width = current_total_w / raw_width_from_display
-                        input_selection_cfg["x"] = max(0, int(round(vx / display_width))) if display_width and display_width > 0 else vx
-                    else:
-                        input_selection_cfg["x"] = vx
+                    input_selection_cfg["x"] = vx
             if video_wall_vertical is not None:
                 vy = _to_float(video_wall_vertical)
                 if vy is not None:
-                    if physical_wall_unit:
-                        display_height = _to_float(video_wall_height)
-                        if (display_height is None or display_height <= 0) and current_total_h and raw_height_from_display:
-                            display_height = current_total_h / raw_height_from_display
-                        input_selection_cfg["y"] = max(0, int(round(vy / display_height))) if display_height and display_height > 0 else vy
-                    else:
-                        input_selection_cfg["y"] = vy
+                    input_selection_cfg["y"] = vy
             if video_wall_grid_width is not None:
                 try:
                     grid_w = int(float(video_wall_grid_width))
@@ -1845,7 +1818,7 @@ def _ws_set_decoder_input_settings(
             if not isinstance(edge_comp_cfg, dict):
                 edge_comp_cfg = {}
             if video_wall_edge_mode is not None:
-                edge_comp_cfg["mode"] = str(video_wall_edge_mode).strip()
+                edge_comp_cfg["mode"] = str(video_wall_edge_mode).strip().replace("_", " ")
             if video_wall_edge_top is not None:
                 try:
                     edge_comp_cfg["top"] = float(video_wall_edge_top)

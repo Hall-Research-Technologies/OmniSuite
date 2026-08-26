@@ -723,7 +723,7 @@ function deviceMatchesFilter(dev, filter, type) {
   );
 }
 
-async function refresh(){
+async function refresh(options = {}){
   // Show loading overlay
   const overlay = document.getElementById('matrix_loading_overlay');
   if (overlay) overlay.classList.remove('hidden');
@@ -738,6 +738,9 @@ async function refresh(){
     const encoders = rawEncoders.filter(e => deviceMatchesFilter(e, usingConfigureFilter ? configureFilterValue : encFilterValue, 'enc'));
     const decoders = rawDecoders.filter(d => deviceMatchesFilter(d, usingConfigureFilter ? configureFilterValue : decFilterValue, 'dec'));
     lastState = {...s, encoders, decoders, _rawEncoders: rawEncoders, _rawDecoders: rawDecoders};
+    if (options.loadVideoWallSettings) {
+      await pollDecoderInputs(rawDecoders.map(d => d.ip), {force: true, render: false});
+    }
     resolvePendingRoutes(lastState);
     requestMatrixRender();
   } finally {
@@ -748,13 +751,15 @@ async function refresh(){
 
 async function pollDecoderInputs(decoderIpsOverride = null, options = {}){
   const force = !!options.force;
+  const shouldRender = options.render !== false;
   if (openVideoWallConfigDecoderIp && !force) {
     return;
   }
-  if (!lastState || !lastState.decoders || lastState.decoders.length === 0) {
+  const hasDecoderOverride = Array.isArray(decoderIpsOverride) && decoderIpsOverride.length > 0;
+  if (!lastState || (!hasDecoderOverride && (!lastState.decoders || lastState.decoders.length === 0))) {
     return;
   }
-  const decoderIps = Array.isArray(decoderIpsOverride) && decoderIpsOverride.length ? decoderIpsOverride : lastState.decoders.map(d => d.ip);
+  const decoderIps = hasDecoderOverride ? decoderIpsOverride : lastState.decoders.map(d => d.ip);
   try {
     const result = await fetch('/api/poll_decoders', {
       method: 'POST',
@@ -771,7 +776,7 @@ async function pollDecoderInputs(decoderIpsOverride = null, options = {}){
       }
       // Re-render with updated inputs
       resolvePendingRoutes(lastState);
-      if (changed) {
+      if (changed && shouldRender) {
         requestMatrixRender(force);
       }
       console.log(`[POLL] Updated ${data.updated || 0} decoders`);
@@ -784,7 +789,8 @@ async function pollDecoderInputs(decoderIpsOverride = null, options = {}){
 async function refreshVideoWallDecoder(decoderIp) {
   if (!decoderIp) return;
   openVideoWallConfigDecoderIp = decoderIp;
-  await pollDecoderInputs([decoderIp], {force: true});
+  await pollDecoderInputs([decoderIp], {force: true, render: false});
+  requestMatrixRender(true);
 }
 
 function syncEncoderFields(ip, fields) {
@@ -1927,9 +1933,17 @@ function inferVideoWallLayoutFromFields(modal) {
   const source = getVideoWallPixelSource(modal.querySelector('.dec-vw-pixel-source-select')?.value);
   const width = Number(modal.querySelector('.dec-vw-width-input')?.value);
   const height = Number(modal.querySelector('.dec-vw-height-input')?.value);
+  const horizontal = Number(modal.querySelector('.dec-vw-horizontal-input')?.value);
+  const vertical = Number(modal.querySelector('.dec-vw-vertical-input')?.value);
   if (isPixelVideoWallUnit(unit) && Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
     modal.dataset.vwLayoutWidth = String(Math.max(1, Math.min(5, Math.round(source.width / width))));
     modal.dataset.vwLayoutHeight = String(Math.max(1, Math.min(5, Math.round(source.height / height))));
+  }
+  if (Number.isFinite(width) && width > 0 && Number.isFinite(horizontal) && horizontal >= 0) {
+    modal.dataset.vwLayoutX = String(Math.max(0, Math.min(4, Math.round(horizontal / width))));
+  }
+  if (Number.isFinite(height) && height > 0 && Number.isFinite(vertical) && vertical >= 0) {
+    modal.dataset.vwLayoutY = String(Math.max(0, Math.min(4, Math.round(vertical / height))));
   }
 }
 
@@ -1939,6 +1953,15 @@ function getVideoWallLayoutSize(modal) {
   return {
     width: Number.isFinite(width) && width > 0 ? width : 2,
     height: Number.isFinite(height) && height > 0 ? height : 2,
+  };
+}
+
+function getVideoWallLayoutPosition(modal) {
+  const x = Number(modal.dataset.vwLayoutX);
+  const y = Number(modal.dataset.vwLayoutY);
+  return {
+    x: Number.isFinite(x) && x >= 0 ? Math.trunc(x) : 0,
+    y: Number.isFinite(y) && y >= 0 ? Math.trunc(y) : 0,
   };
 }
 
@@ -2004,15 +2027,19 @@ function ensureVideoWallModal() {
   return modal;
 }
 
-function openVideoWallPicker(decoderIp, widthValue, heightValue, onPick) {
+function openVideoWallPicker(decoderIp, widthValue, heightValue, positionValue, onPick) {
   const modal = ensureVideoWallModal();
   const widthSelect = modal.querySelector('.video-wall-size-width');
   const heightSelect = modal.querySelector('.video-wall-size-height');
   const grid = modal.querySelector('.video-wall-grid');
+  const selectedX = Number(positionValue?.x);
+  const selectedY = Number(positionValue?.y);
 
   const renderGrid = () => {
     const cols = clampVideoWallSize(widthSelect.value);
     const rows = clampVideoWallSize(heightSelect.value);
+    const activeX = Number.isFinite(selectedX) ? Math.max(0, Math.min(cols - 1, Math.trunc(selectedX))) : 0;
+    const activeY = Number.isFinite(selectedY) ? Math.max(0, Math.min(rows - 1, Math.trunc(selectedY))) : 0;
     grid.innerHTML = '';
     grid.style.setProperty('--vw-grid-cols', String(cols));
     for (let y = 0; y < rows; y += 1) {
@@ -2020,8 +2047,12 @@ function openVideoWallPicker(decoderIp, widthValue, heightValue, onPick) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'video-wall-grid-cell';
+        if (x === activeX && y === activeY) {
+          btn.classList.add('is-selected');
+          btn.setAttribute('aria-current', 'true');
+        }
         btn.textContent = `${x},${y}`;
-        btn.title = `Set position ${x}, ${y}`;
+        btn.title = x === activeX && y === activeY ? `Current position ${x}, ${y}` : `Set position ${x}, ${y}`;
         btn.addEventListener('click', async () => {
           modal.classList.add('hidden');
           await onPick({decoderIp, gridWidth: cols, gridHeight: rows, gridX: x, gridY: y});
@@ -2539,16 +2570,19 @@ function render(s){
     btn.addEventListener('click', async () => {
       const decoderIp = btn.getAttribute('data-dec-ip');
       openVideoWallConfigDecoderIp = decoderIp;
-      const modal = document.querySelector(`.video-wall-config-modal[data-dec-ip="${decoderIp}"]`);
-      if (modal) {
-        inferVideoWallLayoutFromFields(modal);
-        syncVideoWallUnitRows(modal);
-        modal.classList.remove('hidden');
-      }
+      btn.disabled = true;
       try {
         await refreshVideoWallDecoder(decoderIp);
       } catch (err) {
+        const modal = document.querySelector(`.video-wall-config-modal[data-dec-ip="${decoderIp}"]`);
+        if (modal) {
+          inferVideoWallLayoutFromFields(modal);
+          syncVideoWallUnitRows(modal);
+          modal.classList.remove('hidden');
+        }
         toast('Video wall refresh failed: ' + err.message, false);
+      } finally {
+        btn.disabled = false;
       }
     });
   });
@@ -2885,10 +2919,21 @@ function render(s){
     btn.addEventListener('click', async () => {
       const decoderIp = btn.getAttribute('data-dec-ip');
       const current = (lastState._rawDecoders || lastState.decoders || []).find(d => d.ip === decoderIp) || {};
+      const configModal = document.querySelector(`.video-wall-config-modal[data-dec-ip="${decoderIp}"]`);
+      if (configModal) inferVideoWallLayoutFromFields(configModal);
+      const layout = configModal ? getVideoWallLayoutSize(configModal) : {
+        width: current.video_wall_grid_width ?? current.video_wall_width ?? 1,
+        height: current.video_wall_grid_height ?? current.video_wall_height ?? 1,
+      };
+      const position = configModal ? getVideoWallLayoutPosition(configModal) : {
+        x: current.video_wall_grid_x ?? 0,
+        y: current.video_wall_grid_y ?? 0,
+      };
       openVideoWallPicker(
         decoderIp,
-        current.video_wall_grid_width ?? current.video_wall_width ?? 1,
-        current.video_wall_grid_height ?? current.video_wall_height ?? 1,
+        layout.width,
+        layout.height,
+        position,
         ({decoderIp: decIp, gridWidth, gridHeight, gridX, gridY}) => {
           const configModal = document.querySelector(`.video-wall-config-modal[data-dec-ip="${decIp}"]`);
           if (!configModal) return;
@@ -2911,6 +2956,10 @@ function render(s){
           setVideoWallInputValue(configModal, '.dec-vw-height-input', formatWallValue(cellHeight));
           setVideoWallInputValue(configModal, '.dec-vw-horizontal-input', formatWallValue(cellWidth * gridX));
           setVideoWallInputValue(configModal, '.dec-vw-vertical-input', formatWallValue(cellHeight * gridY));
+          configModal.dataset.vwLayoutWidth = String(gridWidth);
+          configModal.dataset.vwLayoutHeight = String(gridHeight);
+          configModal.dataset.vwLayoutX = String(gridX);
+          configModal.dataset.vwLayoutY = String(gridY);
           configModal.classList.remove('hidden');
           openVideoWallConfigDecoderIp = decIp;
           toast('Video wall position staged. Click Save to send.', true);
@@ -3046,9 +3095,8 @@ function syncPollingMode() {
   }
 }
 
-refresh().then(() => {
-  // Fetch current routing and encoder settings after initial load.
-  pollMatrixDevices();
+refresh({loadVideoWallSettings: true}).then(() => {
+  // Load video wall settings once on page load; recurring refresh still follows the user preference.
   syncPollingMode();
 });
 
