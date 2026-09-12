@@ -71,8 +71,7 @@ def extract(artifact: Path, into: Path) -> Path:
     """Unpack a release archive and return the executable inside it."""
     into.mkdir(parents=True, exist_ok=True)
     if artifact.suffix == ".zip":
-        with zipfile.ZipFile(artifact) as zf:
-            zf.extractall(into)
+        unzip(artifact, into)
     elif artifact.name.endswith((".tar.gz", ".tgz")):
         with tarfile.open(artifact, "r:gz") as tf:
             tf.extractall(into)
@@ -92,6 +91,34 @@ def extract(artifact: Path, into: Path) -> Path:
     if unix.exists():
         return ensure_executable(unix)
     raise RuntimeError(f"No OmniSuite executable found under {into}")
+
+
+def unzip(archive: Path, into: Path) -> None:
+    """Unpack a zip, preserving what a macOS .app depends on.
+
+    zipfile.extractall() writes a symlink out as an ordinary file containing
+    its target path, and a .app bundle is held together by symlinks --
+    Contents/Frameworks/Python among them. Extracting one that way produces a
+    bundle whose Python framework is a few bytes of text, and the launcher dies
+    with "slice is not valid mach-o file" before it can start a server. It also
+    drops the executable bit.
+
+    ditto is the tool the archive was made with and restores both; unzip keeps
+    symlinks too. zipfile is the last resort, and the only one used on Windows,
+    where neither symlinks nor the executable bit are in play.
+    """
+    if sys.platform != "win32":
+        for tool, command in (("ditto", ["ditto", "-x", "-k", str(archive), str(into)]),
+                              ("unzip", ["unzip", "-q", "-o", str(archive), "-d", str(into)])):
+            if not shutil.which(tool):
+                continue
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode == 0:
+                log(f"unpacked with {tool}")
+                return
+            log(f"{tool} failed ({result.returncode}); trying the next method")
+    with zipfile.ZipFile(archive) as zf:
+        zf.extractall(into)
 
 
 def ensure_executable(binary: Path) -> Path:

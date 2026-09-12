@@ -210,9 +210,12 @@ devices. Treat those platforms as ready to try, not as field-proven.
   "Windows protected your PC" on first run; choose *More info → Run anyway*.
   Windows Firewall will normally prompt on first launch. Packaged Python
   applications occasionally draw antivirus false positives.
-- **macOS** — an `OmniSuite.app` in a zip. It is **not code signed, not
-  Developer ID signed, and not notarised**, so Gatekeeper will refuse a normal
-  double-click on first launch. Right-click the app → **Open**, then confirm.
+- **macOS** — an `OmniSuite.app` in a zip. Unpack it with Finder (double-click
+  the zip) or `ditto -x -k`, both of which keep the symlinks inside the bundle;
+  a tool that flattens them leaves the app unable to load its own Python
+  framework. It is **not code signed, not Developer ID signed, and not
+  notarised**, so Gatekeeper will refuse a normal double-click on first launch.
+  Right-click the app → **Open**, then confirm.
 - **Ubuntu** — a `tar.gz` containing an `OmniSuite` directory; run the
   `OmniSuite` executable inside it. It needs a **desktop session**: the launcher
   is a graphical window and there is **no headless mode**. CI smoke-tests the
