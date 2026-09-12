@@ -237,7 +237,7 @@ their names from it.
 
 ## License
 
-OmniSuite is **source available**, published by Hall Research under the
+OmniSuite is **source available**, published by Hall Research Technologies under the
 **[PolyForm Noncommercial License 1.0.0](LICENSE)**.
 
 > OmniSuite source is available for noncommercial use, modification and
