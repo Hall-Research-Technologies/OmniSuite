@@ -87,16 +87,28 @@ def extract(artifact: Path, into: Path) -> Path:
         inner = app / "Contents" / "MacOS" / "OmniSuite"
         if not inner.exists():
             raise RuntimeError(f"No executable inside {app.name}")
-        return inner
+        return ensure_executable(inner)
     unix = into / "OmniSuite" / "OmniSuite"
     if unix.exists():
-        # The archive should carry the executable bit; restore it if the
-        # extraction dropped it rather than failing on something cosmetic.
-        if not os.access(unix, os.X_OK):
-            log("WARNING: executable bit missing from the archive; setting it")
-            unix.chmod(unix.stat().st_mode | 0o111)
-        return unix
+        return ensure_executable(unix)
     raise RuntimeError(f"No OmniSuite executable found under {into}")
+
+
+def ensure_executable(binary: Path) -> Path:
+    """Restore the executable bit if the extraction dropped it.
+
+    zipfile.extractall() does not carry Unix permissions, so a .app unpacked
+    with it has a non-executable binary inside and launching it fails with
+    EACCES -- which is how both macOS smoke jobs failed. The published archive
+    is made with ditto, which does preserve the mode; this is about how the
+    smoke test unpacks it, so it applies to every archive type rather than
+    only the one where it was first noticed.
+    """
+    if os.name == "nt" or os.access(binary, os.X_OK):
+        return binary
+    log(f"executable bit missing after extraction; restoring it on {binary.name}")
+    binary.chmod(binary.stat().st_mode | 0o111)
+    return binary
 
 
 # The launcher log is append-only across runs, so "the last port in the file" is
