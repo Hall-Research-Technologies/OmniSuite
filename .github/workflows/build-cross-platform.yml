@@ -245,7 +245,11 @@ jobs:
             # Annotations are the only part of a failed run that can be read
             # without credentials, so put the tail there rather than only in
             # the log.
-            tail -25 smoke-output.txt | grep -v '^[[:space:]]*$' | while IFS= read -r line; do
+            # GitHub keeps only the first 10 annotations per step, and the
+            # line that names the exception is the LAST line of a traceback --
+            # so a wide tail drops precisely the line worth reading. Keep it
+            # narrow, and lead with the end.
+            tail -8 smoke-output.txt | grep -v '^[[:space:]]*$' | (tac 2>/dev/null || tail -r) | while IFS= read -r line; do
               echo "::error::${line}"
             done
             tail -60 smoke-output.txt

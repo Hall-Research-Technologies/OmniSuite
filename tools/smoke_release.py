@@ -193,15 +193,22 @@ def surviving_processes(scope: Path) -> list:
         psutil = None
 
     if psutil is not None:
-        found = []
-        for proc in psutil.process_iter(["pid", "exe"]):
-            try:
+        try:
+            found = []
+            # ad_value is required, not cosmetic: without it process_iter raises
+            # AccessDenied out of the iterator the moment it meets a process
+            # this user cannot read the path of, which is every system process
+            # on macOS. The per-process guard below never sees that -- it is
+            # raised by the loop itself -- so the smoke test died in its own
+            # cleanup on both macOS runners while Linux and Windows passed.
+            for proc in psutil.process_iter(["pid", "exe"], ad_value=None):
                 executable = (proc.info.get("exe") or "").lower()
-            except Exception:
-                continue
-            if executable.startswith(target):
-                found.append(str(proc.info["pid"]))
-        return found
+                if executable.startswith(target):
+                    found.append(str(proc.info["pid"]))
+            return found
+        except Exception as exc:
+            log(f"psutil could not enumerate processes ({type(exc).__name__}); "
+                f"falling back to a command-line match")
 
     # Without psutil, match the extraction path in the command line. Still
     # scoped: this script's arguments name the archive, never the temp copy.
