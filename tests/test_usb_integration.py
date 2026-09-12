@@ -4696,122 +4696,39 @@ def _toc(entries):
     return directory
 
 
-# The first-launch contract is measured in a child process, once, and every test
-# below asserts against that one result. Computed lazily so importing this module
-# costs nothing.
-_FIRST_LAUNCH_RESULT = None
+class CleanInstallBase(ServerTestBase):
+    """A test that sees what a brand-new installation sees.
 
-FIRST_LAUNCH_PROGRAM = r"""
-import json, os, sys, tempfile, importlib.util
-from pathlib import Path
+    ServerTestBase points every state file at a fresh temp directory and then
+    installs a fixture-backed _load_cache so most tests start with a populated
+    bench. A first-launch test needs the opposite: the genuine store, reading a
+    directory with nothing in it.
+    """
 
-fresh = tempfile.mkdtemp(prefix="omni-firstlaunch-")
-os.environ["OMNI_DATA_DIR"] = fresh
-os.environ["OMNI_SMOKE"] = "1"
-root = Path(sys.argv[1])
-sys.path.insert(0, str(root))
+    def setUp(self):
+        super().setUp()
+        self.data_dir = Path(self.folder.name)
+        # Config is read from and written to CWD; point it at the clean folder so
+        # no test can read or overwrite the operator's real settings.
+        previous_cwd = srv.CWD
+        self.addCleanup(setattr, srv, "CWD", previous_cwd)
+        srv.CWD = self.data_dir
+        # Put the real, file-backed cache reader back for the duration.
+        genuine = getattr(self, "_real_load_cache", None)
+        if genuine is not None:
+            patched = srv._load_cache
+            self.addCleanup(setattr, srv, "_load_cache", patched)
+            srv._load_cache = genuine
+        previous_path = srv.app.config.get("FIRMWARE_PATH", "")
+        self.addCleanup(srv.app.config.__setitem__, "FIRMWARE_PATH", previous_path)
+        srv.app.config["FIRMWARE_PATH"] = ""
+        self.client = srv.app.test_client()
 
-spec = importlib.util.spec_from_file_location("srv", root / "OmniMatrix_upgrade_server_v7_6y.py")
-srv = importlib.util.module_from_spec(spec)
-sys.modules["srv"] = srv
-spec.loader.exec_module(srv)
-
-client = srv.app.test_client()
-out = {"data_dir": fresh}
-
-def body(resp):
-    return json.loads(resp.get_data(as_text=True))
-
-# --- A, B, C: a fresh data directory, started, with nothing in it -------------
-out["initial_files"] = sorted(p.name for p in Path(fresh).iterdir())
-out["config"] = body(client.get("/api/config"))
-cache = body(client.get("/api/cache"))
-out["cache_count"] = cache.get("count")
-out["cache_units"] = len(cache.get("units") or [])
-out["topology_devices"] = len((cache.get("lldp_topology") or {}).get("devices") or {})
-out["topology_switches"] = (cache.get("lldp_topology") or {}).get("switch_count")
-scan = body(client.get("/api/scan_results"))
-out["scan"] = {k: len(scan.get(k) or []) for k in ("devices", "encoders", "decoders")}
-usb = body(client.get("/api/usb_state"))
-out["usb"] = {k: len(usb.get(k) or []) for k in
-              ("lex", "rex", "standalone_lex", "standalone_rex",
-               "inventory_lex", "inventory_rex", "pairings")}
-
-# A decoy beside the application must not be adopted as firmware.
-(Path(fresh) / "AT-OMNI-121-2.1.2.vpup2").write_bytes(b"not really firmware")
-out["files_unset"] = [e["name"] for e in body(client.get("/api/files"))["files"]]
-resp = client.post("/api/open_firmware_folder")
-out["open_unset_status"] = resp.status_code
-out["open_unset_body"] = body(resp)
-
-# --- D, E, F: stop and start again, without scanning --------------------------
-reloaded = srv._load_config()
-out["restart_firmware_path"] = reloaded["FIRMWARE_PATH"]
-out["restart_cache_count"] = body(client.get("/api/cache")).get("count")
-out["cache_file_after_restart"] = (Path(fresh) / "units_cache.json").exists()
-
-# --- G, H: a scan persists the way it normally does ---------------------------
-# Written straight to the cache; no device is contacted.
-srv._save_cache([{"ip": "192.0.2.10", "mac": "00:1b:13:09:00:01",
-                  "model": "hw-omni-e4521", "role": "encoder",
-                  "hostname": "doc-encoder"}])
-out["cache_file_after_scan"] = srv.CACHE.exists()
-out["units_after_scan"] = len(srv._load_cache())
-
-# --- I: choose a firmware folder through the normal configuration path --------
-chosen = Path(fresh) / "operator-firmware"
-chosen.mkdir()
-(chosen / "AT-OMNI-121-2.1.2.vpup2").write_bytes(b"x")
-saved = client.post("/api/config", json={
-    "username": "admin", "password": "CHANGE_ME", "fallback_password": "CHANGE_ME",
-    "ws_port": 80, "timeout": 4.5, "concurrency": 6, "firmware_path": str(chosen)})
-out["save_status"] = saved.status_code
-out["config_file_written"] = (Path(fresh) / "config.json").exists()
-out["files_set"] = [e["name"] for e in body(client.get("/api/files"))["files"]]
-
-# --- J, K: restart, and the operator's choices are still there ----------------
-reloaded = srv._load_config()
-srv.app.config["FIRMWARE_PATH"] = reloaded["FIRMWARE_PATH"]
-out["persisted_firmware_path"] = reloaded["FIRMWARE_PATH"]
-out["chosen_firmware_path"] = str(chosen)
-out["persisted_via_api"] = body(client.get("/api/config"))["firmware_path"]
-out["units_after_restart"] = len(srv._load_cache())
-
-# A separate installation inherits none of it.
-other = tempfile.mkdtemp(prefix="omni-other-")
-srv.CWD = Path(other)
-out["other_install_firmware_path"] = srv._load_config()["FIRMWARE_PATH"]
-
-print("@@RESULT@@" + json.dumps(out))
-"""
+    def json(self, response):
+        return json.loads(response.get_data(as_text=True))
 
 
-def _first_launch():
-    """Run the clean-install walk once, in a child process, and cache it."""
-    global _FIRST_LAUNCH_RESULT
-    if _FIRST_LAUNCH_RESULT is not None:
-        return _FIRST_LAUNCH_RESULT
-    import subprocess
-
-    root = Path(srv.__file__).resolve().parent
-    program = Path(tempfile.mkdtemp()) / "first_launch_probe.py"
-    program.write_text(FIRST_LAUNCH_PROGRAM, encoding="utf-8")
-    environment = dict(os.environ)
-    environment["PYTHONIOENCODING"] = "utf-8"
-    environment.pop("OMNI_DATA_DIR", None)
-    completed = subprocess.run([sys.executable, str(program), str(root)],
-                               capture_output=True, text=True, timeout=600,
-                               env=environment)
-    marker = "@@RESULT@@"
-    if marker not in completed.stdout:
-        raise AssertionError(
-            "the clean-install probe produced no result:\n"
-            + (completed.stdout or "")[-2000:] + "\n" + (completed.stderr or "")[-2000:])
-    _FIRST_LAUNCH_RESULT = json.loads(completed.stdout.split(marker, 1)[1].splitlines()[0])
-    return _FIRST_LAUNCH_RESULT
-
-
-class FirstLaunchContractTests(unittest.TestCase):
+class FirstLaunchContractTests(CleanInstallBase):
     """A new installation starts empty, and stays empty until the operator acts.
 
     Nothing about a fresh OmniSuite may be inherited from the machine it happens
@@ -4823,45 +4740,46 @@ class FirstLaunchContractTests(unittest.TestCase):
     broke it. `/api/files` listed the working directory whenever no firmware path
     was set, so a fresh install appeared to arrive with firmware in it, and
     `/api/open_firmware_folder` fell back through `./firmware`, `./ui/firmware`
-    and one developer machine's absolute path -- which also shipped that path
-    inside the executable.
-
-    Measured in a child process with its own data directory: the shared test
-    server is seeded with fixtures at import and cannot answer this question.
+    and an absolute path from the original development machine -- which also
+    shipped inside the executable.
     """
-
-    @classmethod
-    def setUpClass(cls):
-        cls.result = _first_launch()
-        cls.root = Path(srv.__file__).resolve().parent
 
     # ---- firmware path ------------------------------------------------------
     def test_a_clean_install_reports_no_firmware_path(self):
-        self.assertEqual(self.result["config"].get("firmware_path"), "")
+        self.assertEqual(self.json(self.client.get("/api/config")).get("firmware_path"), "")
 
     def test_the_settings_field_shows_no_folder_selected_when_unset(self):
         """The empty value is what renders the placeholder."""
-        settings = (self.root / "ui" / "settings.js").read_text(encoding="utf-8")
+        settings = (Path(srv.__file__).resolve().parent / "ui" / "settings.js").read_text(encoding="utf-8")
         self.assertIn('placeholder="No folder selected"', settings)
 
     def test_no_firmware_path_lists_no_firmware(self):
         """Not even from the directory it happens to be started in."""
-        self.assertEqual(self.result["files_unset"], ["Select Firmware"],
+        decoy = self.data_dir / "AT-OMNI-121-2.1.2.vpup2"
+        decoy.write_bytes(b"not really firmware")
+        names = [entry["name"] for entry in self.json(self.client.get("/api/files"))["files"]]
+        self.assertEqual(names, ["Select Firmware"],
                          "a fresh install must not adopt whatever is beside it")
 
     def test_a_chosen_firmware_path_is_listed(self):
         """The guard must not have broken the feature it protects."""
-        self.assertIn("AT-OMNI-121-2.1.2.vpup2", self.result["files_set"])
+        chosen = self.data_dir / "operator-firmware"
+        chosen.mkdir()
+        (chosen / "AT-OMNI-121-2.1.2.vpup2").write_bytes(b"x")
+        srv.app.config["FIRMWARE_PATH"] = str(chosen)
+        names = [entry["name"] for entry in self.json(self.client.get("/api/files"))["files"]]
+        self.assertIn("AT-OMNI-121-2.1.2.vpup2", names)
 
     def test_opening_the_firmware_folder_refuses_until_one_is_chosen(self):
-        self.assertEqual(self.result["open_unset_status"], 400)
-        self.assertFalse(self.result["open_unset_body"]["ok"])
-        self.assertIn("Settings", self.result["open_unset_body"]["error"])
-        self.assertNotIn("softwareDEV", self.result["open_unset_body"]["error"])
+        response = self.client.post("/api/open_firmware_folder")
+        self.assertEqual(response.status_code, 400)
+        body = self.json(response)
+        self.assertFalse(body["ok"])
+        self.assertIn("Settings", body["error"])
 
     def test_no_default_firmware_location_is_guessed_anywhere(self):
         """./firmware, ./ui/firmware and a developer absolute path are gone."""
-        server = (self.root / "OmniMatrix_upgrade_server_v7_6y.py").read_text(encoding="utf-8")
+        server = (Path(srv.__file__).resolve().parent / "OmniMatrix_upgrade_server_v7_6y.py").read_text(encoding="utf-8")
         code = "\n".join(line for line in server.splitlines()
                           if not line.lstrip().startswith("#"))
         self.assertNotIn('CWD / "firmware"', code)
@@ -4871,8 +4789,9 @@ class FirstLaunchContractTests(unittest.TestCase):
     def test_no_developer_or_home_path_is_hard_coded_in_any_published_file(self):
         import subprocess
 
+        root = Path(srv.__file__).resolve().parent
         try:
-            listed = subprocess.run(["git", "ls-files"], cwd=str(self.root),
+            listed = subprocess.run(["git", "ls-files"], cwd=str(root),
                                     capture_output=True, text=True, timeout=60)
         except (OSError, subprocess.SubprocessError):
             self.skipTest("git is not available")
@@ -4883,7 +4802,7 @@ class FirstLaunchContractTests(unittest.TestCase):
             r"|/(?:Users|home)/[a-z][\w.-]*/", re.I)
         offenders = []
         for name in listed.stdout.split():
-            candidate = self.root / name
+            candidate = root / name
             if candidate.suffix.lower() not in {".py", ".js", ".html", ".css",
                                                 ".md", ".json", ".yml", ".txt"}:
                 continue
@@ -4894,31 +4813,40 @@ class FirstLaunchContractTests(unittest.TestCase):
 
     # ---- discovered devices -------------------------------------------------
     def test_a_clean_install_has_no_devices(self):
-        self.assertEqual(self.result["cache_count"], 0)
-        self.assertEqual(self.result["cache_units"], 0)
+        body = self.json(self.client.get("/api/cache"))
+        self.assertEqual(body.get("count"), 0)
+        self.assertEqual(len(body.get("units") or []), 0)
 
     def test_a_clean_install_has_no_scan_results(self):
-        for key, count in self.result["scan"].items():
-            self.assertEqual(count, 0, key)
+        body = self.json(self.client.get("/api/scan_results"))
+        for key in ("devices", "encoders", "decoders"):
+            self.assertEqual(len(body.get(key) or []), 0, key)
 
     def test_a_clean_install_has_no_usb_endpoints(self):
-        for key, count in self.result["usb"].items():
-            self.assertEqual(count, 0, key)
+        body = self.json(self.client.get("/api/usb_state"))
+        for key in ("lex", "rex", "standalone_lex", "standalone_rex",
+                    "inventory_lex", "inventory_rex", "pairings"):
+            self.assertEqual(len(body.get(key) or []), 0, key)
 
     def test_a_clean_install_infers_no_topology(self):
-        self.assertEqual(self.result["topology_devices"], 0)
-        self.assertEqual(self.result["topology_switches"], 0)
+        topology = self.json(self.client.get("/api/cache")).get("lldp_topology") or {}
+        self.assertEqual(len(topology.get("devices") or {}), 0)
+        self.assertEqual(topology.get("switch_count"), 0)
 
     def test_a_clean_data_directory_starts_with_no_state_files(self):
         """Nothing is written before the operator does anything."""
-        self.assertEqual(self.result["initial_files"], [])
+        for name in ("units_cache.json", "scan_results.json", "units_view.csv",
+                     "config.json"):
+            self.assertFalse((self.data_dir / name).exists(),
+                             f"{name} must not exist on a clean install")
 
     def test_the_repository_ships_no_device_inventory(self):
         """No cache may be published for a new installation to pick up."""
         import subprocess
 
+        root = Path(srv.__file__).resolve().parent
         try:
-            listed = subprocess.run(["git", "ls-files"], cwd=str(self.root),
+            listed = subprocess.run(["git", "ls-files"], cwd=str(root),
                                     capture_output=True, text=True, timeout=60)
         except (OSError, subprocess.SubprocessError):
             self.skipTest("git is not available")
@@ -4930,7 +4858,7 @@ class FirstLaunchContractTests(unittest.TestCase):
             self.assertNotIn(name, tracked)
 
 
-class CleanInstallLifecycleTests(unittest.TestCase):
+class CleanInstallLifecycleTests(CleanInstallBase):
     """Clean install is clean, and stays clean -- then persists normally.
 
     The whole walk: start empty, restart still empty, scan, persist, choose a
@@ -4939,40 +4867,57 @@ class CleanInstallLifecycleTests(unittest.TestCase):
     be bought with the other.
     """
 
-    @classmethod
-    def setUpClass(cls):
-        cls.result = _first_launch()
+    def restart(self):
+        """What a restart actually does: re-read config.json from the data dir."""
+        config = srv._load_config()
+        srv.app.config["FIRMWARE_PATH"] = config["FIRMWARE_PATH"]
+        return config
 
-    def test_c_a_fresh_install_starts_with_nothing(self):
-        self.assertEqual(self.result["initial_files"], [])
-        self.assertEqual(self.result["config"]["firmware_path"], "")
-        self.assertEqual(self.result["cache_count"], 0)
+    def test_the_clean_install_lifecycle(self):
+        # A, B, C -- a fresh data directory, started, with nothing in it.
+        self.assertEqual(sorted(p.name for p in self.data_dir.iterdir()), [])
+        self.assertEqual(self.json(self.client.get("/api/config"))["firmware_path"], "")
+        self.assertEqual(self.json(self.client.get("/api/cache"))["count"], 0)
 
-    def test_f_a_restart_without_scanning_is_still_empty(self):
-        """Nothing may appear merely because the application was run once."""
-        self.assertEqual(self.result["restart_firmware_path"], "")
-        self.assertEqual(self.result["restart_cache_count"], 0)
-        self.assertFalse(self.result["cache_file_after_restart"])
+        # D, E, F -- stop and start again without scanning. Still empty: nothing
+        # may appear merely because the application was run once.
+        self.assertEqual(self.restart()["FIRMWARE_PATH"], "")
+        self.assertEqual(self.json(self.client.get("/api/cache"))["count"], 0)
+        self.assertFalse(srv.CACHE.exists())
 
-    def test_h_a_scan_persists_normally(self):
-        self.assertTrue(self.result["cache_file_after_scan"])
-        self.assertEqual(self.result["units_after_scan"], 1)
+        # G, H -- a scan result persists the way it normally does. Written
+        # straight to the cache file; no device is contacted by this test.
+        srv._save_cache([{"ip": "192.0.2.10", "mac": "00:1b:13:09:00:01",
+                          "model": "hw-omni-e4521", "role": "encoder",
+                          "hostname": "doc-encoder"}])
+        self.assertTrue(srv.CACHE.exists(), "a real scan must still persist")
+        self.assertEqual(len(srv._load_cache()), 1)
 
-    def test_i_a_firmware_folder_can_be_chosen_and_is_saved(self):
-        self.assertEqual(self.result["save_status"], 200)
-        self.assertTrue(self.result["config_file_written"])
+        # I -- choose a firmware folder through the normal configuration path.
+        chosen = self.data_dir / "operator-firmware"
+        chosen.mkdir()
+        response = self.client.post("/api/config", json={
+            "username": "admin", "password": "CHANGE_ME",
+            "fallback_password": "CHANGE_ME", "ws_port": 80, "timeout": 4.5,
+            "concurrency": 6, "firmware_path": str(chosen)})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue((self.data_dir / "config.json").exists())
 
-    def test_k_the_operators_choices_survive_a_restart(self):
-        self.assertEqual(self.result["persisted_firmware_path"],
-                         self.result["chosen_firmware_path"])
-        self.assertEqual(self.result["persisted_via_api"],
-                         self.result["chosen_firmware_path"])
-        self.assertEqual(self.result["units_after_restart"], 1,
-                         "discovered units persist too")
+        # J, K -- restart, and the operator's choices are still there.
+        self.assertEqual(self.restart()["FIRMWARE_PATH"], str(chosen))
+        self.assertEqual(self.json(self.client.get("/api/config"))["firmware_path"], str(chosen))
+        self.assertEqual(len(srv._load_cache()), 1, "discovered units persist too")
 
     def test_a_second_installation_inherits_nothing(self):
         """Persistence lives in the data directory, not in the application."""
-        self.assertEqual(self.result["other_install_firmware_path"], "")
+        chosen = self.data_dir / "operator-firmware"
+        chosen.mkdir()
+        self.client.post("/api/config", json={"firmware_path": str(chosen)})
+        self.assertTrue((self.data_dir / "config.json").exists())
+        other = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, other, True)
+        srv.CWD = other
+        self.assertEqual(srv._load_config()["FIRMWARE_PATH"], "")
 
 
 

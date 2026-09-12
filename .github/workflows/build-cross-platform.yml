@@ -54,7 +54,7 @@ jobs:
           python-version: "3.12"
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "20"
 
@@ -70,7 +70,34 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run every suite, and prove the tests reached no hardware
-        run: python run_tests.py
+        shell: bash
+        run: |
+          set +e
+          python run_tests.py 2>&1 | tee test-output.txt
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # Surface what actually failed. A job summary saying only "exit code
+            # 1" is useless to anyone without credentials to read the log, and
+            # this suite runs on four platforms where the log is the only place
+            # a platform-specific failure shows up.
+            grep -E '^(FAIL|ERROR):' test-output.txt | head -30 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            grep -E '^[A-Za-z_.]*(Error|Exception):' test-output.txt | head -20 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            echo "----- last 60 lines -----"
+            tail -60 test-output.txt
+          fi
+          exit $status
+
+      - name: Keep the test output when a platform fails
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: test-output-${{ matrix.label }}
+          path: test-output.txt
+          retention-days: 7
 
   build:
     name: Build (${{ matrix.artifact_name }})
