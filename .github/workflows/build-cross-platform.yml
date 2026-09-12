@@ -242,10 +242,13 @@ jobs:
           if [ "$status" -ne 0 ]; then
             # Same reason as the test step: the log needs credentials to read,
             # and "exit code 1" does not say which check failed.
-            grep -E '^\[smoke\] +- ' smoke-output.txt | head -20 | while IFS= read -r line; do
+            # Annotations are the only part of a failed run that can be read
+            # without credentials, so put the tail there rather than only in
+            # the log.
+            tail -25 smoke-output.txt | grep -v '^[[:space:]]*$' | while IFS= read -r line; do
               echo "::error::${line}"
             done
-            tail -40 smoke-output.txt
+            tail -60 smoke-output.txt
           fi
           exit $status
 

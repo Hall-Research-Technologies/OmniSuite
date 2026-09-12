@@ -244,11 +244,32 @@ def run(binary: Path, expected_version: str, scope: Path | None = None) -> int:
         port = wait_for_port(log_file, started, timeout=120)
         if port is None:
             failures.append("the launcher never reported a bound port")
+            # Read what the child said. It is only safe to read the pipe once
+            # the process is gone, and a launcher that never bound is usually
+            # still alive -- which is exactly the case the old code skipped,
+            # so the one failure that most needed explaining explained nothing.
+            still_running = process.poll() is None
+            log(f"launcher still running when it should have bound: {still_running}")
+            stop_process_tree(process.pid)
+            try:
+                process.wait(timeout=15)
+            except Exception:
+                process.kill()
             out = b""
-            if process.poll() is not None and process.stdout is not None:
-                out = process.stdout.read()[:1500]
-            if out:
-                log(f"process output: {out!r}")
+            if process.stdout is not None:
+                try:
+                    out = process.stdout.read()[:2000]
+                except Exception as exc:
+                    log(f"could not read the launcher's output: {type(exc).__name__}")
+            log(f"launcher exit code: {process.returncode}")
+            log(f"launcher output: {out.decode('utf-8', 'replace').strip() or '(nothing)'}")
+            if log_file.exists():
+                lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                log(f"launcher log {log_file} has {len(lines)} line(s); last 15:")
+                for line in lines[-15:]:
+                    log(f"  | {line}")
+            else:
+                log(f"launcher log {log_file} was never created")
             raise SystemExit(report(failures))
 
         log(f"launcher bound port {port}")
