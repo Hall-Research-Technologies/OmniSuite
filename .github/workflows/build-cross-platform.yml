@@ -221,13 +221,41 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          artifact="$(ls release/OmniSuite-*.zip release/OmniSuite-*.tar.gz 2>/dev/null | head -1)"
-          echo "smoke-testing ${artifact}"
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            xvfb-run -a python tools/smoke_release.py --artifact "$artifact" --version "${{ steps.version.outputs.release_version }}"
-          else
-            python tools/smoke_release.py --artifact "$artifact" --version "${{ steps.version.outputs.release_version }}"
+          # `ls` of two globs where one cannot match exits non-zero -- 2 with GNU
+          # coreutils, 1 on macOS -- and under `set -e` that killed this step on
+          # every platform before the smoke test ever ran. `find` reports an
+          # empty result without failing.
+          artifact="$(find release -maxdepth 1 \( -name 'OmniSuite-*.zip' -o -name 'OmniSuite-*.tar.gz' \) | head -1)"
+          if [ -z "$artifact" ]; then
+            echo "::error::no release artifact found in release/"
+            ls -la release || true
+            exit 1
           fi
+          echo "smoke-testing ${artifact}"
+          set +e
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            xvfb-run -a python tools/smoke_release.py --artifact "$artifact" --version "${{ steps.version.outputs.release_version }}" 2>&1 | tee smoke-output.txt
+          else
+            python tools/smoke_release.py --artifact "$artifact" --version "${{ steps.version.outputs.release_version }}" 2>&1 | tee smoke-output.txt
+          fi
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # Same reason as the test step: the log needs credentials to read,
+            # and "exit code 1" does not say which check failed.
+            grep -E '^\[smoke\] +- ' smoke-output.txt | head -20 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            tail -40 smoke-output.txt
+          fi
+          exit $status
+
+      - name: Keep the smoke output when a platform fails
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: smoke-output-${{ matrix.artifact_name }}
+          path: smoke-output.txt
+          retention-days: 7
 
       - name: Upload packaged release artifact
         uses: actions/upload-artifact@v5

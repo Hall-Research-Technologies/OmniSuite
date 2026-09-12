@@ -177,26 +177,55 @@ def stop_process_tree(pid: int) -> None:
         log(f"could not stop the process tree: {type(exc).__name__}")
 
 
-def surviving_processes() -> list:
-    """Any OmniSuite process still running after a smoke run is a leak."""
+def surviving_processes(scope: Path) -> list:
+    """Processes still running from the copy this run unpacked.
+
+    Scoped to that directory deliberately. Matching on the image name would
+    catch an OmniSuite the operator started themselves, and matching the
+    command line would catch this script, whose own arguments contain the word
+    -- which reported a leak on every Linux and macOS run.
+    """
     time.sleep(2.0)
+    target = str(Path(scope).resolve()).lower()
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
+
+    if psutil is not None:
+        found = []
+        for proc in psutil.process_iter(["pid", "exe"]):
+            try:
+                executable = (proc.info.get("exe") or "").lower()
+            except Exception:
+                continue
+            if executable.startswith(target):
+                found.append(str(proc.info["pid"]))
+        return found
+
+    # Without psutil, match the extraction path in the command line. Still
+    # scoped: this script's arguments name the archive, never the temp copy.
     try:
         if sys.platform == "win32":
-            out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq OmniSuite.exe", "/NH"],
-                                 capture_output=True, text=True, check=False).stdout
-            return [line.split()[1] for line in out.splitlines()
-                    if line.strip().startswith("OmniSuite.exe")]
-        out = subprocess.run(["pgrep", "-f", "OmniSuite"], capture_output=True,
-                             text=True, check=False).stdout
+            out = subprocess.run(
+                ["wmic", "process", "get", "ProcessId,ExecutablePath", "/format:csv"],
+                capture_output=True, text=True, check=False).stdout
+            return [line.rsplit(",", 1)[-1].strip() for line in out.splitlines()
+                    if target in line.lower()]
+        out = subprocess.run(["pgrep", "-f", str(Path(scope).resolve())],
+                             capture_output=True, text=True, check=False).stdout
         return out.split()
     except Exception:
         return []
 
 
-def run(binary: Path, expected_version: str) -> int:
+def run(binary: Path, expected_version: str, scope: Path | None = None) -> int:
     failures: list[str] = []
     started = time.time()
     log_file = launcher_log_path()
+    # Everything this run unpacked lives under here; a process still running
+    # from it is this run's leak and nobody else's.
+    scope = Path(scope) if scope is not None else binary.parent
 
     env = dict(os.environ)
     # A smoke test must not open a browser window on a build runner, and must
@@ -278,7 +307,7 @@ def run(binary: Path, expected_version: str) -> int:
             if process.poll() is not None:
                 break
             time.sleep(0.5)
-        survivors = surviving_processes()
+        survivors = surviving_processes(scope)
         if survivors:
             failures.append(f"smoke-launched process(es) still running: {survivors}")
 
@@ -322,7 +351,7 @@ def main() -> int:
             arch = subprocess.run(["file", str(binary)], capture_output=True, text=True)
             log(f"file: {arch.stdout.strip()}")
         try:
-            return run(binary, expected)
+            return run(binary, expected, scope=Path(tmp))
         finally:
             for attempt in range(6):
                 try:
