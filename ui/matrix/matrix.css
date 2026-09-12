@@ -54,7 +54,6 @@ body.compact .video-wall-config-card{padding:10px;width:min(92vw,340px)}
 .toggle *{pointer-events:none}
 .toggle .label{opacity:.9;font-size:14px}
 .switch{position:relative;width:33px;height:18px;background:var(--border);border-radius:999px;cursor:pointer}
-.switch.on{background:rgba(30,144,255,.25)}
 .knob{position:absolute;top:1px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--text);transition:left .15s}
 .switch.on .knob{left:17px;background:var(--accent)}
 .gear-btn{width:36px;height:36px;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid var(--border);background:var(--panel-2);cursor:pointer;font-size:18px;color:var(--text)}
@@ -62,11 +61,13 @@ body.compact .video-wall-config-card{padding:10px;width:min(92vw,340px)}
 
 .top{ background:var(--card); padding:10px 12px; border:1px solid var(--border); border-radius:10px; }
 .row{ display:flex; align-items:center; flex-wrap:wrap; gap:10px; }
-.btn, button{ padding:6px 10px; border-radius:8px; border:1px solid var(--border); background:var(--accent); color:var(--text); cursor:pointer; }
-.btn:hover, button:hover{ filter:brightness(1.1); }
-.mode .modebtn.active{ background: var(--accent); color:white; border-color: var(--accent); }
-.mode .modebtn{ background:transparent; color:var(--text); }
-.mode .modebtn.active{ box-shadow:0 0 0 1px var(--accent); }
+/* The label is the readable foreground appearance.js computes for whichever
+   colour the preset chose. --text on an accent fill measured 2.78:1 with the
+   Default preset in dark mode. */
+.btn, button{ padding:6px 10px; border-radius:8px; border:1px solid var(--border); background:var(--action-primary,var(--accent)); color:var(--on-accent,var(--action-primary-text)); cursor:pointer; }
+.btn:hover, button:hover{ background-image:linear-gradient(var(--control-hover-veil),var(--control-hover-veil)); }
+/* .mode .modebtn selected/unselected styling is in ui/templates.css with
+   the other mutually exclusive groups. */
 .divider{ width:2px; height:24px; background:#ccc; margin:0 6px; }
 
 .legend{ display:flex; gap:16px; padding:6px 2px; font-size:13px; align-items:center; }
@@ -94,7 +95,7 @@ body.compact .video-wall-config-card{padding:10px;width:min(92vw,340px)}
 .matrix-hostname-edit{width:180px;max-width:100%;min-width:0;padding:3px 6px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:12px;box-sizing:border-box}
 .matrix-hostname-edit.saving{opacity:.65}
 .matrix-hostname-edit.invalid{border-color:#e5534b}
-.pending-write{outline:2px solid rgba(30,144,255,.8);outline-offset:1px;box-shadow:0 0 0 3px rgba(30,144,255,.18)}
+.pending-write{outline:2px solid var(--action-primary);outline-offset:1px;box-shadow:0 0 0 3px color-mix(in srgb, var(--action-primary) 22%, transparent)}
 .failed-write{outline:2px solid #e5534b;outline-offset:1px;box-shadow:0 0 0 3px rgba(229,83,75,.18)}
 .matrix-hostname-edit-row{width:120px;margin-top:3px;text-align:center}
 .matrix-hostname-edit-compact{width:112px;padding:2px 5px;font-size:11px}
@@ -140,6 +141,50 @@ h3{ margin:16px 12px 6px; }
 .collapsible .body{ }
 .collapsible.collapsed .body{ display:none; }
 .tbl-wrap{ background:var(--card); border:1px solid var(--border); padding:8px; border-radius:10px; overflow:auto; max-width:96vw; }
+
+/* ------------------------------------------- the mirrored top scrollbar -- */
+/*
+ * A section whose content overflows sideways gets a second, synchronised
+ * horizontal scrollbar immediately above it. The container's own scrollbar sits
+ * at its bottom edge, which on a 70vh route grid or a long inventory means
+ * scrolling past everything before the control that moves it sideways is even
+ * reachable.
+ *
+ * These strips are created by ui/mirror-scroll.js for any container carrying
+ * data-mirror-scroll, so the appearance is stated once here and applies to the
+ * Encoder, Decoder and USB tables on Configure, both USB inventories, and both
+ * route grids. A real scroll container rather than a facsimile, so the operator
+ * gets the platform's own scrollbar, keyboard behaviour and trackpad feel.
+ *
+ * NO WIDTHS HERE. The strip's width, its left offset and its track's width are
+ * written inline by the module from the container's rendered clientWidth,
+ * content edge and scrollWidth. A container loses pixels to its border and to a
+ * vertical scrollbar that comes and goes, and `.matrix-wrap` is centred with
+ * auto margins -- a declared width would give the mirror a different maximum
+ * scrollLeft from the thing it scrolls.
+ */
+.mirror-scroll{
+  overflow-x:auto;
+  overflow-y:hidden;
+  height:12px;
+  margin:0 0 4px;
+  /* A groove, so the strip reads as a scrollbar rather than an unexplained gap
+     on a platform whose overlay scrollbar paints its thumb only on hover. The
+     native scrollbar paints over this wherever the platform draws one. */
+  background:var(--panel-2);
+  border-radius:999px;
+}
+/* An inert scrollbar is worse than none, so the module hides the strip whenever
+   its container does not overflow. Stated explicitly: the rules above would
+   otherwise be one cascade accident away from beating the UA's [hidden]. */
+.mirror-scroll[hidden]{ display:none; }
+/* The track exists only to give the strip a scrollable width; it is never seen. */
+.mirror-scroll-track{ height:1px; }
+.mirror-scroll::-webkit-scrollbar{ height:12px; background:transparent; }
+.mirror-scroll::-webkit-scrollbar-thumb{ background:var(--muted); border-radius:999px; }
+.mirror-scroll::-webkit-scrollbar-track{ background:transparent; }
+body.compact .mirror-scroll{ height:10px; margin-bottom:3px; }
+body.compact .mirror-scroll::-webkit-scrollbar{ height:10px; }
 .grid{ border-collapse:collapse; }
 .grid th, .grid td{ border:1px solid var(--border); padding:6px 8px; text-align:left; white-space:nowrap; font-size:12px; background:var(--table); }
 .text-link{background:transparent;border:0;color:var(--accent);padding:0;border-radius:0;text-decoration:underline;cursor:pointer}
@@ -192,9 +237,8 @@ h3{ margin:16px 12px 6px; }
   box-shadow: 2px 2px 4px rgba(0,0,0,0.1);
 }
 
-.toast{ position:fixed; left:50%; transform:translateX(-50%); bottom:-40px; background:#111; color:#fff; padding:8px 12px; border-radius:8px; opacity:0; transition:all .25s ease; }
-.toast.ok{ background:#14532d }
-.toast.show{ bottom:20px; opacity:1 }
+/* .toast is defined in ui/templates.css so every page has one and it
+   follows the active preset. */
 
 .confirm-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:60000}
 .confirm-backdrop.hidden{display:none!important}
@@ -258,8 +302,8 @@ h3{ margin:16px 12px 6px; }
 .video-wall-modal-controls label{display:flex;align-items:center;gap:8px;font-size:13px}
 .video-wall-grid{display:grid;grid-template-columns:repeat(var(--vw-grid-cols, 1), minmax(64px, 1fr));gap:8px}
 .video-wall-grid-cell{background:var(--panel-2);border:1px solid var(--border);color:var(--text);padding:10px 6px;border-radius:8px}
-.video-wall-grid-cell:hover{background:rgba(30,144,255,.2)}
-.video-wall-grid-cell.is-selected{background:rgba(30,144,255,.35);border-color:var(--primary);box-shadow:inset 0 0 0 2px var(--primary)}
+.video-wall-grid-cell:hover{background:var(--selected-tint)}
+.video-wall-grid-cell.is-selected{background:var(--selected-fill);color:var(--selected-on);border-color:var(--selected-edge);box-shadow:inset 0 0 0 2px var(--selected-edge)}
 .video-wall-hint{margin:10px 2px 0;color:var(--muted);font-size:12px}
 
 .encoder-output-modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:56000}

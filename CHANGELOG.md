@@ -1,5 +1,38 @@
 # Changelog
 
+## V1.0.7 - 2026-09-11
+
+- Made Device Info the single discovery surface: it owns the network adapter picker, the target list, Scan and Clear Units, and every other page reads what discovery found.
+- Added support for standalone HW-OMNI-311 and HW-OMNI-324 USB extenders over their binary UDP API, discovered by local broadcast and by bounded, configurable range scans that run in the background without delaying encoder/decoder discovery.
+- Surfaced the Icron USB endpoints built into E4521 and D4511 units alongside the standalone extenders, as one USB inventory with one row per physical endpoint.
+- Added routed USB discovery networks so extenders on a subnet other than the management PC's can be found by directed polling.
+- Reconciled devices by MAC rather than by IP, so a unit that changes address is rediscovered and merged instead of being duplicated or lost.
+- Added LLDP and topology awareness, including the switch and port a unit reports and daisy-chain relationships between endpoints.
+- Reported USB and Icron firmware revisions separately from the parent OmniStream firmware.
+
+- Added one-click USB routing: a Matrix cell states the desired relationship and OmniSuite reconciles the hardware to it, verifying both sides by read-back rather than trusting a command acknowledgement.
+- Presented LEX and REX roles explicitly, with peer capacity, configured peers and live linked counts kept as distinct fields.
+- Added multi-peer support for extenders that carry more than one simultaneous peer, including per-peer Link Status.
+- Added desired-state reassignment, which unpairs a stale relationship before pairing the selected one and serialises rapid changes to the same endpoint.
+- Enforced same-subnet USB routing in the backend as well as the UI, so a cross-subnet attempt is rejected rather than warned about and attempted.
+
+- Added an XLSX inventory download with separate Devices and USB sheets.
+- Improved TS Dump collection and contents.
+- Added encrypted device-log collection for manufacturer Engineering, behind a confirmation that states what the file is; the log is encrypted and is not readable locally.
+
+- Added ten colour presets with independent light and dark selection and four layouts, applied consistently across every page.
+- Reworked dialogs, confirmations and toasts, including keyboard and focus handling, replacing native browser prompts with the shared OmniSuite components.
+- Improved table responsiveness and rendering performance on large inventories, including sticky headers and synchronised scrolling.
+
+- Added an update checker that distinguishes up to date, an available update and a build newer than the newest published release, and reports a failed check as a failure rather than as up to date.
+- Improved the launcher window and tray behaviour, and added port fallback so OmniSuite serves on the next free port when 8080 is taken, showing and logging the address it chose.
+- Fixed the launcher browser handoff so the Open Browser button, the clickable URL and the tray item always open the operator's default browser; CI-only suppression now applies to the automatic open alone.
+
+- Replaced the licence with the PolyForm Noncommercial License 1.0.0 and identified OmniSuite as source-available software.
+- Stopped packaging content the application does not run: superseded page iterations, duplicate assets and development history no longer enter the executable, and the build now verifies its own table of contents.
+- Kept the operator-chosen firmware directory, runtime configuration and device caches out of both the repository and the package.
+- Added cross-platform release automation that runs the full test suite, builds, verifies architecture and smoke-tests the packaged artifact on Windows x86-64, macOS arm64, macOS x86-64 and Ubuntu x86-64, publishing SHA-256 checksums for each.
+
 ## V1.0.6 - 2026-08-26
 
 - Fixed Video Wall configurator writes so inches and millimeters are sent to decoders as physical values instead of being converted into grid coordinates.

@@ -25,12 +25,59 @@
     .lldp-label{color:var(--muted)}
     .lldp-value{white-space:pre-wrap;overflow-wrap:anywhere}
     .mac-lldp{cursor:help;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px}
+    /* Advisory banner: noticeable, dismissible, and it never blocks the table. */
+    .switch-warning{display:flex;align-items:flex-start;gap:10px;margin:10px 0;padding:9px 11px;
+      border:1px solid var(--multi-switch-warning-border);border-left:3px solid var(--multi-switch-warning-accent);
+      border-radius:8px;background:var(--multi-switch-warning-bg);color:var(--multi-switch-warning-fg);
+      font-size:13px;line-height:1.4}
+    .switch-warning.hidden{display:none!important}
+    .switch-warning .switch-warning-body{flex:1 1 auto}
+    .switch-warning .switch-warning-title{font-weight:600;margin-bottom:2px}
+    .switch-warning .switch-warning-detail{opacity:.92}
+    .switch-warning button{flex:0 0 auto;border:none;background:transparent;color:inherit;
+      font-size:18px;line-height:1;padding:0 2px;cursor:pointer;opacity:.75}
+    .switch-warning button:hover{opacity:1}
+    /* The LLDP/MAC portion of a row whose device is reached through a different
+       switch than the majority. Subtle on purpose: this says "different switch",
+       not "broken device". */
+    td.alternate-switch{background:var(--alternate-switch-bg);
+      box-shadow:inset 2px 0 0 var(--alternate-switch-border)}
+    td.alternate-switch .switch-note{display:block;font-size:11px;color:var(--alternate-switch-fg);
+      margin-top:2px;overflow-wrap:anywhere}
   </style>
+  <script src="/ui/diagnostics.js?v=20260911-diag"></script>
+<link rel="stylesheet" href="/ui/templates.css?v=20260910-templates">
+<link rel="stylesheet" href="/ui/settings.css?v=20260911-settings">
+  <link rel="stylesheet" href="/ui/device-table.css?v=20260910-devicetable">
+  <script src="/ui/appearance.js?v=20260910-appearance"></script>
+<script src="/ui/toast.js?v=20260911-toast"></script>
+<script src="/ui/device-log.js?v=20260911-devicelog" defer></script>
+<script src="/ui/settings.js?v=20260911-settings"></script>
+
   <div id="hover_preview" class="hover-preview"><img id="hover_preview_img" alt="preview"/></div>
   <div id="lldp_popup" class="lldp-popup"></div>
   <style>
-    :root{--bg:#1d232a;--card:#222a33;--panel-2:#262f39;--fg:#e9eef5;--muted:#9aa7b4;--accent:#1e90ff;--accent-strong:#1f2937;--border:rgba(255,255,255,0.08);--table:#0f172a;--spinner:#9ca3af;--danger:#e5534b}
-    .light{--bg:#f7f8fb;--card:#fff;--panel-2:#f2f5f8;--fg:#0d1117;--muted:#5a6b7a;--border:rgba(0,0,0,.08);--table:#fff;--accent:#1e90ff;--accent-strong:#f2f5f8;--spinner:#6b7280}
+    :root{--bg:#1d232a;--card:#222a33;--panel-2:#262f39;--fg:#e9eef5;--muted:#9aa7b4;--accent:#1e90ff;--accent-strong:#1f2937;--border:rgba(255,255,255,0.08);--table:#0f172a;--spinner:#9ca3af;--danger:#e5534b;
+      /* Semantic UI states. `multi-switch-warning` is advisory, not an error:
+         it must read as information worth noticing, never as a failure, so it
+         deliberately does not borrow --danger. `alternate-switch` marks a device
+         reached through a different switch, which is a fact about the network
+         and not a fault with the device. */
+      --multi-switch-warning-bg:rgba(180,132,32,.22);
+      --multi-switch-warning-border:rgba(234,179,8,.45);
+      --multi-switch-warning-fg:#fde68a;
+      --multi-switch-warning-accent:#eab308;
+      --alternate-switch-bg:rgba(129,140,248,.18);
+      --alternate-switch-border:rgba(129,140,248,.55);
+      --alternate-switch-fg:#c7d2fe}
+    .light{--bg:#f7f8fb;--card:#fff;--panel-2:#f2f5f8;--fg:#0d1117;--muted:#5a6b7a;--border:rgba(0,0,0,.08);--table:#fff;--accent:#1e90ff;--accent-strong:#f2f5f8;--spinner:#6b7280;
+      --multi-switch-warning-bg:rgba(250,204,21,.16);
+      --multi-switch-warning-border:rgba(161,98,7,.40);
+      --multi-switch-warning-fg:#713f12;
+      --multi-switch-warning-accent:#a16207;
+      --alternate-switch-bg:rgba(99,102,241,.12);
+      --alternate-switch-border:rgba(79,70,229,.45);
+      --alternate-switch-fg:#3730a3}
     *{box-sizing:border-box}
     body{margin:16px;background:var(--bg);color:var(--fg);font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif;font-size:14px;line-height:1.4;min-width:1000px}
     a{color:#93c5fd;text-decoration:underline;cursor:pointer}
@@ -53,15 +100,18 @@
     .toggle .label{opacity:.9;font-size:14px}
     .switch{position:relative;width:33px;height:18px;background:var(--border);border-radius:999px}
       .switch{position:relative;width:33px;height:18px;background:var(--border);border-radius:999px;cursor:pointer}
-    .switch.on{background:rgba(30,144,255,.25)}
-    .knob{position:absolute;top:1px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--fg);transition:left .15s}
+        .knob{position:absolute;top:1px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--fg);transition:left .15s}
     .switch.on .knob{left:17px;background:var(--accent)}
-    .gear-btn{width:36px;height:36px;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid var(--border);background:var(--panel-2);cursor:pointer;font-size:18px;color:var(--fg)}
-    .gear-btn:hover{filter:brightness(1.1)}
     /* Control bar */
     .control-bar{display:flex;gap:12px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
     .control-bar .label{font-size:12px;color:var(--muted)}
     select,input[type=text],input[type=number],input[type=password]{font-size:14px;color:var(--fg);background:var(--card);border:1px solid var(--border);padding:6px 8px;border-radius:6px;outline:none}
+    /* `outline:none` above suppresses the ring on a mouse click, which is what
+       it was for -- but it suppressed it for the keyboard too, so tabbing to the
+       adapter selector, Targets or the firmware selector moved the focus with
+       nothing on screen to say where it had gone. :focus-visible restores the
+       ring for keyboard focus only. */
+    select:focus-visible,input[type=text]:focus-visible,input[type=number]:focus-visible,input[type=password]:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
     select{width:120px}
     input[type=text]{width:160px}
     input[type=text].wide{width:240px}
@@ -70,8 +120,8 @@
     .clearable-input{position:relative;display:inline-flex;align-items:center}
     .clearable-input input{padding-right:28px}
     .input-clear-btn{position:absolute;right:4px;width:22px;height:22px;border:0;background:transparent;color:var(--muted);cursor:pointer;border-radius:50%;font-size:18px;line-height:1;display:flex;align-items:center;justify-content:center;padding:0}
-    .input-clear-btn:hover{background:rgba(30,144,255,.14);color:var(--fg);filter:none}
-    .btn{padding:3px 8px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--accent);color:var(--fg);font-size:14px;display:inline-flex;align-items:center;gap:6px;transition:filter .16s}
+    .input-clear-btn:hover{background:var(--selected-tint);color:var(--fg);filter:none}
+    .btn{padding:3px 8px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--action-primary,var(--accent));color:var(--on-accent,var(--fg));font-size:14px;display:inline-flex;align-items:center;gap:6px;transition:filter .16s}
     .btn:hover{filter:brightness(1.1)}
     .btn.small{padding:3px 8px;font-size:12px}
     .btn.danger{background:var(--danger)}
@@ -80,19 +130,19 @@
     table{width:100%;border-collapse:collapse;background:var(--table);font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif}
     th,td{padding:6px 8px;border-bottom:1px solid var(--border);text-align:left;font-size:14px;font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif}
     th{background:var(--table);font-weight:600;font-size:14px}
-    tr:hover{background:rgba(30,144,255,.08)}
+    tr:hover{background:var(--selected-tint)}
     .ip{color:#93c5fd;text-decoration:underline;cursor:pointer}
     .status{padding:2px 8px;border-radius:999px;font-size:12px;display:inline-flex;align-items:center;gap:6px}
     .s-idle{background:#14532d;color:#bbf7d0}
     .s-error{background:#7f1d1d;color:#fecaca}
     .s-uploading{background:#854d0e;color:#fde68a}
-    .s-upgrading{background:#1d4ed8;color:#dbeafe}
+    .s-upgrading{background:var(--state-info,var(--action-primary));color:var(--on-info,var(--action-primary-text))}
     .s-rebooting{background:#0f172a;color:#bfdbfe;border:1px solid rgba(255,255,255,0.08)}
     .s-na{background:#374151;color:#e5e7eb}
     .pwd-pill{padding:2px 8px;border-radius:999px;font-size:12px;display:inline-flex;align-items:center;gap:6px}
     .pwd-primary{background:#1f2937;color:#e5e7eb}
     .pwd-fallback{background:#7f1d1d;color:#fecaca}
-    .usb-pill{padding:2px 6px;border-radius:999px;font-size:11px;background:#1d4ed8;color:#dbeafe;display:inline-block}
+    .usb-pill{padding:2px 6px;border-radius:999px;font-size:11px;background:var(--state-info,var(--action-primary));color:var(--on-info,var(--action-primary-text));display:inline-block}
     .codec-pill{padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600;display:inline-block}
     .codec-ok{background:#14532d;color:#bbf7d0}
     .codec-bad{background:#7f1d1d;color:#fecaca}
@@ -116,17 +166,6 @@
     .footer-bar .left{display:flex;gap:8px}
     .footer-bar .right{display:flex;gap:8px}
     /* Modal */
-    .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;z-index:20000}
-    .modal{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;width:540px;max-width:95%;color:var(--fg)}
-    .modal h3{margin:0 0 12px 0;font-size:16px;font-weight:600}
-    .modal-row{display:flex;align-items:center;gap:12px;margin-bottom:10px}
-    .modal-row label{min-width:100px;font-size:12px;color:var(--muted)}
-    .modal-row input[type=text],.modal-row select{flex:1}
-    .modal-row input[type=password]{flex:1}
-    .modal-path-input{display:flex;gap:8px;align-items:center;margin-bottom:10px}
-    .modal-path-input input[type=text]{flex:1}
-    .modal-error{color:var(--danger);font-size:12px;margin:8px 0;display:none}
-    .modal-buttons{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
     .confirm-modal{width:520px;max-width:min(95vw,560px)}
     .confirm-modal .confirm-title{margin:0 0 8px;font-size:17px;font-weight:600}
     .confirm-modal .confirm-message{color:var(--muted);line-height:1.45;margin-bottom:12px}
@@ -136,15 +175,6 @@
     .confirm-list{max-height:180px;overflow:auto;border:1px solid var(--border);border-radius:8px;background:var(--table);padding:6px;margin-top:8px}
     .confirm-list div{padding:4px 6px;border-bottom:1px solid var(--border);font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif}
     .confirm-list div:last-child{border-bottom:none}
-    .btn.secondary{background:var(--panel-2)}
-    .browser-list{max-height:360px;overflow-y:auto;border:1px solid var(--border);padding:8px;background:var(--panel-2);border-radius:6px;margin-bottom:10px}
-    .browser-toolbar{display:flex;gap:8px;margin-bottom:8px;align-items:center}
-    .browser-path-row{display:flex;gap:8px;margin-bottom:10px;align-items:center}
-    .browser-drive-select{width:86px}
-    .browser-help{font-size:12px;color:var(--muted);margin:-2px 0 8px}
-    .browser-item{padding:8px;cursor:pointer;border-bottom:1px solid var(--border);border-radius:4px;transition:all .1s;display:flex;align-items:center;gap:8px}
-    .browser-item:hover,.browser-item.selected{background:rgba(30,144,255,.15)}
-    .browser-item:last-child{border-bottom:none}
     .small{font-size:12px;color:var(--muted)}
     .code{font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif;font-size:11px;opacity:.8}
     .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--spinner);border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px}
@@ -153,8 +183,9 @@
     /* Tabs */
     .tabs{display:flex;gap:0;}
     .tab{padding:8px 16px;cursor:pointer;background:transparent;color:var(--muted);border:none;font-size:14px;font-weight:500;border-bottom:2px solid transparent;transition:all .16s;text-decoration:none;border-radius:6px 6px 0 0}
-    .tab:hover{color:var(--fg);background:rgba(30,144,255,.08)}
-    .tab.active{color:var(--accent);background:rgba(30,144,255,.08)}
+    /* Tab hover and selection live in ui/templates.css. Each page carried its
+       own copy painted in a literal blue, so the active tab stayed OmniSuite
+       blue under every preset. */
     /* Loading Overlay */
     .loading-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:30000;}
     .loading-overlay.hidden{display:none!important;}
@@ -188,12 +219,10 @@
   // Apply theme immediately to prevent flash
   (function(){
     const dark = localStorage.getItem("dark") !== "false";
-    const compact = localStorage.getItem("viewDensity") === "compact";
     const apply = ()=>{
       const target = document.body || document.documentElement;
       if (!target) return;
       target.classList.toggle("light", !dark);
-      target.classList.toggle("compact", compact);
     };
     if (document.body) {
       apply();
@@ -204,24 +233,24 @@
 </script>
 
 <!-- Header -->
-<div class="header">
+<div class="header" id="app_header">
   <div class="left">
     <img src="/ui/companylogo.png" alt="Company Logo" class="logo">
     <h1>OmniSuite Upgrade Manager</h1>
   </div>
   <div class="controls">
     <div class="tabs">
-      <a href="/" class="tab active">Device Info</a>
+      <a href="/" class="tab active" aria-current="page">Device Info</a>
       <a href="/matrix/configure" class="tab">Configure</a>
       <a href="/matrix" class="tab">A/V Matrix</a>
       <a href="/matrix/usb" class="tab">USB Matrix</a>
     </div>
-    <button id="header_gear" class="gear-btn" title="Settings">⚙️</button>
+    <button id="header_gear" class="gear-btn" type="button" title="Settings" aria-label="Settings">⚙️</button>
   </div>
 </div>
 
 <!-- Scan Control Bar -->
-<div class="box">
+<div class="box" id="scan_bar">
   <div class="row">
     <div>
       <label for="adapters" class="small">Adapters</label>
@@ -235,17 +264,17 @@
       </span>
     </div>
     <button id="scan_btn" class="btn">🔍 Scan</button>
-    <button id="clear_units_btn" class="btn">🗑️ Clear Units</button>
+    <button id="clear_units_btn" class="btn secondary">🗑️ Clear Units</button>
     <span id="scan_status" class="small pill"></span>
   </div>
 </div>
 
 <!-- Firmware/Upgrade Control Bar -->
-<div class="box">
+<div class="box" id="firmware_bar">
   <div class="row" style="gap:16px;">
     <div style="display:flex; align-items:center; gap:4px;">
-      <button class="btn" id="refresh_files_btn" style="color:#1e90ff; background:transparent; border:none; font-size:20px; padding:4px 8px; cursor:pointer;" title="Refresh firmware list">🔄</button>
-      <button class="btn" id="open_firmware_folder_btn" style="color:#1e90ff; background:transparent; border:none; font-size:20px; padding:4px 8px; cursor:pointer;" title="Open firmware folder">📁</button>
+      <button class="btn icon-only" id="refresh_files_btn" title="Refresh firmware list">🔄</button>
+      <button class="btn icon-only" id="open_firmware_folder_btn" title="Open firmware folder">📁</button>
       <div>
         <select id="files" style="width:240px;"></select>
       </div>
@@ -254,16 +283,17 @@
     <div class="unit-counts" aria-label="Discovered unit counts">
       <span class="unit-count-pill">Encoders <strong id="encoder_count">0</strong></span>
       <span class="unit-count-pill">Decoders <strong id="decoder_count">0</strong></span>
+      <span class="unit-count-pill">USB <strong id="usb_extender_count">0</strong></span>
     </div>
     <div style="margin-left:auto; display:flex; align-items:center; gap:8px;">
       <label class="toggle" for="inventory_extra_toggle" style="margin:0;">
         <span class="label" id="inventory_extra_label">Hide Device Details</span>
-        <input type="checkbox" id="inventory_extra_toggle" style="display:none;"/>
+        <input type="checkbox" id="inventory_extra_toggle" class="switch-input"/>
         <div id="inventory_extra_switch" class="switch on"><div class="knob"></div></div>
       </label>
       <label class="toggle" for="poll_units_toggle" style="margin:0;">
         <span class="label">Poll Units</span>
-        <input type="checkbox" id="poll_units_toggle" style="display:none;"/>
+        <input type="checkbox" id="poll_units_toggle" class="switch-input"/>
         <div id="poll_switch" class="switch"><div class="knob"></div></div>
       </label>
     </div>
@@ -271,17 +301,59 @@
 </div>
 
 <!-- Units Table -->
-<div class="table-wrapper">
+<!-- The device table is wide enough to scroll horizontally, and its own
+     scrollbar sits at the very bottom of a viewport-tall table: to reach it the
+     operator has to scroll past every row first. This mirror rides directly
+     under the locked command area and drives the same scroll position. It is
+     hidden whenever the table does not overflow, because an inert scrollbar is
+     worse than none.
+
+     The element and its placement stay here, because ui/device-table.css pins
+     it into the locked command area through --table-mirror-h and no other
+     page places a mirror that way. Everything it DOES is now one shared
+     implementation in ui/mirror-scroll.js: sizing the track from the wrapper's
+     real scrollWidth, sizing the strip from the wrapper's measured client
+     width and left content edge, hiding it when there is nothing to scroll,
+     and the `syncOwner` reentrancy guard that stops the two scrollers driving
+     each other. data-mirror-strip adopts this element instead of creating a
+     second one, so the placement CSS below is untouched. -->
+<div id="table_scroll_mirror" class="table-scroll-mirror" hidden>
+  <div id="table_scroll_mirror_track" class="table-scroll-mirror-track"></div>
+</div>
+<div class="table-wrapper" id="units_table_wrapper"
+     data-mirror-scroll
+     data-mirror-strip="table_scroll_mirror"
+     data-mirror-height-var="--table-mirror-h">
   <div id="device_codec_mismatch_warning" class="codec-warning hidden"></div>
-  <table>
+  <div id="switch_topology_warning" class="switch-warning hidden" role="status" aria-live="polite">
+    <div class="switch-warning-body">
+      <div class="switch-warning-title"></div>
+      <div class="switch-warning-detail"></div>
+    </div>
+    <button type="button" id="switch_topology_dismiss" aria-label="Dismiss switch topology notice"
+            title="Dismiss">&times;</button>
+  </div>
+  <div id="daisy_chain_warning" class="daisy-warning hidden" role="status" aria-live="polite">
+    <div class="daisy-warning-body">
+      <div class="daisy-warning-title"></div>
+      <div class="daisy-warning-detail"></div>
+    </div>
+    <button type="button" id="daisy_chain_dismiss" aria-label="Dismiss daisy chain notice"
+            title="Dismiss">&times;</button>
+  </div>
+  <!-- Three leading columns stay put while the rest scrolls underneath: without
+       them a scrolled-right row is a line of values with nothing saying which
+       device they belong to. data-sticky-cols tells ui/sticky-columns.js how
+       many leading widths to measure and publish. -->
+  <table class="device-table" data-sticky-cols="3">
     <thead>
       <tr>
         <th style="width:32px;"><input type="checkbox" id="select_all"></th>
         <th onclick="sortTable(1)">IP</th>
-        <th onclick="sortTable(2)">MAC</th>
-        <th onclick="sortTable(3)">Link Speed</th>
-        <th onclick="sortTable(4)">Codec</th>
-        <th onclick="sortTable(5)">Hostname</th>
+        <th onclick="sortTable(2)">Hostname</th>
+        <th onclick="sortTable(3)">MAC</th>
+        <th onclick="sortTable(4)">Link Speed</th>
+        <th onclick="sortTable(5)">Codec</th>
         <th class="inventory-extra-col" onclick="sortTable(6)">TimeZone</th>
         <th class="inventory-extra-col" onclick="sortTable(7)">NTP Server</th>
         <th class="inventory-extra-col" onclick="sortTable(8)">Type</th>
@@ -292,10 +364,11 @@
         <th style="width:40px;">Blink</th>
         <th style="width:70px;">Preview</th>
         <th class="inventory-extra-col" style="width:90px;">USB</th>
+        <th style="width:64px;">Log</th>
       </tr>
     </thead>
     <tbody id="units_table">
-      <tr><td colspan="16" style="text-align:center;padding:40px;opacity:.6;">Scan to discover units</td></tr>
+      <tr><td colspan="17" style="text-align:center;padding:40px;opacity:.6;">Scan to discover units</td></tr>
     </tbody>
   </table>
 </div>
@@ -305,88 +378,16 @@
   <div class="left">
     <button class="btn danger" id="reboot_btn" title="Reboot selected devices">🔃 Reboot Selected</button>
     <button class="btn danger" id="remove_btn" title="Remove selected devices from cache">🗑️ Remove Selected</button>
-    <button class="btn" id="sync_passwords_btn" title="Synchronize unit passwords to primary or fallback">🔐 Sync all Passwords</button>
-    <button class="btn" id="set_ntp_btn" title="Set NTP server and timezone for selected units or all">🕒 Set NTP</button>
-    <button class="btn" id="slate_manager_btn" title="Upload and assign slate logos">Slate Manager</button>
+    <button class="btn secondary" id="sync_passwords_btn" title="Synchronize unit passwords to primary or fallback">🔐 Sync all Passwords</button>
+    <button class="btn secondary" id="set_ntp_btn" title="Set NTP server and timezone for selected units or all">🕒 Set NTP</button>
+    <button class="btn secondary" id="slate_manager_btn" title="Upload and assign slate logos">Slate Manager</button>
   </div>
   <div class="right">
-    <button class="btn" id="export_units_btn">⬇️ Inventory</button>
+    <button class="btn secondary" id="export_units_btn">⬇️ Inventory</button>
   </div>
 </div>
 
 <!-- Configuration Modal -->
-<div id="cfg_backdrop" class="modal-backdrop">
-  <div class="modal">
-    <h3>Configuration</h3>
-    <div class="modal-row">
-      <label>Version</label>
-      <input id="cfg_app_version" type="text" value="V1.0.4" readonly style="flex:1;"/>
-    </div>
-    <div class="modal-row">
-      <label>Theme</label>
-      <select id="cfg_theme" style="flex:1;">
-        <option value="dark">Dark</option>
-        <option value="light">Light</option>
-      </select>
-    </div>
-    <div class="modal-row">
-      <label>View</label>
-      <select id="cfg_view_density" style="flex:1;">
-        <option value="comfortable">Comfortable</option>
-        <option value="compact">Compact</option>
-      </select>
-    </div>
-    <div class="modal-row">
-      <label>Username</label>
-      <input id="cfg_username" type="text" value="admin"/>
-    </div>
-    <div class="modal-row">
-      <label>Password</label>
-      <div style="display:flex;gap:6px;flex:1;">
-        <input id="cfg_password" type="password" value="password" style="flex:1;"/>
-        <button id="cfg_pw_toggle" class="btn small" type="button">👁️</button>
-      </div>
-    </div>
-    <div class="modal-row">
-      <label>Fallback Password</label>
-      <div style="display:flex;gap:6px;flex:1;">
-        <input id="cfg_fallback_password" type="password" value="Atlona" style="flex:1;"/>
-        <button id="cfg_fallback_pw_toggle" class="btn small" type="button">👁️</button>
-      </div>
-    </div>
-    <div class="modal-row">
-      <label>WS Port</label>
-      <select id="cfg_ws_port" style="width:140px;">
-        <option value="80" selected>80 (ws/http)</option>
-        <option value="443">443 (wss/https)</option>
-      </select>
-    </div>
-    <div class="modal-row">
-      <label>Timeout (s)</label>
-      <input id="cfg_timeout" type="number" value="4.5" step="0.1" style="width:100px;"/>
-    </div>
-    <div class="modal-row">
-      <label>Concurrency</label>
-      <select id="cfg_concurrency" style="width:100px;">
-        <option>1</option><option>2</option><option>4</option><option selected>6</option><option>8</option><option>12</option>
-      </select>
-    </div>
-    <div class="modal-row">
-      <label>Firmware Path</label>
-      <div class="modal-path-input">
-        <input id="cfg_firmware_path" type="text" placeholder="e.g. ui/firmware/"/>
-        <button id="cfg_firmware_browse" class="btn small" type="button">📁</button>
-      </div>
-    </div>
-    <div id="cfg_error" class="modal-error"></div>
-    <div class="modal-buttons">
-      <button id="cfg_user_guide" class="btn secondary" type="button" style="margin-right:auto;">User Guide</button>
-      <button id="cfg_ts_export" class="btn secondary" type="button">TS Dump</button>
-      <button id="cfg_close" class="btn" type="button">Close</button>
-      <button id="cfg_save" class="btn" type="button">Save</button>
-    </div>
-  </div>
-</div>
 
 <!-- Password Sync Modal -->
 <div id="sync_pwd_backdrop" class="modal-backdrop">
@@ -408,7 +409,7 @@
         </label>
         <div style="display:flex;gap:6px;align-items:center;">
           <input id="sync_primary_password" type="password" readonly style="flex:1;"/>
-          <button id="sync_primary_eye" class="btn small" type="button">👁️</button>
+          <button id="sync_primary_eye" class="btn small secondary" type="button">👁️</button>
         </div>
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
           <input id="sync_target_fallback" type="radio" name="sync_target" value="fallback">
@@ -416,13 +417,13 @@
         </label>
         <div style="display:flex;gap:6px;align-items:center;">
           <input id="sync_fallback_password" type="password" readonly style="flex:1;"/>
-          <button id="sync_fallback_eye" class="btn small" type="button">👁️</button>
+          <button id="sync_fallback_eye" class="btn small secondary" type="button">👁️</button>
         </div>
       </div>
     </div>
     <div id="sync_pwd_error" class="modal-error"></div>
     <div class="modal-buttons">
-      <button id="sync_pwd_cancel" class="btn" type="button">Cancel</button>
+      <button id="sync_pwd_cancel" class="btn secondary" type="button">Cancel</button>
       <button id="sync_pwd_confirm" class="btn" type="button">Sync</button>
     </div>
   </div>
@@ -461,7 +462,7 @@
     </div>
     <div id="set_ntp_error" class="modal-error"></div>
     <div class="modal-buttons">
-      <button id="set_ntp_cancel" class="btn" type="button">Cancel</button>
+      <button id="set_ntp_cancel" class="btn secondary" type="button">Cancel</button>
       <button id="set_ntp_confirm" class="btn" type="button">Apply</button>
       <button id="set_ntp_confirm_reboot" class="btn danger" type="button">Apply and Reboot</button>
     </div>
@@ -523,7 +524,7 @@
           </select>
         </div>
         <div class="modal-buttons">
-          <button id="slate_refresh_btn" class="btn" type="button">Refresh</button>
+          <button id="slate_refresh_btn" class="btn secondary" type="button">Refresh</button>
           <button id="slate_delete_btn" class="btn danger" type="button">Delete</button>
           <button id="slate_apply_btn" class="btn" type="button">Apply</button>
         </div>
@@ -532,7 +533,7 @@
     <div id="slate_manager_error" class="modal-error"></div>
     <div id="slate_manager_status" class="slate-manager-status"></div>
     <div class="modal-buttons">
-      <button id="slate_manager_close" class="btn" type="button">Close</button>
+      <button id="slate_manager_close" class="btn secondary" type="button">Close</button>
     </div>
   </div>
 </div>
@@ -552,24 +553,6 @@
 </div>
 
 <!-- Folder Browser Modal -->
-<div id="cfg_browser_backdrop" class="modal-backdrop">
-  <div class="modal" style="width:750px;">
-    <h3>Select Folder</h3>
-    <div class="browser-toolbar">
-      <select id="cfg_browser_drive" class="browser-drive-select" title="Drive"></select>
-      <button id="cfg_browser_home" class="btn small secondary" type="button">Home</button>
-    </div>
-    <div style="display:flex;gap:8px;margin-bottom:10px;">
-      <button id="cfg_browser_up" class="btn small">📁 Up</button>
-      <input id="cfg_browser_path" type="text" style="flex:1;" spellcheck="false"/>
-      <button id="cfg_browser_go" class="btn small" type="button">Go</button>
-      <button id="cfg_browser_select" class="btn small">Select</button>
-      <button id="cfg_browser_cancel" class="btn small">Cancel</button>
-    </div>
-    <div class="browser-help">Type or paste a full folder path, choose a drive, or double-click a folder below.</div>
-    <div id="cfg_browser_list" class="browser-list"></div>
-  </div>
-</div>
 
 <!-- Loading Overlay -->
 <div id="loading_overlay" class="loading-overlay hidden">
@@ -579,6 +562,18 @@
   </div>
 </div>
 
+<!-- Switch topology: derived from the inventory this page already fetches. Kept
+     in its own module so its state machine can be exercised directly rather than
+     only through the rendered page. -->
+<script src="/ui/lldp-topology.js?v=20260910-lldp"></script>
+<!-- Frozen identity columns. The module measures the leading column widths and
+     publishes them; ui/device-table.css decides which columns use them. -->
+<script src="/ui/sticky-columns.js?v=20260910-sticky"></script>
+<!-- The mirrored top scrollbar, shared with Configure, the A/V Matrix and
+     the USB Matrix. A container opts in with data-mirror-scroll; this page
+     also names the strip it already has, so its placement CSS still owns
+     where the strip sits. -->
+<script src="/ui/mirror-scroll.js?v=20260911-mirror"></script>
 <script>
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -657,6 +652,32 @@ function updateUnitCounts(units = null) {
   if (decEl) decEl.textContent = decoders;
 }
 
+
+// Counts standalone AT-OMNI-311/324 devices that are currently online, not every
+// device ever discovered. Stale records stay visible on the Configure page.
+let usbExtenderCountRunning = false;
+async function refreshUsbExtenderCount() {
+  const el = $('#usb_extender_count');
+  if (!el) return;
+  // Single-flight: this calls the same sweeping endpoint Configure uses, and
+  // without a guard a slow read let the 10 s interval stack another one on top.
+  if (usbExtenderCountRunning) return;
+  usbExtenderCountRunning = true;
+  if (window.omniDiag) omniDiag.count('poll.usbExtenderCount.run');
+  try {
+    const res = await fetch('/api/usb_extenders');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    el.textContent = Array.isArray(data.devices) ? data.devices.filter(d => d && d.online).length : 0;
+    el.removeAttribute('title');
+  } catch (err) {
+    // Do not silently swallow: keep the last count but flag it as unavailable.
+    console.warn('USB extender count refresh failed:', err && err.message ? err.message : err);
+    el.title = 'USB extender state unavailable: ' + (err && err.message ? err.message : 'request failed');
+  } finally {
+    usbExtenderCountRunning = false;
+  }
+}
 // ===== Theme Toggle =====
 function initTheme() {
   const themeSelect = document.getElementById('cfg_theme');
@@ -684,190 +705,12 @@ function initTheme() {
   });
 }
 
-// ===== Density Toggle =====
-function initDensity() {
-  const densitySelect = document.getElementById('cfg_view_density');
-
-  const applyDensity = (isCompact) => {
-    document.body.classList.toggle('compact', isCompact);
-    if (densitySelect) densitySelect.value = isCompact ? 'compact' : 'comfortable';
-  };
-
-  applyDensity(localStorage.getItem('viewDensity') === 'compact');
-
-  if (densitySelect) {
-    densitySelect.addEventListener('change', () => {
-      const nextCompact = densitySelect.value === 'compact';
-      applyDensity(nextCompact);
-      localStorage.setItem('viewDensity', nextCompact ? 'compact' : 'comfortable');
-    });
-  }
-
-  window.addEventListener('storage', (e) => {
-    if (e.key === 'viewDensity') {
-      applyDensity(e.newValue === 'compact');
-    }
-  });
-}
+// ===== Density follows the layout =====
+// This page used to mirror data-template onto body.compact itself. appearance.js
+// does it for every page now, including its own cross-tab storage sync, so a
+// second copy here would only be a way for the two to disagree.
 
 // ===== Configuration Modal =====
-function initConfig() {
-  const gear = $('#header_gear');
-  const backdrop = $('#cfg_backdrop');
-  const closeBtn = $('#cfg_close');
-  const saveBtn = $('#cfg_save');
-  const pwToggle = $('#cfg_pw_toggle');
-  const pwInput = $('#cfg_password');
-  const fallbackPwToggle = $('#cfg_fallback_pw_toggle');
-  const fallbackPwInput = $('#cfg_fallback_password');
-  const fbtn = $('#cfg_firmware_browse');
-  const guideBtn = $('#cfg_user_guide');
-  const cfgTsExportBtn = $('#cfg_ts_export');
-  
-  // Store current password values so they persist even if user doesn't view them
-  let currentPassword = 'password';
-  let currentFallbackPassword = 'Atlona';
-
-  if (gear) gear.addEventListener('click', () => backdrop.style.display = 'flex');
-  if (closeBtn) closeBtn.addEventListener('click', () => backdrop.style.display = 'none');
-  
-  backdrop.addEventListener('click', (e) => {
-    if (e.target === backdrop) backdrop.style.display = 'none';
-  });
-
-  if (pwToggle && pwInput) {
-    pwToggle.addEventListener('click', async (e) => {
-      e.preventDefault();
-      if (pwInput.type === 'password') {
-        // Show password - fetch actual value from server
-        try {
-          const res = await fetch('/api/config?include_password=1');
-          const cfg = await res.json();
-          if (cfg.ok && cfg.password) {
-            pwInput.value = cfg.password;
-            currentPassword = cfg.password;
-          }
-        } catch (err) {}
-        pwInput.type = 'text';
-      } else {
-        // Hide password
-        pwInput.type = 'password';
-      }
-    });
-  }
-
-  if (fallbackPwToggle && fallbackPwInput) {
-    fallbackPwToggle.addEventListener('click', async (e) => {
-      e.preventDefault();
-      if (fallbackPwInput.type === 'password') {
-        // Show password - fetch actual value from server
-        try {
-          const res = await fetch('/api/config?include_password=1');
-          const cfg = await res.json();
-          if (cfg.ok && cfg.fallback_password) {
-            fallbackPwInput.value = cfg.fallback_password;
-            currentFallbackPassword = cfg.fallback_password;
-          }
-        } catch (err) {}
-        fallbackPwInput.type = 'text';
-      } else {
-        // Hide password
-        fallbackPwInput.type = 'password';
-      }
-    });
-  }
-
-  if (fbtn) {
-    fbtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      openFolderBrowser($('#cfg_firmware_path').value, '#cfg_firmware_path');
-    });
-  }
-
-  if (guideBtn) {
-    guideBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      window.open('/help', '_blank', 'noopener');
-    });
-  }
-
-  if (cfgTsExportBtn) {
-    cfgTsExportBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      $('#cfg_error').textContent = 'Preparing TS dump...';
-      $('#cfg_error').style.color = 'var(--accent)';
-      $('#cfg_error').style.display = 'block';
-      window.location = '/api/ts_export';
-    });
-  }
-
-  if (saveBtn) {
-    saveBtn.addEventListener('click', async (e) => {
-      e.preventDefault();
-      // Use stored values if input is empty
-      const pwValue = pwInput.value || currentPassword || 'password';
-      const fallbackPwValue = fallbackPwInput.value || currentFallbackPassword || 'Atlona';
-      
-      const payload = {
-        username: $('#cfg_username').value || 'admin',
-        password: pwValue,
-        fallback_password: fallbackPwValue,
-        ws_port: parseInt($('#cfg_ws_port').value || '80'),
-        timeout: parseFloat($('#cfg_timeout').value || '4.5'),
-        concurrency: parseInt($('#cfg_concurrency').value || '6'),
-        firmware_path: $('#cfg_firmware_path').value
-      };
-      try {
-        const res = await fetch('/api/config', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(payload)
-        });
-        if (res.ok) {
-          $('#cfg_error').textContent = 'Configuration saved';
-          $('#cfg_error').style.color = 'var(--accent)';
-          $('#cfg_error').style.display = 'block';
-        } else {
-          $('#cfg_error').textContent = 'Save failed';
-          $('#cfg_error').style.color = 'var(--danger)';
-          $('#cfg_error').style.display = 'block';
-        }
-      } catch (e) {
-        $('#cfg_error').textContent = 'Error: ' + e.message;
-        $('#cfg_error').style.color = 'var(--danger)';
-        $('#cfg_error').style.display = 'block';
-      }
-    });
-  }
-
-  // Load current config on modal open
-  gear.addEventListener('click', async () => {
-    try {
-      const res = await fetch('/api/config?include_password=1');
-      const cfg = await res.json();
-      if (cfg.ok) {
-        $('#cfg_error').style.display = 'none';
-        $('#cfg_error').style.color = 'var(--danger)';
-        $('#cfg_error').textContent = '';
-        $('#cfg_username').value = cfg.username || 'admin';
-        $('#cfg_ws_port').value = cfg.ws_port || 80;
-        $('#cfg_timeout').value = cfg.timeout || 4.5;
-        $('#cfg_concurrency').value = cfg.concurrency || 6;
-        $('#cfg_firmware_path').value = cfg.firmware_path || '';
-        const versionInput = $('#cfg_app_version');
-        if (versionInput) versionInput.value = cfg.app_version || 'V0.0.0';
-        // Store current passwords for later use
-        currentPassword = cfg.password || 'password';
-        currentFallbackPassword = cfg.fallback_password || 'Atlona';
-        // Keep the passwords prefilled, but hidden until the user clicks the eye.
-        pwInput.value = currentPassword;
-        fallbackPwInput.value = currentFallbackPassword;
-        pwInput.type = 'password';
-        fallbackPwInput.type = 'password';
-      }
-    } catch (e) {}
-  });
-}
 
 function initPasswordSync() {
   const openBtn = $('#sync_passwords_btn');
@@ -1279,7 +1122,7 @@ function initSlateManager() {
   const rowUnit = (row) => ({
     ip: row.getAttribute('data-ip'),
     type: (row.cells?.[8]?.textContent || '').trim().toLowerCase(),
-    label: `${row.getAttribute('data-ip') || ''} / ${(row.cells?.[5]?.textContent || '').trim()}`
+    label: `${row.getAttribute('data-ip') || ''} / ${(row.cells?.[2]?.textContent || '').trim()}`
   });
   const allUnits = () => Array.from($$('#units_table tr[data-ip]')).map(rowUnit).filter(u => u.ip);
   const selectedUnits = () => Array.from($$('.row-select:checked')).map(cb => cb.closest('tr')).filter(Boolean).map(rowUnit).filter(u => u.ip);
@@ -1602,222 +1445,6 @@ function initSlateManager() {
   });
 }
 
-function openFolderBrowser(startPath, targetSelector) {
-  const backdrop = $('#cfg_browser_backdrop');
-  const list = $('#cfg_browser_list');
-  const pathInput = $('#cfg_browser_path');
-  const selectBtn = $('#cfg_browser_select');
-  const upBtn = $('#cfg_browser_up');
-  const cancelBtn = $('#cfg_browser_cancel');
-
-  let current = startPath || '';
-
-  async function load(p) {
-    list.innerHTML = '<div style="padding:20px;text-align:center;"><span class="spinner"></span></div>';
-    try {
-      const url = '/api/list_dir' + (p ? '?path=' + encodeURIComponent(p) : '');
-      const res = await fetch(url);
-      const j = await res.json();
-      if (!j.ok) {
-        list.innerHTML = '<div style="color:var(--danger);">Error: ' + (j.error || 'unknown') + '</div>';
-        return;
-      }
-      current = j.path || p || '';
-      pathInput.value = current;
-      list.innerHTML = '';
-      if ((j.entries || []).length === 0) {
-        list.innerHTML = '<div style="padding:12px;opacity:.6;">No folders</div>';
-      }
-      (j.entries || []).forEach(ent => {
-        if (!ent.is_dir) return;
-        const row = document.createElement('div');
-        row.className = 'browser-item';
-        row.textContent = '📁 ' + ent.name;
-        row.onclick = () => {
-          const base = (current || '').replace(/\\\\/g, '/');
-          const next = base.endsWith('/') || base === '' ? base + ent.name : base + '/' + ent.name;
-          load(next);
-        };
-        list.appendChild(row);
-      });
-    } catch (e) {
-      list.innerHTML = '<div style="color:var(--danger);">Error: ' + e.message + '</div>';
-    }
-  }
-
-  upBtn.addEventListener('click', () => {
-    const tmp = (current || '').replace(/\\\\/g, '/');
-    if (!tmp || tmp === '/') return;
-    const parts = tmp.split('/').filter(p => p);
-    parts.pop();
-    load('/' + parts.join('/'));
-  }, {once: true});
-
-  selectBtn.addEventListener('click', () => {
-    const target = document.querySelector(targetSelector);
-    if (target) target.value = pathInput.value;
-    backdrop.style.display = 'none';
-  }, {once: true});
-
-  cancelBtn.addEventListener('click', () => {
-    backdrop.style.display = 'none';
-  }, {once: true});
-
-  backdrop.style.display = 'flex';
-  load(current);
-}
-
-function openFolderBrowser(startPath, targetSelector) {
-  const backdrop = $('#cfg_browser_backdrop');
-  const list = $('#cfg_browser_list');
-  const pathInput = $('#cfg_browser_path');
-  const selectBtn = $('#cfg_browser_select');
-  const upBtn = $('#cfg_browser_up');
-  const cancelBtn = $('#cfg_browser_cancel');
-  const goBtn = $('#cfg_browser_go');
-  const driveSelect = $('#cfg_browser_drive');
-  const homeBtn = $('#cfg_browser_home');
-  const homePath = startPath || '';
-
-  let current = startPath || '';
-  let parent = '';
-
-  const showError = (message) => {
-    list.innerHTML = '<div style="color:var(--danger);padding:12px;">Error: ' + (message || 'unknown') + '</div>';
-  };
-
-  const setBusy = () => {
-    list.innerHTML = '<div style="padding:20px;text-align:center;"><span class="spinner"></span></div>';
-  };
-
-  const updateDrives = (drives) => {
-    if (!driveSelect) return;
-    const prior = driveSelect.value;
-    driveSelect.innerHTML = '';
-    if (!Array.isArray(drives) || !drives.length) {
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = 'Drive';
-      driveSelect.appendChild(opt);
-      driveSelect.disabled = true;
-      return;
-    }
-    driveSelect.disabled = false;
-    drives.forEach(drive => {
-      const opt = document.createElement('option');
-      opt.value = drive;
-      opt.textContent = drive.replace(/\\$/, '');
-      driveSelect.appendChild(opt);
-    });
-    const active = drives.find(d => (current || '').toLowerCase().startsWith(d.toLowerCase()));
-    driveSelect.value = active || prior || drives[0];
-  };
-
-  async function load(path) {
-    setBusy();
-    try {
-      const requested = (path || '').trim();
-      const url = '/api/list_dir' + (requested ? '?path=' + encodeURIComponent(requested) : '');
-      const res = await fetch(url);
-      const j = await res.json();
-      if (!j.ok) {
-        showError(j.error || 'unknown');
-        pathInput.value = requested;
-        return;
-      }
-
-      current = j.path || requested || '';
-      parent = j.parent || '';
-      pathInput.value = current;
-      updateDrives(j.drives || []);
-
-      const folders = (j.entries || []).filter(ent => ent.is_dir);
-      list.innerHTML = '';
-      if (!folders.length) {
-        list.innerHTML = '<div style="padding:12px;opacity:.6;">No folders</div>';
-        return;
-      }
-
-      folders.forEach(ent => {
-        const row = document.createElement('div');
-        row.className = 'browser-item';
-        row.textContent = ent.name;
-        row.title = ent.path || ent.name;
-        row.addEventListener('click', () => {
-          list.querySelectorAll('.browser-item.selected').forEach(el => el.classList.remove('selected'));
-          row.classList.add('selected');
-          pathInput.value = ent.path || joinFolderPath(current, ent.name);
-        });
-        row.addEventListener('dblclick', () => load(ent.path || joinFolderPath(current, ent.name)));
-        list.appendChild(row);
-      });
-    } catch (e) {
-      showError(e.message || String(e));
-    }
-  }
-
-  function joinFolderPath(base, child) {
-    const normalized = (base || '').replace(/\//g, '\\');
-    if (/^[A-Za-z]:\\?$/.test(normalized)) return normalized.replace(/\\?$/, '\\') + child;
-    if (normalized.endsWith('\\')) return normalized + child;
-    if (!normalized) return child;
-    return normalized + '\\' + child;
-  }
-
-  if (upBtn) {
-    upBtn.onclick = (e) => {
-      e.preventDefault();
-      if (parent) load(parent);
-    };
-  }
-  if (goBtn) {
-    goBtn.onclick = (e) => {
-      e.preventDefault();
-      load(pathInput.value);
-    };
-  }
-  if (pathInput) {
-    pathInput.onkeydown = (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        load(pathInput.value);
-      }
-    };
-  }
-  if (driveSelect) {
-    driveSelect.onchange = () => {
-      if (driveSelect.value) load(driveSelect.value);
-    };
-  }
-  if (homeBtn) {
-    homeBtn.onclick = (e) => {
-      e.preventDefault();
-      load(homePath);
-    };
-  }
-  if (selectBtn) {
-    selectBtn.onclick = (e) => {
-      e.preventDefault();
-      const target = document.querySelector(targetSelector);
-      if (target) target.value = pathInput.value;
-      backdrop.style.display = 'none';
-    };
-  }
-  if (cancelBtn) {
-    cancelBtn.onclick = (e) => {
-      e.preventDefault();
-      backdrop.style.display = 'none';
-    };
-  }
-  if (backdrop) {
-    backdrop.onclick = (e) => {
-      if (e.target === backdrop) backdrop.style.display = 'none';
-    };
-  }
-
-  backdrop.style.display = 'flex';
-  load(current);
-}
 
 // ===== Data Loading =====
 async function loadAdapters() {
@@ -1830,10 +1457,91 @@ async function loadAdapters() {
       const opt = document.createElement('option');
       opt.value = a.scan || '';
       opt.textContent = a.name + ' (' + a.ip + ')';
+      // Carry the interface address so USB discovery can reuse the same adapter
+      // selection instead of introducing a second interface picker.
+      opt.dataset.ip = a.ip || '';
+      opt.dataset.netmask = a.netmask || '';
       sel.appendChild(opt);
     });
+    // Bind before the async restore: a change made while the saved preference
+    // is still loading must still be saved.
+    sel.onchange = saveScanAdapter;
+    await restoreScanAdapter(sel);
   } catch (e) {
     console.error('Load adapters failed:', e);
+  }
+}
+
+// The saved adapter is identified by its address, never by its position: the
+// list can be reordered or gain an entry without changing what the operator
+// chose. A saved adapter that no longer exists falls back to the first one.
+async function restoreScanAdapter(sel) {
+  let saved = '';
+  try {
+    const prefs = await (await fetch('/api/scan_preferences')).json();
+    saved = (prefs && prefs.interface_ip) || '';
+  } catch (e) {
+    console.error('Scan preference unavailable:', e);
+  }
+  const options = [...sel.options];
+  const match = saved ? options.find(o => o.dataset.ip === saved) : null;
+  if (match) {
+    sel.value = match.value;
+    // value can collide when two adapters share a scan expression, so pin the
+    // index of the option that actually carries the saved address.
+    sel.selectedIndex = options.indexOf(match);
+  } else if (saved) {
+    console.warn('Saved scan adapter ' + saved + ' is no longer present; using the default.');
+  }
+}
+
+// The Targets field is a routed search space the operator has to be able to keep.
+// It is saved by stable content, not by when a scan happens to run, and the same
+// saved value is what USB discovery addresses directly -- so a routed network is
+// entered once, here, rather than again in a USB-only list.
+async function saveScanTargets() {
+  const input = $('#targets');
+  if (!input) return;
+  try {
+    const res = await fetch('/api/scan_preferences', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({scan_targets: input.value || ''}),
+    });
+    const body = await res.json();
+    if (body && body.usb_ranges_error) {
+      console.warn('Targets saved, but not usable for USB discovery:', body.usb_ranges_error);
+    }
+  } catch (e) {
+    console.error('Could not save scan targets:', e);
+  }
+}
+
+async function restoreScanTargets() {
+  const input = $('#targets');
+  if (!input) return;
+  try {
+    const prefs = await (await fetch('/api/scan_preferences')).json();
+    if (prefs && typeof prefs.scan_targets === 'string' && !input.value) {
+      input.value = prefs.scan_targets;
+    }
+  } catch (e) {
+    console.error('Scan targets unavailable:', e);
+  }
+}
+
+async function saveScanAdapter() {
+  const sel = $('#adapters');
+  const opt = sel.options[sel.selectedIndex];
+  if (!opt) return;
+  try {
+    await fetch('/api/scan_preferences', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({interface_ip: opt.dataset.ip || '',
+                            subnet_mask: opt.dataset.netmask || '',
+                            scan_expression: opt.value || ''}),
+    });
+  } catch (e) {
+    console.error('Could not save scan adapter:', e);
   }
 }
 
@@ -1850,7 +1558,13 @@ async function loadFiles() {
       sel.appendChild(opt);
     });
     
-    // Add event listener to filter devices when file is selected
+    // One handler, bound once. loadFiles() runs again on every scan and reload
+    // while the select node itself is reused, so binding here accumulated a
+    // handler per call: after a few scans one file selection ran the filter
+    // several times over, each pass re-hiding and re-disabling the rows the
+    // previous one had just settled.
+    if (sel.dataset.filesChangeBound === '1') return;
+    sel.dataset.filesChangeBound = '1';
     sel.addEventListener('change', () => {
       const selectedFile = sel.value;
       const fwType = _getFirmwareType(selectedFile);
@@ -1968,6 +1682,11 @@ function omniConfirm(options = {}) {
   const okBtn = $('#confirm_ok');
   const cancelBtn = $('#confirm_cancel');
   if (!backdrop || !okBtn || !cancelBtn) {
+    // `requireDialog` is for a confirmation whose whole purpose is to stop
+    // something expensive or irreversible. Degrading that to a native confirm
+    // would replace the notice the operator is supposed to read with a browser
+    // string box; a missing dialog means the action does not happen.
+    if (options.requireDialog) return Promise.resolve(false);
     return Promise.resolve(window.confirm(options.message || options.title || 'Continue?'));
   }
 
@@ -1999,17 +1718,38 @@ function omniConfirm(options = {}) {
 
   okBtn.textContent = options.confirmText || 'Continue';
   cancelBtn.textContent = options.cancelText || 'Cancel';
+  // `acknowledge` is a message, not a choice: there is nothing to cancel, so
+  // offering Cancel would ask a question with no second answer. Escape and the
+  // backdrop still close it, and the promise still resolves, so callers that
+  // await it are unaffected.
+  cancelBtn.hidden = !!options.acknowledge;
   okBtn.classList.toggle('danger', !!options.danger);
-  okBtn.classList.toggle('secondary', false);
+  // `defaultAction: 'cancel'` is for a dialog where the costly answer is Yes.
+  // Cancel takes both the focus and the primary treatment, so the keyboard
+  // default and the visual default agree -- a dialog that looks like OK is the
+  // obvious choice while Enter cancels is worse than either alone. Existing
+  // callers pass nothing and keep OK focused and primary.
+  const cancelIsDefault = options.defaultAction === 'cancel';
+  okBtn.classList.toggle('secondary', cancelIsDefault && !options.danger);
+  cancelBtn.classList.toggle('secondary', !cancelIsDefault);
   backdrop.style.display = 'flex';
 
+  const invoker = document.activeElement;
   return new Promise(resolve => {
     const cleanup = (result) => {
       backdrop.style.display = 'none';
+      cancelBtn.hidden = false;
+      // Back to the arrangement in the markup, so the next caller is not
+      // styled by whatever the previous one asked for.
+      okBtn.classList.remove('secondary');
+      cancelBtn.classList.add('secondary');
       okBtn.removeEventListener('click', onOk);
       cancelBtn.removeEventListener('click', onCancel);
       backdrop.removeEventListener('click', onBackdrop);
       document.removeEventListener('keydown', onKeydown);
+      if (invoker && typeof invoker.focus === 'function' && invoker.isConnected) {
+        invoker.focus();
+      }
       resolve(result);
     };
     const onOk = () => cleanup(true);
@@ -2024,7 +1764,24 @@ function omniConfirm(options = {}) {
     cancelBtn.addEventListener('click', onCancel);
     backdrop.addEventListener('click', onBackdrop);
     document.addEventListener('keydown', onKeydown);
-    okBtn.focus();
+    // Focus goes back where it came from. Without this, dismissing a dialog
+    // dropped the keyboard at the top of the document and the operator had to
+    // tab back to the control they had just used.
+    (cancelIsDefault && !options.acknowledge ? cancelBtn : okBtn).focus();
+  });
+}
+
+// A message the operator has to read before continuing -- typically one that
+// names devices. Not a toast: a list that scrolls away after two seconds is not
+// something anyone can act on.
+function omniNotice(title, message, items) {
+  return omniConfirm({
+    title,
+    message,
+    items: items || [],
+    acknowledge: true,
+    confirmText: 'OK',
+    requireDialog: true,
   });
 }
 
@@ -2124,7 +1881,7 @@ async function handleCodecSelectChange(select) {
     setStatus(ip, 'Rebooting', 's-rebooting', 120000);
   } catch (err) {
     select.value = previous;
-    alert('Codec update failed: ' + (err.message || err));
+    toast('Codec update failed: ' + (err.message || err), 'error');
   } finally {
     select.disabled = false;
   }
@@ -2148,19 +1905,41 @@ async function loadUnits(fallbackUnits = null) {
     }
     
     const res = await fetch('/api/cache');
-    const data = await res.json();
-    let units = data.units || [];
+    // Validate before anything is re-rendered. A transient error response
+    // carries no units array, and `data.units || []` turned that into an empty
+    // inventory: the table was cleared and replaced with "Scan to discover
+    // units" while the server still held every device. An unusable response now
+    // leaves the rendered inventory alone and is reported instead.
+    const body = res.ok ? await res.json().catch(() => null) : null;
+    const cachedUnits = (body && Array.isArray(body.units)) ? body.units : null;
+    let units = cachedUnits || [];
     if (!units.length && Array.isArray(fallbackUnits) && fallbackUnits.length) {
       console.warn('[SCAN] Cache was empty after scan; rendering scan response directly.');
       units = fallbackUnits;
     }
+    // A validated empty list is a real answer (the operator cleared the units),
+    // so only an unreadable response with nothing to fall back on aborts.
+    if (!cachedUnits && !units.length) {
+      throw new Error(res.ok ? 'cache response carried no unit list'
+                             : `cache request failed (HTTP ${res.status})`);
+    }
+    const data = body || {};
     updateUnitCounts(units);
     updateDeviceCodecMismatchWarning(getDeviceCodecModesFromUnits(units));
+    // Acknowledgement comes from the server with the inventory it belongs to, so
+    // navigating here from another page cannot resurrect a dismissed banner.
+    renderSwitchTopology(data.lldp_topology, data.topology_warning_acknowledged);
+    // A separate condition with a separate risk, so a separate banner and a
+    // separate acknowledgement.
+    renderDaisyWarning(data.lldp_topology, data.daisy_warning_acknowledged);
     const tbody = $('#units_table');
+    bindUnitsTableLinks();
     tbody.innerHTML = '';
     if (units.length === 0) {
       updateUnitCounts([]);
       updateDeviceCodecMismatchWarning([]);
+      renderSwitchTopology(null, data.topology_warning_acknowledged);
+      renderDaisyWarning(null, data.daisy_warning_acknowledged);
       tbody.innerHTML = '<tr><td colspan="16" style="text-align:center;padding:40px;opacity:.6;">Scan to discover units</td></tr>';
       const overlay = $('#loading_overlay');
       if (overlay) overlay.classList.add('hidden');
@@ -2214,23 +1993,34 @@ async function loadUnits(fallbackUnits = null) {
         statusCellHtml = '<td><span class="status s-idle">Idle</span></td>';
       }
       
+      // The address link used to carry an onclick that built a URL from data.
+      // That makes a JavaScript string out of a device-reported value, where
+      // HTML escaping gives no protection: the parser decodes entities before
+      // the JS is parsed, so an escaped quote still closes the string. The
+      // address rides in a data attribute now and is opened by one delegated
+      // handler, so nothing a device reports is ever parsed as code.
+      // Every value below is reported by the device and this template is
+      // assigned to innerHTML, so a hostname, model, timezone or NTP server
+      // containing markup would otherwise run as script in the operator's
+      // browser. escapeHtml leaves an ordinary value rendering identically.
       tr.innerHTML = `
-        <td><input type="checkbox" class="row-select" data-ip="${u.ip}" onclick="event.stopPropagation()"/></td>
-        <td><a class="ip" onclick="window.open('http://${u.ip}', '_blank')">${u.ip || ''}</a></td>
-        <td><span class="mac-lldp" data-ip="${u.ip || ''}" onmouseenter="showLldpPopup(this, event)" onmouseleave="hideLldpPopup()">${u.mac || ''}</span></td>
+        <td><input type="checkbox" class="row-select" data-ip="${escapeAttr(u.ip)}" onclick="event.stopPropagation()"/></td>
+        <td><a class="ip" data-open-ip="${escapeAttr(u.ip)}">${escapeHtml(u.ip || '')}</a></td>
+        <td class="hostname_cell" title="${escapeAttr(u.hostname || '')}">${escapeAttr(u.hostname || '')}</td>
+        <td class="${(macCellAttributes(u).includes('alternate-switch') ? 'alternate-switch' : '')}${daisyCellAttributes(u)}"><span class="mac-lldp" data-ip="${escapeAttr(u.ip || '')}" onmouseenter="showLldpPopup(this, event)" onmouseleave="hideLldpPopup()">${escapeHtml(u.mac || '')}</span>${macCellNote(u)}${daisyCellNote(u)}</td>
         <td class="linkspeed_cell">${cached.linkspeedHtml || (u.linkspeed !== undefined && u.linkspeed !== null ? `<span style="color:${u.linkspeed === 1000 ? '#4ade80' : '#f87171'}">${u.linkspeed} Mbps</span>` : '')}</td>
         <td class="codec_cell">${buildCodecCell(u)}</td>
-        <td>${escapeAttr(u.hostname || '')}</td>
-        <td class="inventory-extra-col">${timezone || ''}</td>
-        <td class="inventory-extra-col">${ntpServer || ''}</td>
-        <td class="inventory-extra-col">${u.type || u.role || ''}</td>
-        <td class="inventory-extra-col">${u.model || ''}</td>
-        <td class="inventory-extra-col">${u.version || ''}</td>
+        <td class="inventory-extra-col">${escapeHtml(timezone || '')}</td>
+        <td class="inventory-extra-col">${escapeHtml(ntpServer || '')}</td>
+        <td class="inventory-extra-col">${escapeHtml(u.type || u.role || '')}</td>
+        <td class="inventory-extra-col">${escapeHtml(u.model || '')}</td>
+        <td class="inventory-extra-col">${escapeHtml(u.version || '')}</td>
         <td class="inventory-extra-col"><span class="pwd-pill ${passwordClass}">${passwordSource}</span></td>
         ${statusCellHtml}
         <td><button class="action-btn blink-btn" data-ip="${u.ip}" title="Blink LED">💡</button></td>
         ${previewCell}
         <td class="usb_cell inventory-extra-col">${cached.usbHtml || ''}</td>
+        <td class="log_cell"><button type="button" class="btn small secondary log-btn" data-ip="${escapeAttr(u.ip)}" title="Download this device's debug log">Log</button></td>
       `;
         tr.setAttribute('data-ip', u.ip);
       tbody.appendChild(tr);
@@ -2240,9 +2030,8 @@ async function loadUnits(fallbackUnits = null) {
         const usbCell = tr.querySelector('.usb_cell');
         if (usbCell && cached.usbHtml) {
           usbCell.innerHTML = cached.usbHtml;
-          if (cached.usb.host_port) {
-            usbCell.title = `Host: ${cached.usb.host_port}`;
-          }
+          const tip = usbTooltip(cached.usb);
+          if (tip) usbCell.title = tip;
         }
       }
       
@@ -2289,6 +2078,15 @@ async function loadUnits(fallbackUnits = null) {
     }
   } catch (e) {
     console.error('Load units failed:', e);
+    // The inventory on screen is now deliberately stale, so say so. Failing
+    // silently left the page looking freshly loaded when it had not been.
+    const status = $('#scan_status');
+    if (status) status.textContent = '❌ Inventory refresh failed: ' + (e.message || e);
+  } finally {
+    // The overlay was only hidden on the paths that ran to completion, so a
+    // thrown fetch left it covering the page and the application looked hung.
+    const overlay = $('#loading_overlay');
+    if (overlay) overlay.classList.add('hidden');
   }
 }
 
@@ -2332,10 +2130,55 @@ function selectUnit(ip) {
 }
 
 // ===== Button Actions =====
+// Selected adapter's interface address, used as the network context for USB
+// discovery. Returns null when the adapter did not report one.
+function selectedAdapterNetwork() {
+  const sel = $('#adapters');
+  const opt = sel && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
+  if (!opt || !opt.dataset.ip || !opt.dataset.netmask) return null;
+  return {interface_ip: opt.dataset.ip, subnet_mask: opt.dataset.netmask};
+}
+
+// Fire-and-forget USB discovery. Deliberately not awaited by the OmniStream
+// scan: the server dispatches it to background workers and returns immediately,
+// and any USB-side problem is reported without affecting /api/scan.
+function startUsbDiscovery(targetsExpression) {
+  const net = selectedAdapterNetwork();
+  if (!net) {
+    console.warn('[USB] No interface address on the selected adapter; USB discovery skipped.');
+    return;
+  }
+  const body = Object.assign({}, net);
+  if (targetsExpression) body.targets = targetsExpression;
+  fetch('/api/usb_extenders/discover', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  }).then(res => res.json().catch(() => ({}))).then(data => {
+    (data.issues || []).forEach(issue => console.warn('[USB] ' + issue.scope + ': ' + issue.error));
+    // USB results arrive independently; refresh the count as they land.
+    setTimeout(refreshUsbExtenderCount, 1200);
+    setTimeout(refreshUsbExtenderCount, 3500);
+    setTimeout(refreshUsbExtenderCount, 8000);
+  }).catch(err => {
+    console.warn('[USB] Discovery dispatch failed:', err && err.message ? err.message : err);
+  });
+}
+
 $('#scan_btn').addEventListener('click', async () => {
-  const targets = $('#targets').value || $('#adapters').value;
-  if (!targets) { alert('Please select an adapter or enter targets'); return; }
+  const targetsInput = ($('#targets').value || '').trim();
+  const targets = targetsInput || $('#adapters').value;
+  if (!targets) { toast('Select an adapter, or enter targets to scan.', 'error'); return; }
   $('#scan_status').innerHTML = '<span class="spinner"></span> Scanning...';
+
+  // Remember what was scanned so the next Scan covers the same space without
+  // it being retyped, and so USB directed discovery has it too.
+  saveScanTargets();
+
+  // Dispatch USB discovery first and do not await it, so encoder/decoder
+  // discovery starts immediately and renders as soon as /api/scan returns.
+  startUsbDiscovery(targetsInput);
+
   try {
     const res = await fetch('/api/scan', {
       method: 'POST',
@@ -2356,20 +2199,35 @@ $('#targets_clear').addEventListener('click', () => {
   if (!input) return;
   input.value = '';
   input.focus();
+  saveScanTargets();
 });
+
+const targetsField = $('#targets');
+if (targetsField) {
+  targetsField.addEventListener('change', saveScanTargets);
+  restoreScanTargets();
+}
 
 $('#clear_units_btn').addEventListener('click', async () => {
   const wasPolling = pollInterval !== null;
   if (wasPolling) stopPolling();
   try {
+    // Clear Units is the single clear action: it clears encoder/decoder state as
+    // before and additionally forgets the standalone USB inventory server-side.
     await fetch('/api/clear_units', {method: 'POST'});
     await loadUnits();
+    await refreshUsbExtenderCount();
     if (wasPolling) startPolling();
   } catch (e) {
-    alert('Clear failed: ' + e.message);
+    toast('Clear failed: ' + e.message, 'error');
     if (wasPolling) startPolling();
   }
 });
+
+const switchDismissBtn = $('#switch_topology_dismiss');
+if (switchDismissBtn) switchDismissBtn.addEventListener('click', acknowledgeSwitchTopology);
+const daisyDismissBtn = $('#daisy_chain_dismiss');
+if (daisyDismissBtn) daisyDismissBtn.addEventListener('click', acknowledgeDaisyChain);
 
 $('#refresh_files_btn').addEventListener('click', loadFiles);
 
@@ -2382,27 +2240,55 @@ $('#open_firmware_folder_btn').addEventListener('click', async () => {
     console.log('[FIRMWARE] Response data:', data);
     if (data.ok) {
       console.log('[FIRMWARE] Successfully opened folder:', data.path);
-      alert('Firmware folder opened: ' + data.path);
+      toast('Firmware folder opened: ' + data.path, true);
     } else {
       console.error('[FIRMWARE] Error:', data.error);
-      alert('Failed to open firmware folder: ' + (data.error || 'Unknown error'));
+      toast('Could not open the firmware folder: ' + (data.error || 'unknown error'), 'error');
     }
   } catch (e) {
     console.error('[FIRMWARE] Exception:', e);
-    alert('Failed to open firmware folder: ' + e.message);
+    toast('Could not open the firmware folder: ' + e.message, 'error');
   }
 });
 
 $('#export_units_btn').addEventListener('click', async () => {
   try {
+    // The CSV is still written for anything that consumes it; the download the
+    // operator gets is the workbook, which carries the USB sheet as well.
     await fetch('/api/export_csv', {method: 'POST'});
     setTimeout(() => {
-      window.location = '/api/download_csv';
+      window.location = '/api/download_inventory';
     }, 100);
   } catch (e) {
-    alert('Export failed: ' + e.message);
+    toast('Export failed: ' + e.message, 'error');
   }
 });
+
+// What the USB cell can actually vouch for about THIS device, each fact
+// named. Deliberately not a bare number: the cell used to show the endpoint's
+// neighbour count with no label, which is a property of the subnet.
+function usbTooltip(usb){
+  if(!usb) return '';
+  const lines = [];
+  const role = (usb.role||'').toUpperCase();
+  if(role) lines.push(role === 'LEX' ? 'USB host (LEX)' : (role === 'REX' ? 'USB device (REX)' : role));
+  if(usb.mac) lines.push('USB MAC: ' + usb.mac);
+  if(usb.usb_ip) lines.push('USB IP: ' + usb.usb_ip);
+  if(usb.host_port) lines.push('Host port: ' + usb.host_port);
+  if(typeof usb.paired_count === 'number'){
+    const linked = typeof usb.linked_count === 'number' ? usb.linked_count : null;
+    lines.push(`Paired peers: ${usb.paired_count}` + (linked === null ? '' : ` (${linked} linked now)`));
+  }
+  if(typeof usb.found_count === 'number'){
+    lines.push(`Other USB endpoints on its subnet: ${usb.found_count}`);
+  }
+  return lines.join('\n');
+}
+
+// ===== Device debug log =====
+// The flow lives in ui/device-log.js: an engineering notice, then one request.
+// It is a module rather than inline script so the notice, the cancel paths and
+// the single-flight guard can be exercised by a test instead of read.
 
 // --- Upgrade feedback helpers ---
 const activeUpgradeIps = new Set();
@@ -2732,7 +2618,7 @@ async function monitorUpgrade(ip, snapshotVersion, file = null){
 
 $('#upgrade_btn').addEventListener('click', async () => {
   const file = $('#files').value;
-  if (!file || file === 'Select Firmware') { alert('Please select a firmware file'); return; }
+  if (!file || file === 'Select Firmware') { toast('Select a firmware file first.', 'error'); return; }
 
   // Determine firmware type from filename
   const fwType = _getFirmwareType(file);
@@ -2750,7 +2636,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
   const selected = allCheckboxes.filter(cb => cb.checked).map(cb => cb.getAttribute('data-ip'));
   console.log('[UPGRADE] Selected IPs for upgrade:', selected);
   
-  if (selected.length === 0) { alert('Please select units to upgrade'); return; }
+  if (selected.length === 0) { toast('Select the units to upgrade.', 'error'); return; }
   
   // Check compatibility if firmware type is restricted
   if (fwType !== 'any') {
@@ -2758,16 +2644,22 @@ $('#upgrade_btn').addEventListener('click', async () => {
     const incompatible = _checkFirmwareCompatibility(fwType, selected);
     console.log('[UPGRADE] Compatibility check result:', incompatible);
     if (incompatible.length > 0) {
-      const msg = `ERROR: Cannot upgrade with ${fwType} firmware.\n\nIncompatible devices:\n${incompatible.join('\n')}\n\nThis firmware is only compatible with ${fwType} devices.`;
-      console.error('[UPGRADE]', msg);
-      alert(msg);
+      console.error('[UPGRADE] incompatible devices for', fwType, incompatible);
+      // The operator has to see WHICH devices, so this is a dialog rather than
+      // a toast; it has one answer, so it is an acknowledgement rather than a
+      // confirmation.
+      await omniNotice(
+        'Incompatible Firmware',
+        `This ${fwType} firmware can only be applied to ${fwType} devices. ` +
+        `The following selected devices cannot be upgraded with it:`,
+        incompatible);
       return;
     }
   }
   
   const selectedLabels = selected.map(ip => {
     const row = getRowByIp(ip);
-    const host = (row?.cells?.[5]?.textContent || '').trim();
+    const host = (row?.cells?.[2]?.textContent || '').trim();
     const model = (row?.cells?.[9]?.textContent || '').trim();
     return [ip, host, model].filter(Boolean).join(' / ');
   });
@@ -2926,14 +2818,16 @@ $('#upgrade_btn').addEventListener('click', async () => {
     
     // Check for API errors (e.g., incompatible devices)
     if (!data.ok && data.error) {
-      let errorMsg = `❌ Upgrade failed: ${data.error}`;
-      if (data.incompatible_devices && data.incompatible_devices.length > 0) {
-        errorMsg += `\n\nIncompatible devices:\n${data.incompatible_devices.join('\n')}`;
-      }
+      const details = [];
+      (data.incompatible_devices || []).forEach(entry => details.push(entry));
       if (data.expected_models && data.expected_models.length > 0) {
-        errorMsg += `\n\nExpected models: ${data.expected_models.join(', ')}`;
+        details.push('Expected models: ' + data.expected_models.join(', '));
       }
-      alert(errorMsg);
+      if (details.length) {
+        await omniNotice('Upgrade Failed', data.error, details);
+      } else {
+        toast('Upgrade failed: ' + data.error, 'error');
+      }
       $('#scan_status').innerHTML = `❌ ${data.error}`;
       
       // Clear the uploading status from selected devices since upgrade was rejected
@@ -3041,13 +2935,13 @@ $('#reboot_btn').addEventListener('click', async () => {
     const data = await resp.json();
     console.log('[REBOOT] API response:', data);
     if (!data.ok) {
-      alert(`Reboot failed: ${data.error || 'unknown error'}`);
+      toast(`Reboot failed: ${data.error || 'unknown error'}`, 'error');
       return;
     }
     const results = data.results || {};
     const failed = Object.values(results).filter(r => !r.ok);
     if (failed.length) {
-      alert(`Reboot failed for ${failed.length} device(s). Check console for details.`);
+      toast(`Reboot failed for ${failed.length} device(s).`, 'error');
       console.error('[REBOOT] Failures:', failed);
     }
   } catch (e) {
@@ -3089,7 +2983,7 @@ $('#remove_btn').addEventListener('click', async () => {
       await loadUnits();
     } else {
       console.error(`[REMOVE] Failed:`, data.error);
-      alert(`Failed to remove units: ${data.error}`);
+      toast(`Failed to remove units: ${data.error}`, 'error');
     }
   } catch (e) {
     console.error('Remove error:', e);
@@ -3221,7 +3115,7 @@ function updatePolledUnitDetails(row, unit, ip) {
 
   const linkSpeed = unit.linkspeed;
   if (linkSpeed !== undefined && linkSpeed !== null) {
-    const lsCell = row.querySelector('.linkspeed_cell') || row.cells[3];
+    const lsCell = row.querySelector('.linkspeed_cell') || row.cells[4];
     if (lsCell) {
       const speed = Number(linkSpeed);
       const display = Number.isFinite(speed) ? speed : String(linkSpeed).trim();
@@ -3235,7 +3129,7 @@ function updatePolledUnitDetails(row, unit, ip) {
     }
   }
 
-  setTextIfChanged(5, firstPresent('hostname'));
+  setTextIfChanged(2, firstPresent('hostname'));
   setTextIfChanged(6, firstPresent('timezone', 'active_timezone'));
   setTextIfChanged(7, firstPresent('ntp_server', 'ntpserver'));
   setTextIfChanged(10, firstPresent('fw', 'version'));
@@ -3360,17 +3254,26 @@ async function pollUnits() {
           console.log(`[POLL][USB] ${u.ip}`, usb);
           const usbCell = u.el.querySelector('.usb_cell') || (u.el.cells && u.el.cells[u.el.cells.length-1]);
           if(usbCell){
+            // The number this cell used to carry, `found_count`, is the
+            // endpoint's neighbour table: how many OTHER USB endpoints it can
+            // see on its own subnet. Measured across eight endpoints it is
+            // identical for every device on a segment and can be smaller than
+            // that device's own paired count, so beside one device row it was
+            // describing the network and reading as a property of the unit.
+            // The role is the part that is about this device, so the role is
+            // what the column shows; the per-device counts are in the tooltip,
+            // clearly named.
             const role = (usb.role||'').toUpperCase();
-            const peers = usb.found_count||0;
             const label = role || (usb.mac ? 'USB' : '');
-            const usbHtml = label ? `<span class="usb-pill">${label} · ${peers}</span>` : '';
+            const usbHtml = label ? `<span class="usb-pill">${label}</span>` : '';
             usbCell.innerHTML = usbHtml;
             // Cache USB info
             if (label) {
               unitStatusCache[u.ip].usb = usb;
               unitStatusCache[u.ip].usbHtml = usbHtml;
             }
-            if(usb.host_port){ usbCell.title = `Host: ${usb.host_port}`; } else { usbCell.removeAttribute('title'); }
+            const tip = usbTooltip(usb);
+            if(tip){ usbCell.title = tip; } else { usbCell.removeAttribute('title'); }
           }
         }catch(e){ console.warn('[POLL][USB] update error:', e); }
         // Update link speed indicator if available
@@ -3562,7 +3465,7 @@ async function toggleThumbnail(checkbox) {
     }
   } catch (e) {
     console.error('Thumbnail toggle error:', e);
-    alert('Failed to toggle thumbnail: ' + e.message);
+    toast('Failed to toggle thumbnail: ' + e.message, 'error');
     checkbox.checked = !enable; // Revert on error
   }
 }
@@ -3691,6 +3594,24 @@ function hideHoverPreview() {
 const lldpInfoCache = new Map();
 let lldpHoverToken = 0;
 
+// One delegated handler for every address link, bound once. The rows are
+// rebuilt on every refresh, so binding per row would accumulate handlers on a
+// table that is re-rendered every few seconds.
+function bindUnitsTableLinks() {
+  const table = document.getElementById('units_table');
+  if (!table || table.dataset.openIpBound === '1') return;
+  table.dataset.openIpBound = '1';
+  table.addEventListener('click', (e) => {
+    const link = e.target && e.target.closest ? e.target.closest('a.ip[data-open-ip]') : null;
+    if (!link || !table.contains(link)) return;
+    const ip = link.getAttribute('data-open-ip') || '';
+    // Only an IPv4 literal is ever opened, so nothing a device reports can
+    // steer the navigation somewhere else.
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return;
+    window.open('http://' + ip, '_blank', 'noopener');
+  });
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -3702,8 +3623,15 @@ function escapeHtml(value) {
 
 function normalizeLldpNeighbors(lldp) {
   const interfaces = lldp?.neighbors?.interface || {};
+  // Hardware returns this two ways: a map of interface name to neighbour, and a
+  // list of single-key maps ([{lan0: {...}}]). Object.entries on the list form
+  // yields ["0", {lan0: ...}], which produced a panel of empty fields, so both
+  // shapes are flattened to (name, info) pairs first.
+  const pairs = Array.isArray(interfaces)
+    ? interfaces.flatMap(entry => (entry && typeof entry === 'object' ? Object.entries(entry) : []))
+    : Object.entries(interfaces);
   const rows = [];
-  Object.entries(interfaces).forEach(([iface, info]) => {
+  pairs.forEach(([iface, info]) => {
     const chassisMap = info?.chassis || {};
     const chassisName = Object.keys(chassisMap)[0] || '';
     const chassis = chassisMap[chassisName] || {};
@@ -3732,10 +3660,31 @@ function normalizeLldpNeighbors(lldp) {
 
 function renderLldpPopup(ip, lldp) {
   const rows = normalizeLldpNeighbors(lldp);
-  if (!rows.length) {
-    return `<h4>LLDP ${escapeHtml(ip)}</h4><div class="small">No LLDP neighbors reported.</div>`;
+  // The explanation for the shading sits with the detail it refers to.
+  const alternate = switchTopology.minorityIps.has(ip)
+    ? `<div class="small" style="color:var(--alternate-switch-fg);margin-bottom:6px;">${escapeHtml(ALTERNATE_SWITCH_NOTE)}</div>`
+    : '';
+  // Where this device actually sits, in words. A chassis ID is not an answer to
+  // "what is this plugged into".
+  const path = typeof lldpConnectionSummary === 'function' ? lldpConnectionSummary(ip) : null;
+  let connection = '';
+  if (path && path.kind === 'daisy') {
+    connection = `<div class="lldp-grid" style="margin-bottom:6px;">`
+      + `<div class="lldp-label">${escapeHtml(path.heading)}</div><div class="lldp-value">${escapeHtml(path.through)}</div>`
+      + `<div class="lldp-label">Upstream switch</div><div class="lldp-value">${escapeHtml(path.upstream)}${path.port ? ' &middot; ' + escapeHtml(path.port) : ''}</div>`
+      + `</div><div class="small" style="color:var(--daisy-topology-fg);margin-bottom:6px;">${escapeHtml(DAISY_NOTE)}</div>`;
+  } else if (path && path.kind === 'direct') {
+    connection = `<div class="lldp-grid" style="margin-bottom:6px;">`
+      + `<div class="lldp-label">${escapeHtml(path.heading)}</div><div class="lldp-value">${escapeHtml(path.upstream)}</div>`
+      + (path.port ? `<div class="lldp-label">Port</div><div class="lldp-value">${escapeHtml(path.port)}</div>` : '')
+      + `</div>`;
+  } else if (path) {
+    connection = `<div class="small" style="margin-bottom:6px;">${escapeHtml(path.heading)}: ${escapeHtml(path.upstream)}</div>`;
   }
-  return `<h4>LLDP ${escapeHtml(ip)}</h4>` + rows.map(row => `
+  if (!rows.length) {
+    return `<h4>LLDP ${escapeHtml(ip)}</h4>${connection}${alternate}<div class="small">No LLDP neighbors reported.</div>`;
+  }
+  return `<h4>LLDP ${escapeHtml(ip)}</h4>${connection}${alternate}` + rows.map(row => `
     <div class="lldp-grid">
       <div class="lldp-label">Interface</div><div class="lldp-value">${escapeHtml(row.interfaceName)}</div>
       <div class="lldp-label">Switch</div><div class="lldp-value">${escapeHtml(row.chassisName)}</div>
@@ -3819,8 +3768,11 @@ function openPreviewWindow(url) {
   const elapsed = performance.now() - start;
   console.log(`[INIT] Data loading complete in ${elapsed.toFixed(0)}ms`);
   initTheme();
-  initDensity();
-  initConfig();
+  // Density is applied by appearance.js on every page; nothing to do here.
+  // Settings is wired by ui/settings.js, which is shared with the other
+  // three pages and starts itself.
+  refreshUsbExtenderCount();
+  setInterval(refreshUsbExtenderCount, 10000);
   initPasswordSync();
   initSetNtp();
   initSlateManager();
@@ -3858,6 +3810,137 @@ function openPreviewWindow(url) {
   });
 })();
 </script>
-<div class="version-footer">OmniSuite Version V1.0.1</div>
+<!-- The locked command area, the table viewport beneath it, and the mirrored top
+     scrollbar. Everything here is a measurement: the stylesheet states the
+     relationships, this states the numbers. -->
+<script>
+(function () {
+  'use strict';
+
+  // Every sticky offset on this page is derived from a height measured here and
+  // published as a custom property. Hardcoding the stack (top: 0 / 37px / 91px)
+  // is correct at exactly one font size, one density template and one zoom
+  // level; a single Settings change or a browser zoom silently misaligns it and
+  // the header row hides behind the command bars.
+  const root = document.documentElement;
+  const px = (n) => Math.max(0, Math.round(n)) + 'px';
+  const published = new Map();
+
+  function publish(name, value) {
+    // Writing an unchanged value still invalidates style, and these writes can
+    // be triggered by the observers watching what they affect.
+    if (published.get(name) === value) return;
+    published.set(name, value);
+    root.style.setProperty(name, value);
+  }
+
+  function num(value) {
+    const n = parseFloat(value);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  // A bar's contribution to the stack is its margin box: the margins between
+  // the bars are part of the height the next sticky element has to clear.
+  function outerHeight(el) {
+    if (!el) return 0;
+    const rect = el.getBoundingClientRect();
+    if (!rect.height) return 0;
+    const cs = getComputedStyle(el);
+    return rect.height + num(cs.marginTop) + num(cs.marginBottom);
+  }
+
+  const header = document.getElementById('app_header');
+  const scanBar = document.getElementById('scan_bar');
+  const firmwareBar = document.getElementById('firmware_bar');
+  const footer = document.querySelector('.footer-bar');
+  const wrapper = document.getElementById('units_table_wrapper');
+  const table = wrapper ? wrapper.querySelector('table.device-table') : null;
+  const tbody = document.getElementById('units_table');
+  const mirror = document.getElementById('table_scroll_mirror');
+  const mirrorTrack = document.getElementById('table_scroll_mirror_track');
+  if (!wrapper || !table || !mirror || !mirrorTrack) return;
+
+  function measureShell() {
+    const bodyStyle = getComputedStyle(document.body);
+    publish('--shell-gutter', px(num(bodyStyle.marginTop)));
+    publish('--shell-header-h', px(outerHeight(header)));
+    publish('--scan-bar-h', px(outerHeight(scanBar)));
+    publish('--firmware-bar-h', px(outerHeight(firmwareBar)));
+    // Whatever has to remain visible below the table viewport, so bounding the
+    // table never pushes Reboot/Remove Selected off the bottom of the window.
+    publish('--table-viewport-reserve',
+            px(outerHeight(footer) + num(bodyStyle.marginBottom)));
+    const head = table.tHead;
+    publish('--table-head-h', px(head ? head.getBoundingClientRect().height : 0));
+
+    // How much of a row the frozen columns occupy, so keyboard focus is never
+    // scrolled to a position where they cover the element that just took it.
+    const lead = head ? head.querySelectorAll('tr > th') : [];
+    let frozen = 0;
+    for (let i = 0; i < Math.min(3, lead.length); i += 1) {
+      frozen += lead[i].getBoundingClientRect().width;
+    }
+    publish('--frozen-columns-w', px(frozen));
+
+    // The platform's own horizontal scrollbar thickness, so the mirror is
+    // exactly as tall as a scrollbar rather than a guessed strip. offsetHeight
+    // counts the borders that clientHeight does not, so they come back out.
+    const cs = getComputedStyle(wrapper);
+    const borders = num(cs.borderTopWidth) + num(cs.borderBottomWidth);
+    publish('--table-scrollbar-h',
+            px(wrapper.offsetHeight - wrapper.clientHeight - borders));
+  }
+
+  function refresh() {
+    measureShell();
+  }
+
+  // Every observer funnels through one frame-batched refresh, so a render that
+  // mutates six hundred cells still measures once.
+  let pending = 0;
+  function scheduleRefresh() {
+    if (pending) return;
+    pending = requestAnimationFrame(() => { pending = 0; refresh(); });
+  }
+
+  // Scroll synchronisation, the reentrancy guard and the mirror geometry are
+  // ui/mirror-scroll.js's job for every page, including this one. This module
+  // keeps only what is peculiar to Device Info: the heights of the locked
+  // command bars, and the platform scrollbar thickness the strip is drawn at.
+
+  // ---- what makes the numbers stale --------------------------------------
+  // Sizes are observed, never polled: a timer would either lag a column toggle
+  // or burn a frame every tick for a page that changes shape a few times a day.
+  if (typeof ResizeObserver === 'function') {
+    const ro = new ResizeObserver(scheduleRefresh);
+    [header, scanBar, firmwareBar, footer, wrapper, table].forEach(el => el && ro.observe(el));
+  }
+  // Row membership changes the table's width without resizing any element that
+  // already existed.
+  if (tbody) new MutationObserver(scheduleRefresh).observe(tbody, {childList: true});
+  // "Show Device Details" and the codec controls hide and show whole columns by
+  // class, which changes scrollWidth while the table's own box may not move.
+  new MutationObserver(scheduleRefresh).observe(table, {
+    attributes: true, subtree: true, attributeFilter: ['class', 'style', 'hidden']
+  });
+  window.addEventListener('resize', scheduleRefresh, {passive: true});
+  // Browser and pinch zoom change the CSS-pixel size of everything measured
+  // here; visualViewport reports the pinch case that window.resize does not.
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', scheduleRefresh, {passive: true});
+  }
+  // Web fonts land after first paint and change every bar's height.
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(scheduleRefresh);
+  window.addEventListener('load', scheduleRefresh, {passive: true});
+
+  refresh();
+
+  // Exposed so the layout can be asserted directly rather than only by eye.
+  window.deviceTableChrome = {refresh, wrapper, mirror, mirrorTrack};
+})();
+</script>
+<!-- Filled in from /api/config by ui/settings.js. It used to carry a
+     literal, which was three releases out of date by the time anyone noticed. -->
+<div class="version-footer" id="app_version_footer">OmniSuite</div>
 </body>
 </html>

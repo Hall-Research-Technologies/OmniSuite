@@ -1,0 +1,270 @@
+# OmniSuite development rules
+
+## Preserve the working application
+
+- This is an existing working application. Preserve existing behavior.
+- Prefer additive changes over refactoring working code.
+- Do not replace working subsystems simply to make architecture cleaner.
+- Do not modify unrelated functionality.
+- Do not break encoder discovery.
+- Do not break decoder discovery.
+- Do not slow existing encoder/decoder discovery.
+- Do not serialize new discovery operations behind existing discovery.
+- New device discovery should run concurrently where safe.
+- Long-running or broad scans must run in the background and must not block normal discovery or UI rendering.
+- Do not change existing E4521/D4511 USB routing behavior unless specifically instructed.
+- Do not change existing USB matrix behavior unless specifically instructed.
+- Preserve existing APIs, routes, and persisted fields unless a change is explicitly required.
+- Database or persistence changes must be additive and backward compatible whenever practical.
+- Reuse existing UI components and design patterns.
+- Reuse existing services and models only when doing so does not introduce regression risk.
+- Keep protocol and network logic out of UI components.
+- Validate network responses before changing application state.
+- Device identity must not depend solely on IP address when a stable hardware identifier such as a MAC address is available.
+- Add tests for new behavior; existing tests must continue to pass.
+- Never silently swallow network or protocol errors; log safe diagnostic context and return useful failures.
+- Avoid excessive polling and network traffic.
+- Do not perform unnecessary architectural rewrites.
+- Do not automatically change the host computer's NIC or IP configuration.
+- Do not assume undocumented device behavior. Mark hardware-dependent behavior for validation.
+
+## USB extender guardrails
+
+- AT-OMNI-311/324 support is a distinct binary-UDP protocol integration, not an extension of the OmniStream WebSocket protocol.
+- Keep automatic local USB discovery independent of the existing `/api/scan` path. Encoder and decoder results must be available without waiting for USB discovery.
+- Put configurable range scans in a bounded-concurrency background worker; never add them to startup or a blocking normal-discovery request.
+- Preserve MAC identity across IP changes and retain discovery reachability separately from manageability and pairing eligibility.
+- Do not combine AT-OMNI-311/324 controls with `/api/usb_pair`, `/api/usb_unpair`, or `usb_icron` until a single, hardware-validated unified routing design is approved.
+- A command acknowledgement is not a verified route. Never report routing success from an ACK alone; require a fresh read-back that agrees, and report the accepted-but-unverified case distinctly.
+- Routing decisions must consume state read during the current operation. Cached pairing data may be displayed as history but must never be substituted for a failed authoritative read.
+- Any targeted operation against a known MAC must verify the responding MAC. Never update, revive, or address a record using a reply from a different device.
+- Network eligibility fails closed: when real interface information is unavailable, classify as unknown and deny pairing eligibility rather than inferring a network from the device's own address.
+- Bound address-range input arithmetically before expanding it. Never materialize an address space in order to discover that it is too large.
+- Keep an opcode or command unsupported and untransmittable until a specification confirms its value; do not infer one from adjacent values.
+- Device Info owns discovery and clearing. Do not add a second discovery console, interface picker, or clear action elsewhere; other pages view and configure what discovery already found.
+- Dispatch a device action by ownership. A USB endpoint belonging to an E4521/D4511 is acted on through its parent's existing control path; only a true standalone unit receives a standalone extender command.
+- Correlate a USB endpoint to its parent solely by exact normalized MAC against recorded device state. Never infer association from IP proximity, MAC similarity, address suffixes, or hostname patterns.
+- Present a field as read-only `N/A`/`Not supported` when the device API does not establish it. Do not fabricate a configurable control to fill a column.
+- One physical endpoint appears once in an inventory. Correlate and enrich an existing row rather than adding a second row from another provider.
+- A discovery protocol's reported type is not a product identity. When authoritative association exists, it wins for both presentation and control ownership; keep the protocol-reported value for diagnostics only.
+- Classification fails closed. Until association is proven complete, treat an uncorrelated endpoint as unconfirmed and withhold device-specific commands rather than assuming it is standalone.
+- Derive a value once. When two pages show the same state, they must consume the same derived object, not recompute it independently.
+- Hardware-validation access belongs behind an explicit diagnostic endpoint with a confirmation token, never behind normal product controls.
+- Tests must deep-copy fixtures they hand to server code; background tasks mutate cached device dicts in place.
+- Ownership is decided in exactly one server-side pipeline that every page and endpoint consumes. No page determines device ownership on its own.
+- Derive association from current state on every call so late-arriving information resolves an unknown automatically, without requiring the user to rescan.
+- Learn authoritative data wherever the application already queries it rather than adding a second device round trip for the same fact.
+- Correction requests are general. Fix the class of defect for every current and future device; a per-device special case is never the fix.
+- Prove genericity with synthetic fixtures whose addresses, MACs, and hostnames share nothing with the reported examples, and assert no live value appears in production code.
+- A refresh must not erase additive metadata learned outside it. Preserve learned fields onto rebuilt records, matched by stable hardware identity, and let new authoritative data win.
+- Persist learned state that is expensive to relearn, so a restart, a cache clear, or a rebuild does not lose it.
+- Every write to a shared JSON file must be atomic and serialized: unique temp file, fsync, os.replace, under one lock. Never truncate a file in place.
+- A malformed state file must quarantine and degrade to empty, never crash discovery or propagate corrupt data.
+- Verify a protocol's propagation model on hardware before assuming it. A command may update only the device it is addressed to; test both endpoints rather than inferring that a peer was told.
+- When a multi-step device transaction fails partway, roll back the steps that succeeded rather than leaving a half-applied state.
+- Classify each route combination independently from its own evidence. Success in one family never implies another.
+- Separate control-plane from data-plane verification, and keep them in separate tables. Agreement between control-plane tables is not proof that the data plane works, and enabling a route so it can be tested must never upgrade the claim made about it.
+- Re-verify through the production endpoint, not only the bench diagnostic, before calling a path validated. The shipping path is the one that has to be proven.
+- Reuse an existing proven device operation for a new surface. If no such operation exists, disable the control and say why; never invent one to fill a gap in the UI.
+- Before any experimental hardware mutation, capture the original state, use only endpoints with nothing in use, and verify restoration before continuing.
+- Order every list a UI renders deterministically on the server. Never let thread, dict, or response completion order reach the screen, and sort addresses numerically rather than as strings.
+- Separate structure from live state. A state-only refresh updates existing DOM in place; rebuild only when membership or identity actually changes.
+- One shared backend live-state mechanism serves every page, with in-flight suppression and a minimum interval, so extra open pages never multiply device traffic.
+- Prove liveness with the cheapest sufficient query, and take it from an existing read where the application already performs one rather than adding a second round trip.
+- Tolerate a dropped datagram before declaring a device offline, and treat a determined-offline result as authoritative over an older sighting.
+- Production UI never uses native alert/confirm/prompt. Reuse the application's existing dialog structure, and never overload Cancel to mean a second choice.
+- Never put detailed explanations in a native `title`; the browser renders them as one very wide tooltip. Use a bounded, viewport-clamped styled tooltip.
+- Internal enum names belong in JSON, tests and logs, never in user-facing text. Map each state to a concise human label.
+- Give each kind of freshness its own timestamp and cadence. Do not let a cheap liveness check imply that expensive state was re-read.
+- Refresh expensive state on its own slower cadence, skip anything already fresh, and reset the cadence immediately after an operation that already read it.
+- Integrated 45xx Icron network configuration uses the parent OmniStream `net` API (the `icron` interface), never the standalone UDP IP commands.
+- Resolve the parent server-side from the USB MAC before any integrated USB mutation, and verify the MAC belongs to that parent.
+- A frontend render change needs a runtime smoke test, not only a syntax check; `node --check` cannot catch an undefined helper.
+- Define one escaping helper per module at module scope. A helper defined inside a function is invisible to other scopes and will fail only at runtime.
+- When a capability looks absent, check whether it is nested inside a broader configuration object before concluding the product cannot do it.
+- Where a device and a cache disagree, read the device and make the application agree with it. Never reconfigure hardware so it matches what the software already believed.
+- Give each device family its own authority for a field. A value that is meaningful in one protocol may be meaningless in another; when no authoritative read has succeeded, show nothing rather than a value known to be unreliable.
+- Preserve a device's raw value alongside the interpreted one, and surface an unrecognised value as unknown rather than normalising it into something that looks valid.
+- Route every path that ingests the same device state through one ingest function, so discovery, a manual refresh, and a post-write read-back cannot interpret it differently.
+- Tests must never be able to mutate real hardware. Stub the transport in the shared base class, allow reads, and make any mutating command fail the test; assert it at the call and again in cleanup, because service code that converts errors into results will otherwise absorb the assertion.
+- Widening a gate widens what reaches the transport behind it. Re-check what the tests on the far side of that gate will now do.
+- Identity and display key are different fields. Never overload one key so it means an address on one row and a hardware identity on another, and never send a display key where an identity is expected.
+- A permissive normalizer is an attack surface on identity. If it strips separators it will happily convert an address into a plausible identifier, so reject the other format explicitly.
+- A control that is enabled on screen and the endpoint behind it must consume the same derived state. If the UI and the gate judge liveness, ownership or capability from different sources, the user sees a clickable control that always fails.
+- When a status code doubles as a semantic answer, say which it is. A 404 meaning "this endpoint is unknown to me" reads as a missing route; separate malformed input (400) from an unknown-but-well-formed identity (404).
+- Never fall back from a failed new path to an older one that addresses devices by a different key. Report the failure instead; a retry through an incompatible path can reach the wrong hardware.
+- Verify a device operation with the same source the operation itself used. A view built for presentation may deliberately omit or transform the field, and using it to verify produces a false negative that triggers an unnecessary rollback.
+- Two views of one device state may converge on different timescales. Before concluding that one cannot see the other's writes, read it again later; "blind" and "late" call for different designs.
+- Select route state by control path, not by row family, once one row can be routed by more than one provider.
+- Assert the frontend's request contract in a test that actually dispatches the click and inspects the request, and pin the endpoint path against the server's route table so the two cannot drift apart.
+- Test scenarios that share a rendered DOM or a request log must run sequentially; an async check whose setup runs at declaration time will be trampled by the next one.
+- Successful live device data overrides persisted standalone configuration; persisted values are fallback and history only.
+- Standalone Atlona model identification uses the physically verified Atlona mapping, not generic Icron assumptions, and never the product ID, hostname, address or MAC pattern.
+- Configured pairing and current link status are separate concepts with separate fields and separate freshness. A configured peer is not a live link, and a timeout is not a confirmed absence of one.
+- An unknown protocol field stays unknown. Name a value only once hardware has shown it; fold everything else into an explicit unknown rather than the nearest known state.
+- The Matrix USB inventory is one row per canonical USB MAC. Merge on identity server-side; a client-side filter is defence in depth, never the fix.
+- A row states its own capabilities. A standalone device must not inherit an integrated-only control just because it shares a table.
+- Before renaming a shared column, audit what it holds for each family. Rename only when the values are semantically the same thing, and keep a genuinely different fact in its own field.
+- A parser change needs exact captured-hardware fixtures, asserted by length before use, and a malformed-input suite beside them.
+- When two captures disagree with a working implementation, suspect the labels before the code, and re-derive identity from a response that carries it self-evidently.
+- Measure a remedy before adopting it. A retry, a longer timeout or a wider bound that does not move the number is traffic without benefit.
+- Distinguish a degraded device from a defect in the software. Verify at a layer below the application before changing code to accommodate it.
+- Broadcast finds unknown devices on the attached L2 network; it is never how known devices stay visible. Poll what is already known by address, with directed unicast, which routes.
+- Every surface must draw its endpoint population from one logical inventory. A device present in one view and absent from another is a discovery-source bug, not a display bug.
+- Opening a page must never be what repairs backend state. The backend maintains truth on its own schedule; pages display it.
+- Bind a source address only when the local interface is on the destination's network. Forcing one otherwise makes a routed endpoint unreachable, so let IP routing choose.
+- Compatibility between two devices is computed from their own addresses and masks, never from the controller's subnet, and never from an assumed /24.
+- Keep the mask of the interface a device was discovered from separate from the mask the device reports for itself; conflating them corrupts every relation derived from either.
+- A transaction whose goal is already half-met should converge toward that goal rather than refuse, provided the disagreement is only between the two endpoints and both reads are authoritative.
+- Command only the endpoint that is missing the intended state. A device may reject a command re-asserting what it already holds, and an endpoint the transaction did not change must never be rolled back.
+- A backend capability the UI never exposes is unfinished. If an operator cannot see or set it, it does not exist for them.
+- Finding an unknown device requires something to address: an attached network to broadcast on, or a configured network to scan. Say so plainly rather than implying discovery is universal.
+- Re-probe a known device that has gone quiet before treating it as gone; its recorded address is the only lead available, and it may simply have moved.
+- Search only fields the user can see. A diagnostic value that is deliberately never displayed must never be searchable, or the results look arbitrary.
+- Every parser in a module should fail the same way. A stray ValueError escaping where callers expect the module's own error type surfaces as a 500 on malformed user input.
+- Persist a user's choice by a stable identity, never by list position, and bind the save handler as soon as the control exists rather than after its saved value loads.
+- A diagnostic flag must never gate the action that would set it. Enabling a control and claiming its outcome is proven are different statements.
+- Measure each device family's capacity separately even when they share a platform, and claim only what was observed simultaneously.
+- Capacity for peers and capacity for downstream devices are different quantities; never let one imply the other.
+- When a device stops answering under sustained traffic, pace the operations and let the gate refuse; do not retry into a device that is not listening.
+- A control states the state the user wants, not the operation the protocol needs. Reconcile the hardware to the request; never make the operator perform the intermediate steps.
+- Before removing a working relationship to create a new one, capture what exists and be able to put it back, and report separately whether the restoration was verified.
+- Show a change as pending until a verified read-back settles it; an intermediate state must never be displayed as a completed user action.
+- Refresh a value before the freshness window that governs it expires. When the re-read interval equals or exceeds the TTL, there is always a window in which good state reads as unknown, and that gap is a design defect rather than a device fault.
+- Tolerate a bounded number of missed reads before discarding a verified value, and present the retained value as ageing rather than replacing it with unknown or discarding it silently.
+- Give each fact its own recorded provider. A single source field written by whichever refresh ran last will alternate on its own and be read as the endpoint changing.
+- Decide authority by fixed precedence, not by write order, when two providers can attest to the same fact at once.
+- Control ownership does not restrict reads. A device that answers a safe query still answers it when its writes belong to another API.
+- Summarise a multi-peer state from every peer, never from one byte standing in for all of them.
+- Absence of evidence is not a capability statement. Say a capability is not established, with the evidence, rather than reporting it as unsupported.
+- Two inputs that describe the same search space are one input. If the second exists only because the first is not remembered, persist the first.
+- Order asynchronous reads against the writes they race. A response that was already in flight when state changed describes a world that no longer exists and must be discarded, not applied.
+- LLDP multi-switch warning acknowledgement belongs to the lifetime of the discovered-device inventory. Never reset it on Scan/Discover. Reset it only when the discovered-device inventory is explicitly cleared.
+- An acknowledgement is functional state with its own store. Never infer it from whether the element it silences happens to be visible.
+- A dismissible notice and the condition it describes are separate. Dismissing the notice must never remove the indication of the condition.
+- Advisory information is not an error. Give it its own semantic state rather than borrowing the danger treatment, and never describe a supported configuration as a fault.
+- Absent data is not a distinct value. Compare only records that carry the field, and never let a missing reading create a second group.
+- A dominant group needs strictly the most members. On a tie, designate nothing rather than picking one arbitrarily.
+- A fresh discovery of an existing canonical hardware MAC updates that device's mutable live address and state in place. IP address is not device identity, and clearing the inventory must never be required merely because a device changed address.
+- LLDP upstream-switch resolution must not discard physical path information. If a device is reached through another known endpoint, retain and expose the daisy-chain relationship even when grouping the device under the resolved upstream switch.
+- When merging cached and fresh records, iterate the fresh ones first. A dedupe check that runs cache-first silently discards the newer observation it was meant to protect.
+- Audit every secondary structure keyed by address whenever identity is keyed by something else. The stale row usually survives in the index, not in the record.
+- A layout is presentation. Never fork the behaviour layer per template; one set of logic, several stylesheets.
+- Read a persisted UI preference synchronously before first paint, and treat the server copy as the authority that reconciles afterwards.
+- Two advisories about different risks need two acknowledgements. Record what an acknowledgement covered, so a genuinely new instance can be surfaced once without re-notifying for the same one.
+- State a bandwidth risk from topology, never a bandwidth condition, unless the devices actually report throughput. Say plainly, in the data, that no measurement exists.
+- A diagnostic export may omit bulk, never omit that something is unknown. Sanitisers that strip empty values must not be applied to sections whose nulls are the answer.
+- Routed management does not imply routed USB pairing eligibility. Every USB route creation or reassignment must prove same-subnet compatibility from the actual USB/Icron endpoint IP and subnet mask before any mutating operation.
+- The USB inventory and export report USB/Icron firmware for integrated endpoints. Parent OmniStream firmware belongs to the parent device inventory and must never be substituted for a missing USB firmware value.
+- For a safety gate, unproven is refused. Distinguish "incompatible" from "cannot say", and let only a positive proof authorise a mutation; an existing configuration is never torn down because telemetry went incomplete.
+- Check eligibility before releasing anything. A destructive step taken ahead of validation turns a refusal into an outage.
+- Never assume a prefix length or compare address octets. Derive the network from the mask each endpoint reports, and require each endpoint to fall inside the other's network.
+- When a derived value the UI needs is computed per cell, stamp it onto the axis once. A grid that rebuilds shared state per intersection is both slow and prone to being skipped entirely.
+- Two controls that appear to choose the same thing are one control. Remove the duplicate rather than renaming around it.
+- A custom colour must be validated as a colour before it reaches a custom property, and must be applied wherever a palette class could redeclare the same token.
+- Compute a readable foreground for any colour a user chooses; keep their colour and decide only what sits on top of it.
+- Layouts may change structure and density, but there is one ownership path for primary navigation and page content. A layout must never duplicate navigation or relocate page nodes; style what the server rendered where it rendered it.
+- All layout-specific surfaces consume semantic theme tokens. Layout CSS must not hard-code a dark or light application shell.
+- A custom property resolves where it is declared. An alias defined once on the root freezes at that palette's values, so every appearance mode must restate the aliases it changes, not only the variables they were derived from.
+- Paint the document element as well as the body, or a strip of the viewport keeps the previous palette.
+- When a control is removed, stop honouring the state it wrote. Ignore it on read and drop it on the next save, in every store that holds it, so nothing keeps acting on a setting the operator can no longer see.
+- Offering a user N independent choices to reach one outcome is not customisation. Ship curated sets and keep the underlying tokens internal.
+- Derive related surfaces from a chosen colour rather than painting everything with it; a single flat fill destroys the separation the layout depends on.
+
+- A safety fence belongs at the transport, not at the convenient wrapper above it. Stubbing the shared send/receive helper left four mutating paths that opened their own socket, so the guarantee held only for code that happened to route through the helper. Fence the thing that actually reaches the network, and a future bypass is caught by construction rather than by remembering.
+- A test that cannot fail proves nothing. Before trusting an assertion, make the defect it names and watch it fail; a fixture that omits the very field under test turns `assertNotEqual` into a tautology.
+- Claiming a guard flag before an early return strands it. Every path out of a claimed critical section must release, or the first empty result disables the feature for the life of the process.
+- Two individually locked operations do not compose into an atomic one. A read-modify-write must hold one lock across the whole sequence; separately, concurrent writers each apply their change to their own copy and the last save silently discards the rest.
+- Registering a handler on an object that is later reconstructed registers nothing. Build the application once; a second construction quietly discards everything attached to the first.
+- A device that does not answer is an upstream condition, not a fault in this application. Report it as such, and keep the server-fault status for genuine bugs, or a routine offline unit is indistinguishable from a crash.
+- A test that replaces a module-level name must restore it. Test classes run in alphabetical order, so an unrestored stub leaks into unrelated tests and the blast radius moves whenever a class is renamed.
+- Measure before changing, and accept the measurement. When profiling does not reproduce a predicted cost, report no change; a cache added on the strength of an unverified prediction can regress the live feedback it was meant to speed up.
+- An idle poll must not log at INFO. Steady-state chatter buries the records that matter -- a mutation, a refusal, a device that stopped answering.
+- Audit logging names the fields it records; it never dumps the request body. A verbatim dump logs whatever a caller sends, including a credential added to that request later.
+- Global navigation and Settings occupy the same screen position on every page. A control the operator's eye has learned to find must not move because the work surface below it changed; shell geometry and page-content geometry are separate concerns.
+- A control that appears on several pages has one implementation. Copy the markup into each page and there are as many dialogs to keep in step as there are pages; own it in one module, inject it, and guard the injection so a second call cannot duplicate every id.
+- Styling shared markup is part of sharing it. Markup extracted into a module whose CSS stays behind renders unstyled everywhere except the page it came from.
+- Primary device identity columns stay visible while a wide table scrolls sideways, and a frozen column's offset is measured from rendered widths rather than assumed. A hardcoded offset is correct in one layout and wrong in the others.
+- A mirrored scroll control reports the authoritative container's real dimensions and is hidden when there is nothing to scroll. It must never be driven from an assumed width, and the synchronisation needs a reentrancy guard so the two ends cannot drive each other.
+- Automated tests are physically isolated from both hardware transports, and the isolation is enforced by the test entry point rather than left to each test's discipline.
+- An icon-only control carries an accessible name. The tooltip is not one.
+- Device Info's primary command area stays reachable while a long inventory is traversed. Pin the compact command surfaces only; an advisory panel pinned forever costs the height the operator came for.
+- Express every sticky offset in terms of measured, published heights. A file full of unrelated `top: 37px` / `top: 91px` values is correct at one zoom, one font and one layout, and wrong everywhere else.
+- Where a sticky header and a frozen column intersect, the corner carries the highest stacking order of the three. Prove it by hit-testing the corner's own centre while scrolled in both directions, not by looking at it.
+- Suppressing a focus outline to hide it on mouse click hides it from the keyboard too. Scope the suppression to `:focus-visible` or the control becomes unreachable to anyone navigating by keyboard.
+- Redundant CSS is not free. A rule that merely repeats an existing one still participates in the cascade, and a more specific repeat silently changes whatever the original settled.
+- Read a colour only after its transition has finished. Sampling a computed background mid-transition reports a value the user never sees, and the reading differs on every run.
+- An observer must never be re-armed from inside its own callback without disconnecting the previous one. Re-arming on every delivery makes the observer count double per event, and since each callback typically forces a layout, the cost of one render grows exponentially with how long the page has been open. Observe the element that persists once; replace only the observers whose targets were actually detached, and disconnect before re-observing.
+- Discarding a stale response is not the same as not issuing the request. A sequence counter protects correctness; a poll that sweeps hardware also needs single-flight, or a slow read lets the interval stack another sweep on top of the one still running.
+- Diagnostics belong in the product, off by default and silent. A thread-starvation report cannot be argued about without long-task, request-concurrency and observer-callback numbers, and adding the instrumentation after the fact changes the thing being measured.
+- One authoritative version, read by everything that displays it. A literal copied into a page is correct on the day it is written and wrong from the next release onward.
+- Percentages in a `color-mix()` must sum to 100. A mix summing to less multiplies the result's alpha by that sum, so the token is silently translucent and every surface built on it lets content show through.
+- Apply the theme to the document element, not only to the body. A script in `<head>` runs before `document.body` exists, so deferring to DOMContentLoaded paints the first frame in the wrong palette.
+- When a headless harness reports that nothing is happening, confirm the instrumentation actually ran. An isolated evaluation world cannot see page globals, and a probe that quietly falls back to an empty object reports reassuring zeros.
+- Any independently horizontally scrollable application section must expose synchronized top and bottom horizontal scrolling when overflow exists, from one shared implementation rather than a copy per table.
+- An optional external service is never a dependency. Bound the request, cache it for hours, keep it off every polling and startup path, fall back to the last good answer marked stale, and make the manual action always available so the feature degrades to a link when the network is gone.
+- Compare versions numerically, never as strings: 1.0.10 is newer than 1.0.9, and an unparseable version means "no update", not "update".
+- Validate any URL received from an external service against the expected host and path before handing it to a browser, or the endpoint becomes an open redirect.
+- Identify a platform artifact confidently or not at all. Offering the wrong build is worse than offering the download page.
+- Write files with the line terminator they already use. On Windows, `write_text` translates `\n` to `\r\n`, so a script that normalises and rewrites adds a CR on every pass and the damage compounds silently.
+- An explicit operator refresh re-reads everything it covers, not only the records with something missing. Selecting incomplete records means a value that CHANGED on the device can never arrive, because the record stopped looking incomplete the moment it was first filled.
+- Clearing the inventory is not a refresh. If emptying a store is the only way to pick up a device's current state, the refresh path is broken and that is the defect to fix.
+- A reply's fields are worth keeping even when the caller only wanted one of them. Firmware sat in every usb_icron response and was discarded, leaving a field permanently blank for any endpoint that had no second source.
+- Fresh known value beats cached known value beats a missing fresh value. An optional query that fails or omits a field must never erase something already verified, and a field that arrives must never be ignored because a record already existed.
+- Investigate the device before changing the code. Querying the parent directly showed the firmware was already being returned, which turned a suspected protocol gap into a two-line data-plumbing fix.
+- A product name and a protocol identity are two different facts about the same device. Map between them in one place and route every rendered surface through it; a global search-and-replace takes the identity with it, and the role lookups, family checks and bench guards that compare against that string fail silently rather than loudly.
+- A boundary that is not a hardware transport still has to be fenced for the lifetime of the test process, not per test. A daemon thread started inside one test outlives its teardown, by which time the per-test restore has put the real implementation back -- which is how a suite that stubs an external service in `setUp` still reaches the Internet, intermittently, from a thread nobody is looking at.
+- Acknowledge a notification against the thing it is about, never with a boolean. Recording the version dismisses that release only: a newer one announces itself, re-checking the same one stays quiet, and a late acknowledgement of an older release cannot un-dismiss a newer one.
+- A one-time alert and a standing status are different. The alert stops once it has been seen; the status goes on being true. Conflating them either nags forever or hides the fact after the first glance.
+- A build ahead of the newest published release is current, not an error and not an update. That is why the answer needs three states and not a boolean -- and why a failed check must never render as "up to date".
+- Retiring a preference means removing its readers, not only its writer. A key that is no longer written still reads as absent, and code that applies state from it keeps applying the absent value -- silently undoing whatever the replacement had just set, with the outcome decided by which handler happened to run last.
+- Measure a shell across sections, not only across repeated loads of one page. Every page being pixel-identical to itself says nothing about whether the header is the same height on the next page, and a control that moves when you navigate is the part a user actually notices.
+- Ask the device what its API returns before designing around it. `get_debug_info` was assumed to carry a log; it returns a path to a bundle the device builds on demand and serves over plain HTTP, which is a different feature with different failure modes, a different security surface and a different cost.
+- A path a device hands back is untrusted input about to become a URL. Refuse a scheme, a host, a protocol-relative prefix, a parent-directory segment, a backslash, a control character or anything outside an explicit character set -- and refuse rather than repair, because a path that had to be sanitised was not understood. Build the URL against the address you already trust.
+- A download's filename comes from data the application already holds, never from the remote artefact's own name. Sanitise it for all three platforms in one helper, including the Windows reserved device names, which are refused with any extension.
+- A vendor artefact is passed through byte for byte. If it is encrypted, say so plainly rather than implying the application inspected it, and document what the operator is actually sending when they forward it.
+- A number on a device's row must be a fact about that device. A value identical for every device on a subnet is a fact about the subnet, and beside one row it reads as a property of that unit; if it earns a place at all, name it where it is shown.
+- Keep USB role, configured peer count, live linked count, peer capacity, physical port count and firmware revision as six separate fields. Two of them agreeing on one bench proves nothing, and one standing in for another is how a column comes to mean something nobody can state.
+- A semantic role must survive every palette. Distinguish a destructive action by form as well as hue -- measured across ten presets, accent and critical were as close as deltaE 11 -- and never solve it by editing the palette the operator chose.
+- Derive control states from the same tokens the presets set, in one shared stylesheet. A literal colour in a hover, selected or pending rule is invisible to the preset system, and it survives every change to it.
+- A selected control is filled, not outlined. Measure the selected-versus-unselected difference rather than assuming it: a 20% tint measured deltaE 3.5 against an unselected tab, which is not a difference anyone can act on.
+- Do not paint a label in the accent colour on a tinted ground. That pairing measured 1.90:1; the fill, the edge and an underline can all carry the selection, and none of them has to be legible as text.
+- `filter: brightness()` is not a hover treatment. It lightens a light control and a dark one alike, so one rule reads as hover in one palette and as washed out in the other. Composite a translucent veil of the text colour instead.
+- Hide a control's real input without removing it. `display:none` on the checkbox behind a custom switch takes it out of the tab order and out of the accessibility tree, so the control cannot be reached or announced at all; clip it instead and style the visible part from `:checked` and `:focus-visible`.
+- Paint the class and set the state. A selected control that only gains a CSS class shows as selected and announces nothing.
+- A synthetic mouse move does not set `:hover` in a headless browser. Force the pseudo-class through the debugging protocol, or a real hover rule reads as absent and gets 'fixed'.
+- Compare a control with itself in both states. Measuring a selected tab against a different unselected tab measures their labels; toggle the state on one element and watch that element, its siblings and the shell.
+- Bound a source-text assertion at the end of the thing it describes. A slice that runs to the end of the file starts asserting about whatever is added below it later.
+- Put the costly answer behind the focus. When a confirmation's Yes starts something large or irreversible, Cancel takes the focus and the primary treatment so the keyboard default and the visual default agree; a dialog that looks like OK is the obvious choice while Enter cancels is worse than either alone.
+- A confirmation whose purpose is the sentence it carries must not degrade to a native dialog. If the shared dialog is unavailable, refuse the action: a browser string box does not carry the notice, and the notice was the point.
+- A notice that explains a property of the thing is shown every time. Only an acknowledgement of an event is remembered; making the explanation dismissible means the tenth download happens without it.
+- Take the single-flight lock before opening the confirmation, not after it closes. Two dialogs stacked on one device each go on to make their own request.
+- Move a flow out of a page and into a module when you need to assert how it behaves. Source-text assertions about an inline handler prove the text, not the behaviour; a module can be driven with a scripted dialog and a recording fetch, and then "Cancel makes no request" is a measurement.
+- Never name a local variable after the global it is there to avoid. A local `confirm` in the one file that must never call `confirm()` makes the question unanswerable by inspection, and it defeated the check written to answer it.
+- Check that a mutation harness can actually see a failure before trusting a clean sweep. A runner that prints only each suite's last line will report every mutation as uncaught to a grep looking for individual failures, which reads exactly like tests that do not work.
+- When a test fails intermittently, make it name which of its preconditions broke. An assertion that blames the behaviour under test hides the population changing underneath it, and the next person reads a real race as flakiness.
+- If everything is primary, nothing is. Reserve the accent fill for the action a surface exists for and for the principal action of a dialog; a page of utilities has no primary at all. Classify each control by what it does, not by the class it happens to carry.
+- A secondary control is a filled surface with a real border, not a ghost outline, and it keeps hover, press and focus. Quiet is not the same as disabled-looking.
+- Retire a native dialog by classifying it, never by search-and-replace. A failure or a confirmation of something that happened is a toast; a list the operator must read before acting is a modal; a destructive choice stays a confirmation. Downgrading a required confirmation to a toast removes the decision.
+- A modal returns focus to the control that opened it. Without that, dismissing a dialog drops the keyboard at the top of the document and the operator has to tab back to where they were.
+- An acknowledgement offers one button. Showing Cancel next to OK asks a question that has no second answer -- and whatever a dialog hides for one caller it must restore for the next.
+- Documentation is part of the application. A help page with its own palette is a second product that drifts, and it is the surface most likely to be read on someone else's machine; give it the shared tokens and let it declare only measure, print rules and callouts.
+- Two tints of different roles can converge in some palettes. Carry the distinction at full strength somewhere -- a rule, an edge, an icon -- so it survives a preset where the hues sit close.
+- A colour probe must understand every syntax the browser emits. `color(srgb 0.98 0.98 0.99)` has components in 0..1 and `rgb(247, 248, 251)` in 0..255; treating the first as the second reports an almost-white as black, and a working light mode reads as 1.10:1 across six elements.
+- An operator-enabled poll is still steady state. Fifteen devices on a five-second cadence at INFO is ninety lines a minute, and it buries a mutation or a refusal exactly as an idle poll would. Log the change, not the check.
+- Validate a mutation harness before trusting a clean sweep: break something on purpose in every suite it watches and require that it notices. A harness that cannot see one suite reports that suite's tests as worthless, which is indistinguishable from them being worthless.
+- An assertion sliced from source must have comments stripped first. An explanatory comment naming the very selector, attribute or call under test will satisfy the assertion with the code gone.
+- `performance.memory` without forcing a collection is monotonic by construction. Before reporting a heap trend, collect garbage through the debugging protocol and read again: a soak that showed 10 MB climbing to 30 MB measured flat at 8 MB across forty navigations and a multi-minute dwell once collection was forced.
+- Sample instrumentation on a page that carries it. A probe taken wherever a loop happens to end reports "not available" for every cycle, which looks like a clean result and is no result at all.
+- A dialog taller than the window must be reachable. Centring it on a backdrop that cannot scroll puts its title above the top of the screen with nothing to scroll; let the backdrop scroll and centre with auto margins so a short dialog is unaffected.
+- A runtime configuration file that can hold a credential never belongs in version control, even when the committed values are defaults. The repository copy is usually not the one the application reads, so it buys nothing, and the next password change gets published. Ignore it and track an example with placeholders instead.
+- A build must never bundle a folder the operator chooses at runtime. The firmware directory is a Settings path, and adding it to the package produced a 981 MB executable on a machine that happened to have images in it -- 908 MB of them the manufacturer's. CI did not notice because that folder is gitignored, so the defect only existed where someone would actually hit it.
+- "PyInstaller completed successfully" is not evidence that anything runs. Start the packaged artifact, wait for its server and ask it for its version, its pages and its assets; a missing data file or an uncollected import builds cleanly and fails only when a person opens it.
+- An artifact name is a contract with whatever selects it. The updater matches a download by the tail of its filename, so renaming a release asset without changing that matcher offers a Windows machine the macOS Intel build. Pin the two together with a test that asks each platform what it would download.
+- A release artifact's name states its architecture, and names the environment actually tested rather than the family. "windows" does not say x86-64, and "linux" claims every distribution when only one was built and tested.
+- Read a log for the run you started, not for the file. An append-only log makes "the last port in the file" the previous run's until the current one writes its own line, and a probe that trusts it reports a working binary as broken.
+- Bundling a directory bundles everything inside it. `--add-data ui` shipped fifteen superseded page iterations, because they lived in `ui/archive/`, and a repository that still tracked them made that invisible. Assert the package's contents from its own table of contents, not from the intent of the build command.
+- A packaging guard must be tested against a build that actually failed. The first version of this one read the TOC's second field -- the path on the build machine -- and so reported `.venv/` and `build/` as contraband on every legitimate build while the real defect sat in the first field.
+- "Is this file used?" is a question about references, not names. `omni_matrix_logic.py` is imported by module name and matches no filename search; `HallwayBlueBlack.png` appears only inside a CSS comment explaining an asset that replaced it. Search for both forms before concluding either way.
+- What belongs in Git and what belongs in the executable are two different lists. The README screenshots are published documentation and must not ship inside the binary; the User Guide is an operator-facing runtime page and must.
+- A tree that builds on the development machine proves nothing about what was published. Materialise only the files Git would carry, then install, test and build from that copy -- it is the only way to catch source that was never added.

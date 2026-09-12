@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: "Override version (example: V0.9.1.1)"
+        description: "Override version (example: V1.0.7)"
         required: false
         type: string
   push:
@@ -21,7 +21,60 @@ on:
       - "V*"
 
 jobs:
+  # The full suite on every target that ships an artifact, not only on Linux.
+  # A build that cannot pass its own platform's tests must not produce a
+  # download for that platform.
+  #
+  # run_tests.py replaces both hardware transports with recording spies before
+  # importing anything, fences GitHub for the lifetime of the process, and fails
+  # if a test reaches a routable host. No job here needs a bench and none can
+  # touch one.
+  test:
+    name: Tests (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows x86_64
+          - os: ubuntu-latest
+            label: Ubuntu x86_64
+          - os: macos-latest
+            label: macOS arm64
+          - os: macos-15-intel
+            label: macOS x86_64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Record the interpreter this runner actually provides
+        shell: bash
+        run: |
+          python -c "import platform, sys; print('python', sys.version)"
+          python -c "import platform; print('machine', platform.machine())"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run every suite, and prove the tests reached no hardware
+        run: python run_tests.py
+
   build:
+    name: Build (${{ matrix.artifact_name }})
+    needs: test
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -29,20 +82,24 @@ jobs:
         include:
           - os: windows-latest
             suffix: windows
-            artifact_name: OmniSuite-Windows
+            artifact_name: Windows-x86_64
             mac_arch: ""
+            expect_arch: x86-64
           - os: ubuntu-latest
             suffix: linux
-            artifact_name: OmniSuite-Linux
+            artifact_name: Ubuntu-x86_64
             mac_arch: ""
+            expect_arch: x86-64
           - os: macos-15-intel
             suffix: x86_64
-            artifact_name: OmniSuite-macOS-intel
+            artifact_name: macOS-x86_64
             mac_arch: x86_64
+            expect_arch: x86_64
           - os: macos-latest
             suffix: arm64
-            artifact_name: OmniSuite-macOS-arm64
+            artifact_name: macOS-arm64
             mac_arch: arm64
+            expect_arch: arm64
 
     steps:
       - name: Checkout
@@ -53,11 +110,20 @@ jobs:
         with:
           python-version: "3.12"
 
+      # An artifact's name is not evidence of its architecture. Record what the
+      # runner and the interpreter actually are, so the log proves it.
+      - name: Record runner and interpreter architecture
+        shell: bash
+        run: |
+          echo "runner.os=${{ runner.os }} runner.arch=${{ runner.arch }}"
+          python -c "import platform; print('python machine:', platform.machine())"
+          python -c "import sysconfig; print('python platform:', sysconfig.get_platform())"
+
       - name: Install Linux GUI deps
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-tk libx11-dev libxkbcommon-x11-0
+          sudo apt-get install -y python3-tk libx11-dev libxkbcommon-x11-0 xvfb file
 
       - name: Install dependencies
         run: |
@@ -86,18 +152,77 @@ jobs:
         run: |
           python tools/build_release.py --suffix ${{ matrix.suffix }} --version "${{ steps.version.outputs.release_version }}"
 
+      # `file` on the binary inside the artifact, checked against what this row
+      # claims to be. A macOS job running on the wrong runner would otherwise
+      # publish an arm64 binary under an Intel name.
+      - name: Verify the built executable's architecture
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.suffix }}" in
+            linux)  bin="dist/linux/OmniSuite/OmniSuite" ;;
+            *)      bin="dist/${{ matrix.suffix }}/OmniSuite.app/Contents/MacOS/OmniSuite" ;;
+          esac
+          echo "inspecting $bin"
+          file "$bin"
+          if ! file "$bin" | grep -qi -- "${{ matrix.expect_arch }}"; then
+            echo "::error::architecture mismatch: expected ${{ matrix.expect_arch }}"
+            exit 1
+          fi
+          if [ "${{ matrix.suffix }}" = "linux" ]; then
+            ldd "$bin" || true
+            test -x "$bin" || { echo "::error::executable bit missing"; exit 1; }
+          fi
+
+      - name: Verify the built executable's architecture (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes("dist/windows/OmniSuite.exe")
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          # 0x8664 is IMAGE_FILE_MACHINE_AMD64.
+          Write-Host ("PE machine: 0x{0:X4}" -f $machine)
+          if ($machine -ne 0x8664) { throw "expected an x86-64 PE, got 0x$('{0:X4}' -f $machine)" }
+
+      # "PyInstaller completed successfully" is not evidence that anything runs.
+      # Start the packaged executable, wait for its server, and ask it the
+      # questions an operator's first minute would. Linux needs a display for
+      # the launcher window, so it runs under Xvfb.
+      - name: Smoke-test the packaged artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="$(ls release/OmniSuite-*.zip release/OmniSuite-*.tar.gz 2>/dev/null | head -1)"
+          echo "smoke-testing ${artifact}"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            xvfb-run -a python tools/smoke_release.py --artifact "$artifact" --version "${{ steps.version.outputs.release_version }}"
+          else
+            python tools/smoke_release.py --artifact "$artifact" --version "${{ steps.version.outputs.release_version }}"
+          fi
+
       - name: Upload packaged release artifact
         uses: actions/upload-artifact@v5
         with:
           name: release-${{ matrix.artifact_name }}
-          path: release/*
+          path: |
+            release/*.zip
+            release/*.tar.gz
+            release/*.sha256
           if-no-files-found: error
 
   publish-release:
+    name: Publish GitHub Release
+    # `needs: build` requires the WHOLE matrix to succeed, so a failure on any
+    # declared target stops publication rather than shipping a partial set.
     if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - name: Download packaged artifacts
         uses: actions/download-artifact@v5
         with:
@@ -105,8 +230,41 @@ jobs:
           merge-multiple: true
           path: release-assets
 
+      # One file listing every distributable archive, in the format
+      # `sha256sum -c` understands, built from the per-artifact sums each build
+      # job produced from the archive it actually uploaded.
+      - name: Assemble SHA256SUMS.txt
+        run: |
+          set -euo pipefail
+          cd release-assets
+          cat *.sha256 > SHA256SUMS.txt
+          rm -f *.sha256
+          echo "--- SHA256SUMS.txt ---"
+          cat SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+
+      # Every declared target must be present before anything is published, so a
+      # release can never be missing a platform the README promises.
+      - name: Require every declared artifact
+        run: |
+          set -euo pipefail
+          cd release-assets
+          missing=0
+          for pattern in "OmniSuite-*-Windows-x86_64.zip" \
+                         "OmniSuite-*-macOS-arm64.zip" \
+                         "OmniSuite-*-macOS-x86_64.zip" \
+                         "OmniSuite-*-Ubuntu-x86_64.tar.gz"; do
+            # shellcheck disable=SC2086
+            if ! ls $pattern >/dev/null 2>&1; then
+              echo "::error::missing release artifact: $pattern"
+              missing=1
+            fi
+          done
+          test "$missing" -eq 0
+          ls -la
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body_path: RELEASE_NOTES_V1.0.7.md
           files: release-assets/*

@@ -1,0 +1,9 @@
+{
+  "username": "admin",
+  "password": "CHANGE_ME",
+  "fallback_password": "CHANGE_ME",
+  "ws_port": 80,
+  "timeout": 4.5,
+  "concurrency": 6,
+  "firmware_path": ""
+}

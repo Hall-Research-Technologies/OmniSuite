@@ -1,0 +1,99 @@
+/* Configuration dialog styling, shared by every page.
+   These rules used to sit in ui/index.html's inline <style>, so the dialog was
+   styled only on Device Info. ui/settings.js injects the same markup on all
+   four pages, so its styling has to be shared too, or the same dialog would
+   render unstyled on three of them.
+   index.html's other dialogs use .modal/.modal-row/.btn.secondary as well, and
+   still get them from here. */
+.gear-btn{width:36px;height:36px;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid var(--border);background:var(--panel-2);cursor:pointer;font-size:18px;color:var(--fg)}
+.gear-btn:hover{filter:brightness(1.1)}
+/* A dialog taller than the window has to stay reachable. Centring it on a
+   backdrop that cannot scroll put the Settings dialog's title above the top
+   of the screen at 1280x720 -- measured at y = -79 with nothing to scroll.
+   The backdrop scrolls, the padding keeps the dialog off the edges, and
+   `align-items:flex-start` with `margin:auto` still centres it vertically
+   while it fits. */
+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.5);display:none;align-items:flex-start;justify-content:center;z-index:20000;overflow:auto;padding:24px 12px}
+.modal{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;width:540px;max-width:95%;color:var(--fg);margin:auto}
+.modal h3{margin:0 0 12px 0;font-size:16px;font-weight:600}
+.modal-row{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+.modal-row label{min-width:100px;font-size:12px;color:var(--muted)}
+.modal-row input[type=text],.modal-row select{flex:1}
+.modal-row input[type=password]{flex:1}
+.modal-path-input{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+.modal-path-input input[type=text]{flex:1}
+/* Matches the Slate dialog's file input: a chooser button followed by the
+current selection. A directory cannot be obtained from a file input, so
+the button opens the application's folder browser instead -- same
+treatment, correct semantics. */
+.file-chooser{display:flex;gap:8px;align-items:center;flex:1 1 auto;min-width:0}
+.file-chooser-btn{flex:0 0 auto;padding:4px 10px;border:1px solid var(--border);
+border-radius:6px;background:var(--panel-2);color:var(--fg);cursor:pointer;font-size:13px}
+.file-chooser-btn:hover{background:var(--state-selection,rgba(30,144,255,.14))}
+.file-chooser-path{flex:1 1 auto;min-width:0;text-overflow:ellipsis}
+.modal-error{color:var(--danger);font-size:12px;margin:8px 0;display:none}
+.modal-buttons{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+/* .btn.secondary is defined once, in ui/templates.css, with its colour and
+   border as well as its fill. The partial copy that stood here set only
+   the background, and settings.css loads after templates.css on every
+   page -- so it won, and a secondary control kept the primary label
+   colour. */
+.browser-list{max-height:360px;overflow-y:auto;border:1px solid var(--border);padding:8px;background:var(--panel-2);border-radius:6px;margin-bottom:10px}
+.browser-toolbar{display:flex;gap:8px;margin-bottom:8px;align-items:center}
+.browser-path-row{display:flex;gap:8px;margin-bottom:10px;align-items:center}
+.browser-drive-select{width:86px}
+.browser-help{font-size:12px;color:var(--muted);margin:-2px 0 8px}
+.browser-item{padding:8px;cursor:pointer;border-bottom:1px solid var(--border);border-radius:4px;transition:all .1s;display:flex;align-items:center;gap:8px}
+/* .browser-item hover/selected is styled with the other exclusive groups
+   in ui/templates.css. */
+.browser-item:last-child{border-bottom:none}
+
+/* The first-run network notice. Advisory, so it borrows the dialog's own
+   surface rather than the danger treatment: a firewall being enabled is a
+   supported configuration, not a fault. Stacked above the Configuration dialog
+   so the two can never argue about which is on top. */
+.notice-backdrop{z-index:20010}
+.notice-modal{width:480px}
+.notice-text{margin:0 0 10px;font-size:13px;line-height:1.5;color:var(--fg)}
+.notice-text:last-of-type{margin-bottom:2px}
+
+/* The Version row's update status. Kept to two small lines under the field so
+   the dialog gains information rather than a panel. */
+.update-status{font-size:12px;margin:6px 0 0;color:var(--fg)}
+.update-status.muted{color:var(--muted)}
+/* The one state an operator must not scroll past. Semantic tokens only, so it
+   follows every preset and both palettes; a literal colour here would look
+   wrong in nine of the ten. */
+.update-status.update-available{
+  color:var(--on-accent,var(--fg));
+  background:var(--state-warning,var(--accent));
+  font-weight:700;letter-spacing:.02em;
+  padding:5px 9px;border-radius:6px;
+  border:1px solid var(--edge,var(--border));
+  display:inline-block;
+}
+.update-actions{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;align-items:center}
+.update-actions .btn{text-decoration:none}
+
+/* The Settings icon while an unacknowledged update is available.
+   A slow two-second pulse, not a strobe: it should be noticeable at the edge of
+   vision and never demand attention. The ring is drawn with box-shadow so the
+   icon's own box never changes size -- an animation that altered width or
+   padding would reflow the navigation on every pulse. */
+@keyframes omni-update-pulse{
+  0%,100%{box-shadow:0 0 0 0 var(--state-warning,var(--accent))}
+  50%    {box-shadow:0 0 0 4px transparent}
+}
+.gear-btn.update-alert{
+  border-color:var(--state-warning,var(--accent));
+  animation:omni-update-pulse 2s ease-in-out infinite;
+}
+/* Reduced motion gets a stronger static indicator instead of a pulse, not a
+   weaker one: the point is still to be noticed. */
+@media (prefers-reduced-motion: reduce){
+  .gear-btn.update-alert{
+    animation:none;
+    border-color:var(--state-warning,var(--accent));
+    box-shadow:0 0 0 3px var(--state-warning,var(--accent));
+  }
+}

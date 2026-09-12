@@ -9,23 +9,42 @@
   <style>
     .tabs{display:flex;gap:0;}
     .tab{padding:8px 16px;cursor:pointer;background:transparent;color:var(--muted);border:none;font-size:14px;font-weight:500;border-bottom:2px solid transparent;transition:all .16s;text-decoration:none;border-radius:6px 6px 0 0}
-    .tab:hover{color:var(--fg);background:rgba(30,144,255,.08)}
-    .tab.active{color:var(--accent);background:rgba(30,144,255,.08)}
+    /* Tab hover and selection live in ui/templates.css. Each page carried its
+       own copy painted in a literal blue, so the active tab stayed OmniSuite
+       blue under every preset. */
     .matrix-loading-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:50000;}
     .matrix-loading-overlay.hidden{display:none!important;}
     .matrix-loading-message{color:var(--text);text-align:center;padding:40px;font-size:18px;}
     .matrix-loading-spinner{width:40px;height:40px;border:4px solid rgba(255,255,255,0.2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 20px;}
-    @keyframes spin{to{transform:rotate(360deg)}}
-  </style>
+    @keyframes spin{to{transform:rotate(360deg)}}    .usb-status{font-weight:600;color:#86efac}.usb-status.offnet{color:#fde68a}.usb-empty{text-align:center;color:var(--muted);padding:24px}.usb-filter{margin-bottom:8px}.usb-filter input{margin-left:6px;min-width:220px}.usb-na{color:var(--muted)}.usb-parent{color:var(--muted);font-size:11px}
+  
+</style>
+  <script src="/ui/diagnostics.js?v=20260911-diag"></script>
+<link rel="stylesheet" href="/ui/templates.css?v=20260910-templates">
+<link rel="stylesheet" href="/ui/settings.css?v=20260911-settings">
+  <script src="/ui/appearance.js?v=20260910-appearance"></script>
+  <script src="/ui/toast.js?v=20260911-toast"></script>
+<script src="/ui/settings.js?v=20260911-settings"></script>
+  <script src="/ui/sticky-columns.js?v=20260910-sticky" defer></script>
+  <!-- Each of the three sections below overflows sideways at every width this
+       application is used at, so each opts its own scroll container in with
+       data-mirror-scroll and gets a synchronised scrollbar above its table.
+       One container, one mirror: scrolling Encoders must not move Decoders. -->
+  <script src="/ui/mirror-scroll.js?v=20260911-mirror" defer></script>
+
   <script>
     (function(){
       const dark = localStorage.getItem('dark') !== 'false';
-      const compact = localStorage.getItem('viewDensity') === 'compact';
       const apply = ()=>{
-        const target = document.body || document.documentElement;
-        if(!target) return;
-        target.classList.toggle('light', !dark);
-        target.classList.toggle('compact', compact);
+        // The document element, always -- this script runs in <head> on the
+        // matrix pages, where document.body is still null. Waiting for
+        // DOMContentLoaded meant the first paint used the dark palette and the
+        // dark logo even when light was selected, and the page visibly flipped.
+        const root = document.documentElement;
+        root.classList.toggle('light', !dark);
+        if (document.body) {
+          document.body.classList.toggle('light', !dark);
+        }
       };
       if (document.body) apply();
       else document.addEventListener('DOMContentLoaded', apply, {once:true});
@@ -41,21 +60,22 @@
     <div class="controls">
       <div class="tabs">
         <a href="/" class="tab">Device Info</a>
-        <a href="/matrix/configure" class="tab active">Configure</a>
+        <a href="/matrix/configure" class="tab active" aria-current="page">Configure</a>
         <a href="/matrix" class="tab">A/V Matrix</a>
         <a href="/matrix/usb" class="tab">USB Matrix</a>
       </div>
+      <button id="header_gear" class="gear-btn" type="button" title="Settings" aria-label="Settings">⚙️</button>
     </div>
   </div>
 
   <div class="top">
     <div class="row">
-      <button id="refreshBtn">Refresh</button>
-      <button id="reloadCacheBtn" style="margin-left:8px;">Reload Cache</button>
+      <button id="refreshBtn" class="secondary">Refresh</button>
+      <button id="reloadCacheBtn" class="secondary" style="margin-left:8px;">Reload Cache</button>
       <div class="divider"></div>
       <label for="configureFilterInput"><b>Filter Devices:</b></label>
       <input type="text" id="configureFilterInput" placeholder="Type to filter encoders and decoders..." style="min-width:260px;width:260px;">
-      <button id="configureFilterClearBtn" type="button">Clear</button>
+      <button id="configureFilterClearBtn" type="button" class="secondary">Clear</button>
     </div>
   </div>
 
@@ -65,34 +85,34 @@
         <h3>Encoders</h3>
         <div class="section-filter-controls">
           <label class="toggle matrix-section-filter" data-section-group="encUnitInfo" data-section-label="Unit Information">
-            <input type="checkbox" class="section-filter-checkbox" data-section-group="encUnitInfo" style="display:none;">
+            <input type="checkbox" class="section-filter-checkbox switch-input" data-section-group="encUnitInfo">
             <span class="label">Unit Information</span>
             <span class="switch"><span class="knob"></span></span>
           </label>
           <label class="toggle matrix-section-filter" data-section-group="encInput" data-section-label="Input">
-            <input type="checkbox" class="section-filter-checkbox" data-section-group="encInput" style="display:none;">
+            <input type="checkbox" class="section-filter-checkbox switch-input" data-section-group="encInput">
             <span class="label">Input</span>
             <span class="switch"><span class="knob"></span></span>
           </label>
           <label class="toggle matrix-section-filter" data-section-group="encOutput" data-section-label="Session">
-            <input type="checkbox" class="section-filter-checkbox" data-section-group="encOutput" style="display:none;">
+            <input type="checkbox" class="section-filter-checkbox switch-input" data-section-group="encOutput">
             <span class="label">Session</span>
             <span class="switch"><span class="knob"></span></span>
           </label>
           <label class="toggle matrix-section-filter" data-section-group="encEncoding" data-section-label="Encoding">
-            <input type="checkbox" class="section-filter-checkbox" data-section-group="encEncoding" style="display:none;">
+            <input type="checkbox" class="section-filter-checkbox switch-input" data-section-group="encEncoding">
             <span class="label">Encoding</span>
             <span class="switch"><span class="knob"></span></span>
           </label>
           <label class="toggle matrix-section-filter" data-section-group="encConfiguration" data-section-label="Configuration">
-            <input type="checkbox" class="section-filter-checkbox" data-section-group="encConfiguration" style="display:none;">
+            <input type="checkbox" class="section-filter-checkbox switch-input" data-section-group="encConfiguration">
             <span class="label">Configuration</span>
             <span class="switch"><span class="knob"></span></span>
           </label>
-          <button id="encBulkConfigExportBtn" type="button" title="Download config backup for all encoders">Export Encoder Configs</button>
+          <button id="encBulkConfigExportBtn" type="button" class="secondary" title="Download config backup for all encoders">Export Encoder Configs</button>
         </div>
       </div>
-      <div class="tbl-wrap"><table id="encTbl" class="grid" aria-label="Encoders table"></table></div>
+      <div class="tbl-wrap" data-mirror-scroll><table id="encTbl" class="grid sticky-identity" aria-label="Encoders table"></table></div>
     </div>
 
     <div class="configure-section" id="decoders-section">
@@ -100,43 +120,43 @@
         <h3>Decoders</h3>
         <div class="section-filter-controls">
           <label class="toggle matrix-section-filter" data-section-group="decUnitInfo" data-section-label="Unit Information">
-            <input type="checkbox" class="section-filter-checkbox" data-section-group="decUnitInfo" style="display:none;">
+            <input type="checkbox" class="section-filter-checkbox switch-input" data-section-group="decUnitInfo">
             <span class="label">Unit Information</span>
             <span class="switch"><span class="knob"></span></span>
           </label>
           <label class="toggle matrix-section-filter" data-section-group="decOutput" data-section-label="Output">
-            <input type="checkbox" class="section-filter-checkbox" data-section-group="decOutput" style="display:none;">
+            <input type="checkbox" class="section-filter-checkbox switch-input" data-section-group="decOutput">
             <span class="label">Output</span>
             <span class="switch"><span class="knob"></span></span>
           </label>
           <label class="toggle matrix-section-filter" data-section-group="decResolution" data-section-label="Resolution">
-            <input type="checkbox" class="section-filter-checkbox" data-section-group="decResolution" style="display:none;">
+            <input type="checkbox" class="section-filter-checkbox switch-input" data-section-group="decResolution">
             <span class="label">Resolution</span>
             <span class="switch"><span class="knob"></span></span>
           </label>
           <label class="toggle matrix-section-filter" data-section-group="decFastSwitching" data-section-label="Fast Switching">
-            <input type="checkbox" class="section-filter-checkbox" data-section-group="decFastSwitching" style="display:none;">
+            <input type="checkbox" class="section-filter-checkbox switch-input" data-section-group="decFastSwitching">
             <span class="label">Fast Switching</span>
             <span class="switch"><span class="knob"></span></span>
           </label>
           <label class="toggle matrix-section-filter" data-section-group="decVideoWall" data-section-label="Video Wall">
-            <input type="checkbox" class="section-filter-checkbox" data-section-group="decVideoWall" style="display:none;">
+            <input type="checkbox" class="section-filter-checkbox switch-input" data-section-group="decVideoWall">
             <span class="label">Video Wall</span>
             <span class="switch"><span class="knob"></span></span>
           </label>
           <label class="toggle matrix-section-filter" data-section-group="decConfiguration" data-section-label="Configuration">
-            <input type="checkbox" class="section-filter-checkbox" data-section-group="decConfiguration" style="display:none;">
+            <input type="checkbox" class="section-filter-checkbox switch-input" data-section-group="decConfiguration">
             <span class="label">Configuration</span>
             <span class="switch"><span class="knob"></span></span>
           </label>
-          <button id="decBulkConfigExportBtn" type="button" title="Download config backup for all decoders">Export Decoder Configs</button>
+          <button id="decBulkConfigExportBtn" type="button" class="secondary" title="Download config backup for all decoders">Export Decoder Configs</button>
         </div>
       </div>
-      <div class="tbl-wrap"><table id="decTbl" class="grid" aria-label="Decoders table"></table></div>
+      <div class="tbl-wrap" data-mirror-scroll><table id="decTbl" class="grid sticky-identity" aria-label="Decoders table"></table></div>
     </div>
   </div>
 
-  <div id="matrix_loading_overlay" class="matrix-loading-overlay hidden">
+    <div class="configure-section usb-extender-section" id="usb-extenders-section"><div class="header"><h3>USB</h3><span class="small">USB endpoint inventory and configuration &mdash; discover devices, including routed networks, from Device&nbsp;Info &rsaquo; Scan</span></div><div class="tbl-wrap" data-mirror-scroll><div class="usb-filter"><label>Filter USB devices <input id="usbDeviceFilter" type="text" placeholder="Model, IP, MAC, hostname, role"></label></div><table class="grid sticky-identity" aria-label="USB endpoints"><thead><tr><th>Device IP</th><th>Hostname</th><th>Model</th><th>USB Role</th><th>USB IP</th><th>USB MAC</th><th>Firmware</th><th>Network Mode</th><th>Network</th><th>Status</th><th>Link</th><th>Pairing Information</th><th>Actions</th></tr></thead><tbody id="usbExtenderRows"></tbody></table></div></div>  <div id="matrix_loading_overlay" class="matrix-loading-overlay hidden">
     <div class="matrix-loading-message">
       <div class="matrix-loading-spinner"></div>
       <div>Please wait while we build the device list...</div>
@@ -144,5 +164,6 @@
   </div>
 
   <script src="/ui/matrix/matrix.js?v=20260821-codec-route"></script>
+  <script src="/ui/matrix/usb-extenders.js?v=20260910-icron"></script>
 </body>
 </html>

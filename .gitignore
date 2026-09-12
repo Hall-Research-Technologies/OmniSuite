@@ -1,16 +1,72 @@
+# ---------------------------------------------------------------- Python ---
 .venv/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
+# ---------------------------------------------------- build output --------
+# Everything here is produced from tracked sources. None of it is an input.
 build/
 dist/
 release/
+*.spec
+
+# ------------------------------------------------- local user content -----
+# The firmware directory is an operator choice made in Settings at runtime,
+# and the images in it are the manufacturer's. It is not the firmware set for
+# every OmniSuite user, it must never be committed, and it must never enter a
+# build: adding it once produced a 981 MB executable, 908 MB of it firmware.
+# The application ships the CODE that browses an operator-chosen folder; it
+# does not ship the folder.
 firmware/
+
+# Development history kept on this machine, not published. See archive/README.md.
+archive/
+
+# Working material, device web-app bundles and QA baselines captured from the
+# bench. Carries real addresses and third-party code; it is evidence, not source.
+artifacts/
+
 upgrademanager.zip
 
-*.log
+# ------------------------------------------- runtime / generated state ----
+# Runtime configuration: holds device credentials and is written by the
+# application into its data directory. The repository copy is never read --
+# the server loads DATA_DIR/config.json -- and tracking it means the next
+# password change gets committed. Start from config.example.json.
+config.json
 
+# Runtime caches. These are written by a running installation and carry the
+# bench's addresses, MACs, hostnames and stored device passwords. The
+# committed copies held only the documented default password, but the next
+# scan against a fleet with a real one would have committed that. The server
+# reads these from DATA_DIR, never from the repository.
+units_cache.json
+units_cache*.json
+scan_results.json
+units_view.csv
+
+# Runtime acknowledgements and preferences, written per installation.
+notice_ack.json
+topology_ack.json
+scan_preferences.json
+
+# Logs, downloaded device logs and support bundles. A .vdf is an encrypted
+# device log pulled from real hardware.
+*.log
+*.vdf
+ts_dump*.zip
+
+# Packaged-artifact smoke tests extract the application to a temp directory.
+omnisuite-smoke-*/
+
+# ------------------------------------------------ editor / machine --------
+*.code-workspace
+.vscode/
+.idea/
+*.swp
+*~
 .DS_Store
 Thumbs.db
+desktop.ini

@@ -203,41 +203,22 @@ function initTheme(){
   });
 }
 
-// ===== Density Toggle =====
-function initDensity(){
-  const densitySwitch = document.getElementById('density_switch');
-  const densityToggle = document.getElementById('density_toggle');
-
-  const applyDensity = (isCompact)=>{
-    document.body.classList.toggle('compact', isCompact);
-    if(densitySwitch) densitySwitch.classList.toggle('on', isCompact);
-    if(densityToggle) densityToggle.checked = isCompact;
-  };
-
-  applyDensity(localStorage.getItem('viewDensity') === 'compact');
-
-  const label = document.getElementById('density_toggle_label');
-  if(label){
-    const toggle = ()=>{
-      const nextCompact = !document.body.classList.contains('compact');
-      applyDensity(nextCompact);
-      localStorage.setItem('viewDensity', nextCompact ? 'compact' : 'comfortable');
-    };
-    label.addEventListener('click', (e)=>{ e.preventDefault(); toggle(); });
-    if(densityToggle) densityToggle.addEventListener('change', ()=> toggle());
-    if(densitySwitch) densitySwitch.addEventListener('click', (e)=>{ e.preventDefault(); toggle(); });
-  }
-
-  window.addEventListener('storage', (e)=>{
-    if(e.key === 'viewDensity'){
-      applyDensity(e.newValue === 'compact');
-    }
-  });
-}
+// ===== Density =====
+// Density is what the Compact layout means, and appearance.js applies it on
+// every page. The switch this file used to drive was removed with the old
+// density preference; what was left read the retired `viewDensity` key and
+// cleared body.compact from it, undoing the layout on this page.
 
 function setMode(m){
   routeMode = m;
-  document.querySelectorAll('.modebtn').forEach(b=>b.classList.toggle('active', b.dataset.mode===m));
+  document.querySelectorAll('.modebtn').forEach(b=>{
+    const on = b.dataset.mode===m;
+    b.classList.toggle('active', on);
+    // The class is what is painted; aria-checked is what is announced.
+    // Setting only the class leaves a screen reader saying nothing is
+    // selected while the screen shows one clearly is.
+    b.setAttribute('aria-checked', String(on));
+  });
   const modeLabel = document.getElementById('mode_label');
   if(modeLabel){
     const upper = (m||'').toUpperCase();
@@ -268,15 +249,9 @@ async function postJSON(u, body){
   try { return JSON.parse(t);} catch { return {ok:false, error:t}; }
 }
 
-function toast(msg, good=false){
-  const el = document.createElement('div');
-  el.className = 'toast'+(good?' ok':'');
-  el.textContent = msg;
-  document.body.appendChild(el);
-  setTimeout(()=>el.classList.add('show'),10);
-  setTimeout(()=>el.classList.remove('show'), 1800);
-  setTimeout(()=>el.remove(), 2200);
-}
+// toast() is provided by ui/toast.js, which every page loads. This file and
+// usb.js carried byte-identical copies while Device Info had none and fell back
+// to native alert().
 
 const liveWriteQueues = new Map();
 const liveWriteLatest = new Map();
@@ -444,6 +419,14 @@ function ipNum(ip){
 function sortByIpAsc(arr){ return [...arr].sort((a,b)=>ipNum(a.ip)-ipNum(b.ip)); }
 
 let lastState = null;
+// /api/state responses are not ordered. Every filter keystroke, the Refresh
+// button, a save handler and the page-load call all fire refresh() without
+// awaiting the one before, so a slow earlier response landed after a fresher one
+// and put the superseded encoder/decoder state back on screen -- on the A/V
+// Matrix and on Configure, which runs this same refresh. The counters discard a
+// response already overtaken by a newer one, following usb.js.
+let matrixStateSeq = 0;
+let matrixStateApplied = 0;
 const DECODER_POLL_MS = 5000;
 const ENCODER_SETTINGS_POLL_MS = 15000;
 const VIDEO_WALL_PIXEL_SOURCES = {
@@ -728,8 +711,14 @@ async function refresh(options = {}){
   const overlay = document.getElementById('matrix_loading_overlay');
   if (overlay) overlay.classList.remove('hidden');
   
+  const seq = ++matrixStateSeq;
   try {
     const s = await getJSON('/api/state');
+    if (seq <= matrixStateApplied) {
+      console.log('Matrix state response superseded; discarded');
+      return;
+    }
+    matrixStateApplied = seq;
     // sort encoders left->right and decoders top->bottom by IP
     const rawEncoders = sortByIpAsc(s.encoders||[]);
     const rawDecoders = sortByIpAsc(s.decoders||[]);
@@ -2485,15 +2474,19 @@ function render(s){
       ${colTh('Configuration', 'encConfiguration')}
     </tr>` +
     enc.map(e=>{
+      // Model, firmware, serial and the session addresses are reported by the
+      // device and land in innerHTML, so a unit whose stored string contains
+      // markup would otherwise execute it in the operator's browser. escAttr is
+      // this module's escaper and leaves an ordinary value looking identical.
       return `<tr>
         <td><a href="http://${escAttr(e.ip)}" target="_blank" class="text-link" title="Open ${escAttr(e.ip)}">${escAttr(e.ip)}</a></td>
         <td>${buildHostnameInput(e)}</td>
         <td>${buildCodecControl(e)}</td>
-        ${colTd(e.model||'', 'encUnitInfo')}
-        ${colTd(e.fw||'', 'encUnitInfo')}
-        ${colTd(e.serial||'', 'encUnitInfo')}
-        ${colTd((e.v_mcast||'')+':'+(e.v_port||''), 'encUnitInfo')}
-        ${colTd((e.a_mcast||'')+':'+(e.a_port||''), 'encUnitInfo')}
+        ${colTd(escAttr(e.model||''), 'encUnitInfo')}
+        ${colTd(escAttr(e.fw||''), 'encUnitInfo')}
+        ${colTd(escAttr(e.serial||''), 'encUnitInfo')}
+        ${colTd(escAttr((e.v_mcast||'')+':'+(e.v_port||'')), 'encUnitInfo')}
+        ${colTd(escAttr((e.a_mcast||'')+':'+(e.a_port||'')), 'encUnitInfo')}
         ${buildEncoderInputSection(e)}
         ${buildEncoderOutputLink(e)}
         ${buildEncoderEncodingLink(e)}
@@ -2509,7 +2502,8 @@ function render(s){
       ${colTh('Video Wall', 'decVideoWall')}
       ${colTh('Configuration', 'decConfiguration')}
     </tr>` +
-    dec.map(d=>`<tr><td><a href="http://${escAttr(d.ip)}" target="_blank" class="text-link" title="Open ${escAttr(d.ip)}">${escAttr(d.ip)}</a></td><td>${buildHostnameInput(d)}</td><td>${buildCodecControl(d)}</td>${colTd(d.model||'', 'decUnitInfo')}${colTd(d.fw||'', 'decUnitInfo')}${colTd(d.serial||'', 'decUnitInfo')}${colTd((d.ip1_addr||'')+':'+(d.ip1_port||''), 'decUnitInfo')}${colTd((d.ip3_addr||'')+':'+(d.ip3_port||''), 'decUnitInfo')}${buildDecoderInputSection(d)}${buildUnitConfigActions(d, 'decConfiguration')}</tr>`).join('');
+    // Same device-supplied values reaching innerHTML as the encoder row above.
+    dec.map(d=>`<tr><td><a href="http://${escAttr(d.ip)}" target="_blank" class="text-link" title="Open ${escAttr(d.ip)}">${escAttr(d.ip)}</a></td><td>${buildHostnameInput(d)}</td><td>${buildCodecControl(d)}</td>${colTd(escAttr(d.model||''), 'decUnitInfo')}${colTd(escAttr(d.fw||''), 'decUnitInfo')}${colTd(escAttr(d.serial||''), 'decUnitInfo')}${colTd(escAttr((d.ip1_addr||'')+':'+(d.ip1_port||'')), 'decUnitInfo')}${colTd(escAttr((d.ip3_addr||'')+':'+(d.ip3_port||'')), 'decUnitInfo')}${buildDecoderInputSection(d)}${buildUnitConfigActions(d, 'decConfiguration')}</tr>`).join('');
   }
 
   applySectionFilterControls();
@@ -2974,7 +2968,10 @@ const refreshButton = qs('#refreshBtn');
 if (refreshButton) {
   refreshButton.onclick = async ()=>{
     try { await refresh(); toast('Refreshed', true); }
-    catch(err){ alert('Refresh error: '+err.message); }
+    // Production UI reports through the application's own toast. A native alert
+    // blocks the page and stops the polling loop until it is dismissed, so a
+    // single failed refresh froze the Matrix behind a modal.
+    catch(err){ toast('Refresh error: '+err.message, false); }
   };
 }
 
@@ -3031,7 +3028,6 @@ setMode('av');
 initStickyHeaders();
 initPreviewToggle();
 initTheme();
-initDensity();
 initSectionFilterControls();
 
 document.addEventListener('focusout', () => {

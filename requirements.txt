@@ -5,3 +5,4 @@ rich
 Pillow
 pystray
 psutil
+openpyxl

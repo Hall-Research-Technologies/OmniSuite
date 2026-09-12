@@ -5,69 +5,95 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>OmniSuite User Guide</title>
   <link rel="icon" href="/ui/favicon.ico"/>
+  <!-- The shared appearance system: the same tokens, presets, light/dark and
+       logo handling every other page uses. Loaded before the page's own rules
+       so those can build on the tokens. appearance.js also applies the stored
+       template and palette before first paint. -->
+  <link rel="stylesheet" href="/ui/templates.css?v=20260911-guide"/>
+  <script src="/ui/appearance.js?v=20260910-appearance"></script>
   <style>
-    :root{--bg:#1d232a;--card:#222a33;--panel:#262f39;--text:#e9eef5;--muted:#9aa7b4;--accent:#1e90ff;--border:rgba(255,255,255,.1);--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
-    .light{--bg:#f7f8fb;--card:#fff;--panel:#f2f5f8;--text:#0d1117;--muted:#5a6b7a;--border:rgba(0,0,0,.1)}
+    /* Only what is specific to a document. Everything colour-bearing comes from
+       the shared tokens, so all ten presets and both palettes apply here too. */
     *{box-sizing:border-box}
-    body{margin:0;background:var(--bg);color:var(--text);font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif;font-size:15px;line-height:1.48}
-    a{color:#93c5fd}
-    code{background:var(--panel);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+    body{margin:0;background:var(--surface);color:var(--text);
+         font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif;font-size:15px;line-height:1.48}
+    /* Links are an information colour, not the accent: on a page that is mostly
+       prose, accent-coloured links compete with the callouts for attention. */
+    a{color:var(--state-info,var(--action-primary))}
+    a:hover{text-decoration:underline}
+    code{background:var(--surface-elevated);border:1px solid var(--edge);border-radius:5px;padding:1px 5px}
     .page{max-width:1120px;margin:0 auto;padding:22px 22px 56px}
-    .header{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid var(--border);padding-bottom:14px;margin-bottom:18px}
+    .header{display:flex;align-items:center;justify-content:space-between;gap:16px;
+            border-bottom:1px solid var(--edge);padding-bottom:14px;margin-bottom:18px}
     .brand{display:flex;align-items:center;gap:12px}
     .brand img{height:44px;border-radius:6px}
     h1{margin:0;font-size:26px}
     h2{margin:28px 0 10px;font-size:20px}
     h3{margin:18px 0 8px;font-size:16px}
     p{margin:8px 0;color:var(--text)}
-    .muted{color:var(--muted)}
+    .muted{color:var(--text-muted)}
     .toc{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin:18px 0}
-    .toc a{display:block;border:1px solid var(--border);background:var(--card);border-radius:8px;padding:10px 12px;text-decoration:none;color:var(--text)}
-    .toc a:hover{border-color:rgba(30,144,255,.5)}
-    section{border:1px solid var(--border);background:var(--card);border-radius:10px;padding:16px 18px;margin:14px 0}
+    .toc a{display:block;border:1px solid var(--edge);background:var(--surface-raised);
+           border-radius:8px;padding:10px 12px;text-decoration:none;color:var(--text)}
+    .toc a:hover{border-color:var(--selected-edge);background:var(--selected-tint);text-decoration:none}
+    section{border:1px solid var(--edge);background:var(--surface-raised);border-radius:10px;
+            padding:16px 18px;margin:14px 0}
     ul,ol{margin:8px 0 8px 22px;padding:0}
     li{margin:5px 0}
-    table{width:100%;border-collapse:collapse;margin:10px 0;background:var(--panel)}
-    th,td{border:1px solid var(--border);padding:7px 9px;text-align:left;vertical-align:top}
-    th{background:rgba(30,144,255,.12)}
-    .note,.warn,.danger{border-radius:8px;padding:10px 12px;margin:12px 0}
-    .note{border:1px solid rgba(30,144,255,.35);background:rgba(30,144,255,.1)}
-    .warn{border:1px solid rgba(217,119,6,.45);background:rgba(217,119,6,.12)}
-    .danger{border:1px solid rgba(220,38,38,.45);background:rgba(220,38,38,.12)}
+    table{width:100%;border-collapse:collapse;margin:10px 0;background:var(--surface-elevated)}
+    th,td{border:1px solid var(--edge);padding:7px 9px;text-align:left;vertical-align:top}
+    /* A header row is structure, not a highlight: a quiet surface reads better
+       across ten palettes than a tinted one, and keeps the table legible. */
+    th{background:var(--surface);font-weight:600}
+    /* A tinted background alone is not enough to tell the three apart: measured
+       across the ten presets, the warning and critical tints converge to
+       deltaE 2.8 in Warm. The left rule carries the role colour at full
+       strength, where the same two are far apart, so the distinction holds in
+       every palette without making the page more colourful. */
+    .note,.warn,.danger{border-radius:8px;padding:10px 12px;margin:12px 0;border-left-width:4px}
+    /* The three callouts keep their distinct meanings, each from the semantic
+       role that carries it, so the distinction survives every preset. */
+    .note{border:1px solid color-mix(in srgb, var(--state-info,var(--action-primary)) 45%, transparent);
+          background:color-mix(in srgb, var(--state-info,var(--action-primary)) 12%, transparent);border-left:4px solid var(--state-info,var(--action-primary))}
+    .warn{border:1px solid color-mix(in srgb, var(--state-warning) 55%, transparent);
+          background:color-mix(in srgb, var(--state-warning) 14%, transparent);border-left:4px solid var(--state-warning)}
+    .danger{border:1px solid color-mix(in srgb, var(--state-error) 55%, transparent);
+            background:color-mix(in srgb, var(--state-error) 14%, transparent);border-left:4px solid var(--state-error)}
     .pill{display:inline-block;border-radius:999px;padding:1px 8px;font-size:12px;font-weight:600}
-    .good{background:#14532d;color:#bbf7d0}
-    .bad{background:#7f1d1d;color:#fecaca}
+    .good{background:var(--state-success);color:var(--on-success,#0d1117)}
+    .bad{background:var(--state-error);color:var(--on-error,#ffffff)}
     .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
-    .mini{border:1px solid var(--border);background:var(--panel);border-radius:8px;padding:12px}
+    .mini{border:1px solid var(--edge);background:var(--surface-elevated);border-radius:8px;padding:12px}
     .mini h3{margin-top:0}
     .actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-    .btn{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:8px;background:var(--accent);color:white;padding:7px 11px;text-decoration:none;cursor:pointer}
-    .btn.secondary{background:var(--panel);color:var(--text)}
-    @media print{body{background:white;color:#111}.page{max-width:none;padding:0}.header,.toc .btn{display:none}section{break-inside:avoid;border-color:#ccc}.toc a,section,.mini{background:white;color:#111}a{color:#0645ad}}
+    /* .btn, .btn.secondary and every interaction state come from templates.css;
+       only the anchor form needs its own reset, because an <a> is not a button. */
+    a.btn{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;
+          padding:7px 11px;border-radius:8px;border:1px solid var(--edge);
+          background:var(--action-primary);color:var(--on-accent,var(--action-primary-text))}
+    a.btn.secondary{background:var(--surface-elevated);color:var(--text)}
+    a.btn:hover{text-decoration:none}
+    @media print{
+      body{background:white;color:#111}
+      .page{max-width:none;padding:0}
+      .header,.toc .btn,.actions{display:none}
+      section{break-inside:avoid;border-color:#ccc}
+      .toc a,section,.mini,table,th{background:white;color:#111}
+      a{color:#0645ad}
+    }
   </style>
-  <script>
-    (function(){
-      const dark = localStorage.getItem('dark') !== 'false';
-      const compact = localStorage.getItem('viewDensity') === 'compact';
-      const apply = () => {
-        const target = document.body || document.documentElement;
-        if (!target) return;
-        target.classList.toggle('light', !dark);
-        target.classList.toggle('compact', compact);
-      };
-      if (document.body) apply();
-      else document.addEventListener('DOMContentLoaded', apply, {once:true});
-    })();
-  </script>
+  <!-- Theme and preset are applied by appearance.js above, which runs before
+       first paint and reconciles with the server copy afterwards. This page
+       used to carry its own copy that knew only about light/dark. -->
 </head>
 <body>
   <div class="page">
     <div class="header">
       <div class="brand">
-        <img src="/ui/companylogo.png" alt="Company Logo"/>
+        <img src="/ui/companylogo.png" alt="Company Logo" class="logo"/>
         <div>
           <h1>OmniSuite User Guide</h1>
-          <div class="muted">Configuration, discovery, firmware, routing, device setup, USB, and slate workflow</div>
+          <div class="muted">Settings, appearance, discovery, firmware, routing, device setup, USB, and slate workflow</div>
         </div>
       </div>
       <div class="actions">
@@ -80,81 +106,202 @@
     </div>
 
     <div class="toc">
-      <a href="#configuration">1. Configuration Popup</a>
-      <a href="#launch-files">2. Files Created on Launch</a>
-      <a href="#scan">3. Scanning Units</a>
-      <a href="#device-info">4. Device Info Page</a>
-      <a href="#configure">5. Configure Page</a>
-      <a href="#av-matrix">6. A/V Matrix Page</a>
-      <a href="#usb-matrix">7. USB Matrix Page</a>
-      <a href="#popups">8. Configuration Popups</a>
-      <a href="#gotchas">9. Gotchas and Field Rules</a>
+      <a href="#before-first-use">1. Before First Use</a>
+      <a href="#settings">2. Settings</a>
+      <a href="#appearance">3. Appearance</a>
+      <a href="#launch-files">4. Files Created on Launch</a>
+      <a href="#scan">5. Scanning and Discovery</a>
+      <a href="#device-info">6. Device Info Page</a>
+      <a href="#configure">7. Configure Page</a>
+      <a href="#av-matrix">8. A/V Matrix Page</a>
+      <a href="#usb">9. USB Endpoints and USB Matrix</a>
+      <a href="#popups">10. Configuration Popups</a>
+      <a href="#gotchas">11. Gotchas and Field Rules</a>
+      <a href="#troubleshooting">12. Troubleshooting</a>
     </div>
 
-    <section id="configuration">
-      <h2>1. Configuration Popup</h2>
-      <p>Open Configuration with the gear button on the Device Info page. This is the first place to check before scanning or sending writes.</p>
+    <section id="before-first-use">
+      <h2>1. Before First Use</h2>
+      <p>OmniSuite runs on the management PC and talks to each device <strong>directly</strong>. Nothing discovers devices on its behalf, so what that PC is allowed to reach is what OmniSuite can manage. Work through this list once, before the first scan.</p>
+      <ol>
+        <li><strong>Connect the management PC to the appropriate network</strong> &mdash; the network the Omni devices are on, or one that routes to them.</li>
+        <li><strong>Select the correct network interface in OmniSuite.</strong> The adapter selector is on Device Info, beside the Targets field and the Scan button, and it is the only interface picker in the application. The choice is stored on the server and identified by the adapter's address rather than by its position in the list, so it survives a page refresh, navigating to another page and an OmniSuite restart. If the PC has more than one adapter &mdash; a dock, a wireless connection, a VPN &mdash; choose the one carrying the control network deliberately.</li>
+        <li><strong>Allow OmniSuite through the host firewall and any endpoint-security software</strong> when you are prompted. Because OmniSuite talks directly to devices, an operating-system firewall rule or an endpoint-security policy can block discovery and management <em>even when the device is otherwise reachable on the network</em>. A unit whose own web page opens in a browser can still be invisible to OmniSuite if the traffic OmniSuite uses is being filtered.</li>
+      </ol>
+
+      <h3 id="what-omnisuite-puts-on-the-network">What OmniSuite puts on the network</h3>
+      <p>This is what has to be permitted, described as behaviour rather than as a rule to paste in: the exact rule, and whether it is expressed inbound, outbound or per application, depends on the operating system and the security product in use.</p>
+      <table>
+        <tr><th>Purpose</th><th>Traffic</th></tr>
+        <tr><td>OmniStream encoder / decoder discovery, configuration, firmware and polling</td><td>HTTP / WebSocket from the management PC to each unit, on the port chosen in Settings &rsaquo; WS Port (<code>80 (ws/http)</code> or <code>443 (wss/https)</code>). Each candidate address gets a short TCP reachability check first.</td></tr>
+        <tr><td>Finding <strong>unknown</strong> standalone HW-OMNI-311/324 USB extenders on the attached network</td><td>The HW-OMNI-311/324 binary UDP API on port <code>6137</code>, sent as a local broadcast, with the devices' replies returning to OmniSuite.</td></tr>
+        <tr><td>Polling, configuring and controlling <strong>known</strong> standalone USB extenders, routed ones included</td><td>The same binary UDP API on port <code>6137</code>, sent as directed unicast to each known address.</td></tr>
+        <tr><td>Using OmniSuite itself</td><td>The browser connects to the local OmniSuite server; the address and port it bound to are printed at startup.</td></tr>
+      </table>
+      <div class="note"><strong>Do not disable your firewall.</strong> What OmniSuite needs is permission for its own process and the traffic above, not an unprotected machine. On a corporate PC, endpoint-security policy is often centrally managed and cannot be changed locally; in that case the permission has to be granted by your IT department, and the table above is what to give them.</div>
+
+      <h3>What a scan can reach, and what it remembers</h3>
+      <ul>
+        <li><strong>Local broadcast discovery does not cross a router.</strong> It finds unknown devices on the directly attached network only. That is how IP broadcast works, not a missing feature.</li>
+        <li><strong>Routed USB discovery is directed, not broadcast.</strong> Extenders on another subnet are found by scanning the configured discovery networks &mdash; the Targets expression on Device Info writes through to the directed USB discovery ranges &mdash; and are kept visible afterwards by directed unicast polling of their known addresses, which does route.</li>
+        <li><strong>Known devices are refreshed by subsequent scans.</strong> You never have to empty the list to update it: scanning again re-probes every device already known, including ones that have gone quiet.</li>
+        <li><strong>A rescan reconciles by hardware identity.</strong> Devices are matched on MAC address, and information that has changed &mdash; address, hostname, firmware, status &mdash; is updated on the record that already exists.</li>
+        <li><strong>A device that changes IP but keeps its MAC updates its existing inventory entry.</strong> It does not appear a second time, and the row it had at the old address does not linger.</li>
+        <li><strong>Firewall or security policy can prevent discovery or management</strong> even when the device is otherwise reachable on the network. Treat it as a first suspect rather than a last one.</li>
+      </ul>
+      <div class="warn"><strong>Clear Units is not a normal refresh mechanism.</strong> Do not use it to update stale information. To bring the list up to date, <strong>scan again</strong>. Clear Units empties the inventory &mdash; it is for deliberately starting over, and it also resets the topology advisory acknowledgements. See <a href="#scan">Scanning and Discovery</a>.</div>
+    </section>
+
+    <section id="settings">
+      <h2>2. Settings</h2>
+      <p>Settings is the gear button in the page header. It is present on <strong>every</strong> page &mdash; Device Info, Configure, A/V Matrix and USB Matrix &mdash; in the same position, and it opens the same dialog with the same state everywhere. There is one implementation of the dialog, and it reads and writes the server (<code>/api/config</code> and <code>/api/ui_preferences</code>), so there is no page-local copy that could disagree with another page.</p>
+      <p>This is the first place to check before scanning or sending writes.</p>
       <table>
         <tr><th>Setting</th><th>Purpose</th><th>Notes</th></tr>
-        <tr><td>Version</td><td>Shows the running OmniSuite version.</td><td>Read only. This is pulled from the app build/runtime version.</td></tr>
-        <tr><td>Theme</td><td>Switches the UI between Dark and Light.</td><td>Stored locally in the browser.</td></tr>
-        <tr><td>View</td><td>Switches between Comfortable and Compact spacing.</td><td>Compact is intended for laptops or larger systems where more columns need to fit.</td></tr>
+        <tr><td>Version</td><td>Shows the running OmniSuite version, and whether a newer official release exists.</td><td>Read only. The server reports it from the <code>VERSION</code> file it was built from; at the time of writing that is <code>V1.0.7</code>. Always trust what Settings shows over any version printed elsewhere. Underneath it OmniSuite reports one of three answers: <code>No update available &mdash; V1.0.7 is current.</code>, <code>UPDATE AVAILABLE</code> naming the newer release, or <code>Unable to check for updates.</code> A build that is <em>newer</em> than the latest published release is current, not an error. <strong>Check Now</strong> re-checks immediately; <strong>Releases</strong> always opens the official release page. The check is made by the server, cached for several hours, and is never on a polling path — OmniSuite works normally with no Internet, and a failed check changes nothing else. Nothing is downloaded or installed for you: when an update exists and your platform's build can be identified, a download link is offered alongside the release page, and you choose.<br/>When a newer release is found, the <strong>Settings gear</strong> pulses gently so you notice without a dialog interrupting you. Opening Settings stops the pulse for that release; it does not hide the message, which goes on saying an update is available for as long as one is. A later release starts it again, and re-checking the same one does not.</td></tr>
+        <tr><td>Theme</td><td>Switches the UI between Dark and Light.</td><td>Applies to every layout. See <a href="#appearance">Appearance</a>.</td></tr>
         <tr><td>Username</td><td>Device login username.</td><td>Most Omni units use <code>admin</code>.</td></tr>
         <tr><td>Password</td><td>Primary device password.</td><td>The eye button reveals the stored value.</td></tr>
         <tr><td>Fallback Password</td><td>Secondary password tried when the primary password fails.</td><td>Useful while normalizing mixed fleets.</td></tr>
         <tr><td>WS Port</td><td>Selects HTTP/WebSocket or HTTPS/Secure WebSocket.</td><td>Use <code>80 (ws/http)</code> for normal Omni units. Use <code>443 (wss/https)</code> only when the unit's secure API path is working for the target action.</td></tr>
         <tr><td>Timeout</td><td>Per-request device timeout in seconds.</td><td>Increase on slow networks. Too low can make reachable units appear failed.</td></tr>
         <tr><td>Concurrency</td><td>Number of simultaneous scan/upgrade operations.</td><td>Higher is faster, but can make busy networks or units respond unevenly.</td></tr>
-        <tr><td>Firmware Path</td><td>Folder scanned for firmware files.</td><td>The folder button opens a browser for choosing the path.</td></tr>
-        <tr><td>TS Dump</td><td>Downloads a timestamped troubleshooting JSON file.</td><td>The dump contains current collected settings and status only. Passwords are masked, and option lists/raw detail blocks are omitted.</td></tr>
+        <tr><td>Firmware Path</td><td>Folder scanned for firmware files.</td><td>Choose Folder opens OmniSuite's own folder browser. See below.</td></tr>
+        <tr><td>Appearance</td><td>Layout, colour preset and light background.</td><td>Covered in <a href="#appearance">section 3</a>, along with Reset Appearance.</td></tr>
+        <tr><td>User Guide</td><td>Opens this document.</td><td>Also served directly at <code>/help</code>.</td></tr>
+        <tr><td>TS Dump</td><td>Downloads a timestamped troubleshooting JSON file.</td><td>Built entirely from state OmniSuite already holds, so generating it sends nothing to any device. See below.</td></tr>
       </table>
-      <div class="note">OmniSuite itself starts on port <code>8080</code>. If that port is already in use, it binds to the next available local port.</div>
+
+      <h3>Choosing the firmware folder</h3>
+      <p>A browser file input cannot return a directory path, and OmniSuite does not pretend otherwise. <strong>Choose Folder</strong> opens the application's own folder browser, which lists directories on the machine running the server. You can double-click through the tree, pick a drive, or type/paste a full path. The chosen path is stored server-side in <code>config.json</code>, so it survives a restart, and the firmware selector then lists the <code>.vpup2</code> files in that folder.</p>
+
+      <h3>TS Dump / support information</h3>
+      <p>The dump is a single JSON file for support. It carries the current collected settings and status, with passwords masked, plus four derived sections:</p>
+      <table>
+        <tr><th>Section</th><th>Contents</th></tr>
+        <tr><td><code>usb_endpoints</code></td><td>One entry per USB endpoint: model, role, addresses, firmware and Icron revision, network mode and relation, liveness and where it came from, classification and parent identity, configured peers, and per-peer link state with its timestamps.</td></tr>
+        <tr><td><code>usb_routes</code></td><td>Each configured USB relationship with both endpoints identified, the provider that owns it, current link state, and whether the control plane and the data plane were verified.</td></tr>
+        <tr><td><code>usb_discovery</code></td><td>Scan interface and targets, directed ranges, per-endpoint discovery and freshness timestamps, and a summary of UDP packet rates.</td></tr>
+        <tr><td><code>lldp_topology</code></td><td>Per-device LLDP neighbour, resolved upstream switch, and any daisy-chain path.</td></tr>
+      </table>
+      <p>Fields whose value is unknown are deliberately left in the dump rather than stripped: "we do not know this" is usually the answer a support engineer needs. If one section fails to build, the rest of the dump is still produced and the failure is named.</p>
+      <div class="note">OmniSuite itself tries port <code>8080</code> first. If that port is already taken it uses the next free port &mdash; <code>8081</code>, <code>8082</code>, and so on &mdash; and the address it actually bound to is printed at startup.</div>
+    </section>
+
+    <section id="appearance">
+      <h2>3. Appearance</h2>
+      <div class="note"><strong>The preset applies to every control.</strong> Buttons, tabs, toggles, the routing mode selector and the status messages all take their colour from the chosen preset, on all four pages, in both light and dark mode. A destructive action &mdash; Reboot Selected, Remove Selected &mdash; stays recognisably destructive under every preset: it is filled in the critical colour <em>and</em> carries a ring that no other button has, so it never comes to look like an ordinary primary button even in a palette whose accent and critical colours are close. Hovering shades a control, pressing it deepens it, and moving with the keyboard draws a focus ring; none of these change a control's size, so nothing on the page moves as you interact with it. A control you cannot use is dimmed and shows a "not allowed" cursor.</div>
+      <div class="note"><strong>Buttons say how important they are.</strong> The action a page exists for &mdash; Scan on Device&nbsp;Info, Upgrade&nbsp;Selected, and the main button of each dialog &mdash; is filled with the preset&rsquo;s accent colour. Everyday utilities such as Clear&nbsp;Units, Set&nbsp;NTP, Slate&nbsp;Manager and Inventory are quieter but still plainly clickable. Destructive actions are filled in the critical colour and carry a ring no other button has. This guide follows the same preset and light/dark setting as the rest of the application.</div>
+      <div class="note"><strong>Selected controls are filled, not outlined.</strong> Wherever one choice out of several applies &mdash; the page tabs, the A/V&nbsp;Matrix <code>AV / Video / Audio</code> selector, the layout and preset choosers, and every on/off toggle &mdash; the active one is filled with the preset's selection colour while the others stay quiet. Every toggle can also be reached with the Tab key and operated with Space.</div>
+      <p>Appearance lives in the Settings dialog and is presentation only. It never touches discovered units, routes, scan settings, USB state, topology acknowledgements or any credential.</p>
+      <table>
+        <tr><th>Control</th><th>Values</th><th>Notes</th></tr>
+        <tr><td>Theme</td><td>Dark, Light</td><td>Independent of layout: either mode works with any layout.</td></tr>
+        <tr><td>Layout</td><td>Classic, Compact, Modern, Workspace</td><td>Spacing, density and grouping only. Behaviour, navigation and device state are identical in all four.</td></tr>
+        <tr><td>Colour preset</td><td>Ten palettes: Default, Slate, Cool, Ocean, Forest, Warm, Plum, Rose, Soft, High contrast</td><td>Each preset is a complete palette. Meaning is held constant &mdash; critical always reads as critical, online always reads as healthy. Hovering a preset previews it; moving away restores your selection.</td></tr>
+        <tr><td>Light background</td><td>One colour picker</td><td>Sets the light-mode application background. Panel, header and border tones are derived from it so surfaces keep their separation. It is a light-mode value and does not affect dark mode.</td></tr>
+      </table>
+      <h3>The four layouts</h3>
+      <ul>
+        <li><strong>Classic</strong> &mdash; the familiar OmniSuite layout, stated as a choice rather than as the absence of one.</li>
+        <li><strong>Compact</strong> &mdash; denser tables and quieter chrome, so more rows fit on screen.</li>
+        <li><strong>Modern</strong> &mdash; grouped into cards with a visible hierarchy.</li>
+        <li><strong>Workspace</strong> &mdash; a constrained, centred work area with a maximum width and slightly tighter spacing, so a wide display does not stretch every table across the whole viewport. The USB Matrix keeps the width it needs on its own page.</li>
+      </ul>
+      <p>Your choice is remembered in the browser so the first frame is already correct, and on the server so it follows you to another browser and survives a restart.</p>
+      <h3>Reset Appearance</h3>
+      <p><strong>Reset Appearance</strong> returns the layout, palette, light background and theme to their defaults (Classic, Default preset, dark). It is immediate and needs no confirmation because it is visual and reversible. It touches no credential, port, timeout, concurrency, firmware path, scan interface or target, USB discovery range, route, topology acknowledgement, cached device or device configuration.</p>
     </section>
 
     <section id="launch-files">
-      <h2>2. Files Created on Launch</h2>
-      <p>OmniSuite keeps a small set of local working files so configuration, scan results, and exports survive a restart.</p>
+      <h2>4. Files Created on Launch</h2>
+      <p>OmniSuite keeps a small set of local working files so configuration, scan results, and exports survive a restart. They live in the platform data directory: <code>%LOCALAPPDATA%\OmniSuite</code> on Windows, <code>~/Library/Application Support/OmniSuite</code> on macOS, and <code>~/.omnisuite</code> on Linux. Setting <code>OMNI_DATA_DIR</code> overrides that location.</p>
       <table>
         <tr><th>File</th><th>Purpose</th><th>Safe to delete?</th></tr>
-        <tr><td><code>config.json</code></td><td>Stores Configuration popup values such as username, passwords, WS port, timeout, concurrency, and firmware path.</td><td>Yes, but the app returns to defaults and saved passwords/settings are lost.</td></tr>
-        <tr><td><code>units_cache.json</code></td><td>Legacy/current device cache used to repopulate the Device Info list quickly.</td><td>Yes. The unit list clears until you scan again.</td></tr>
+        <tr><td><code>config.json</code></td><td>Stores Settings values such as username, passwords, WS port, timeout, concurrency, and firmware path.</td><td>Yes, but the app returns to defaults and saved passwords/settings are lost.</td></tr>
+        <tr><td><code>units_cache.json</code></td><td>Device cache used to repopulate the Device Info list quickly.</td><td>Yes. The unit list clears until you scan again.</td></tr>
         <tr><td><code>scan_results.json</code></td><td>Unified scan cache used by Device Info, Configure, A/V Matrix, and USB Matrix. It includes discovered devices plus encoder/decoder route details.</td><td>Yes. The matrix and configure pages will need a new scan or cache reload.</td></tr>
-        <tr><td><code>units_view.csv</code></td><td>Generated inventory CSV used by the Inventory export button.</td><td>Yes. It is recreated on export.</td></tr>
+        <tr><td><code>units_view.csv</code></td><td>Generated inventory CSV.</td><td>Yes. It is recreated on export.</td></tr>
+        <tr><td><code>usb_extenders.json</code></td><td>Standalone HW-OMNI-311/324 inventory and the configured USB discovery ranges, kept separately from the OmniStream cache.</td><td>Yes. Standalone USB devices return after the next discovery; configured ranges would have to be re-entered.</td></tr>
+        <tr><td><code>usb_associations.json</code></td><td>Which USB/Icron endpoint belongs to which OmniStream parent, so the association survives a restart or a cache clear.</td><td>Yes, but OmniSuite has to relearn it before integrated endpoints classify.</td></tr>
+        <tr><td><code>scan_preferences.json</code></td><td>The chosen scan adapter (identified by its address) and the saved Targets expression.</td><td>Yes. Scan returns to the default adapter and an empty Targets field.</td></tr>
+        <tr><td><code>ui_preferences.json</code></td><td>Layout, colour preset and light background.</td><td>Yes. Appearance returns to defaults.</td></tr>
+        <tr><td><code>notice_ack.json</code></td><td>Which one-time notices you have already seen &mdash; the first-run network notice, and the release an update alert has been acknowledged for.</td><td>Yes. The first-run notice appears again, and a pending update alert returns once.</td></tr>
+        <tr><td><code>topology_ack.json</code></td><td>Which topology advisories have been dismissed for the current discovered inventory.</td><td>Yes. Any outstanding advisory is shown again.</td></tr>
         <tr><td><code>launcher.log</code></td><td>Launcher startup and error log.</td><td>Yes. It is recreated if the launcher needs to log again.</td></tr>
       </table>
-      <p>When running from source, these JSON/CSV files are stored beside the application files. In the packaged app, the launcher log is stored in the user log folder: Windows uses <code>%LOCALAPPDATA%\OmniSuite\logs\launcher.log</code>, macOS uses <code>~/Library/Logs/OmniSuite/launcher.log</code>, and Linux uses <code>~/.omnisuite/logs/launcher.log</code>.</p>
-      <div class="warn">Do not edit cache files while OmniSuite is running. Use Clear Units for a normal reset, or close OmniSuite before manually deleting cache/config files.</div>
+      <p>In the packaged app, the launcher log is stored in the user log folder: Windows uses <code>%LOCALAPPDATA%\OmniSuite\logs\launcher.log</code>, macOS uses <code>~/Library/Logs/OmniSuite/launcher.log</code>, and Linux uses <code>~/.omnisuite/logs/launcher.log</code>.</p>
+      <div class="warn">Do not edit cache files while OmniSuite is running. To refresh device information, scan again; Clear Units is not a refresh. When you do want to start from an empty inventory, use Clear Units, and close OmniSuite before manually deleting any cache/config file.</div>
     </section>
 
     <section id="scan">
-      <h2>3. Scanning Units</h2>
+      <h2>5. Scanning and Discovery</h2>
+      <p>Device Info owns discovery. Its adapter selector, Targets field, Scan button and Clear Units button drive every provider. No other page has a discovery console, an interface picker or a clear action; the other pages view and configure what discovery has already found.</p>
       <ol>
         <li>Choose the network adapter that is connected to the Omni control network.</li>
         <li>Leave Targets blank to use the adapter's detected range, or type a specific range such as <code>192.168.100.1-254</code>, CIDR such as <code>192.168.100.0/24</code>, or comma-separated IPs.</li>
         <li>Click Scan. Discovered units are cached and reused by Device Info, Configure, A/V Matrix, and USB Matrix.</li>
         <li>Use the X inside the Targets field to clear manual input and return to the selected adapter range.</li>
       </ol>
+      <p>The adapter choice and the Targets expression are both <strong>remembered</strong>. They are stored on the server and survive a page refresh, navigating to another page and back, and an OmniSuite restart. The adapter is identified by its address rather than by its position in the list, so a reordered or renamed adapter list cannot silently change what you chose; if the saved adapter no longer exists, OmniSuite says so and falls back to the normal default.</p>
+      <p>Targets is also the single definition of where to look for USB devices. Saving it writes through to the directed USB discovery ranges, so a routed subnet is entered once rather than in two places. A target expression that cannot be parsed as a range is reported back, and the rest of the preference still saves.</p>
+
+      <h3>What Scan actually does</h3>
+      <p>One click dispatches two independent providers. The OmniStream encoder/decoder scan returns on its own timing and is never made to wait for USB work; USB discovery runs in the background and its results, and the USB count, arrive afterwards.</p>
+      <p>The USB side dispatches all of the following, asynchronously:</p>
+      <ol>
+        <li>a directed re-probe of every known standalone endpoint, including ones currently offline &mdash; a device that stopped answering may simply have moved, and its recorded address is the only lead there is;</li>
+        <li>parent-derived enumeration of every known USB-capable OmniStream unit;</li>
+        <li>a local broadcast for unknown devices on the attached network;</li>
+        <li>a directed range scan of the Targets expression / configured discovery networks.</li>
+      </ol>
+
+      <h3>Local broadcast versus directed discovery</h3>
+      <table>
+        <tr><th>Mechanism</th><th>What it is for</th><th>Scope</th></tr>
+        <tr><td>Local UDP broadcast</td><td>Finding <strong>unknown</strong> endpoints</td><td>The directly attached layer 2 network only. Broadcast does not cross a router.</td></tr>
+        <tr><td>Directed unicast</td><td>Polling and controlling <strong>known</strong> standalone endpoints</td><td>Anywhere IP routing reaches, including other subnets.</td></tr>
+        <tr><td>Configured range scan</td><td>Finding unknown endpoints at <strong>known addresses</strong></td><td>Directed, one candidate address at a time.</td></tr>
+        <tr><td>Parent enumeration</td><td>Discovering and refreshing <strong>integrated</strong> endpoints</td><td>Anywhere the parent OmniStream unit is reachable.</td></tr>
+      </table>
+      <div class="note">There is no generic way to find an unknown device at an arbitrary routed address. If OmniSuite knows neither the device's address nor a network containing it, nothing can find it, because there is nothing to address. That is a property of IP, not a missing feature &mdash; OmniSuite does not sweep private address space. Entering the routed network in Targets is how you tell it where to look.</div>
+      <p>Range input is bounded before it is expanded, so an over-broad expression such as <code>10.0.0.0/8</code> is rejected immediately rather than being materialised. Range scanning is a discovery operation triggered by Scan; ordinary page polling never runs one.</p>
       <div class="warn">On macOS and Linux builds, adapter discovery depends on OS interface data. If the adapter list looks wrong, use the Targets box to enter the intended subnet manually.</div>
-      <p>Scan results are merged into the existing list. Clear Units removes the current cache when you want a fresh list.</p>
+
+      <h3>Clear Units</h3>
+      <p>Scan results are merged into the existing list; rediscovering a device at a new address updates the existing row rather than adding a second one, because identity is the hardware MAC and not the IP address. Clear Units is the single reset:</p>
+      <ul>
+        <li>clears the encoder/decoder cache, the scan results and the CSV export;</li>
+        <li>forgets the standalone USB inventory, so cleared devices do not reappear on a refresh;</li>
+        <li>resets the topology advisory acknowledgements.</li>
+      </ul>
+      <p>It is inventory only. <strong>No packet is sent to any device</strong>, and no pairing, network setting or power state is touched. Configured USB discovery ranges are kept, and devices return after the next successful discovery.</p>
+      <div class="warn"><strong>Clear Units is not how you refresh stale data.</strong> A rescan already re-probes every known device and reconciles it by MAC, so a moved or changed device corrects itself without the inventory being emptied. Use Clear Units only when you deliberately want to start from nothing.</div>
     </section>
 
     <section id="device-info">
-      <h2>4. Device Info Page</h2>
-      <p>The Device Info page is the fleet overview and firmware workflow page.</p>
+      <h2>6. Device Info Page</h2>
+      <p>The Device Info page is the fleet overview, the discovery console and the firmware workflow page.</p>
+
+      <h3>Navigating the table</h3>
+      <p>The leading columns are, in order, the <strong>selection checkbox, IP, Hostname, then MAC</strong>, so you read select, address, name, hardware identity. The first three &mdash; checkbox, IP and Hostname &mdash; are <strong>frozen</strong>: MAC and everything to the right of it scroll underneath them, so a row read at the far right of a wide table is still attributable to a device. The frozen widths are measured from what is actually rendered, so they stay correct in every layout and at any zoom.</p>
+      <p>The <strong>command area is locked in place</strong>. The page header, the scan bar (adapters, Targets, Scan, Clear Units) and the firmware bar (firmware selector, Upgrade Selected, the Encoders/Decoders/USB counts and the details toggle) stay on screen while the table scrolls beneath them. Only those compact command surfaces are pinned; the advisory banners scroll away with the rows, because a permanently pinned advisory costs the height you came for.</p>
+      <p>A <strong>mirrored horizontal scrollbar</strong> sits directly below the locked command area and above the table, so reaching it does not mean scrolling past every row first. It drives the same container the table's own scrollbar does, and the two stay in step whichever one you use. It is shown <strong>only when the table actually overflows</strong> its width, and disappears again as soon as it does not &mdash; for example after hiding the device detail columns. This is an application-wide rule rather than a Device&nbsp;Info feature: any section wide enough to need a horizontal scrollbar at the bottom also gets a synchronized one at the top &mdash; the Encoder, Decoder and USB tables on Configure, the LEX and REX inventories on the USB&nbsp;Matrix, and the route grids when they are wide enough. Each section scrolls independently: moving one does not move the others. A section that fits shows no top scrollbar at all.</p>
+
       <div class="grid">
         <div class="mini">
           <h3>Inventory Table</h3>
-          <p>Shows IP, MAC, link speed, codec, hostname, timezone, NTP server, type, model, version, password state, status, blink, preview, and USB information.</p>
-          <p>Use Show/Hide Device Details to hide or show TimeZone, NTP Server, Type, Model, Version, Password, and USB columns.</p>
+          <p>Shows the selection checkbox, IP, hostname, MAC, link speed, codec, timezone, NTP server, type, model, version, password state, status, blink, preview, USB role, and a Log button.</p>
+          <p>Use Show/Hide Device Details to hide or show TimeZone, NTP Server, Type, Model, Version, Password, and USB columns. Status, Blink, Preview and Log stay visible either way.</p>
+        </div>
+        <div class="mini">
+          <h3>Unit Counts</h3>
+          <p>The firmware bar shows Encoders, Decoders and USB counts. Encoder and decoder counts come from the OmniStream scan; the USB count counts each online USB endpoint once, by its hardware identity, so an endpoint inside an encoder or decoder is never counted twice.</p>
         </div>
         <div class="mini">
           <h3>Polling</h3>
           <p>Poll Units keeps status, version, hostname, timezone, NTP server, link speed, password state, and USB feedback fresh without another scan.</p>
           <p>Open dropdowns and active edits are guarded so polling does not overwrite the field while you are working.</p>
-        </div>
-        <div class="mini">
-          <h3>LLDP Popup</h3>
-          <p>Hover over a MAC address to fetch and show LLDP neighbor data, including switch chassis, management IP, port ID, port description, age, TTL, and capabilities.</p>
         </div>
         <div class="mini">
           <h3>Codec</h3>
@@ -163,10 +310,62 @@
         </div>
       </div>
 
+      <h3>LLDP and network topology</h3>
+      <p>Each discovered unit is asked for its LLDP neighbour during the scan, so the inventory knows what each device is attached to. Nothing polls for it separately, and displaying it touches no device.</p>
+      <p>Hover a MAC address to open the LLDP panel: switch chassis, management IP, port ID, port description, age, TTL, and capabilities. A device that reports no LLDP simply contributes nothing &mdash; missing information is never treated as a second switch.</p>
+      <p><strong>Multiple switches.</strong> When the discovered devices resolve to more than one switch chassis, traffic between them crosses an uplink, which is worth checking <em>if</em> performance problems appear. A banner says so, and the devices on the minority switch carry a subtle shade and a "Different switch" line on their MAC cell. Multiple switches are <strong>not</strong> presented as a fault. Where two groups are the same size, no group is designated as the odd one out.</p>
+      <p><strong>Daisy chains.</strong> An OmniStream unit has a two-port bridge, so a device cabled behind another OmniStream unit reports that unit as its neighbour rather than a switch. OmniSuite follows the chain to the real upstream switch for grouping purposes, and separately keeps and shows the path: the row is marked "Daisy chained via" the unit in front, and the hover panel names both the unit in front and the upstream switch. A chain that cannot be resolved leaves the upstream switch honestly unknown rather than guessed. <strong>A daisy chain is a supported way to cable a system, not a fault, and it is not a second switch.</strong></p>
+      <div class="warn">The daisy-chain advisory states a <strong>risk derived from topology, not a measurement</strong>. Downstream devices share the upstream link, so if several high-bandwidth streams run through it, that link is worth verifying. No device reports its stream bitrate to OmniSuite, so nothing here claims a link is congested, saturated or overloaded.</div>
+      <p><strong>Dismissing an advisory.</strong> Each banner has a close control. The multi-switch advisory and the daisy-chain advisory are separate risks with separate acknowledgements, so dismissing one never silences the other. A dismissal lasts for the lifetime of the current discovered inventory:</p>
+      <table>
+        <tr><th>Operation</th><th>Brings the banner back?</th></tr>
+        <tr><td>Scan / Discover, however many times</td><td>No</td></tr>
+        <tr><td>Scanning a different network, or changing Targets</td><td>No</td></tr>
+        <tr><td>Discovering more devices, or a further switch</td><td>No</td></tr>
+        <tr><td>Background polling, or navigating between pages</td><td>No</td></tr>
+        <tr><td>A device that becomes daisy chained for the first time</td><td>Yes, once, for that new device</td></tr>
+        <tr><td><strong>Clear Units</strong></td><td><strong>Yes</strong> &mdash; the acknowledgement belongs to the inventory and resets with it</td></tr>
+      </table>
+      <p>Dismissing a banner silences the banner and nothing else. The minority-switch and daisy-chain row highlighting keeps describing whatever the current topology is, and follows it in both directions.</p>
+
+      <h3>The USB column</h3>
+      <p>Some OmniStream units have a USB extender built in. For those, this column shows which end of a USB link that unit is:</p>
+      <table>
+        <tr><th>Shows</th><th>Means</th><th>In practice</th></tr>
+        <tr><td><code>LEX</code></td><td>USB <strong>host</strong> end (local extender)</td><td>The end the computer plugs into. An E4521 is a LEX.</td></tr>
+        <tr><td><code>REX</code></td><td>USB <strong>device</strong> end (remote extender)</td><td>The end the keyboard, mouse, camera or hub plugs into. A D4511 is a REX.</td></tr>
+        <tr><td>(blank)</td><td>No USB extender</td><td>The unit does not carry USB.</td></tr>
+      </table>
+      <p>The column is deliberately just the role. Device&nbsp;Info's Type column tells you encoder or decoder, which is a different question &mdash; a unit can be a decoder and the USB device end at the same time &mdash; so the USB role is worth its own column. Everything else about the endpoint is on the tooltip.</p>
+      <p><strong>Hover the cell</strong> and OmniSuite lists what it can actually vouch for about that endpoint:</p>
+      <table>
+        <tr><th>Tooltip line</th><th>What it tells you</th></tr>
+        <tr><td>USB MAC</td><td>The endpoint's hardware identity. This, not its address, is how OmniSuite recognises it.</td></tr>
+        <tr><td>USB IP</td><td>The endpoint's own address, which is usually not the address in the IP column &mdash; that one belongs to the parent unit.</td></tr>
+        <tr><td>Host port</td><td>On a LEX, which physical USB connector the host is expected on.</td></tr>
+        <tr><td>Paired peers</td><td>How many routes are <strong>configured</strong> on this endpoint.</td></tr>
+        <tr><td>(N linked now)</td><td>How many of those configured peers are <strong>connected right now</strong>.</td></tr>
+        <tr><td>Other USB endpoints on its subnet</td><td>How many other USB endpoints this one can see on its own USB network. It describes the network rather than this device, and reads the same for every endpoint on that subnet.</td></tr>
+      </table>
+      <div class="warn"><strong>Paired is not the same as linked.</strong> &ldquo;Paired peers: 2 (0 linked now)&rdquo; means two routes are configured and neither is up at the moment &mdash; a powered-down peer, an unplugged cable, or a peer that lost its pairing table will all read that way. A configured route is a statement about configuration; it is not evidence that USB traffic is flowing. To act on USB routing, use Configure&nbsp;&rsaquo;&nbsp;USB or the USB&nbsp;Matrix, which show configured pairing and live link as separate columns.</div>
+
+      <h3>Downloading a device log</h3>
+      <p>Each OmniStream encoder and decoder can produce a diagnostic bundle for the manufacturer's support team. The <strong>Log</strong> button at the right-hand end of each row retrieves it.</p>
+      <ul>
+        <li>Clicking Log first shows a short notice: <em>&ldquo;Device logs are encrypted and can only be decrypted and read by Engineering.&rdquo;</em> Choose <strong>OK</strong> to continue or <strong>Cancel</strong> to stop. <strong>Cancel is the highlighted, focused button</strong>, so pressing Enter by accident will not start a download; Escape and clicking outside the dialog also cancel. Nothing is requested from the device until you choose OK.</li>
+        <li>The notice appears every time. It is not something to dismiss permanently, because it is the reason not to expect to open the file yourself.</li>
+        <li>After OK, that device builds a fresh bundle and it downloads. The button shows <code>&hellip;</code> while this happens &mdash; usually a few seconds &mdash; and clicking again during that time does nothing, so one click is one request.</li>
+        <li>The file is saved as <code>hostname_IP_timestamp.vdf</code>, so logs from several devices never overwrite each other and each one says which unit and which moment it came from.</li>
+        <li>Nothing else in OmniSuite ever requests a log. It is not part of discovery, polling, startup, the TS&nbsp;Dump or the inventory workbook &mdash; only this button.</li>
+        <li>Retrieving a log does not change the device. Its configuration is untouched and it is not rebooted; the unit does work to build the bundle, so its fans may briefly spin up.</li>
+      </ul>
+      <div class="note"><strong>What is in the file.</strong> The bundle is <strong>encrypted by the manufacturer</strong> and is around 10&nbsp;MB. OmniSuite passes the bytes through exactly as the device produced them &mdash; it does not and cannot read them, so it cannot tell you what is inside. Treat it as diagnostic material for Hall&nbsp;Research or Atlona support and send it only to them. Do not expect to open it yourself. OmniSuite never writes your device passwords into it.</div>
+      <div class="warn"><strong>If Log does not work.</strong> A unit that is powered down, on an unreachable network, or answering on neither the primary nor the fallback password will report that it did not return a debug log, and the button returns to normal. Nothing is left half-downloaded. Check that the unit's row shows a current status, that you can open its web page from the IP link, and that the Primary and Fallback passwords in Settings still match the unit &mdash; a log uses the same sign-in that discovery does.</div>
+
       <h3>Firmware Upgrade</h3>
       <ol>
         <li>Select one or more units.</li>
-        <li>Select the firmware file from the firmware selector.</li>
+        <li>Select the firmware file from the firmware selector. The list is the <code>.vpup2</code> files in the folder set in Settings &rsaquo; Firmware Path; the refresh button re-reads that folder and the folder button opens it.</li>
         <li>Click Upgrade Selected and confirm the custom upgrade dialog.</li>
         <li>Rows move through queued/uploading/upgrading/rebooting/idle based on feedback and version polling.</li>
       </ol>
@@ -180,13 +379,23 @@
         <tr><td>Sync all Passwords</td><td>Moves discovered units to the chosen primary or fallback admin password when the current password is known.</td></tr>
         <tr><td>Set NTP</td><td>Applies timezone and NTP server values to selected units or all units.</td></tr>
         <tr><td>Slate Manager</td><td>Uploads slate images and assigns slate mode/logo to encoders or decoders.</td></tr>
-        <tr><td>Inventory</td><td>Exports the current inventory CSV, including HDCP settings, encoder Session 1/2 A/V multicast addresses, and decoder <code>ip_input1</code>/<code>ip_input3</code> route values when collected.</td></tr>
+        <tr><td>Inventory</td><td>Downloads the inventory workbook. See below.</td></tr>
       </table>
+      <p>Per-row actions live in the table itself: Blink identifies a unit, Preview shows an encoder's thumbnail, and Log downloads that device's diagnostic bundle.</p>
+
+      <h3>The inventory workbook</h3>
+      <p>Inventory downloads an <code>.xlsx</code> workbook with two sheets:</p>
+      <ul>
+        <li><strong>Devices</strong> &mdash; the same columns the inventory CSV has always had, including HDCP settings, encoder Session 1/2 A/V multicast addresses, and decoder <code>ip_input1</code>/<code>ip_input3</code> route values when collected. Parent OmniStream firmware belongs here.</li>
+        <li><strong>USB</strong> &mdash; nine columns, in this order: Model, USB Role, Device IP, Hostname, USB IP, USB MAC, Firmware, Network Mode, Network. This is the operator's view of Configure &rsaquo; USB; peers, link state, status and diagnostics belong in the TS Dump instead.</li>
+      </ul>
+      <p>Both sheets freeze the header row, carry an autofilter, and write addresses and MACs as text so Excel cannot reformat them. It is built from the same inventory the pages render, so one physical endpoint is one row. If the build does not include Excel support, the download falls back to the CSV.</p>
     </section>
 
     <section id="configure">
-      <h2>5. Configure Page</h2>
-      <p>The Configure page contains unit settings that are too wide for the routing matrix. It has a single search filter that applies to both encoders and decoders.</p>
+      <h2>7. Configure Page</h2>
+      <p>The Configure page contains unit settings that are too wide for the routing matrix. It has Encoder, Decoder and USB sections, and a search filter that applies to encoders and decoders.</p>
+      <p>The Encoder, Decoder and USB tables all freeze their first two identity columns &mdash; IP and Hostname on the encoder and decoder tables, Device IP and Hostname on the USB table &mdash; so a row stays attributable while the rest of it scrolls sideways.</p>
       <h3>Encoder Sections</h3>
       <table>
         <tr><th>Section</th><th>Fields</th><th>Notes</th></tr>
@@ -206,12 +415,26 @@
         <tr><td>Video Wall</td><td>Enable plus Configure button when enabled</td><td>The detailed video wall layout opens in a popup to keep the table usable.</td></tr>
         <tr><td>Configuration</td><td>Export / Import links plus Export Decoder Configs bulk button</td><td>Exports are named with the unit IP, unit name, and a UTC timestamp. Bulk exports are bundled into a zip with a manifest. The row spinner clears after polling confirms the unit is back online.</td></tr>
       </table>
+      <h3>USB Section</h3>
+      <p>The USB section is an inventory and configuration view of every known USB endpoint, standalone and integrated alike. It has <strong>no discovery controls</strong>: discovery lives on Device Info, including for routed networks.</p>
+      <table>
+        <tr><th>Column</th><th>Notes</th></tr>
+        <tr><td>Device IP, Hostname, Model, USB Role</td><td>For an integrated endpoint these come from its parent OmniStream unit, which owns its identity and its controls.</td></tr>
+        <tr><td>USB IP, USB MAC</td><td>The USB/Icron endpoint's own address and hardware identity. The MAC is the identity; an address change updates the existing row.</td></tr>
+        <tr><td>Firmware</td><td>The USB endpoint's own firmware. See <a href="#usb-firmware">USB firmware</a>.</td></tr>
+        <tr><td>Network Mode / Network</td><td>Mode reads from whichever source has authority for that endpoint. Network reads <strong>Local</strong>, <strong>Routed</strong> or <strong>Unknown</strong> relative to the selected scan interface; Routed is not a fault.</td></tr>
+        <tr><td>Status</td><td>Online / offline with how long ago it was seen. Which backend refreshed the value is diagnostic detail on the row tooltip, not a status.</td></tr>
+        <tr><td>Link</td><td>Linked, Partial, Not linked, Not paired or Unknown, with a per-peer breakdown on the tooltip. A query that did not answer is Unknown &mdash; a timeout and a confirmed absence of link are different facts.</td></tr>
+        <tr><td>Pairing Information</td><td>Configured peers with an explicit age. When the pairing read has aged out it says so rather than presenting a stale peer as current.</td></tr>
+        <tr><td>Actions</td><td>Identify, network configuration and reboot, dispatched according to which unit owns the endpoint.</td></tr>
+      </table>
+      <p>The USB filter searches only what is on screen: model, role, device IP, hostname, USB IP, USB MAC, firmware, network mode, status and link. Model matching ignores punctuation, so <code>311</code>, <code>-311</code> and <code>HW-OMNI-311</code> all select the same rows. Terms separated by spaces must all match, and a <code>field:value</code> prefix such as <code>ip:</code> or <code>mac:</code> scopes a single term. Filtering is presentation only: it never changes the inventory, the USB count, route state or pairing.</p>
       <p>The section switches show or hide groups of columns. They do not disable the underlying device settings.</p>
       <div class="warn">Configuration import is a device-level restore and can reboot the unit. On legacy units, OmniSuite applies the imported hostname again after reboot because some firmware imports restore other system fields but ignore hostname inside the JSON file.</div>
     </section>
 
     <section id="av-matrix">
-      <h2>6. A/V Matrix Page</h2>
+      <h2>8. A/V Matrix Page</h2>
       <p>The A/V Matrix page is for routing. Encoders are columns. Decoders are rows. Click a matrix cell to route the selected encoder to the selected decoder.</p>
       <table>
         <tr><th>Mode</th><th>What it writes</th><th>Visual feedback</th></tr>
@@ -224,21 +447,87 @@
       <p>Use Lock Headers when the matrix is larger than the viewport. Use Preview to show or hide encoder preview behavior. Use the encoder and decoder filters to reduce the visible matrix without changing the discovered cache.</p>
     </section>
 
-    <section id="usb-matrix">
-      <h2>7. USB Matrix Page</h2>
-      <p>The USB Matrix page pairs LEX and REX units. LEX units are local extenders, REX units are remote extenders.</p>
+    <section id="usb">
+      <h2>9. USB Endpoints and USB Matrix</h2>
+      <p>The USB Matrix pairs LEX and REX endpoints. A LEX (local extender, USB host) is where the computer is; a REX (remote extender, USB device) is where the peripherals are. LEX endpoints are columns and REX endpoints are rows.</p>
+
+      <h3>Standalone and integrated endpoints</h3>
+      <p>OmniSuite handles two kinds of USB endpoint, and the distinction decides how each one is discovered, controlled and reported:</p>
+      <table>
+        <tr><th></th><th>Standalone</th><th>Integrated</th></tr>
+        <tr><td>What it is</td><td>An HW-OMNI-311 (host/LEX) or HW-OMNI-324 (device/REX) as its own unit.</td><td>The USB/Icron endpoint inside an OmniStream E4521 (LEX) or D4511 (REX).</td></tr>
+        <tr><td>Discovered by</td><td>UDP broadcast, a directed range scan, or a directed poll of its known address.</td><td>Its parent OmniStream unit, which normal discovery already talks to.</td></tr>
+        <tr><td>Identity, model, hostname</td><td>The unit's own.</td><td>Supplied by the parent. A USB endpoint is matched to its parent by exact hardware identity, never by address proximity or hostname pattern.</td></tr>
+        <tr><td>Identify</td><td>The extender's own blink.</td><td>The parent OmniStream unit's identify.</td></tr>
+        <tr><td>Reboot</td><td>The extender's own reboot.</td><td>The parent is rebooted instead.</td></tr>
+        <tr><td>Network configuration</td><td>DHCP / static, from OmniSuite.</td><td>Not offered from OmniSuite; it is managed on the parent unit.</td></tr>
+        <tr><td>Pairing shown from</td><td>A fresh read of the endpoint itself.</td><td>The parent's USB configuration, which is the established control plane.</td></tr>
+      </table>
+      <p>Until OmniSuite can prove which of the two an endpoint is, it says so and withholds device-specific commands rather than guessing. That resolves on its own as soon as the parent information arrives &mdash; no USB rescan is needed.</p>
+      <div class="warn">A standalone HW-OMNI-311/324 does not keep its pairing table across a power cycle. After one loses power its routes have to be re-established, and any peer that did keep its own table will disagree with it until they are.</div>
+
+      <h3>Routing from the matrix</h3>
+      <p>A cell states the relationship you want. OmniSuite reconciles the hardware to it; you do not perform the intermediate steps.</p>
+      <table>
+        <tr><th>You do</th><th>It means</th></tr>
+        <tr><td>Click an empty cell</td><td>Route this REX to this LEX.</td></tr>
+        <tr><td>Click an active cell</td><td>Remove this route.</td></tr>
+        <tr><td>Click another LEX's cell for a REX that already belongs to a LEX</td><td><strong>Move</strong> this REX to that LEX.</td></tr>
+      </table>
+      <p><strong>There is no step where you unpair the old route first, and no message telling you to.</strong> Moving a REX is one click: OmniSuite reads the authoritative state, releases only the conflicting relationship, establishes the requested one, and verifies both endpoints. Everything else on the old host is left exactly as it was.</p>
+      <p>Because a click states an end state rather than a command, OmniSuite also handles the states hardware is genuinely found in: already routed (nothing is sent), configured on one endpoint only (it converges, commanding only the endpoint that is missing the relationship), or owned by another host (it moves).</p>
+      <p>If a move cannot complete, the result distinguishes what actually happened &mdash; the endpoint could not be released and nothing was changed; or the new route failed and the previous one was restored and verified; or the new route failed and the restoration could not be confirmed. Failures surface in the ordinary toast.</p>
+      <div class="note">A cell is drawn as pending while the transaction runs, and only shows a finished state once a fresh read of both endpoints agrees. A route is never painted from a click, an HTTP response or a device acknowledgement, so an intermediate state is never displayed as though it were your completed action.</div>
       <ul>
-        <li>Click an empty pairing bubble to pair a LEX to a REX.</li>
-        <li>Click an existing paired bubble to unpair it.</li>
-        <li>Pairing feedback may take longer than the physical unit action because the UI waits for refreshed device state.</li>
-        <li>Auto-Refresh keeps the matrix current; adjust the interval for large systems.</li>
+        <li>Pairing feedback may take longer than the physical unit action because the UI waits for verified device state.</li>
+        <li>Auto-Refresh keeps the matrix current; adjust the interval for large systems. Extra open pages do not multiply device traffic &mdash; one shared backend refresh serves the Matrix, Configure and the Device Info count.</li>
+        <li>An intersection that cannot be routed is disabled and says why: the endpoint is offline, its ownership is not confirmed, its identity is unavailable, its pairing state is stale, or the two endpoints are not on the same USB subnet.</li>
+        <li>The LEX and REX detail tables list one row per physical endpoint. They expose USB type, host port and device filtering where the unit supports them; a standalone HW-OMNI-311/324 does not inherit those controls, and its unsupported fields read as fixed, not applicable, or not established rather than offering a selector that would do nothing.</li>
       </ul>
-      <div class="warn">USB pairing is layer 2. The control GUI can reach devices across layer 3, but the USB pair itself should be on the same layer 2 network. OmniSuite warns when pairing units on different subnets.</div>
-      <p>LEX and REX detail tables expose USB type, host port, and filtering settings when supported by the unit.</p>
+
+      <h3>A USB route never crosses a subnet</h3>
+      <p>Management is routed; USB is not. OmniSuite can query, configure, identify and reboot an endpoint through a router perfectly well. <strong>A USB pairing between endpoints on different subnets does not work, and OmniSuite will not create one.</strong></p>
+      <p>Compatibility is computed from the two endpoints' own addresses and subnet masks, with real address arithmetic &mdash; nothing assumes a /24, and the controller's own subnet is irrelevant. Both endpoints must resolve to the same network, and each must fall inside the other's.</p>
+      <div class="danger">For an integrated endpoint the judgement uses the <strong>Icron interface's own IP and mask</strong>, as the parent reports it &mdash; <strong>never the parent's management subnet</strong>. An E4521 managed on <code>192.168.100.x</code> whose USB endpoint sits on <code>192.168.200.0/24</code> belongs, for pairing purposes, to <code>192.168.200.0/24</code>.</div>
+      <p>The check <strong>fails closed</strong>, and it runs on the server immediately before anything is written:</p>
+      <table>
+        <tr><th>What is known</th><th>Result</th><th>What the cell says</th></tr>
+        <tr><td>Proven to share a subnet</td><td>Offered</td><td>Available</td></tr>
+        <tr><td>Proven not to</td><td>Refused</td><td>Different USB subnet</td></tr>
+        <tr><td>Not proven either way</td><td><strong>Refused</strong></td><td>USB network information unavailable</td></tr>
+      </table>
+      <p>Both disabled cases keep the addresses and masks they judged, for diagnosis. Routed endpoints stay on both axes; only their intersection closes, which is itself useful topology information. A reassignment <strong>checks before it releases</strong>, so a REX is never unpaired from a working host only to discover the destination was not allowed. Existing routes are never torn down because information went incomplete &mdash; only creation is refused.</p>
+
+      <h3>One host, several peers</h3>
+      <p>An HW-OMNI-311 can own several REX peers at once, so the matrix does not restrict a 311 to a single peer. A REX has a single owner, so each REX row is single-select &mdash; which is exactly why clicking another LEX for an owned REX is a move.</p>
+      <p>Adding or removing one peer affects only that peer: a host holding several keeps the rest untouched, and that is true whether the peers are standalone or integrated.</p>
+      <p>Link state is summarised from <em>every</em> peer, never from one value standing in for all of them. A host with five peers all linked reads <code>Linked / 5 peers</code>; some linked reads <code>Partial &mdash; 3/5 linked</code>; the per-peer detail is on the tooltip.</p>
+
+      <h4>What was physically tested</h4>
+      <p>One HW-OMNI-311 was validated on hardware holding <strong>five REX peers simultaneously</strong> &mdash; two standalone HW-OMNI-324 and three integrated D4511 &mdash; added one at a time through the production Matrix endpoints and verified from both sides after every addition. Each REX independently named the host, no addition displaced an earlier peer, removing one route removed exactly that peer, and an application restart reconstructed the whole five-peer state from the hardware.</p>
+      <div class="note"><strong>Five is the number that was tested, not a discovered maximum.</strong> The documented model for an HW-OMNI-311 host is seven peers; five is simply how many have been proven to carry USB simultaneously. The integrated E4521's capacity is a separate question and is measured separately: one E4521 was observed holding two peers at once, and <strong>no E4521 capacity beyond two is claimed</strong>. Capacity for peers is also not a statement about how many USB peripherals can be used.</div>
+      <p>Route combinations, and how far each one has actually been proven:</p>
+      <table>
+        <tr><th>Combination</th><th>Control plane (pair / unpair)</th><th>USB data plane</th></tr>
+        <tr><td>E4521 &rarr; D4511</td><td>The established path, unchanged.</td><td>Verified (pre-existing).</td></tr>
+        <tr><td>HW-OMNI-311 &rarr; HW-OMNI-324</td><td>Verified through the production endpoints.</td><td>Verified &mdash; peripherals were physically run across the five-peer topology.</td></tr>
+        <tr><td>HW-OMNI-311 &rarr; D4511</td><td>Verified through the production endpoints.</td><td>Verified &mdash; same physical test, which carried both families at once.</td></tr>
+        <tr><td>E4521 &rarr; HW-OMNI-324</td><td>Verified through the production endpoints: pair and unpair were each acknowledged on both endpoints and both peer tables agreed.</td><td><strong>Not verified.</strong> No peripheral test has been performed for this combination.</td></tr>
+      </table>
+      <p>The mixed combinations are labelled in the matrix as a mixed USB route whose data transport is not yet validated, and they are routable precisely so that test can be carried out. A successful pair is never treated as evidence that USB traffic crosses the link, and nothing about the other three combinations upgrades the claim made about <code>E4521 &rarr; HW-OMNI-324</code>.</p>
+
+      <h3 id="usb-firmware">USB firmware</h3>
+      <p>An OmniStream unit and the USB module inside it are versioned separately, so the Firmware shown on a USB row is <strong>the firmware of the USB endpoint itself</strong>:</p>
+      <ul>
+        <li>For a <strong>standalone</strong> HW-OMNI-311/324, it is that unit's own firmware, read from the unit.</li>
+        <li>For an <strong>integrated</strong> endpoint, it is the <strong>Icron endpoint's</strong> firmware, read from that endpoint. It is <strong>never</strong> the parent OmniStream unit's firmware. On the bench an E4521 and a D4511 both running OmniStream <code>2.1.2</code> carried Icron <code>2.0.9</code>, and one D4511 carried an older Icron revision than its siblings &mdash; real per-endpoint variation the parent's firmware would have hidden.</li>
+      </ul>
+      <p><strong>Some units report no Icron revision.</strong> When that read has never succeeded, the Firmware field is left <strong>blank</strong> rather than being filled in from the parent, because that would state a version the module does not have. The workbook writes <code>N/A</code> for it.</p>
+      <p>The parent OmniStream firmware is still reported, on the Devices sheet of the workbook and in the Device Info inventory, where it belongs.</p>
     </section>
 
     <section id="popups">
-      <h2>8. Configuration Popups</h2>
+      <h2>10. Configuration Popups</h2>
       <h3>Session Popup</h3>
       <p>Opened from an encoder's Session link on the Configure page. It displays a unit selector at the top so you can move between available encoders without closing the popup.</p>
       <ul>
@@ -268,6 +557,16 @@
         <li>In inches or millimeters mode, do not apply the pixel math. Width, height, total display width, and total display height are handled as device measurement fields.</li>
       </ul>
 
+      <h3>USB Network and Reboot Dialogs</h3>
+      <p>Opened from the Actions column of Configure &rsaquo; USB, for a standalone extender.</p>
+      <ul>
+        <li>The network dialog offers three explicit choices &mdash; DHCP, Static, and Cancel &mdash; so Cancel means cancel.</li>
+        <li>DHCP confirms with the device identified by model, address and MAC, and warns that the address may change. Identity stays the hardware MAC, so a new address updates the existing row.</li>
+        <li>Static opens a form for IP, mask and gateway, prepopulated where authoritative values exist, and validated for address syntax, a contiguous mask, and a gateway inside the same subnet before anything is sent.</li>
+        <li>Cancel, the close button, the backdrop and Escape all abort without transmitting.</li>
+        <li>An integrated endpoint never opens this dialog. It shows an explanation instead: its network is managed by the parent OmniStream unit.</li>
+      </ul>
+
       <h3>Slate Manager</h3>
       <p>Opened from the Device Info footer. It uploads slate images and applies slate settings to selected units, all encoders, or all decoders.</p>
       <ul>
@@ -279,7 +578,7 @@
     </section>
 
     <section id="gotchas">
-      <h2>9. Gotchas and Field Rules</h2>
+      <h2>11. Gotchas and Field Rules</h2>
       <table>
         <tr><th>Area</th><th>Gotcha</th><th>Best practice</th></tr>
         <tr><td>Live dropdowns and checkboxes</td><td>Writes are queued, but the device can still take time to report the new value.</td><td>Move down the list normally. If a field shows pending, let it finish before changing the same unit again.</td></tr>
@@ -288,9 +587,72 @@
         <tr><td>Video Wall</td><td>Enabling Video Wall requires 1920x1080 decoder resolution.</td><td>OmniSuite sets 1920x1080 when Video Wall is enabled.</td></tr>
         <tr><td>Codec</td><td>Changing codec reboots legacy units.</td><td>Confirm only when ready for the unit to go offline briefly.</td></tr>
         <tr><td>Firmware upgrade</td><td>Some failed uploads leave fragments on the unit until reboot.</td><td>If upload times out, reboot the unit before retrying the same firmware.</td></tr>
-        <tr><td>USB pairing</td><td>USB data pairing is layer 2 even when GUI control is layer 3.</td><td>Keep LEX and REX on the same layer 2 path for real USB operation.</td></tr>
+        <tr><td>USB routing</td><td>Management is routed; USB pairing is not. Two endpoints on different USB subnets cannot be paired, and an intersection OmniSuite cannot prove is refused rather than offered.</td><td>Keep the two USB endpoints on the same subnet. For an integrated endpoint, check the <em>Icron</em> address and mask, not the parent's management address.</td></tr>
+        <tr><td>Moving a USB route</td><td>Clicking another LEX for an owned REX moves it in one action.</td><td>Do not unpair first. Let the transaction complete; the cell settles once both endpoints have been re-read.</td></tr>
+        <tr><td>Standalone USB power cycle</td><td>A standalone HW-OMNI-311/324 loses its pairing table when it loses power.</td><td>Re-establish its routes from the matrix afterwards; a surviving peer will disagree with it until you do.</td></tr>
+        <tr><td>USB firmware</td><td>The Firmware on a USB row is the USB endpoint's own version, and is blank when the endpoint has never reported one.</td><td>Read parent OmniStream firmware from the device inventory, not from the USB row.</td></tr>
+        <tr><td>Topology advisories</td><td>Dismissing a banner lasts for the life of the current inventory. Scanning again does not bring it back.</td><td>Clear Units resets the acknowledgements. Row highlighting keeps describing the topology whether or not the banner was dismissed.</td></tr>
+        <tr><td>Discovery reach</td><td>Broadcast finds unknown devices only on the attached network; nothing can find an unknown device at an unknown routed address.</td><td>Put routed networks in Targets so they are scanned by directed unicast. The value is remembered.</td></tr>
         <tr><td>Hostname</td><td>Unsupported characters can be rejected by the unit.</td><td>Use only letters, numbers, hyphen, and period.</td></tr>
       </table>
+    </section>
+
+    <section id="troubleshooting">
+      <h2>12. Troubleshooting</h2>
+      <p>Most reports of a missing or unresponsive device are answered by the same short sequence. The order matters: there is nothing to gain from rescanning a subnet the PC is not on, and nothing to learn from suspecting OmniSuite while its traffic is being filtered.</p>
+      <div class="note">Device missing &rarr; Verify interface/subnet &rarr; Verify IP connectivity &rarr; Verify firewall/security policy &rarr; For routed USB: verify Discovery Network / known address &rarr; Scan again &rarr; Review TS Dump</div>
+
+      <h3>The order to work through</h3>
+      <ol>
+        <li><strong>Device missing.</strong> State it precisely: which device, at which address, expected on which network. A device that has never been seen and a device that stopped being seen are different problems.</li>
+        <li><strong>Verify the interface and subnet.</strong> Check that the adapter selected on Device Info is the one connected to the device's network, and that the Targets expression covers the addresses you expect. A dock, a wireless connection or a VPN can quietly own the route you assumed.</li>
+        <li><strong>Verify IP connectivity.</strong> From the management PC, confirm the device answers at all &mdash; ping its address, or open its own web page. If it does not answer here, the problem is in the network or the device, not in OmniSuite.</li>
+        <li><strong>Verify firewall and security policy.</strong> Confirm that OmniSuite is permitted by the host firewall and by any endpoint-security product, for the traffic listed in <a href="#what-omnisuite-puts-on-the-network">What OmniSuite puts on the network</a>. A blocked process and an empty network look identical from the UI. Do not disable the firewall to test this; permit OmniSuite, and involve IT where the policy is centrally managed.</li>
+        <li><strong>For routed USB: verify the discovery network or the known address.</strong> Broadcast does not cross a router, so a routed standalone HW-OMNI-311/324 is found only if its network is entered in Targets &mdash; which writes through to the configured USB discovery networks &mdash; or if OmniSuite already knows its address and can poll it by directed unicast.</li>
+        <li><strong>Scan again.</strong> This is the refresh. A rescan re-probes known devices, reconciles them by MAC and updates whatever has changed. Encoder and decoder results return first; USB discovery runs in the background and its results, and the USB count, arrive afterwards.</li>
+        <li><strong>Review the TS Dump.</strong> Settings &rsaquo; TS Dump downloads a timestamped JSON file built entirely from state OmniSuite already holds, so producing it sends nothing to any device. It carries per-endpoint discovery and freshness timestamps, liveness and its source, classification and parent identity, configured peers and link state, and the scan interface and directed ranges &mdash; including the fields whose value is unknown, which is frequently the answer. Attach it when you raise the issue.</li>
+      </ol>
+
+      <h3>Devices not appearing</h3>
+      <ol>
+        <li><strong>Firewall and endpoint security.</strong> Confirm OmniSuite is allowed to send and receive the traffic in <a href="#what-omnisuite-puts-on-the-network">the table above</a>. This is the first check, not the last one.</li>
+        <li><strong>Adapter and Targets.</strong> Is the selected adapter on the device's network? Does Targets cover the right addresses? Leave Targets blank to use the adapter's detected range.</li>
+        <li><strong>Settings &rsaquo; WS Port.</strong> OmniStream units are identified through their API. Use <code>80 (ws/http)</code> for normal units; <code>443 (wss/https)</code> only when the unit's secure path is working.</li>
+        <li><strong>Credentials.</strong> A unit answering at its address still has to be readable. If Settings holds the wrong username or password, and the fallback password does not match either, a reachable unit may not be reported.</li>
+        <li><strong>Timeout.</strong> Too low a per-request timeout can make a reachable but slow unit look like it failed. Raise it on slow networks.</li>
+        <li><strong>An unknown device at an unknown routed address cannot be found.</strong> If OmniSuite knows neither the address nor a network containing it, there is nothing to address. Enter the routed network in Targets.</li>
+      </ol>
+
+      <h3>Devices appear but do not respond</h3>
+      <ol>
+        <li><strong>Firewall and endpoint security.</strong> A policy that permits some traffic and filters the rest will leave a device listed from an earlier scan while every action against it fails. Check this before changing anything else.</li>
+        <li><strong>Credentials.</strong> Check the password state on the Device Info row. Sync all Passwords moves units onto the chosen primary or fallback password where the current one is known.</li>
+        <li><strong>Timeout and concurrency.</strong> Raising Timeout, or lowering Concurrency on a busy network, often settles units that respond unevenly rather than not at all.</li>
+        <li><strong>Confirm it is still there.</strong> Read Status and how long ago the device was seen, then scan again to re-probe it at its recorded address. A device that moved is reconciled onto its existing row by MAC.</li>
+        <li><strong>A device that does not answer is an upstream condition.</strong> OmniSuite reports it as such rather than as an application error; a unit that is offline, rebooting or degraded is not an OmniSuite fault. Verify the unit itself before treating it as a software problem.</li>
+      </ol>
+
+      <h3>Routed devices not discovered</h3>
+      <ol>
+        <li><strong>Firewall and security policy, on the PC and between the subnets.</strong> Routed discovery and management are directed unicast; if that traffic cannot leave the management PC or return to it, a perfectly healthy routed device is simply never heard from.</li>
+        <li><strong>Broadcast was never going to find it.</strong> Local broadcast reaches the attached network only. A routed device missing from a broadcast-only scan is the expected result, not a fault.</li>
+        <li><strong>Is the network configured?</strong> Enter the routed network in Targets on Device Info. It is saved, and it writes through to the directed USB discovery networks used by Configure &rsaquo; USB, so it is entered once rather than in two places.</li>
+        <li><strong>Check the expression itself.</strong> An over-broad range such as <code>10.0.0.0/8</code> is rejected before it is expanded, and a target expression that cannot be parsed is reported back. A network with no IP path costs a bounded scan and yields nothing &mdash; which is the correct outcome, not an error.</li>
+        <li><strong>Give the background work time.</strong> USB discovery is never made to block the encoder/decoder scan, so USB rows and the USB count appear after it, on their own schedule.</li>
+        <li><strong>Routed management is not routed USB pairing.</strong> A routed endpoint can be discovered, polled and configured perfectly well and still be refused a route, because a USB pairing never crosses a subnet. That refusal is a separate matter from discovery.</li>
+      </ol>
+
+      <h3>USB devices show stale or unknown information</h3>
+      <ol>
+        <li><strong>Firewall and endpoint security.</strong> The directed UDP polling that keeps a USB row current is the same traffic as discovery. If it is being filtered, values age out and read as unknown while the endpoint itself is healthy.</li>
+        <li><strong>Scan again.</strong> A rescan re-probes known endpoints, re-enumerates parents and reconciles everything by canonical USB MAC. This is the refresh.</li>
+        <li><strong>Read the vocabulary literally.</strong> <code>Unknown</code> means the value was not read, which is not the same as "not linked"; a pairing figure past its age is stated as aged rather than presented as current; and after an OmniSuite restart a known standalone endpoint reads <code>Offline (stale)</code> until the next discovery reaches it.</li>
+        <li><strong>An integrated endpoint follows its parent.</strong> Its identity, liveness and pairing come from the parent OmniStream unit, so a parent that has become unreachable is what is actually stale. Check the parent on Device Info.</li>
+        <li><strong>An endpoint whose ownership is not yet proven says so.</strong> It resolves on its own once the parent information arrives, with no USB rescan needed.</li>
+        <li><strong>A standalone extender that lost power lost its pairing table.</strong> Its peers are gone and any surviving peer will disagree with it until the routes are re-established from the matrix. That is the device's behaviour, not stale display.</li>
+        <li><strong>A blank USB Firmware is deliberate.</strong> It means that endpoint has never reported one; it is never filled in from the parent's firmware.</li>
+      </ol>
+      <div class="warn">Nothing in this section asks you to clear the inventory. <strong>Clear Units is not the fix for stale data</strong> &mdash; scanning again is, and it keeps everything OmniSuite has already learned. Clear Units is for deliberately starting from an empty inventory.</div>
     </section>
   </div>
 </body>

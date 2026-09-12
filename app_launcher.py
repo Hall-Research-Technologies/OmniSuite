@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import errno
 import os
 import socket
 import sys
@@ -191,6 +192,9 @@ class AppWindow:
         self.url_var = tk.StringVar(value="")
         self.url_label = tk.Label(frame, textvariable=self.url_var, font=("Helvetica", 11, "underline"), fg="#64B5F6", bg="#000000", cursor="hand2")
         self.url_label.pack(pady=4)
+        # The lambda discards Tk's event argument deliberately: binding
+        # self.open_browser directly would pass the event as `automatic`, which
+        # is truthy, and the click would suppress itself under OMNI_SMOKE.
         self.url_label.bind("<Button-1>", lambda _event: self.open_browser())
 
         button_frame = tk.Frame(frame, bg="#000000")
@@ -238,7 +242,7 @@ class AppWindow:
         try:
             icon_image = Image.open(icon_path)
             menu = pystray.Menu(
-                pystray.MenuItem("Open Browser", lambda: self.root.after(0, self.open_browser)),
+                pystray.MenuItem("Open Browser", lambda: self.root.after(0, self.open_browser)),  # explicit: never suppressed
                 pystray.MenuItem("Show Window", lambda: self.root.after(0, self.show_window)),
                 pystray.MenuItem("Exit", lambda: self.root.after(0, self.on_close)),
             )
@@ -277,10 +281,19 @@ class AppWindow:
                     self.port = candidate_port
                     os.environ["OMNI_PORT"] = str(self.port)
                     log_message(f"Starting server on {self.host}:{self.port}")
+                    # The read-only startup refreshes begin here rather than at
+                    # import, so simply importing the module never reaches the
+                    # network.
+                    if hasattr(server, "start_background_startup_tasks"):
+                        server.start_background_startup_tasks()
                     server.app.run(host=self.host, port=self.port, debug=False, use_reloader=False, threaded=True)
                     return
                 except OSError as exc:
-                    if "Address already in use" not in str(exc):
+                    # Windows reports WSAEADDRINUSE with its own wording, so a
+                    # substring match never advanced to the next port there.
+                    in_use = getattr(exc, "errno", None) in (
+                        errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", errno.EADDRINUSE))
+                    if not in_use and "Address already in use" not in str(exc):
                         raise
                     log_message(f"Port {candidate_port} is in use, trying {candidate_port + 1}")
             raise RuntimeError(f"Unable to bind server on any port starting at {self.port}")
@@ -312,19 +325,77 @@ class AppWindow:
         self.status_label.config(text="✓ Server Running", fg="#4CAF50")
         self.url_var.set(url)
         self.open_button.config(state="normal")
-        self.open_browser()
+        # The only automatic open. Everything else is a person clicking.
+        self.open_browser(automatic=True)
 
     def on_server_failed(self) -> None:
         self.status_label.config(text="✗ Server Failed to Start", fg="#f44336")
         self.open_button.config(state="disabled")
         messagebox.showerror("Server Error", "Failed to start the server. Please check the launcher log.")
 
-    def open_browser(self) -> None:
-        url = f"http://{self.host}:{self.port}"
+    def current_url(self) -> str:
+        """The address this launcher is actually serving on.
+
+        Built from the port the server bound, which is chosen at runtime and is
+        not always 8080 -- so nothing here may assume one.
+        """
+        return f"http://{self.host}:{self.port}"
+
+    def open_browser(self, automatic: bool = False) -> bool:
+        """Open OmniSuite in the operator's default browser.
+
+        The Open Browser button, the clickable URL and the tray menu item all
+        call this with no argument; the server-ready handler calls it with
+        automatic=True.
+
+        OMNI_SMOKE suppresses only the AUTOMATIC open. A build runner must not
+        have a browser window appear on its own, but a click is a person asking
+        for one and is always honoured -- the guard used to sit in front of both,
+        so with OMNI_SMOKE set the button silently did nothing.
+        """
+        url = self.current_url()
+        if automatic and os.environ.get("OMNI_SMOKE"):
+            log_message(f"OMNI_SMOKE set; not opening a browser automatically for {url}")
+            return False
+        return self.launch_browser(url)
+
+    def launch_browser(self, url: str) -> bool:
+        """Hand the URL to the OS default browser. True if it was accepted.
+
+        webbrowser.open() returns False when it cannot launch anything and does
+        NOT raise, so the result has to be checked: discarding it turns a failed
+        launch into a button that appears to do nothing at all.
+
+        new=2 asks for a new tab in an already-open window, which is what an
+        operator expects when their browser is already running. No specific
+        browser is named: this is the platform's own default-browser mechanism,
+        which is why the same code serves Windows, macOS and Linux.
+        """
         try:
-            webbrowser.open(url)
+            opened = bool(webbrowser.open(url, new=2))
         except Exception as exc:
-            messagebox.showerror("Browser Error", f"Failed to open browser: {exc}")
+            log_message(f"Browser launch raised {type(exc).__name__}: {exc}")
+            opened = False
+        if opened:
+            log_message(f"Opened {url} in the default browser")
+        else:
+            log_message(f"Could not open a browser for {url}")
+            self.report_browser_failure(url)
+        return opened
+
+    def report_browser_failure(self, url: str) -> None:
+        """Say so without interrupting; the server is still running.
+
+        Reported in the launcher's own status line rather than a modal: the
+        address is already on screen and can be copied, and a dialog would have
+        to be dismissed before the operator could reach it.
+        """
+        try:
+            self.status_label.config(
+                text="Server running - could not open a browser; open the address below",
+                fg="#FFB300")
+        except Exception:
+            pass
 
     def on_close(self) -> None:
         if messagebox.askokcancel("Exit OmniSuite", "Stop the server and exit the application?"):

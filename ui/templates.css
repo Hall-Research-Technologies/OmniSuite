@@ -1,0 +1,871 @@
+/*
+ * OmniSuite UI templates.
+ *
+ * Three layouts, two appearance modes, one behaviour layer. Nothing here knows
+ * anything about routing, discovery or device state -- a template is spacing,
+ * density and grouping, never a second copy of the application.
+ *
+ *   data-template="classic"   the layout OmniSuite has always had
+ *   data-template="compact"   denser, quieter controls, built for wide displays
+ *   data-template="modern"    grouped into cards with a clearer hierarchy
+ *
+ * Appearance is the independent dimension and stays where it already was:
+ * `body.light` is light, its absence is dark. Three layouts times two modes,
+ * not six templates.
+ *
+ * Colours are named by meaning, never by value, so a template can be restyled
+ * without hunting component rules. The two topology states were introduced by
+ * the LLDP work and keep their names.
+ */
+
+:root {
+  /* Surfaces and text */
+  --surface: var(--bg, #1d232a);
+  --surface-raised: var(--card, #222a33);
+  --surface-elevated: var(--panel-2, #262f39);
+  --text: var(--fg, #e9eef5);
+  --text-muted: var(--muted, #9aa7b4);
+  --edge: var(--border, rgba(255, 255, 255, .08));
+
+  /* Actions */
+  --action-primary: var(--accent, #1e90ff);
+  --action-primary-text: #ffffff;
+  --action-secondary: transparent;
+  --action-secondary-text: var(--text);
+
+  /* States */
+  --state-success: #4ade80;
+  --state-warning: #eab308;
+  --state-error: var(--danger, #e5534b);
+  --state-selection: rgba(30, 144, 255, .16);
+  --state-pending: rgba(148, 163, 184, .22);
+
+  /* Derived control tokens.
+     Every one of these is computed from a role above, so a preset changes the
+     whole control system by changing nine colours. Nothing below this line
+     names a literal hue. */
+  --selected-fill: var(--state-selection);
+  --selected-on: var(--on-selection, var(--action-primary-text));
+  --selected-tint: color-mix(in srgb, var(--state-selection) 20%, transparent);
+  /* A tab is selected by its fill, not by its label colour, so its tint has to
+     carry the whole difference. Measured at 20% it was as little as deltaE 3.5
+     against an unselected tab. */
+  --selected-tint-strong: color-mix(in srgb, var(--state-selection) 45%, transparent);
+  --selected-edge: var(--state-selection);
+  /* The focus ring has to stay visible on a bare surface AND on a filled
+     accent button, so it is the accent pulled toward the text colour rather
+     than the accent itself. */
+  --focus-ring: color-mix(in srgb, var(--action-primary) 55%, var(--text) 45%);
+  /* Destructive actions must not rely on hue alone. Measured across the ten
+     presets, accent and error are as close as deltaE 11 (Rose), which is not a
+     difference an operator can act on -- so a destructive button also carries a
+     ring that no other button has. Derived from the error colour, so it follows
+     the preset. */
+  --danger-ring: color-mix(in srgb, var(--state-error) 45%, #000000 55%);
+  --control-hover-veil: color-mix(in srgb, var(--text) 12%, transparent);
+  --control-press-veil: color-mix(in srgb, #000000 16%, transparent);
+  --control-disabled-opacity: .45;
+
+  /* Topology, from the LLDP work */
+  --minority-topology-bg: var(--alternate-switch-bg, rgba(129, 140, 248, .18));
+  --minority-topology-fg: var(--alternate-switch-fg, #c7d2fe);
+  --daisy-topology-bg: rgba(45, 212, 191, .16);
+  --daisy-topology-border: rgba(45, 212, 191, .55);
+  --daisy-topology-fg: #99f6e4;
+
+  /* Density, redefined per template rather than per component */
+  --gap-sm: 6px;
+  --gap-md: 10px;
+  --gap-lg: 16px;
+  --row-pad-y: 8px;
+  --row-pad-x: 10px;
+  --panel-pad: 14px;
+  --panel-radius: 10px;
+  --control-height: 30px;
+  --font-body: 14px;
+  --font-small: 12px;
+}
+
+/*
+ * The light palette must redefine the semantic aliases, not only the raw
+ * variables they were derived from.
+ *
+ * This was a real defect. `--surface: var(--bg)` is resolved where it is
+ * declared, so declaring it once on :root froze it at the dark value; light mode
+ * redefined `--bg` on <body> and every rule written against `--surface`,
+ * `--text` or `--edge` carried on using the dark colour. Rules written against
+ * `--bg` went light, rules written against `--surface` did not, and a layout
+ * built on the semantic tokens -- Workspace -- stayed dark around a light page.
+ *
+ * So every alias is restated here against the light values. A token that means
+ * "the application background" has to mean it in both palettes.
+ */
+html.light,
+body.light {
+  --surface: var(--light-bg, #f7f8fb);
+  --surface-raised: var(--light-surface, #ffffff);
+  --surface-elevated: var(--light-surface-elevated, #eef1f5);
+  --text: #0d1117;
+  --text-muted: #5a6b7a;
+  --edge: rgba(0, 0, 0, .10);
+  --action-primary-text: #ffffff;
+  --action-secondary-text: var(--text);
+  --state-success: #15803d;
+  --state-warning: #a16207;
+  --state-error: #b91c1c;
+  --state-info: #0369a1;
+  --state-selection: rgba(30, 144, 255, .12);
+  --state-pending: rgba(100, 116, 139, .18);
+  --minority-topology-bg: rgba(99, 102, 241, .12);
+  --minority-topology-fg: #3730a3;
+  /* Light mode paints on a light ground, so the destructive ring and the press
+     veil are darker rather than lighter; everything else is already derived. */
+  --danger-ring: color-mix(in srgb, var(--state-error) 40%, #000000 60%);
+  --control-hover-veil: color-mix(in srgb, #000000 8%, transparent);
+  --control-press-veil: color-mix(in srgb, #000000 12%, transparent);
+  --daisy-topology-bg: rgba(13, 148, 136, .12);
+  --daisy-topology-border: rgba(13, 148, 136, .45);
+  --daisy-topology-fg: #115e59;
+}
+
+/*
+ * The operator's chosen light background, and the surfaces derived from it.
+ * `--light-bg` is set by the appearance module; the two surface tones are
+ * derived from it with colour-mix so panels and table headers keep their
+ * separation from the page instead of every element becoming one flat colour.
+ * Browsers without colour-mix fall back to the defaults above.
+ */
+@supports (background: color-mix(in srgb, white 50%, black)) {
+  html.light,
+  body.light {
+    --surface-raised: color-mix(in srgb, var(--light-bg, #f7f8fb) 55%, #ffffff);
+    /* The percentages must sum to 100. At 78% + 4% they summed to 82, and
+       color-mix multiplies the result's alpha by that sum -- so this token was
+       18% transparent and every sticky surface built on it let the rows scroll
+       through. The ratio between the two colours is unchanged (78:4 is the same
+       mix as 95:5), so the tone is the same; it is simply opaque now. */
+    --surface-elevated: color-mix(in srgb, var(--light-bg, #f7f8fb) 95%, #000000 5%);
+    --edge: color-mix(in srgb, var(--light-bg, #f7f8fb) 72%, #000000);
+  }
+}
+
+/* The page itself, so no strip of the viewport is left in the other palette. */
+html { background: var(--surface); }
+body { background: var(--surface); color: var(--text); }
+html.light,
+body.light { background: var(--surface); color: var(--text); }
+
+/* ---------------------------------------------------------------- classic */
+/* The current layout. Declared explicitly so "Classic" is a choice rather than
+   the absence of one, and so the other two have something to differ from. */
+[data-template="classic"] {
+  --gap-sm: 6px;
+  --gap-md: 10px;
+  --gap-lg: 16px;
+  --row-pad-y: 8px;
+  --row-pad-x: 10px;
+  --panel-pad: 14px;
+  --panel-radius: 10px;
+  --control-height: 30px;
+  --font-body: 14px;
+  --font-small: 12px;
+}
+
+/* --------------------------------------------------------------- compact */
+/* More rows on screen, quieter chrome. The intent is an engineering tool: the
+   data is the interface, and the controls stay out of its way until wanted. */
+[data-template="compact"] {
+  --gap-sm: 4px;
+  --gap-md: 6px;
+  --gap-lg: 10px;
+  --row-pad-y: 3px;
+  --row-pad-x: 7px;
+  --panel-pad: 9px;
+  --panel-radius: 5px;
+  --control-height: 25px;
+  --font-body: 13px;
+  --font-small: 11px;
+}
+
+[data-template="compact"] body { font-size: var(--font-body); }
+[data-template="compact"] .box,
+[data-template="compact"] .configure-section,
+[data-template="compact"] .table-wrapper { padding: var(--panel-pad); margin-bottom: var(--gap-md); border-radius: var(--panel-radius); }
+[data-template="compact"] .row { gap: var(--gap-md); }
+[data-template="compact"] table { font-size: var(--font-body); }
+[data-template="compact"] th,
+[data-template="compact"] td { padding: var(--row-pad-y) var(--row-pad-x) !important; }
+[data-template="compact"] th {
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  font-size: var(--font-small);
+  font-weight: 600;
+}
+/* Buttons stop competing with the data: outlined by default, filled only where
+   the action is the point of the row. */
+[data-template="compact"] .btn,
+[data-template="compact"] button:not(.switch):not(.action-btn) {
+  min-height: var(--control-height);
+  padding: 2px 9px;
+  font-size: var(--font-body);
+  border-radius: 5px;
+  background: var(--action-secondary);
+  color: var(--action-secondary-text);
+  border: 1px solid var(--edge);
+}
+[data-template="compact"] .btn:hover,
+[data-template="compact"] button:not(.switch):not(.action-btn):hover { background: var(--state-selection); }
+[data-template="compact"] .btn.danger,
+[data-template="compact"] button.danger { border-color: var(--state-error); color: var(--state-error); }
+[data-template="compact"] #scan_btn,
+[data-template="compact"] #upgrade_btn,
+[data-template="compact"] .btn-primary {
+  background: var(--action-primary);
+  color: var(--action-primary-text);
+  border-color: transparent;
+}
+[data-template="compact"] input,
+[data-template="compact"] select {
+  min-height: var(--control-height);
+  padding: 2px 7px;
+  font-size: var(--font-body);
+}
+[data-template="compact"] h1 { font-size: 18px; }
+[data-template="compact"] h2 { font-size: 16px; }
+[data-template="compact"] h3 { font-size: 14px; }
+[data-template="compact"] .header { padding-top: var(--gap-sm); padding-bottom: var(--gap-sm); }
+/* Wide displays: the inventory gets the width it deserves. */
+[data-template="compact"] .table-wrapper,
+[data-template="compact"] .tbl-wrap { max-width: none; }
+[data-template="compact"] .usb-filter { margin-bottom: var(--gap-sm); }
+[data-template="compact"] .switch-warning { padding: 5px 9px; margin: var(--gap-sm) 0; }
+
+/* ---------------------------------------------------------------- modern */
+/* Grouped into cards with a visible hierarchy. Same controls, same density of
+   information -- what changes is how easily the eye finds the boundary between
+   one concern and the next. */
+[data-template="modern"] {
+  --gap-sm: 8px;
+  --gap-md: 14px;
+  --gap-lg: 22px;
+  --row-pad-y: 9px;
+  --row-pad-x: 13px;
+  --panel-pad: 18px;
+  --panel-radius: 14px;
+  --control-height: 33px;
+  --font-body: 14px;
+  --font-small: 12px;
+}
+
+[data-template="modern"] .box,
+[data-template="modern"] .configure-section,
+[data-template="modern"] .table-wrapper {
+  background: var(--surface-raised);
+  border: 1px solid var(--edge);
+  border-radius: var(--panel-radius);
+  padding: var(--panel-pad);
+  margin-bottom: var(--gap-lg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .18), 0 8px 24px rgba(0, 0, 0, .10);
+}
+[data-template="modern"] .configure-section > .header,
+[data-template="modern"] .collapsible > .header {
+  border-bottom: 1px solid var(--edge);
+  padding-bottom: var(--gap-sm);
+  margin-bottom: var(--gap-md);
+}
+[data-template="modern"] .configure-section > .header h3,
+[data-template="modern"] .collapsible > .header h3 {
+  font-size: 15px;
+  letter-spacing: .01em;
+}
+[data-template="modern"] th {
+  background: var(--surface-elevated);
+  font-size: var(--font-small);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  font-weight: 600;
+  border-bottom: 1px solid var(--edge);
+}
+[data-template="modern"] th,
+[data-template="modern"] td { padding: var(--row-pad-y) var(--row-pad-x) !important; }
+[data-template="modern"] tbody tr:hover { background: var(--state-selection); }
+[data-template="modern"] .btn,
+[data-template="modern"] button:not(.switch):not(.action-btn) {
+  min-height: var(--control-height);
+  border-radius: 8px;
+  padding: 4px 13px;
+  transition: filter .15s, background .15s;
+}
+[data-template="modern"] .btn.secondary,
+[data-template="modern"] button.secondary {
+  background: var(--action-secondary);
+  border: 1px solid var(--edge);
+  color: var(--action-secondary-text);
+}
+[data-template="modern"] input,
+[data-template="modern"] select {
+  min-height: var(--control-height);
+  border-radius: 8px;
+  padding: 4px 10px;
+}
+[data-template="modern"] .usb-filter {
+  background: var(--surface-elevated);
+  border: 1px solid var(--edge);
+  border-radius: var(--panel-radius);
+  padding: var(--gap-sm) var(--gap-md);
+  margin-bottom: var(--gap-md);
+}
+[data-template="modern"] .switch-warning { border-radius: var(--panel-radius); padding: 11px 14px; }
+
+/* ------------------------------------------------- topology, all templates */
+/* A device reached through another device rather than straight from the switch.
+   Distinct from the minority-switch shade and from any error state: this is a
+   fact about the path, not a fault. */
+td.daisy-chained,
+tr.daisy-chained > td.daisy-cell {
+  background: var(--daisy-topology-bg);
+  box-shadow: inset 2px 0 0 var(--daisy-topology-border);
+}
+.daisy-note {
+  display: block;
+  font-size: var(--font-small);
+  color: var(--daisy-topology-fg);
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+.daisy-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--gap-md);
+  margin: var(--gap-md) 0;
+  padding: 9px 11px;
+  border: 1px solid var(--daisy-topology-border);
+  border-left: 3px solid var(--daisy-topology-border);
+  border-radius: 8px;
+  background: var(--daisy-topology-bg);
+  color: var(--daisy-topology-fg);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.daisy-warning.hidden { display: none !important; }
+.daisy-warning .daisy-warning-body { flex: 1 1 auto; }
+.daisy-warning .daisy-warning-title { font-weight: 600; margin-bottom: 2px; }
+.daisy-warning .daisy-warning-detail { opacity: .92; }
+.daisy-warning button {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  opacity: .75;
+}
+.daisy-warning button:hover { opacity: 1; }
+
+/* The template selector itself. */
+.template-choice { display: flex; gap: var(--gap-sm); flex-wrap: wrap; }
+.template-choice button {
+  flex: 1 1 120px;
+  text-align: left;
+  padding: 7px 10px;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--action-secondary);
+  color: var(--text);
+  cursor: pointer;
+}
+.template-choice button[aria-pressed="true"] {
+  border-color: var(--action-primary);
+  background: var(--state-selection);
+}
+.template-choice .template-name { display: block; font-weight: 600; }
+.template-choice .template-hint { display: block; font-size: var(--font-small); color: var(--text-muted); }
+
+/* ------------------------------------------------------------- workspace */
+/*
+ * A cleaner, constrained OmniSuite -- not a different application wrapped around
+ * it. The navigation rail and the context inspector were tried and removed: the
+ * application already has one primary navigation, and duplicating it in a rail
+ * gave the operator two of everything for no benefit.
+ *
+ * What remains is what was worth keeping: a centred work area with a sensible
+ * maximum width, so a wide display does not stretch every table across two feet
+ * of glass, and slightly tighter spacing around it.
+ *
+ * Every surface here uses the semantic tokens, so light and dark are the
+ * palette's business and this file never names a shell colour.
+ */
+[data-template="workspace"] {
+  --gap-sm: 6px;
+  --gap-md: 10px;
+  --gap-lg: 18px;
+  --row-pad-y: 6px;
+  --row-pad-x: 10px;
+  --panel-pad: 14px;
+  --panel-radius: 10px;
+  --control-height: 30px;
+  --font-body: 13px;
+  --font-small: 11px;
+  --workspace-max: 1560px;
+}
+
+[data-template="workspace"] body {
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* The constrained work area. Top-level page containers are centred and bounded
+   rather than being wrapped in a new shell, so nothing is relocated and there is
+   only ever one of each element. */
+[data-template="workspace"] body > .box,
+[data-template="workspace"] body > .table-wrapper,
+[data-template="workspace"] body > .configure-section,
+[data-template="workspace"] body > .topbar,
+[data-template="workspace"] body > .tabs,
+[data-template="workspace"] body > .matrix-container,
+[data-template="workspace"] body > .usb-container,
+[data-template="workspace"] body > div:not(.modal-backdrop):not(.lldp-popup):not(.hover-preview):not(.usb-cell-tip):not(.usb-tip) {
+  max-width: var(--workspace-max);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+[data-template="workspace"] .box,
+[data-template="workspace"] .configure-section,
+[data-template="workspace"] .table-wrapper {
+  background: var(--surface-raised);
+  border: 1px solid var(--edge);
+  border-radius: var(--panel-radius);
+  padding: var(--panel-pad);
+  margin-bottom: var(--gap-md);
+}
+[data-template="workspace"] th,
+[data-template="workspace"] td { padding: var(--row-pad-y) var(--row-pad-x) !important; }
+[data-template="workspace"] th {
+  background: var(--surface-elevated);
+  color: var(--text);
+  font-size: var(--font-small);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  border-bottom: 1px solid var(--edge);
+}
+[data-template="workspace"] .btn,
+[data-template="workspace"] button:not(.switch):not(.action-btn) {
+  min-height: var(--control-height);
+  border-radius: 6px;
+  padding: 3px 10px;
+}
+[data-template="workspace"] input,
+[data-template="workspace"] select {
+  min-height: var(--control-height);
+  border-radius: 6px;
+}
+
+/* The USB Matrix is the priority content on its own page: it gets the width. */
+[data-template="workspace"][data-page="usb"] { --workspace-max: none; }
+[data-template="workspace"][data-page="usb"] .table-wrapper,
+[data-template="workspace"][data-page="usb"] .tbl-wrap { max-width: none; }
+
+@media (max-width: 1100px) {
+  [data-template="workspace"] { --workspace-max: none; }
+}
+
+/* Preset and colour controls in Settings. */
+.preset-choice { display: flex; gap: var(--gap-sm); flex-wrap: wrap; }
+.preset-choice button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--action-secondary);
+  color: var(--text);
+  cursor: pointer;
+}
+.preset-choice button[aria-pressed="true"] { border-color: var(--action-primary); background: var(--state-selection); }
+.preset-swatches { display: inline-flex; gap: 2px; }
+.preset-swatches i { width: 9px; height: 14px; border-radius: 2px; display: block; }
+/* The single manual colour control. */
+.light-bg-choice { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.light-bg-choice input[type="color"] { width: 34px; height: 26px; padding: 0; border: 1px solid var(--edge); border-radius: 5px; background: none; cursor: pointer; }
+.light-bg-choice .color-hex { width: 96px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: var(--font-small); }
+.light-bg-choice .light-bg-note { font-size: var(--font-small); color: var(--text-muted); }
+
+/* Settings sections. */
+.settings-section { border-top: 1px solid var(--edge); margin-top: var(--gap-md); padding-top: var(--gap-sm); }
+.settings-section > h4 {
+  margin: 0 0 var(--gap-sm);
+  font-size: var(--font-small);
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--text-muted);
+}
+.settings-scroll { max-height: min(70vh, 640px); overflow-y: auto; padding-right: 4px; }
+
+/* An informational accent, referenced by the semantic colour set. */
+:root { --state-info: #38bdf8; }
+html.light,
+body.light { --state-info: #0369a1; }
+
+/* ------------------------------------------------ frozen identity columns */
+/*
+ * IP and Hostname stay anchored while the rest of a wide configuration table
+ * scrolls behind them. Without this, scrolling right leaves a row of values with
+ * nothing saying which device they belong to.
+ *
+ * The second column's left offset is the measured width of the first, published
+ * by ui/sticky-columns.js as `--sticky-col2-offset`; it is never hardcoded,
+ * because that width changes with template density, content and zoom.
+ *
+ * Every colour here is a semantic token, so the frozen cells match whichever
+ * palette, preset and mode are in force. A sticky cell must be opaque -- a
+ * transparent one lets the scrolling columns show through it.
+ */
+table.sticky-identity th:nth-child(1),
+table.sticky-identity td:nth-child(1),
+table.sticky-identity th:nth-child(2),
+table.sticky-identity td:nth-child(2) {
+  position: sticky;
+  background: var(--surface-raised);
+  z-index: 3;
+}
+table.sticky-identity th:nth-child(1),
+table.sticky-identity td:nth-child(1) { left: 0; }
+table.sticky-identity th:nth-child(2),
+table.sticky-identity td:nth-child(2) { left: var(--sticky-col2-offset, 0px); }
+
+/* Headers sit above the frozen body cells, and the two frozen headers above
+   everything, so nothing scrolls over a corner. */
+table.sticky-identity th:nth-child(1),
+table.sticky-identity th:nth-child(2) { z-index: 5; background: var(--surface-elevated); }
+
+/* The boundary: a restrained divider so it is obvious the rest is scrolling
+   behind the frozen pair. */
+table.sticky-identity th:nth-child(2),
+table.sticky-identity td:nth-child(2) {
+  box-shadow: inset -1px 0 0 var(--edge), 6px 0 8px -8px rgba(0, 0, 0, .45);
+}
+html.light table.sticky-identity th:nth-child(2),
+body.light table.sticky-identity td:nth-child(2) {
+  box-shadow: inset -1px 0 0 var(--edge), 6px 0 8px -8px rgba(0, 0, 0, .18);
+}
+
+/* Hostname is an editable field in the encoder and decoder tables. Freezing the
+   cell must not shrink or disable what is inside it. */
+table.sticky-identity td:nth-child(2) input,
+table.sticky-identity td:nth-child(2) select { position: relative; z-index: 1; }
+table.sticky-identity td:nth-child(1) { white-space: nowrap; }
+table.sticky-identity td:nth-child(2) { max-width: 260px; }
+
+/* ------------------------------------------------ the application shell --- */
+/*
+ * The shell header -- logo, navigation tabs, Settings -- is already sticky on
+ * every page: ui/matrix/matrix.css pins it for the three matrix pages and
+ * ui/device-table.css pins it, with the two command bars below it, for Device
+ * Info. Nothing is added here.
+ *
+ * A `body > .header` rule was written here and then removed: being more
+ * specific than matrix.css's `.header`, it won, and quietly dropped the header's
+ * stacking order from 100 to 40. Redundant CSS is not free when it changes the
+ * cascade.
+ *
+ * Note for anyone reading the matrix pages: matrix.css pins `.header`
+ * unscoped, so the Encoders/Decoders/USB section headings are sticky too. That
+ * is long-standing behaviour and is left alone.
+ */
+
+/* ------------------------------------------------------------------ logo --- */
+/*
+ * Two wordmarks, one rule. The existing asset is designed for a dark ground;
+ * HallwayBlueBlack.png is the black-on-light version and is used only in light
+ * mode. `content` replaces the rendered image of the <img> without a second
+ * element, so only the logo actually in use is fetched, the alt text is
+ * untouched, and a browser that ignores it falls back to the dark asset in the
+ * markup rather than to nothing.
+ *
+ * Driven by the theme class, which every page now applies to the document
+ * element before first paint, so the correct logo is painted the first time
+ * rather than swapped afterwards. It follows a theme change immediately because
+ * it is a CSS rule, and no layout or preset participates in the choice.
+ *
+ * The two images share an aspect ratio (3.844 against 3.848), so the header
+ * geometry -- height 48px, width auto -- is unchanged by the swap.
+ */
+html.light .logo,
+body.light .logo {
+  content: url("/ui/companylogo-light.png");
+}
+
+
+/* ==========================================================================
+   Controls
+   --------------------------------------------------------------------------
+   One implementation for every actionable control on all four pages. Before
+   this, each page styled its own tabs, switches and selected states, and three
+   of them painted selection with a literal rgba(30,144,255,...) that no preset
+   could reach -- so choosing Rose recoloured the buttons and left every
+   selected control OmniSuite blue.
+
+   Two rules hold throughout:
+
+   * Nothing here names a hue. Every colour is derived from the nine semantic
+     roles a preset sets, so all ten presets and both palettes are covered by
+     construction rather than by ten sets of overrides.
+
+   * No state changes a control's box. Hover, press, focus and selection alter
+     background, colour, box-shadow and outline only -- never width, height,
+     padding, border-width, font-size or position -- so a selection can never
+     move the navigation or shift a table.
+   ========================================================================== */
+
+/* ---- hover / press / focus / disabled, shared by every control family ---- */
+.btn,
+.modebtn,
+.tab,
+.gear-btn,
+.action-btn,
+.file-chooser-btn,
+.template-choice button,
+.preset-choice button {
+  transition: background-color .15s ease, color .15s ease,
+              box-shadow .15s ease, filter .15s ease;
+}
+
+/* A veil rather than `filter: brightness()`: brightness on a dark control makes
+   it lighter and on a light control makes it lighter still, so the same rule
+   read as "hover" in dark mode and "washed out" in light. */
+.btn:hover:not(:disabled):not([aria-disabled="true"]),
+.modebtn:hover,
+.tab:hover,
+.gear-btn:hover,
+.file-chooser-btn:hover,
+.template-choice button:hover,
+.preset-choice button:hover {
+  background-image: linear-gradient(var(--control-hover-veil), var(--control-hover-veil));
+}
+
+.btn:active:not(:disabled),
+.modebtn:active,
+.tab:active,
+.gear-btn:active,
+.action-btn:active,
+.file-chooser-btn:active,
+.template-choice button:active,
+.preset-choice button:active {
+  background-image: linear-gradient(var(--control-press-veil), var(--control-press-veil));
+  /* An inset shadow reads as pressed without moving the control. A transform
+     would move it, and a border change would resize it. */
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .35);
+}
+
+/* Keyboard focus only. A mouse click must not leave a ring behind, but taking
+   the ring away from :focus entirely would make every control unreachable to
+   anyone navigating by keyboard. */
+.btn:focus-visible,
+.modebtn:focus-visible,
+.tab:focus-visible,
+.gear-btn:focus-visible,
+.action-btn:focus-visible,
+.file-chooser-btn:focus-visible,
+.template-choice button:focus-visible,
+.preset-choice button:focus-visible,
+.toggle input[type="checkbox"]:focus-visible ~ .switch {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.btn:disabled,
+.btn[aria-disabled="true"],
+.modebtn:disabled,
+.action-btn:disabled,
+.template-choice button:disabled,
+.preset-choice button:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
+  filter: saturate(.4);
+  background-image: none;
+  box-shadow: none;
+}
+
+/* ---- destructive ---- */
+/* Hue is not enough. The ring is the part that survives a preset whose accent
+   and error sit next to each other. */
+.btn.danger:not(:disabled) {
+  background-color: var(--state-error);
+  color: var(--on-error, #ffffff);
+  border-color: var(--danger-ring);
+  box-shadow: inset 0 0 0 1.5px var(--danger-ring);
+}
+.btn.danger:active:not(:disabled) {
+  box-shadow: inset 0 0 0 1.5px var(--danger-ring), inset 0 1px 2px rgba(0, 0, 0, .35);
+}
+
+/* ---- secondary ---- */
+/* `button.secondary` as well as `.btn.secondary`: the Matrix pages' controls
+   carry no .btn class and take their fill from `.btn, button` in matrix.css, so
+   without this a helper there could not opt out of the primary treatment.
+   Obviously clickable, and obviously not the principal action: a filled surface
+   with a real border, not a ghost outline. */
+.btn.secondary,
+button.secondary,
+.encoder-output-close,
+.encoder-output-footer-close,
+.encoder-output-refresh,
+.encoder-encoding-close,
+.encoder-encoding-footer-close,
+.encoder-encoding-refresh {
+  background-color: var(--surface-elevated);
+  color: var(--text);
+  border: 1px solid var(--edge);
+  box-shadow: none;
+}
+/* Hover and press reach these through the shared rules above only when they
+   carry .btn, so the bare-button forms are named here too. */
+button.secondary:hover:not(:disabled),
+.encoder-output-refresh:hover:not(:disabled),
+.encoder-encoding-refresh:hover:not(:disabled) {
+  background-image: linear-gradient(var(--control-hover-veil), var(--control-hover-veil));
+}
+button.secondary:active:not(:disabled) {
+  background-image: linear-gradient(var(--control-press-veil), var(--control-press-veil));
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .35);
+}
+button.secondary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* ---- warning ---- */
+.btn.warn {
+  background-color: var(--state-warning);
+  color: var(--on-warning, #1d232a);
+  border-color: color-mix(in srgb, var(--state-warning) 60%, #000000 40%);
+}
+
+/* ---- an icon-only control that carries no fill ---- */
+.btn.icon-only {
+  background: transparent;
+  border: none;
+  color: var(--action-primary);
+  font-size: 20px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.btn.icon-only:hover { color: var(--text); }
+
+/* ==========================================================================
+   Mutually exclusive groups
+   --------------------------------------------------------------------------
+   Page tabs, the A/V routing mode selector, the layout and preset choosers and
+   the toggle switches all answer one question with one answer. The selected
+   option is filled with the selection colour and carries an edge; the rest are
+   quiet. That is a difference in fill, not a one-pixel border change, so it
+   survives every preset and both palettes.
+   ========================================================================== */
+
+.tab {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+}
+.tab:hover { color: var(--text); }
+.tab.active,
+.tab[aria-current="page"] {
+  background-color: var(--selected-tint-strong);
+  /* The label stays the ordinary text colour. Painting it in the accent put
+     1.90:1 on screen in light mode with the Default preset -- the selection is
+     carried by the fill, the edge and the underline, which do not have to be
+     legible as text. */
+  color: var(--text);
+  border-color: var(--selected-edge);
+  /* A second, colour-independent signal, applied with a shadow rather than
+     font-weight so the tab cannot change width. */
+  box-shadow: inset 0 -2px 0 0 var(--selected-fill);
+}
+
+.mode .modebtn {
+  background-color: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--edge);
+}
+.mode .modebtn:hover { color: var(--text); }
+.mode .modebtn.active,
+.mode .modebtn[aria-checked="true"] {
+  background-color: var(--selected-fill);
+  color: var(--selected-on);
+  border-color: var(--selected-edge);
+  box-shadow: inset 0 0 0 1px var(--selected-edge);
+}
+/* A selected option still answers to the pointer. Losing hover on the selected
+   item makes it feel dead precisely where the operator is aiming. */
+.mode .modebtn.active:hover {
+  background-image: linear-gradient(var(--control-hover-veil), var(--control-hover-veil));
+}
+
+/* The toggle switches: Poll Units, Hide Device Details, Lock Headers, Preview,
+   Auto-Refresh. */
+.switch { background-color: var(--edge); }
+.switch.on { background-color: var(--selected-fill); }
+
+/* The real checkbox behind each switch used to be display:none, which took it
+   out of the tab order and out of the accessibility tree -- so none of these
+   controls could be reached or read without a mouse. Hidden visually, present
+   to the keyboard and to assistive technology. */
+.toggle input[type="checkbox"].switch-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.browser-item.selected,
+.browser-item:hover { background-color: var(--selected-tint); }
+.browser-item.selected { box-shadow: inset 0 0 0 1px var(--selected-edge); }
+
+/* ==========================================================================
+   Toast
+   --------------------------------------------------------------------------
+   Was defined only in matrix.css, in a fixed near-black, so Device Info had no
+   toast at all and the other two never followed the preset.
+   ========================================================================== */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: -60px;
+  transform: translateX(-50%);
+  z-index: 2000;
+  max-width: min(560px, 92vw);
+  padding: 9px 14px;
+  border-radius: 8px;
+  background-color: var(--surface-elevated);
+  color: var(--text);
+  border: 1px solid var(--edge);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .35);
+  opacity: 0;
+  transition: bottom .25s ease, opacity .25s ease;
+  pointer-events: none;
+}
+.toast.show { bottom: 20px; opacity: 1; }
+.toast.ok {
+  background-color: var(--state-success);
+  color: var(--on-success, #0d1117);
+  border-color: color-mix(in srgb, var(--state-success) 60%, #000000 40%);
+}
+.toast.error {
+  background-color: var(--state-error);
+  color: var(--on-error, #ffffff);
+  border-color: var(--danger-ring);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast { transition: none; }
+}

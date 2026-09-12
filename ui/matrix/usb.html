@@ -9,8 +9,9 @@
   <style>
     .tabs{display:flex;gap:0;}
     .tab{padding:8px 16px;cursor:pointer;background:transparent;color:var(--muted);border:none;font-size:14px;font-weight:500;border-bottom:2px solid transparent;transition:all .16s;text-decoration:none;border-radius:6px 6px 0 0}
-    .tab:hover{color:var(--fg);background:rgba(30,144,255,.08)}
-    .tab.active{color:var(--accent);background:rgba(30,144,255,.08)}
+    /* Tab hover and selection live in ui/templates.css. Each page carried its
+       own copy painted in a literal blue, so the active tab stayed OmniSuite
+       blue under every preset. */
     
     /* USB matrix specific styles */
     .usb-cell{ 
@@ -22,12 +23,12 @@
       cursor:pointer;
       user-select:none;
     }
-    .usb-cell:hover{ background:rgba(30,144,255,.05); }
+    .usb-cell:hover{ background:var(--selected-tint); }
     .usb-cell.paired{ 
-      background:rgba(30,144,255,.2); 
+      background:color-mix(in srgb, var(--state-selection) 28%, transparent); 
       border:2px solid var(--accent);
     }
-    .usb-cell.paired:hover{ background:rgba(30,144,255,.3); }
+    .usb-cell.paired:hover{ background:color-mix(in srgb, var(--state-selection) 42%, transparent); }
     .usb-cell.disabled{ 
       background:var(--border); 
       cursor:not-allowed;
@@ -194,17 +195,37 @@
         grid-template-columns:1fr;
       }
     }
-  </style>
+  
+td.cell.pending{opacity:.55;cursor:progress;}
+td.cell.pending .dot{animation:usbPending 1s ease-in-out infinite;}
+@keyframes usbPending{0%,100%{opacity:.35}50%{opacity:1}}
+</style>
+  <script src="/ui/diagnostics.js?v=20260911-diag"></script>
+<link rel="stylesheet" href="/ui/templates.css?v=20260910-templates">
+<link rel="stylesheet" href="/ui/settings.css?v=20260911-settings">
+<link rel="stylesheet" href="/ui/matrix/usb-matrix.css?v=20260911-usb-frozen">
+  <!-- The route grid and both inventory tables overflow sideways; each opts
+       its own scroll container in with data-mirror-scroll and gets its own
+       synchronised scrollbar above it. -->
+  <script src="/ui/mirror-scroll.js?v=20260911-mirror" defer></script>
+  <script src="/ui/appearance.js?v=20260910-appearance"></script>
+  <script src="/ui/toast.js?v=20260911-toast"></script>
+<script src="/ui/settings.js?v=20260911-settings"></script>
+
   <script>
     // Apply page preferences early to avoid flash; guard if body not ready yet
     (function(){
       const dark = localStorage.getItem('dark') !== 'false';
-      const compact = localStorage.getItem('viewDensity') === 'compact';
       const apply = ()=>{
-        const target = document.body || document.documentElement;
-        if(!target) return;
-        target.classList.toggle('light', !dark);
-        target.classList.toggle('compact', compact);
+        // The document element, always -- this script runs in <head> on the
+        // matrix pages, where document.body is still null. Waiting for
+        // DOMContentLoaded meant the first paint used the dark palette and the
+        // dark logo even when light was selected, and the page visibly flipped.
+        const root = document.documentElement;
+        root.classList.toggle('light', !dark);
+        if (document.body) {
+          document.body.classList.toggle('light', !dark);
+        }
       };
       if (document.body) {
         apply();
@@ -227,17 +248,18 @@
         <a href="/" class="tab">Device Info</a>
         <a href="/matrix/configure" class="tab">Configure</a>
         <a href="/matrix" class="tab">A/V Matrix</a>
-        <a href="/matrix/usb" class="tab active">USB Matrix</a>
+        <a href="/matrix/usb" class="tab active" aria-current="page">USB Matrix</a>
       </div>
+      <button id="header_gear" class="gear-btn" type="button" title="Settings" aria-label="Settings">⚙️</button>
     </div>
   </div>
 
   <div class="top">
     <div class="row">
-      <button id="refreshBtn">Refresh</button>
+      <button id="refreshBtn" class="secondary">Refresh</button>
       <div class="divider"></div>
       <label class="toggle" style="margin-left:8px;">
-        <input type="checkbox" id="auto_poll_toggle" style="display:none;" />
+        <input type="checkbox" id="auto_poll_toggle" class="switch-input" />
         <div class="label">Auto-Refresh</div>
         <div id="poll_switch" class="switch"><div class="knob"></div></div>
       </label>
@@ -247,7 +269,7 @@
       </label>
       <div class="divider"></div>
       <label class="toggle" id="sticky_headers_label">
-        <input type="checkbox" id="sticky_headers_toggle" style="display:none;" />
+        <input type="checkbox" id="sticky_headers_toggle" class="switch-input" />
         <div class="label">Lock Headers</div>
         <div id="sticky_switch" class="switch"><div class="knob"></div></div>
       </label>
@@ -266,7 +288,7 @@
   </div>
 
   <div class="matrix-area">
-    <div class="matrix-wrap">
+    <div class="matrix-wrap" data-mirror-scroll>
       <table id="usbMatrix" class="matrix" aria-label="USB routing matrix"></table>
     </div>
   </div>
@@ -279,7 +301,7 @@
       <h3 style="margin:0;">LEX Units (Local Extenders)</h3>
     </div>
     <div class="body">
-      <div class="tbl-wrap"><table id="lexTbl" class="grid" aria-label="LEX table"></table></div>
+      <div class="tbl-wrap" data-mirror-scroll><table id="lexTbl" class="grid" aria-label="LEX table"></table></div>
     </div>
   </div>
 
@@ -291,7 +313,7 @@
       <h3 style="margin:0;">REX Units (Remote Extenders)</h3>
     </div>
     <div class="body">
-      <div class="tbl-wrap"><table id="rexTbl" class="grid" aria-label="REX table"></table></div>
+      <div class="tbl-wrap" data-mirror-scroll><table id="rexTbl" class="grid" aria-label="REX table"></table></div>
     </div>
   </div>
 
@@ -302,6 +324,63 @@
     </div>
   </div>
 
-  <script src="/ui/matrix/usb.js?v=20260821-usb-subnet"></script>
+  <script src="/ui/matrix/usb.js?v=20260910-escfix"></script>
+  <script>
+    // The frozen REX identity column reserves its own width in the grid's
+    // scroll padding, so moving focus into the matrix never parks a route
+    // radio underneath it. That width is the *rendered* one -- density, font
+    // and zoom each change it, and a literal would be correct in exactly one
+    // of those combinations and quietly wrong in the rest. It is therefore
+    // measured here and published as --usb-frozen-col-w for usb-matrix.css to
+    // consume, the way ui/sticky-columns.js publishes Device Info's offsets.
+    //
+    // Deliberately no timer: the width changes when something resizes the
+    // column or when render() rebuilds the grid, and both of those announce
+    // themselves. A poll would repaint forever to observe a value that is
+    // usually identical.
+    (function(){
+      const wrap = document.querySelector('.matrix-area .matrix-wrap');
+      const table = document.getElementById('usbMatrix');
+      if(!wrap || !table) return;
+      const corner = () => table.querySelector('tr > th.row-head');
+      let published = '';
+      let observed = null;
+      const resizer = (typeof ResizeObserver === 'function')
+        ? new ResizeObserver(() => measure()) : null;
+
+      function measure(){
+        const head = corner();
+        if(!head) return;
+        const width = Math.round(head.getBoundingClientRect().width);
+        // An unlaid-out table measures zero everywhere; publishing that would
+        // state a reserve that is wrong rather than merely absent.
+        if(!width) return;
+        const value = width + 'px';
+        if(value === published) return;   // nothing moved; do not touch the DOM
+        published = value;
+        wrap.style.setProperty('--usb-frozen-col-w', value);
+      }
+
+      function attach(){
+        const head = corner();
+        if(!head || head === observed) return;
+        observed = head;
+        if(resizer){ resizer.disconnect(); resizer.observe(head); }
+      }
+
+      // render() replaces the table's rows wholesale when membership changes,
+      // and with them the cell being observed. A state-only refresh rewrites
+      // route cells in place and never reaches this, which is the point.
+      new MutationObserver(() => { attach(); measure(); })
+        .observe(table, {childList: true, subtree: false});
+
+      attach();
+      measure();
+      // Layout template and appearance both change the column's density.
+      new MutationObserver(() => measure())
+        .observe(document.documentElement, {attributes: true, attributeFilter: ['data-template', 'class']});
+      window.addEventListener('resize', measure, {passive: true});
+    })();
+  </script>
 </body>
 </html>
