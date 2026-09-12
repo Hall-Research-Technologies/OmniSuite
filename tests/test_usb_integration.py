@@ -10033,6 +10033,18 @@ class HostNetworkDiagnosticTests(ServerTestBase):
     test shells out: run_tests.py blocks sockets but not subprocess.
     """
 
+    def as_windows(self):
+        """Exercise the Windows branch of the firewall query on any host.
+
+        `_firewall_profile_states` returns "not applicable on <platform>" before
+        it reaches the stubbed query anywhere but Windows. Without this, these
+        tests assert against that short-circuit instead of the parsing they
+        exist to cover -- silently, on the macOS and Ubuntu runners.
+        """
+        patcher = mock.patch.object(srv.platform, "system", return_value="Windows")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def dump(self):
         return json.loads(self.client.get("/api/ts_export").get_data(as_text=True))
 
@@ -10091,6 +10103,7 @@ class HostNetworkDiagnosticTests(ServerTestBase):
 
     # ---- the firewall query ----
     def test_the_state_is_parsed_when_the_query_answers(self):
+        self.as_windows()
         self.patch_srv("_firewall_query_output", lambda: NETSH_ALLPROFILES_STATE)
         firewall = self.section()["firewall_profiles"]
         self.assertTrue(firewall["available"])
@@ -10098,6 +10111,25 @@ class HostNetworkDiagnosticTests(ServerTestBase):
         self.assertEqual(firewall["profiles"]["Domain"]["enabled"], True)
         self.assertEqual(firewall["profiles"]["Private"]["reported"], "ON")
         self.assertEqual(firewall["profiles"]["Public"]["enabled"], False)
+
+    def test_off_windows_the_query_is_not_attempted_and_says_so(self):
+        """macOS and Linux have no netsh; the section states that plainly.
+
+        It must stay "unavailable with a reason" rather than becoming "all
+        profiles off", which would read as a diagnosis the section never makes.
+        """
+        for system in ("Darwin", "Linux"):
+            with self.subTest(system=system):
+                reached = []
+                self.patch_srv("_firewall_query_output",
+                               lambda: reached.append(True) or "")
+                with mock.patch.object(srv.platform, "system", return_value=system):
+                    firewall = srv._firewall_profile_states()
+                self.assertFalse(firewall["available"])
+                self.assertEqual(firewall["profiles"], {})
+                self.assertIn("not applicable", firewall["unavailable_reason"])
+                self.assertIn(system, firewall["unavailable_reason"])
+                self.assertEqual(reached, [], "no process may be started off Windows")
 
     def test_an_unrecognised_state_word_stays_unknown(self):
         """A value never observed is not folded into "off"."""
@@ -10107,6 +10139,7 @@ class HostNetworkDiagnosticTests(ServerTestBase):
         self.assertEqual(profiles["Domain"]["reported"], "NOTREADY")
 
     def test_an_enabled_firewall_is_not_reported_as_an_error(self):
+        self.as_windows()
         self.patch_srv("_firewall_query_output", lambda: NETSH_ALLPROFILES_STATE)
         payload = self.dump()
         host = payload["host_network"]
@@ -10119,6 +10152,7 @@ class HostNetworkDiagnosticTests(ServerTestBase):
     def test_the_diagnostic_never_raises_when_the_platform_query_fails(self):
         def explode():
             raise RuntimeError("netsh is not available here")
+        self.as_windows()
         self.patch_srv("_firewall_query_output", explode)
         firewall = srv._firewall_profile_states()          # must not propagate
         self.assertFalse(firewall["available"])
@@ -10130,12 +10164,14 @@ class HostNetworkDiagnosticTests(ServerTestBase):
     def test_a_timeout_degrades_the_same_way(self):
         def slow():
             raise subprocess.TimeoutExpired(cmd="netsh", timeout=srv.FIREWALL_QUERY_TIMEOUT)
+        self.as_windows()
         self.patch_srv("_firewall_query_output", slow)
         firewall = self.section()["firewall_profiles"]
         self.assertFalse(firewall["available"])
         self.assertEqual(firewall["unavailable_reason"], "TimeoutExpired")
 
     def test_unparseable_output_is_unavailable_not_all_profiles_off(self):
+        self.as_windows()
         self.patch_srv("_firewall_query_output", lambda: "Parametrages du profil de domaine :")
         firewall = self.section()["firewall_profiles"]
         self.assertFalse(firewall["available"])
@@ -10144,6 +10180,7 @@ class HostNetworkDiagnosticTests(ServerTestBase):
 
     # ---- what it deliberately does not do ----
     def test_no_firewall_rules_are_read_or_reported(self):
+        self.as_windows()
         self.patch_srv("_firewall_query_output", lambda: NETSH_ALLPROFILES_STATE)
         firewall = self.section()["firewall_profiles"]
         self.assertEqual(firewall["source"], "netsh advfirewall show allprofiles state")
