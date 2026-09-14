@@ -199,6 +199,7 @@ class ServerTestBase(unittest.TestCase):
         srv._usb_extenders._devices.clear()
         srv._usb_extenders._ranges.clear()
 
+
         # The runtime usb_icron association store is process-global; isolate it so
         # observations learned by one test cannot classify another test's fixture.
         previous_association = dict(srv._USB_ASSOCIATION)
@@ -222,6 +223,21 @@ class ServerTestBase(unittest.TestCase):
         self.service = usb.ExtenderDiscoveryService(Path(self.folder.name) / "usb_extenders.json", persist_debounce=0)
         self._real_service = srv._usb_extenders
         srv._usb_extenders = self.service
+        # Background work must not outlive the test that scheduled it.
+        #
+        # /api/usb_state and Configure > USB submit _refresh_icron_network_config
+        # to this service's executor, deliberately, so a request never waits on
+        # an Icron read. In production that is right. In a suite it means the
+        # read happens at an arbitrary later moment -- inside whichever test is
+        # running by then, against whatever _ws_send_recv that test installed.
+        #
+        # That is what failed on Ubuntu: a refresh scheduled by an earlier test
+        # landed inside MixedRoutingDispatchTests and recorded a parent
+        # WebSocket read the route never made. Windows and macOS won the race.
+        #
+        # Running submissions inline keeps both the work and the code path, and
+        # makes them belong to the test that caused them.
+        self.inline_background(self.service)
         self.addCleanup(lambda: setattr(srv, "_usb_extenders", self._real_service))
         # Stand in for the socket so no test can reach the physical network: the
         # fixture addresses are real bench devices. Liveness reads are a normal
@@ -301,6 +317,13 @@ class ServerTestBase(unittest.TestCase):
         self.addCleanup(self._assert_no_mutation_attempted)
         self.client = srv.app.test_client()
         self._patch_cache(CACHE_UNITS)
+
+    def inline_background(self, service):
+        """Run this service's background submissions on the calling thread."""
+        executor = service._executor
+        previous = executor.submit
+        self.addCleanup(setattr, executor, "submit", previous)
+        executor.submit = lambda fn, *args, **kwargs: fn(*args, **kwargs)
 
     def patch_srv(self, name, value):
         """Replace a server global for this test only, and put it back after.
@@ -2804,6 +2827,55 @@ class MixedRoutingDispatchTests(ServerTestBase):
         self.assertEqual(r.get_json()["status"], "VERIFIED_SUCCESS")
         self.assertEqual(self.opcodes(), [usb.PAIR, usb.PAIR])
         self.assertEqual(self.icron_writes, [])
+
+    def test_a_scheduled_icron_read_is_not_attributed_to_a_later_route(self):
+        """The Ubuntu CI failure, reproduced deliberately.
+
+        /api/usb_state schedules an Icron network read on the shared background
+        executor when a mask is missing. Left asynchronous, that read lands in
+        whatever test is running when the thread gets its turn, against that
+        test's _ws_send_recv -- and the route it lands in appears to have made a
+        parent WebSocket call it never made.
+
+        Here the read is scheduled first, deliberately, and the mixed route is
+        then performed. The route's own dispatch must still be UDP only.
+        """
+        # Deliberately slow, so this detects the fault instead of racing it: left
+        # asynchronous, the read is guaranteed to still be running when the route
+        # below starts, and lands in the route's evidence. Run inline, it is over
+        # before the request returns.
+        real_refresh = srv._refresh_icron_network_config
+
+        def slow_refresh(*args, **kwargs):
+            time.sleep(0.3)
+            return real_refresh(*args, **kwargs)
+
+        self.patch_srv("_refresh_icron_network_config", slow_refresh)
+
+        srv._usb_net_config.clear()          # force the read to be scheduled
+        # Configure > USB is the surface that asks for pairing freshness, and it
+        # is what schedules the Icron read in this fixture.
+        self.client.get("/api/usb_extenders?live=1&pairing=1")
+        # Whatever that request did is the request's own business. Only what the
+        # route does next is under test here.
+        self.icron_writes.clear()
+        self.net.sent.clear()
+
+        r = self.client.post("/api/usb_route/pair",
+                             json={"lex_mac": OMNI311_MAC, "rex_mac": D4511_USB_MAC})
+        self.assertEqual(r.get_json()["status"], "VERIFIED_SUCCESS")
+        self.assertEqual(self.opcodes(), [usb.PAIR, usb.PAIR])
+        self.assertEqual(self.icron_writes, [],
+                         "the mixed route must dispatch over UDP only")
+
+        # And nothing may arrive afterwards either. Left asynchronous the read
+        # is still sleeping when the route finishes, so it lands here -- which
+        # in the suite means it lands in whatever test runs next.
+        time.sleep(0.5)
+        self.assertEqual(self.icron_writes, [],
+                         "a parent WebSocket read arrived after the route "
+                         "completed: background work escaped the test that "
+                         "scheduled it")
 
     # ---- transaction ----
     def test_mixed_unpair_clears_both_endpoints(self):
@@ -5318,6 +5390,47 @@ class LauncherBrowserTests(ServerTestBase):
     def test_no_browser_was_opened_by_this_class(self):
         """The suite must never reach a real browser."""
         self.assertIsNot(self.launcher.webbrowser.open, __import__("webbrowser").open)
+
+
+class BackgroundWorkIsolationTests(ServerTestBase):
+    """Nothing scheduled during a test may run during a different one.
+
+    The shared extender executor is how USB state refreshes stay off the request
+    path in production. In a suite that same asynchrony makes one test's work
+    arrive inside another, which is how a UDP-only route came to be credited
+    with a parent WebSocket read on Ubuntu and nowhere else.
+    """
+
+    def test_a_submission_runs_inside_the_test_that_made_it(self):
+        """Deliberately slow, so the answer cannot come out right by luck.
+
+        A quick task finishes on a worker thread before the next statement runs
+        about as often as not, which would let this pass while the leak was
+        still there. A quarter of a second does not.
+        """
+        ran = []
+
+        def slow():
+            time.sleep(0.25)
+            ran.append(True)
+
+        srv._usb_extenders._executor.submit(slow)
+        self.assertEqual(ran, [True],
+                         "background work must complete inside the test that "
+                         "scheduled it, not inside some later one")
+
+    def test_the_usb_state_request_performs_its_own_icron_read(self):
+        """The real scheduler, not a stand-in."""
+        calls = []
+        self.patch_srv("_refresh_icron_network_config",
+                       lambda *a, **k: calls.append(time.monotonic()))
+        srv._usb_net_config.clear()
+        before = time.monotonic()
+        self.client.get("/api/usb_state")
+        after = time.monotonic()
+        for when in calls:
+            self.assertTrue(before <= when <= after,
+                            "the read ran outside the request that asked for it")
 
 
 class ArtifactNamingTests(ServerTestBase):
