@@ -41,20 +41,10 @@ function initStickyHeaders(){
 }
 
 // ===== Theme Toggle =====
-function initTheme(){
-  const applyTheme = (isDark)=>{
-    document.body.classList.toggle('light', !isDark);
-  };
+// Light and dark are applied by appearance.js, which owns every appearance
+// dimension and is loaded by all four pages. This file used to carry its own
+// copy, bound to controls that no longer exist.
 
-  applyTheme(localStorage.getItem('dark') !== 'false');
-
-  // Sync with other tabs/pages
-  window.addEventListener('storage', (e)=>{
-    if(e.key === 'dark'){
-      applyTheme(e.newValue !== 'false');
-    }
-  });
-}
 
 // ===== Density =====
 // Applied by appearance.js for every page. This file's copy read the
@@ -819,7 +809,6 @@ qs('#refreshBtn').onclick = async ()=>{
 };
 
 initStickyHeaders();
-initTheme();
 document.addEventListener('focusout', () => {
   setTimeout(flushDeferredUsbRender, 150);
 });

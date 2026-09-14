@@ -235,6 +235,20 @@ their names from it.
 
 ---
 
+## Known issues since V1.0.7
+
+Reported after the release and fixed on `main`. **The V1.0.7 downloads on the
+Releases page do not contain these fixes** — they will appear in the next
+release.
+
+| Issue | Status |
+|---|---|
+| Settings/Appearance controls were inconsistent across pages. Light mode could not be selected from Configure, the A/V Matrix or the USB Matrix, even though Device Info behaved correctly. | **Fixed on `main`**; not yet in a published release. |
+
+See the **Unreleased** section of [CHANGELOG.md](CHANGELOG.md) for the detail.
+
+---
+
 ## License
 
 OmniSuite is **source available**, published by Hall Research Technologies under the

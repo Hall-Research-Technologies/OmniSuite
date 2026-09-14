@@ -8642,13 +8642,22 @@ class WorkspaceLayoutTests(ServerTestBase):
 
     def test_the_light_palette_reaches_the_root_element(self):
         """The page canvas is painted from <html>, which the body-level `light`
-        class never reached -- so light mode left a dark strip around the page."""
+        class never reached -- so light mode left a dark strip around the page.
+
+        The root used to be kept in step by a MutationObserver watching <body>,
+        because the mode belonged to each page. appearance.js owns the mode now
+        and sets both elements itself, so the assertion is that it does -- not
+        that a particular follower still exists.
+        """
         css = self.source("ui", "templates.css")
         self.assertIn("html.light,", css)
         script = self.source("ui", "appearance.js")
-        self.assertIn("root.classList.toggle('light'", script,
-                      "the root follows the theme the page already owns")
-        self.assertIn("function watchThemeClass()", script)
+        self.assertIn("root.classList.toggle('light', light)", script,
+                      "the root carries the palette")
+        self.assertIn("document.body.classList.toggle('light', light)", script,
+                      "and so does the body")
+        self.assertNotIn("watchThemeClass", script,
+                         "nothing needs to observe a class this module sets")
 
 
 class LinkFreshnessTests(ServerTestBase):

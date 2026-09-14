@@ -679,31 +679,9 @@ async function refreshUsbExtenderCount() {
   }
 }
 // ===== Theme Toggle =====
-function initTheme() {
-  const themeSelect = document.getElementById('cfg_theme');
-
-  const applyTheme = (isDark) => {
-    document.body.classList.toggle('light', !isDark);
-    if (themeSelect) themeSelect.value = isDark ? 'dark' : 'light';
-  };
-
-  applyTheme(localStorage.getItem('dark') !== 'false');
-
-  if (themeSelect) {
-    themeSelect.addEventListener('change', () => {
-      const isDark = themeSelect.value !== 'light';
-      applyTheme(isDark);
-      localStorage.setItem('dark', isDark.toString());
-    });
-  }
-
-  // Keep in sync across tabs/pages
-  window.addEventListener('storage', (e) => {
-    if (e.key === 'dark') {
-      applyTheme(e.newValue !== 'false');
-    }
-  });
-}
+// Light and dark are applied by appearance.js, which owns every appearance
+// dimension and is loaded by all four pages. The Theme select in the shared
+// Settings dialog is bound by settings.js, which owns that dialog's markup.
 
 // ===== Density follows the layout =====
 // This page used to mirror data-template onto body.compact itself. appearance.js
@@ -3767,7 +3745,6 @@ function openPreviewWindow(url) {
   await Promise.all([loadAdapters(), loadFiles(), loadUnits(), loadScanResults()]);
   const elapsed = performance.now() - start;
   console.log(`[INIT] Data loading complete in ${elapsed.toFixed(0)}ms`);
-  initTheme();
   // Density is applied by appearance.js on every page; nothing to do here.
   // Settings is wired by ui/settings.js, which is shared with the other
   // three pages and starts itself.

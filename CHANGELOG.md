@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+Fixed on `main` and **not yet part of a published release**. The V1.0.7
+binaries on the Releases page do not contain these changes.
+
+- Fixed Settings/Appearance behaving differently from page to page. Light mode
+  could not be selected from Configure, the A/V Matrix or the USB Matrix even
+  though Device Info worked: the shared Settings dialog rendered the Theme
+  control on every page, but each page was expected to wire it up itself, and
+  two of the three did so against header controls that had been removed.
+- Made light and dark part of the one shared appearance implementation, next to
+  the layout, the colour preset and the light background, so every page uses the
+  same source of truth and the three page-specific copies are gone.
+- Removed the MutationObserver that watched `<body>` for a theme class change;
+  the shared module sets the class rather than following it.
+
 ## V1.0.7 - 2026-09-11
 
 - Made Device Info the single discovery surface: it owns the network adapter picker, the target list, Scan and Clear Units, and every other page reads what discovery found.

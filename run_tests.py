@@ -32,7 +32,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 TESTS = ROOT / "tests"
 JS_SUITES = ("usb_render_smoke.js", "usb_filter_test.js", "lldp_topology_test.js",
-             "sticky_observers_test.js", "mirror_scroll_test.js", "device_log_test.js")
+             "sticky_observers_test.js", "mirror_scroll_test.js", "device_log_test.js",
+             "appearance_theme_test.js")
 
 attempts: collections.Counter = collections.Counter()
 

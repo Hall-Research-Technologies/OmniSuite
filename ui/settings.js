@@ -211,6 +211,29 @@ function initConfig() {
   if (typeof loadAppearance === 'function') {
     loadAppearance().then(renderAppearanceControls);
   }
+
+  // Light or dark. The dialog owns this control on every page, so its handler
+  // belongs with the dialog -- leaving it to each page is how it came to be
+  // wired on Device Info alone, while Configure, the A/V Matrix and the USB
+  // Matrix rendered a Theme select that changed nothing.
+  //
+  // initConfig runs once per page, so this listener is registered once. The
+  // select is re-read from the shared state whenever the dialog opens, which
+  // also picks up a change made in another tab.
+  const themeSelect = $('#cfg_theme');
+  const syncThemeSelect = () => {
+    if (themeSelect && typeof appearance === 'object') {
+      themeSelect.value = appearance.theme === 'light' ? 'light' : 'dark';
+    }
+  };
+  if (themeSelect) {
+    syncThemeSelect();
+    themeSelect.addEventListener('change', () => {
+      if (typeof setTheme === 'function') {
+        setTheme(themeSelect.value === 'light' ? 'light' : 'dark');
+      }
+    });
+  }
   const cfgResetUiBtn = $('#cfg_reset_ui');
   if (cfgResetUiBtn) {
     cfgResetUiBtn.addEventListener('click', async () => {
@@ -219,12 +242,9 @@ function initConfig() {
       // acknowledgements and every credential are untouched by it.
       await resetUiPreferences();
       renderAppearanceControls();
-      const darkSwitch = $('#dark_switch');
-      if (darkSwitch) darkSwitch.classList.add('on');
-      const darkToggle = $('#dark_mode_toggle');
-      if (darkToggle) darkToggle.checked = true;
-      const themeSelect = $('#cfg_theme');
-      if (themeSelect) themeSelect.value = 'dark';
+      // resetUiPreferences returns the mode to dark; show that. The two header
+      // controls this used to poke were removed from every page long ago.
+      syncThemeSelect();
     });
   }
 
@@ -234,7 +254,10 @@ function initConfig() {
   let currentPassword = 'password';
   let currentFallbackPassword = 'Atlona';
 
-  if (gear) gear.addEventListener('click', () => backdrop.style.display = 'flex');
+  if (gear) gear.addEventListener('click', () => {
+    syncThemeSelect();
+    backdrop.style.display = 'flex';
+  });
   if (closeBtn) closeBtn.addEventListener('click', () => backdrop.style.display = 'none');
   
   backdrop.addEventListener('click', (e) => {

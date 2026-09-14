@@ -126,6 +126,11 @@ const APPEARANCE_PRESET_DEFAULT = 'default';
 const LIGHT_BACKGROUND_DEFAULT = '#f7f8fb';
 
 const APPEARANCE_KEY = 'omniAppearance';
+// The mode is stored under its original key so an existing installation keeps
+// the choice it already made. Absent means dark, which is the application
+// default and what every page assumed before this was shared.
+const THEME_KEY = 'dark';
+const THEME_DEFAULT = 'dark';
 const HEX = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
 function isKnownTemplate(id) {
@@ -187,7 +192,20 @@ const appearance = {
   template: UI_TEMPLATE_DEFAULT,
   preset: APPEARANCE_PRESET_DEFAULT,
   lightBackground: LIGHT_BACKGROUND_DEFAULT,
+  theme: THEME_DEFAULT,
 };
+
+function isKnownTheme(mode) {
+  return mode === 'light' || mode === 'dark';
+}
+
+function readStoredTheme() {
+  try {
+    return localStorage.getItem(THEME_KEY) === 'false' ? 'light' : 'dark';
+  } catch (err) {
+    return THEME_DEFAULT;
+  }
+}
 
 function presetById(id) {
   return APPEARANCE_PRESETS.find(preset => preset.id === id) || APPEARANCE_PRESETS[0];
@@ -205,6 +223,7 @@ function applyAppearance(state) {
   appearance.template = isKnownTemplate(next.template) ? next.template : UI_TEMPLATE_DEFAULT;
   appearance.preset = presetById(next.preset).id;
   appearance.lightBackground = normalizeColor(next.lightBackground) || LIGHT_BACKGROUND_DEFAULT;
+  appearance.theme = isKnownTheme(next.theme) ? next.theme : THEME_DEFAULT;
 
   const root = document.documentElement;
   root.setAttribute('data-template', appearance.template);
@@ -226,13 +245,18 @@ function applyAppearance(state) {
     host.style.removeProperty(`--on-${entry.id}`);
   }));
   hosts.forEach(host => host.style.setProperty('--light-bg', appearance.lightBackground));
-  // The light palette is a class on <body>, but the page canvas is painted from
-  // <html>, which that class never reaches -- so light mode left a dark strip
-  // around the page. Mirroring the class onto the root element lets the palette
-  // own the whole viewport. Each page's own theme toggle stays the source of
-  // truth; this only follows it.
+  // The mode is applied here rather than followed from <body>. It used to be
+  // the one appearance dimension this file did not own, which left each page to
+  // implement its own toggle -- and two of them bound a header control that had
+  // been removed, so the shared Settings dialog's Theme select did nothing at
+  // all outside Device Info.
+  //
+  // <html> is set unconditionally: this module runs before <body> exists, and
+  // the page canvas is painted from the root element.
+  const light = appearance.theme === 'light';
+  root.classList.toggle('light', light);
   if (document.body) {
-    root.classList.toggle('light', document.body.classList.contains('light'));
+    document.body.classList.toggle('light', light);
     // Density is what the Compact layout means, and every page's density rules
     // are written as `body.compact`. Mirroring the template here is what makes
     // Compact reach all of them: this bridge used to live in index.html's own
@@ -263,7 +287,7 @@ function readStoredAppearance() {
       // the values are ignored here and dropped on the next save; leaving them
       // applied would tint the UI from a control that no longer exists.
       const {colors, ...kept} = raw;
-      return kept;
+      return {...kept, theme: readStoredTheme()};
     }
   } catch (err) { /* storage disabled or corrupt: defaults are still a valid page */ }
   try {
@@ -271,10 +295,10 @@ function readStoredAppearance() {
     // the separate density control the layout selector replaced.
     const template = localStorage.getItem('uiTemplate');
     const density = localStorage.getItem('viewDensity');
-    if (isKnownTemplate(template)) return {template};
-    if (density === 'compact') return {template: 'compact'};
+    if (isKnownTemplate(template)) return {template, theme: readStoredTheme()};
+    if (density === 'compact') return {template: 'compact', theme: readStoredTheme()};
   } catch (err) { /* as above */ }
-  return {};
+  return {theme: readStoredTheme()};
 }
 
 function storeAppearance() {
@@ -284,6 +308,7 @@ function storeAppearance() {
       lightBackground: appearance.lightBackground,
     }));
     localStorage.setItem('uiTemplate', appearance.template);
+    localStorage.setItem(THEME_KEY, String(appearance.theme !== 'light'));
   } catch (err) { /* not fatal */ }
 }
 
@@ -317,8 +342,11 @@ async function loadAppearance() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const prefs = await res.json();
     if (prefs && prefs.ok) {
+      // The mode is a local preference and is not part of this reply; carrying
+      // the current one through stops a server reconcile from resetting it.
       applyAppearance({template: prefs.template, preset: prefs.preset,
-                       lightBackground: prefs.light_background});
+                       lightBackground: prefs.light_background,
+                       theme: appearance.theme});
       storeAppearance();
     }
   } catch (err) {
@@ -347,6 +375,9 @@ async function saveAppearance(partial) {
 }
 
 const setUiTemplate = template => saveAppearance({template});
+// Light or dark, from anywhere. Every page's Settings dialog calls this one
+// function, so there is nothing left for a page to implement differently.
+const setTheme = mode => saveAppearance({theme: isKnownTheme(mode) ? mode : THEME_DEFAULT});
 const setAppearancePreset = preset => saveAppearance({preset});
 const setLightBackground = value => {
   const colour = normalizeColor(value);
@@ -366,12 +397,14 @@ async function resetUiPreferences() {
     localStorage.removeItem(APPEARANCE_KEY);
     localStorage.removeItem('uiTemplate');
     localStorage.removeItem('viewDensity');
-    // Dark is the application default, so an appearance reset returns to it.
-    localStorage.setItem('dark', 'true');
   } catch (err) { /* not fatal */ }
-  document.body.classList.remove('light', 'compact');
+  if (document.body) document.body.classList.remove('compact');
+  // Dark is the application default, so an appearance reset returns to it.
+  // Applied through the normal path, which also writes the stored mode -- the
+  // class used to be stripped by hand here, leaving storage saying light.
   applyAppearance({template: UI_TEMPLATE_DEFAULT, preset: APPEARANCE_PRESET_DEFAULT,
-                   lightBackground: LIGHT_BACKGROUND_DEFAULT});
+                   lightBackground: LIGHT_BACKGROUND_DEFAULT, theme: THEME_DEFAULT});
+  storeAppearance();
   return appearance;
 }
 
@@ -455,23 +488,13 @@ function renderLightBackground(host, onChange) {
   hex.addEventListener('change', () => commit(hex.value.trim()));
 }
 
-// The theme can be toggled at any time by the page's own control; follow it.
-function watchThemeClass() {
-  if (!document.body) return;
-  const sync = () => document.documentElement.classList.toggle(
-    'light', document.body.classList.contains('light'));
-  sync();
-  new MutationObserver(sync).observe(document.body, {attributes: true, attributeFilter: ['class']});
-}
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', watchThemeClass);
-} else {
-  watchThemeClass();
-}
+// No MutationObserver watches <body> for a class change any more: this module
+// sets the class rather than following it, so there is nothing to observe and
+// one fewer observer per page.
 
 window.addEventListener('storage', event => {
-  if (event.key === APPEARANCE_KEY || event.key === 'uiTemplate') {
-    applyAppearance(readStoredAppearance());
+  if (event.key === APPEARANCE_KEY || event.key === 'uiTemplate' || event.key === THEME_KEY) {
+    applyAppearance({...readStoredAppearance(), theme: readStoredTheme()});
   }
 });
 
@@ -481,7 +504,8 @@ if (typeof globalThis !== 'undefined') {
     APPEARANCE_PRESET_DEFAULT, appearance, isKnownTemplate, isValidColor, normalizeColor,
     relativeLuminance, contrastRatio, readableTextOn, colorReadability, effectiveColors,
     applyAppearance, readStoredAppearance, loadAppearance, saveAppearance, setUiTemplate,
-    setAppearancePreset, setLightBackground, resetUiPreferences, renderTemplateChoice,
+    setAppearancePreset, setLightBackground, setTheme, isKnownTheme, readStoredTheme,
+    THEME_DEFAULT, resetUiPreferences, renderTemplateChoice,
     renderPresetChoice, renderLightBackground, LIGHT_BACKGROUND_DEFAULT, currentPageKey,
     // Kept so existing callers of the previous module keep working.
     uiTemplateIsKnown: isKnownTemplate, loadUiTemplate: loadAppearance,

@@ -170,38 +170,10 @@ function initStickyHeaders(){
 }
 
 // ===== Theme Toggle =====
-function initTheme(){
-  const darkSwitch = document.getElementById('dark_switch');
-  const darkToggle = document.getElementById('dark_mode_toggle');
+// Light and dark are applied by appearance.js, which owns every appearance
+// dimension and is loaded by all four pages. This file used to carry its own
+// copy, bound to controls that no longer exist.
 
-  const applyTheme = (isDark)=>{
-    document.body.classList.toggle('light', !isDark);
-    if(darkSwitch) darkSwitch.classList.toggle('on', isDark);
-    if(darkToggle) darkToggle.checked = isDark;
-  };
-
-  applyTheme(localStorage.getItem('dark') !== 'false');
-
-  const label = document.getElementById('header_dark_label');
-  if(label){
-    const toggle = ()=>{
-      const nowDark = !document.body.classList.contains('light');
-      const nextDark = !nowDark;
-      applyTheme(nextDark);
-      localStorage.setItem('dark', nextDark.toString());
-    };
-    label.addEventListener('click', (e)=>{ e.preventDefault(); toggle(); });
-    if(darkToggle) darkToggle.addEventListener('change', ()=> toggle());
-    if(darkSwitch) darkSwitch.addEventListener('click', (e)=>{ e.preventDefault(); toggle(); });
-  }
-
-  // Sync with other tabs/pages
-  window.addEventListener('storage', (e)=>{
-    if(e.key === 'dark'){
-      applyTheme(e.newValue !== 'false');
-    }
-  });
-}
 
 // ===== Density =====
 // Density is what the Compact layout means, and appearance.js applies it on
@@ -3027,7 +2999,6 @@ document.addEventListener('DOMContentLoaded', function() {
 setMode('av');
 initStickyHeaders();
 initPreviewToggle();
-initTheme();
 initSectionFilterControls();
 
 document.addEventListener('focusout', () => {
