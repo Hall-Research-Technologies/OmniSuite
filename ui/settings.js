@@ -254,14 +254,65 @@ function initConfig() {
   let currentPassword = 'password';
   let currentFallbackPassword = 'Atlona';
 
+  // One way out, whichever way it is asked for, so the close button, the
+  // backdrop and Escape cannot drift apart.
+  const closeSettings = () => {
+    backdrop.style.display = 'none';
+    // A modal returns focus to the control that opened it; without this,
+    // dismissing the dialog drops the keyboard at the top of the document.
+    if (gear && typeof gear.focus === 'function') gear.focus();
+  };
+
   if (gear) gear.addEventListener('click', () => {
     syncThemeSelect();
     backdrop.style.display = 'flex';
   });
-  if (closeBtn) closeBtn.addEventListener('click', () => backdrop.style.display = 'none');
-  
+  if (closeBtn) closeBtn.addEventListener('click', closeSettings);
+
   backdrop.addEventListener('click', (e) => {
-    if (e.target === backdrop) backdrop.style.display = 'none';
+    if (e.target === backdrop) closeSettings();
+  });
+
+  // ---- Escape ----------------------------------------------------------
+  //
+  // Settings was the one dialog in OmniSuite that Escape did not close, on
+  // every page, because the shared dialog had no binding for it.
+  //
+  // Registered here, at document level, exactly once: initConfig runs once per
+  // page, so opening and closing the dialog any number of times adds no further
+  // listeners. Binding on open would accumulate one per open.
+  //
+  // This handler defers rather than competes. It acts only when Settings is the
+  // thing Escape should reach:
+  //
+  //   * the folder browser opens *above* Settings, so it takes Escape first;
+  //   * the first-run network notice is an acknowledgement with one button, so
+  //     it is deliberately not dismissible by a key;
+  //   * any other modal on the page owns its own Escape, and this does nothing
+  //     while one of them is showing.
+  const isShowing = (element) =>
+    !!element && getComputedStyle(element).display !== 'none';
+
+  // The backdrops this module is responsible for. Anything else wearing
+  // .modal-backdrop belongs to a page and handles its own keys.
+  const OWN_BACKDROPS = ['cfg_backdrop', 'cfg_browser_backdrop', 'notice_backdrop'];
+  const foreignModalShowing = () =>
+    Array.from(document.querySelectorAll('.modal-backdrop'))
+      .some((element) => !OWN_BACKDROPS.includes(element.id) && isShowing(element));
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+
+    const browser = document.getElementById('cfg_browser_backdrop');
+    if (isShowing(browser)) {
+      browser.style.display = 'none';
+      return;
+    }
+    if (isShowing(document.getElementById('notice_backdrop'))) return;
+    if (foreignModalShowing()) return;
+    if (!isShowing(backdrop)) return;
+
+    closeSettings();
   });
 
   if (pwToggle && pwInput) {

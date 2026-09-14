@@ -320,6 +320,72 @@ check('the pre-paint scripts agree with the shared module', async () => {
   }
 });
 
+// ---- 6. Escape closes Settings, from one shared handler ---------------------
+check('Escape is handled once, by the module that owns the dialog', async () => {
+  const settings = fs.readFileSync(SETTINGS, 'utf8');
+  const listeners = settings.match(/document\.addEventListener\(\s*'keydown'/g) || [];
+  equal(listeners.length, 1, "document-level keydown listeners in settings.js");
+  assert(/event\.key !== 'Escape'/.test(settings), 'the handler filters on Escape');
+  // Registered in initConfig, which runs once per page. Binding it when the
+  // dialog opens would add one listener per open.
+  const initConfig = settings.slice(settings.indexOf('function initConfig()'));
+  assert(initConfig.indexOf("document.addEventListener('keydown'") > -1,
+         'the listener is registered inside initConfig');
+});
+
+check('no page binds Escape to Settings itself', async () => {
+  for (const file of ['ui/index.html', 'ui/matrix/matrix.js', 'ui/matrix/usb.js',
+                      'ui/matrix/configure.html', 'ui/matrix/index.html',
+                      'ui/matrix/usb.html']) {
+    const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    if (!text.includes('Escape')) continue;
+    assert(!/cfg_backdrop/.test(text),
+           `${file} reaches into the shared Settings backdrop`);
+  }
+});
+
+check('Escape defers to whatever is above or beside Settings', async () => {
+  const settings = fs.readFileSync(SETTINGS, 'utf8');
+  const handler = settings.slice(settings.indexOf("document.addEventListener('keydown'"));
+  const body = handler.slice(0, 900);
+  // The folder browser sits above Settings and takes Escape first.
+  assert(body.indexOf('cfg_browser_backdrop') < body.indexOf('closeSettings()'),
+         'the folder browser is checked before Settings');
+  // An acknowledgement is not dismissible by a key.
+  assert(/notice_backdrop/.test(body), 'the notice is checked');
+  // Any other page modal keeps its own Escape.
+  assert(/foreignModalShowing\(\)/.test(body), 'foreign modals are deferred to');
+  assert(body.indexOf('foreignModalShowing()') < body.indexOf('closeSettings()'),
+         'foreign modals are checked before Settings closes');
+});
+
+check('every close path goes through one function', async () => {
+  const settings = fs.readFileSync(SETTINGS, 'utf8');
+  assert(/const closeSettings = \(\) =>/.test(settings), 'closeSettings exists');
+  // The close button, the backdrop click and Escape must not drift apart.
+  const calls = settings.match(/closeSettings\(\)/g) || [];
+  assert(calls.length >= 2, 'closeSettings is used by more than one path');
+  assert(/closeBtn\.addEventListener\('click', closeSettings\)/.test(settings),
+         'the close button uses it');
+});
+
+check('closing returns focus to the control that opened the dialog', async () => {
+  const settings = fs.readFileSync(SETTINGS, 'utf8');
+  const close = settings.slice(settings.indexOf('const closeSettings'));
+  assert(/gear\.focus\(\)/.test(close.slice(0, 400)),
+         'focus returns to the gear');
+});
+
+check('the shared dialog is loaded by every page, so Escape reaches all four', async () => {
+  // The behaviour is one handler in one module; what makes it true on four
+  // pages is that four pages load that module. Asserted here so removing the
+  // script from a page fails a test rather than silently losing the key.
+  for (const [name, file] of PAGES) {
+    const html = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    assert(/src="\/ui\/settings\.js/.test(html), `${name} loads settings.js`);
+  }
+});
+
 // ---- report -----------------------------------------------------------------
 setTimeout(() => {
   results.forEach(([status, name]) => console.log(`${status} ${name}`));

@@ -15,6 +15,7 @@ binaries on the Releases page do not contain these changes.
   same source of truth and the three page-specific copies are gone.
 - Removed the MutationObserver that watched `<body>` for a theme class change;
   the shared module sets the class rather than following it.
+- Settings can now be closed with Escape consistently from every page.
 
 ## V1.0.7 - 2026-09-11
 
