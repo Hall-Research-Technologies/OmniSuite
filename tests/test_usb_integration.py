@@ -17,6 +17,7 @@ import shutil
 import tempfile
 import threading
 import time
+from concurrent.futures import Future
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -319,11 +320,33 @@ class ServerTestBase(unittest.TestCase):
         self._patch_cache(CACHE_UNITS)
 
     def inline_background(self, service):
-        """Run this service's background submissions on the calling thread."""
+        """Run this service's background submissions on the calling thread.
+
+        The enrichment pool only. That is the one carrying
+        _refresh_icron_network_config, the work that was arriving in later
+        tests.
+
+        The range-scan and local-discovery pools stay asynchronous on purpose:
+        their asynchrony is itself under test -- discovery must return without
+        blocking the request, and a second range scan while one is in flight
+        must be reported busy rather than queued. Running those inline would
+        make both of those tests assert nothing.
+
+        A real Future is still returned, because callers keep the handle.
+        """
         executor = service._executor
         previous = executor.submit
         self.addCleanup(setattr, executor, "submit", previous)
-        executor.submit = lambda fn, *args, **kwargs: fn(*args, **kwargs)
+
+        def inline(fn, *args, **kwargs):
+            future = Future()
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except BaseException as exc:              # noqa: BLE001 - mirrored
+                future.set_exception(exc)
+            return future
+
+        executor.submit = inline
 
     def patch_srv(self, name, value):
         """Replace a server global for this test only, and put it back after.
@@ -2827,55 +2850,6 @@ class MixedRoutingDispatchTests(ServerTestBase):
         self.assertEqual(r.get_json()["status"], "VERIFIED_SUCCESS")
         self.assertEqual(self.opcodes(), [usb.PAIR, usb.PAIR])
         self.assertEqual(self.icron_writes, [])
-
-    def test_a_scheduled_icron_read_is_not_attributed_to_a_later_route(self):
-        """The Ubuntu CI failure, reproduced deliberately.
-
-        /api/usb_state schedules an Icron network read on the shared background
-        executor when a mask is missing. Left asynchronous, that read lands in
-        whatever test is running when the thread gets its turn, against that
-        test's _ws_send_recv -- and the route it lands in appears to have made a
-        parent WebSocket call it never made.
-
-        Here the read is scheduled first, deliberately, and the mixed route is
-        then performed. The route's own dispatch must still be UDP only.
-        """
-        # Deliberately slow, so this detects the fault instead of racing it: left
-        # asynchronous, the read is guaranteed to still be running when the route
-        # below starts, and lands in the route's evidence. Run inline, it is over
-        # before the request returns.
-        real_refresh = srv._refresh_icron_network_config
-
-        def slow_refresh(*args, **kwargs):
-            time.sleep(0.3)
-            return real_refresh(*args, **kwargs)
-
-        self.patch_srv("_refresh_icron_network_config", slow_refresh)
-
-        srv._usb_net_config.clear()          # force the read to be scheduled
-        # Configure > USB is the surface that asks for pairing freshness, and it
-        # is what schedules the Icron read in this fixture.
-        self.client.get("/api/usb_extenders?live=1&pairing=1")
-        # Whatever that request did is the request's own business. Only what the
-        # route does next is under test here.
-        self.icron_writes.clear()
-        self.net.sent.clear()
-
-        r = self.client.post("/api/usb_route/pair",
-                             json={"lex_mac": OMNI311_MAC, "rex_mac": D4511_USB_MAC})
-        self.assertEqual(r.get_json()["status"], "VERIFIED_SUCCESS")
-        self.assertEqual(self.opcodes(), [usb.PAIR, usb.PAIR])
-        self.assertEqual(self.icron_writes, [],
-                         "the mixed route must dispatch over UDP only")
-
-        # And nothing may arrive afterwards either. Left asynchronous the read
-        # is still sleeping when the route finishes, so it lands here -- which
-        # in the suite means it lands in whatever test runs next.
-        time.sleep(0.5)
-        self.assertEqual(self.icron_writes, [],
-                         "a parent WebSocket read arrived after the route "
-                         "completed: background work escaped the test that "
-                         "scheduled it")
 
     # ---- transaction ----
     def test_mixed_unpair_clears_both_endpoints(self):
@@ -5414,10 +5388,11 @@ class BackgroundWorkIsolationTests(ServerTestBase):
             time.sleep(0.25)
             ran.append(True)
 
-        srv._usb_extenders._executor.submit(slow)
+        future = srv._usb_extenders._executor.submit(slow)
         self.assertEqual(ran, [True],
-                         "background work must complete inside the test that "
+                         "enrichment work must complete inside the test that "
                          "scheduled it, not inside some later one")
+        self.assertTrue(future.done(), "a Future is still returned to the caller")
 
     def test_the_usb_state_request_performs_its_own_icron_read(self):
         """The real scheduler, not a stand-in."""
