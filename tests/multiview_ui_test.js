@@ -377,7 +377,7 @@ let routeResponse = {ok: true, status: 'VERIFIED',
 let applyResponse = {ok: true, status: 'VERIFIED', applied: ['Set vc2_encoder2'],
                      verified: [{step: 'Set vc2_encoder2', verified: true}],
                      plan: {object_name: 'multiview2x2'}};
-const showResponse = {ok: true, status: 'VERIFIED',
+let showResponse = {ok: true, status: 'VERIFIED',
                       steps: [{step: 'Show multiview2x2 on the display',
                                verified: true}]};
 const deleteResponse = {ok: true, status: 'VERIFIED',
@@ -751,7 +751,11 @@ async function selectDecoder(ip) {
       });
       assert(!hidden('mv_cancel'), 'no way to back out of creation');
       assert(hidden('mv_delete'), 'Delete is offered for something not yet created');
-      assert(hidden('mv_show'), 'Show on Display is offered before anything is saved');
+      // Show on Display saves first, so it is offered from the start: an
+      // operator never has to press Save to reach it. There is still nothing
+      // to delete.
+      assert(!hidden('mv_show'),
+        'Show on Display is withheld until Save has been pressed');
     });
 
   await check('the name defaults to the layout and follows it until edited',
@@ -1250,7 +1254,8 @@ async function selectDecoder(ip) {
     async () => {
       forcedPlan = (desired) => planFor(desired);
       await buildFourSourcePlan();
-      assert(hidden('mv_show'), 'Show on Display is offered before a save');
+      assert(!hidden('mv_show'),
+        'Show on Display is withheld until Save has been pressed');
       assert(hidden('mv_delete'), 'Delete is offered before a save');
       // After the save the object exists, so the decoder reports it.
       stateResponse = stateBody([EXISTING_VIEW]);
@@ -3332,6 +3337,228 @@ async function selectDecoder(ip) {
       'an offline encoder was offered as a draggable source');
   });
 
+  // ---- Show on Display = save, then show ---------------------------------
+  //
+  // One operator action, two operations, and deliberately NOT one transaction.
+  // A preset that saves and then cannot be shown is an ordinary outcome, and
+  // the operator's work survives it.
+
+  async function openInactivePreset() {
+    displayOutput = OUTPUT_SOURCE;
+    stateResponse = stateBody([EXISTING_VIEW]);
+    await selectDecoder('192.0.2.10');
+    REGISTRY.get('mv_target').value = 'multiview2x2';
+    REGISTRY.get('mv_target').dispatch('change');
+    await flush();
+  }
+
+  function dirtyTheEditor(ip) {
+    // A drop on an inactive canvas edits the preset and writes nothing.
+    const box = REGISTRY.get('mv_stage').children[1]
+                || REGISTRY.get('mv_stage').children[0];
+    box.dispatch('drop', {preventDefault: () => {},
+                          dataTransfer: {getData: () => ip || '192.0.2.24'}});
+    return box;
+  }
+
+  await check('a dirty inactive preset is saved before it is shown', async () => {
+    await openInactivePreset();
+    dirtyTheEditor('192.0.2.24');
+    await flush();
+    assert(/unsaved/i.test(REGISTRY.get('mv_edit_state').textContent),
+      'the editor does not consider itself dirty, so this proves nothing');
+
+    const before = requests.length;
+    REGISTRY.get('mv_show').dispatch('click');
+    await flush();
+    const sent = requests.slice(before).filter(
+      r => r.url.startsWith('/api/multiview/apply')
+        || r.url.startsWith('/api/multiview/show'));
+    assert(sent.length >= 2, 'expected a save and a show: '
+                             + sent.map(r => r.url).join(', '));
+    assert(sent[0].url.startsWith('/api/multiview/apply'),
+      'the first request was not the save: ' + sent[0].url);
+    assert(sent.some(r => r.url.startsWith('/api/multiview/show')),
+      'it never got as far as showing');
+  });
+
+  await check('the show uses what was just saved, not the older stored copy',
+    async () => {
+      await openInactivePreset();
+      dirtyTheEditor('192.0.2.24');
+      await flush();
+      // The save reports a DIFFERENT object than the one the editor was
+      // opened on, which is what a rename or a create does. If the show reads
+      // the name from the open view rather than from the save, it activates
+      // the wrong object -- and with both names equal that mistake is
+      // invisible, which is why they are made to differ here.
+      const good = applyResponse;
+      applyResponse = Object.assign({}, good, {
+        plan: Object.assign({}, good.plan, {object_name: 'multiviewRenamed'})});
+      const before = requests.length;
+      REGISTRY.get('mv_show').dispatch('click');
+      await flush();
+      applyResponse = good;
+      const sent = requests.slice(before);
+      const saved = sent.find(r => r.url.startsWith('/api/multiview/apply'));
+      const shown = sent.find(r => r.url.startsWith('/api/multiview/show'));
+      assert(saved && shown, 'save and show did not both happen');
+      assertEqual(shown.payload.name, 'multiviewRenamed',
+        'the show activated the object the editor was opened on rather than '
+        + 'the one the save just wrote');
+      assert(Object.keys(saved.payload.assignments || {}).length > 0,
+        'the save carried no assignments at all');
+    });
+
+  await check('the operator never has to press Save first', async () => {
+    await openInactivePreset();
+    dirtyTheEditor('192.0.2.24');
+    await flush();
+    const before = requests.length;
+    // Save is never pressed in this check.
+    REGISTRY.get('mv_show').dispatch('click');
+    await flush();
+    assert(requests.slice(before).some(
+      r => r.url.startsWith('/api/multiview/show')),
+      'Show on Display did nothing without a preceding Save');
+  });
+
+  await check('Save on its own still only saves', async () => {
+    await openInactivePreset();
+    dirtyTheEditor('192.0.2.24');
+    await flush();
+    const before = requests.length;
+    confirmAnswer = true;
+    REGISTRY.get('mv_save').dispatch('click');
+    await flush();
+    const sent = requests.slice(before);
+    assert(sent.some(r => r.url.startsWith('/api/multiview/apply')),
+      'Save did not save');
+    assertEqual(sent.filter(r => r.url.startsWith('/api/multiview/show')).length,
+      0, 'Save also showed');
+  });
+
+  await check('a failed save stops before anything is activated', async () => {
+    await openInactivePreset();
+    dirtyTheEditor('192.0.2.24');
+    await flush();
+    const good = applyResponse;
+    applyResponse = {ok: false, status: 'FAILED',
+                     error: 'the decoder refused the object'};
+    const before = requests.length;
+    REGISTRY.get('mv_show').dispatch('click');
+    await flush();
+    applyResponse = good;
+    const sent = requests.slice(before);
+    assert(sent.some(r => r.url.startsWith('/api/multiview/apply')),
+      'the save was not attempted');
+    assertEqual(sent.filter(r => r.url.startsWith('/api/multiview/show')).length,
+      0, 'a failed save still went on to activate');
+    assert(/failed/i.test(REGISTRY.get('mv_status').textContent),
+      'the operator was not told the save failed: '
+      + REGISTRY.get('mv_status').textContent);
+  });
+
+  await check('a save that succeeds is kept when the show fails', async () => {
+    await openInactivePreset();
+    dirtyTheEditor('192.0.2.24');
+    await flush();
+    const good = showResponse;
+    showResponse = {ok: false, status: 'FAILED',
+                    error: 'enc-test-01 did not answer'};
+    const before = requests.length;
+    REGISTRY.get('mv_show').dispatch('click');
+    await flush();
+    showResponse = good;
+    const sent = requests.slice(before);
+    assert(sent.some(r => r.url.startsWith('/api/multiview/apply')),
+      'the save did not happen');
+    assert(sent.some(r => r.url.startsWith('/api/multiview/show')),
+      'the show was not attempted');
+    // The preset is NOT rolled back merely because it cannot be displayed.
+    assertEqual(sent.filter(
+      r => r.url.startsWith('/api/multiview/delete')).length, 0,
+      'the saved preset was withdrawn because it could not be shown');
+    const status = REGISTRY.get('mv_status').textContent;
+    assert(/saved/i.test(status) && /unable to show|could not/i.test(status),
+      'the operator is not told that the save survived: ' + status);
+  });
+
+  await check('an already-shown preset is not saved and shown again', async () => {
+    // Section 8: the live workflow is untouched. A preset that is already the
+    // one on the display does not offer this button at all.
+    stateResponse = stateBody([LIVE_VIEW]);
+    displayOutput = OUTPUT_MULTIVIEW;
+    await selectDecoder('192.0.2.10');
+    REGISTRY.get('mv_target').value = 'multiview2x2';
+    REGISTRY.get('mv_target').dispatch('change');
+    await flush();
+    assert(hidden('mv_show'),
+      'Show on Display is offered for the Multiview already on the display');
+  });
+
+  await check('a live drag still switches directly, with no save-then-show',
+    async () => {
+      const before = requests.length;
+      const box = REGISTRY.get('mv_stage').children[0];
+      box.dispatch('drop', {preventDefault: () => {},
+                            dataTransfer: {getData: () => '192.0.2.24'}});
+      await flush();
+      const sent = requests.slice(before);
+      assert(sent.some(r => r.url.startsWith('/api/multiview/switch')),
+        'a live drop no longer switches: ' + sent.map(r => r.url).join(', '));
+      assertEqual(sent.filter(
+        r => r.url.startsWith('/api/multiview/apply')).length, 0,
+        'a live drop now performs a redundant save');
+    });
+
+  await check('an empty preset can be shown', async () => {
+    displayOutput = OUTPUT_SOURCE;
+    stateResponse = stateBody([Object.assign({}, EXISTING_VIEW, {
+      subframes: []})]);
+    await selectDecoder('192.0.2.10');
+    REGISTRY.get('mv_target').value = 'multiview2x2';
+    REGISTRY.get('mv_target').dispatch('change');
+    await flush();
+    const before = requests.length;
+    REGISTRY.get('mv_show').dispatch('click');
+    await flush();
+    assert(requests.slice(before).some(
+      r => r.url.startsWith('/api/multiview/show')),
+      'an empty preset could not be shown');
+  });
+
+  await check('the combined action asks at most one question', async () => {
+    await openInactivePreset();
+    dirtyTheEditor('192.0.2.24');
+    await flush();
+    confirmCalls = 0;
+    REGISTRY.get('mv_show').dispatch('click');
+    await flush();
+    assert(confirmCalls <= 1,
+      'Show on Display asked ' + confirmCalls + ' questions; the Save dialog '
+      + 'is not raised for it because it promises the display is untouched');
+  });
+
+  await check('Copy still copies and never shows', async () => {
+    const source = fs.readFileSync(SOURCE, 'utf8');
+    const start = source.indexOf('async function copyToDecoders');
+    const body = start > 0
+      ? source.slice(start, source.indexOf('\n  }', start))
+      : source.slice(source.indexOf('function openCopyDialog'),
+                     source.indexOf('function closeCopyDialog'));
+    assert(!/multiview\/show/.test(body),
+      'Copy now shows what it copied');
+  });
+
+  await check('none of this introduced a timer', () => {
+    const source = fs.readFileSync(SOURCE, 'utf8');
+    const start = source.indexOf('async function showOnDisplay');
+    const body = source.slice(start, source.indexOf('\n  async function ', start + 10));
+    ['setInterval', 'setTimeout'].forEach((forbidden) => assert(
+      !body.includes(forbidden), 'Show on Display started a timer: ' + forbidden));
+  });
+
   // ---- Phase 8G: the display output looks like a display ------------------
 
   const screenOf = () => REGISTRY.get('mv_output_screen');
@@ -3507,8 +3734,13 @@ async function selectDecoder(ip) {
            && /changes nothing|nothing on any encoder/i.test(text),
       'the notice does not say that designing a preset changes nothing: '
       + text.slice(0, 600));
-    assert(/only when you Show|when you Show a Multiview/i.test(text),
-      'the notice does not say when the changes happen');
+    assert(/Show on Display/i.test(text),
+      'the notice does not name the action that causes the changes');
+    assert(/recall/i.test(text),
+      'the notice does not mention recalling a different Multiview');
+    assert(/saves .{0,40}first|saves the Multiview/i.test(text),
+      'the notice does not say that Show on Display saves first: '
+      + text.slice(0, 700));
   });
 
   await check('it states the encoder architecture accurately', () => {

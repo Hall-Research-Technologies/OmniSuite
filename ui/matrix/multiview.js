@@ -305,7 +305,12 @@
     renderEditHeading(creating);
 
     const view = currentView();
-    show('mv_show', state.mode === MODE.EDIT && view && !view.selected_on_output);
+    // Offered whenever there is something that could be shown, including a
+    // Multiview being created: Show on Display saves first, so an operator
+    // never has to press Save to get to it. It is withdrawn only for the one
+    // that is already on the display.
+    show('mv_show', (state.mode === MODE.EDIT && view && !view.selected_on_output)
+                    || creating);
     show('mv_shown', state.mode === MODE.EDIT && !!view);
     show('mv_delete', state.mode === MODE.EDIT);
     show('mv_cancel', working);
@@ -524,8 +529,9 @@
       'Creating, installing, editing, copying or saving a Multiview that is '
       + 'not on the display changes nothing on any encoder and nothing on the '
       + 'screen. A saved Multiview is a description, not a booking.',
-      'The changes below happen only when you Show a Multiview or recall a '
-      + 'different one.',
+      'Show on Display saves the Multiview you are looking at first, and then '
+      + 'shows what it saved. The changes below happen at that point, and when '
+      + 'you recall a different Multiview.',
       'They also happen when you add, change or clear a source on a Multiview '
       + 'that is already on the display — and that takes effect '
       + 'immediately, while it is on screen.',
@@ -2193,7 +2199,8 @@
         title: 'Save Multiview',
         message: 'This stores the configuration below on the decoder. No source '
           + 'and no input is changed, and the display is untouched — the sources '
-          + 'are prepared when you show it.',
+          + 'are prepared when you show it. You do not have to save first: '
+          + 'Show on Display saves for you.',
         summary: summary,
         confirmText: 'Save',
         suppressLabel: 'Do not ask again for this version',
@@ -2232,13 +2239,60 @@
                          });
   }
 
+  // Save the preset the operator is looking at, without the Save dialog and
+  // without the full transaction wrapper. Returns the object name on success,
+  // or null -- in which case nothing further may happen.
+  //
+  // The Save confirmation is deliberately not raised here: it promises "the
+  // display is untouched", which is the opposite of what is about to happen.
+  // The Show question is the one that belongs to this action, and it is asked
+  // before anything is written.
+  async function saveForShow() {
+    const wanted = desiredState();
+    try {
+      const body = await getJSON('/api/multiview/apply', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(wanted),
+      });
+      if (!(body && body.ok && body.plan)) {
+        showResult(body || {});
+        setStatus('FAILED — ' + operatorReason(body || {}), false);
+        return null;
+      }
+      state.editing = body.plan.object_name;
+      rememberTarget(state.editing);
+      // What was stored is what the editor was showing, so that is the
+      // baseline. Deriving it from the next read instead makes the editor go
+      // on looking unsaved whenever the read has not caught up -- and after a
+      // save that succeeded and a show that did not, the work IS saved.
+      state.savedBaseline = editableState();
+      return body.plan.object_name;
+    } catch (err) {
+      const message = operatorReason(err.body || {error: err.message});
+      state.outcome = 'ERROR';
+      setStatus('FAILED — ' + message, false);
+      notify(message);
+      return null;
+    }
+  }
+
+  // Show on Display is one operator action and two operations.
+  //
+  //   1. save what is in the editor, exactly as it stands
+  //   2. show THAT, not some older stored copy of it
+  //
+  // They are not one transaction, and must not be. A preset that saves and
+  // then cannot be shown is a normal outcome -- a source is off, another
+  // display needs the encoder at a different size -- and the operator's work
+  // is kept either way. Only the display rolls back.
   async function showOnDisplay() {
+    const group = activeGroup();
     const view = currentView();
-    if (!view) return;
-    // No confirmation. Selecting a Multiview and pressing Show on Display is
-    // the intent; a dialog that restates the button is noise. The transaction
-    // behind it is unchanged -- plan, reconcile, verify, roll back on failure.
-    if (view.showable === false) {
+    const creating = state.mode === MODE.CREATE
+      || (state.mode === MODE.SAVING && state.previousMode === MODE.CREATE);
+
+    if (view && view.showable === false) {
       // The server has already said this one cannot go on the display, so the
       // page does not send a request it knows will be refused.
       setStatus(view.not_showable_reason || 'This Multiview cannot be shown.',
@@ -2246,30 +2300,69 @@
       notify(view.not_showable_reason || 'This Multiview cannot be shown.');
       return;
     }
-    const group = activeGroup();
+
+    // Asked BEFORE the save, so Cancel leaves the preset alone as well as the
+    // display: zero writes of any kind, and the operator's edits still in the
+    // editor where they left them.
     if (group) {
-      // The group-wide planner: every member planned before anything is
-      // written, refused as a whole on a shared-encoder conflict, rolled back
-      // together on a failure.
+      const label = (view && (view.friendly_name || view.name))
+        || el('mv_name').value || 'this Multiview';
       const answer = await window.omniConfirm({
         title: 'Show this on every decoder in the group?',
-        message: 'Each decoder in ' + group.name + ' is reconfigured and '
-          + 'switched to ' + (view.friendly_name || view.name)
+        message: 'The current Multiview is saved first, then each decoder in '
+          + group.name + ' is reconfigured and switched to ' + label
           + '. Their current pictures change.',
         summary: [{label: 'Group', value: group.name},
                   {label: 'Decoders', value: (group.members || []).length},
-                  {label: 'Multiview', value: view.friendly_name || view.name}],
-        confirmText: 'Show on group',
+                  {label: 'Multiview', value: label},
+                  {label: 'Saved first', value: 'yes — your current edits'}],
+        confirmText: 'Save and show',
       });
-      if (!(answer === true || (answer && answer.ok))) return;
+      if (!(answer === true || (answer && answer.ok))) {
+        notify('Nothing was changed.', 'ok');
+        return;
+      }
+    }
+
+    // 1. Save, whenever there is anything to save. A preset that is already
+    // stored exactly as the editor shows it is not written again.
+    let name = view ? view.name : null;
+    if (creating || !view || isDirty()) {
+      setStatus('Saving…', null);
+      name = await saveForShow();
+      if (!name) return;                  // Save failed: nothing is activated.
+    }
+    const savedBaseline = state.savedBaseline;
+    if (!name) return;
+
+    // 2. Show what was just saved. `name` is the object the save returned, so
+    // the activation can never plan an older revision of it.
+    if (group) {
       await runTransaction(
         'Showing on ' + group.name + '…', '/api/multiview/groups/show',
-        {group: group.id, source_decoder: readingDecoder(), name: view.name},
+        {group: group.id, source_decoder: readingDecoder(), name: name},
         async (body) => { if (body.ok) await checkGroup(); });
-      return;
+    } else {
+      await runTransaction('Showing on display…', '/api/multiview/show',
+                           {decoder: readingDecoder(), name: name});
     }
-    await runTransaction('Showing on display…', '/api/multiview/show',
-                         {decoder: readingDecoder(), name: view.name});
+
+    // The save succeeded even when the show did not, so say both things. The
+    // editor is not dirty: what is in it is what is stored.
+    if (state.outcome === 'ERROR' && savedBaseline !== undefined) {
+      const reason = (el('mv_status').textContent || '')
+        .replace(/^FAILED — /, '');
+      setStatus('Preset saved — unable to show: ' + reason, false);
+    }
+    // The save stands whatever the show did, so the editor stops claiming the
+    // work is unstored.
+    if (savedBaseline !== undefined) {
+      state.savedBaseline = savedBaseline;
+      renderActions();
+      renderMode();
+    } else {
+      markSaved();
+    }
   }
 
   async function remove() {

@@ -602,7 +602,7 @@
       <div class="note"><strong>Saved Multiviews do not reserve anything.</strong> A saved layout holds no bandwidth and no encoder. That is why two of them can happily want the same source in different sizes &mdash; only showing one of them is a decision.</div>
 
       <h3>Selecting is not showing</h3>
-      <p>Choosing a Multiview from the dropdown opens it for editing. It does <strong>not</strong> put it on the display. Nothing reaches the screen until you press <strong>Show on Display</strong>.</p>
+      <p>Choosing a Multiview from the dropdown opens it for editing. It does <strong>not</strong> put it on the display, and it does not prepare any source. Nothing reaches the screen until you press <strong>Show on Display</strong> &mdash; which saves your current edits and then shows them.</p>
       <p>The canvas says which you are looking at: <strong>LIVE</strong> when this Multiview is the one on the display, <strong>INACTIVE</strong> when it is saved on the decoder but not currently shown. The Display output panel above always shows what the decoder is really doing.</p>
 
       <h3>Filling windows while it is on the display</h3>
@@ -642,7 +642,15 @@
       <p>For a <strong>group</strong>, the panel reports the group&rsquo;s display state and takes no drops. It says <em>MULTIVIEW &mdash; ACTIVE</em> with the number of synchronized displays when they all agree, and <em>DRIFTED</em> when they do not. Routing a whole group to one ordinary source is done from the A/V Matrix, so that a single drag can never change a room full of screens by accident.</p>
 
       <h3>Showing one on the display</h3>
-      <p><strong>Show on Display</strong> prepares every source the Multiview needs and then switches the display to it. It runs immediately &mdash; choosing a Multiview and pressing the button is the instruction, so there is no extra dialog.</p>
+      <p><strong>Show on Display</strong> saves the Multiview you are looking at, then prepares every source it needs and switches the display to it. It runs immediately &mdash; choosing a Multiview and pressing the button is the instruction, so there is no extra dialog.</p>
+      <div class="note"><strong>You do not have to press Save first.</strong> Whatever is on the canvas when you press Show on Display is what gets saved and what gets shown. Save on its own is still there for when you want to store a design without putting it on screen.</div>
+      <p>The two halves are deliberately separate. If the Multiview saves but cannot be shown &mdash; a source is switched off, another display needs that source at a different size &mdash; then <strong>your saved changes are kept</strong> and OmniSuite tells you why it could not be shown. It does not throw your work away because the room is not ready for it.</p>
+      <table>
+        <tr><th>What you pressed</th><th>What happens</th></tr>
+        <tr><td><strong>Save</strong></td><td>Stores the Multiview. The display does not change.</td></tr>
+        <tr><td><strong>Show on Display</strong></td><td>Stores the Multiview, then puts it on the display.</td></tr>
+        <tr><td>Show on Display, but it cannot be shown</td><td>The Multiview is still stored. The display stays as it was, and the reason is shown.</td></tr>
+      </table>
       <p>Each change is read back from the device afterwards. If anything cannot be confirmed, the whole operation is undone and you are told what failed. A Multiview that is already showing and already correct can be shown again safely; nothing is rewritten.</p>
 
       <h3>Editing versus changing what is on screen</h3>
