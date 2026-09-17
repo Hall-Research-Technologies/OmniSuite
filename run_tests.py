@@ -22,6 +22,7 @@ import argparse
 import collections
 import importlib.util
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -33,7 +34,8 @@ ROOT = Path(__file__).resolve().parent
 TESTS = ROOT / "tests"
 JS_SUITES = ("usb_render_smoke.js", "usb_filter_test.js", "lldp_topology_test.js",
              "sticky_observers_test.js", "mirror_scroll_test.js", "device_log_test.js",
-             "appearance_theme_test.js")
+             "appearance_theme_test.js", "multiview_ui_test.js",
+             "matrix_multiview_test.js")
 
 attempts: collections.Counter = collections.Counter()
 
@@ -115,10 +117,19 @@ def node_binary() -> str:
 # blocked at the socket -- it is reported, but it does not fail the gate.
 UNROUTABLE_PREFIXES = ("192.0.2.", "198.51.100.", "203.0.113.")
 
+# An attempt is recorded in whatever shape the caller used: a bare host, a URL,
+# or a host with the command appended. Classifying the raw string would read
+# "ws://192.0.2.10/wsapp/" as a routable host, so pull the address out first.
+_ADDRESS = re.compile(r"(?<![0-9.])[0-9]{1,3}(?:[.][0-9]{1,3}){3}(?![0-9.])")
+
 
 def report_isolation() -> bool:
     def reachable(target: str) -> bool:
-        return not any(target.startswith(prefix) for prefix in UNROUTABLE_PREFIXES)
+        found = _ADDRESS.search(target)
+        if found is None:
+            return True              # not an address we recognise: assume the worst
+        return not any(found.group(0).startswith(prefix)
+                       for prefix in UNROUTABLE_PREFIXES)
 
     blocked = sum(attempts.values())
     live = sum(count for (_kind, target), count in attempts.items() if reachable(target))

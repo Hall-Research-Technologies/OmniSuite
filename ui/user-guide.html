@@ -93,7 +93,8 @@
         <img src="/ui/companylogo.png" alt="Company Logo" class="logo"/>
         <div>
           <h1>OmniSuite User Guide</h1>
-          <div class="muted">Settings, appearance, discovery, firmware, routing, device setup, USB, and slate workflow</div>
+          <div class="muted">Settings, appearance, discovery, firmware, routing, device setup, Multiview, USB, and slate workflow</div>
+          <div class="muted">This guide describes OmniSuite <strong>{{OMNI_VERSION}}</strong>.</div>
         </div>
       </div>
       <div class="actions">
@@ -101,6 +102,7 @@
         <a class="btn secondary" href="/matrix/configure">Configure</a>
         <a class="btn secondary" href="/matrix">A/V Matrix</a>
         <a class="btn secondary" href="/matrix/usb">USB Matrix</a>
+        <a class="btn secondary" href="/matrix/multiview">Multiview</a>
         <button class="btn" onclick="window.print()">Print</button>
       </div>
     </div>
@@ -114,10 +116,11 @@
       <a href="#device-info">6. Device Info Page</a>
       <a href="#configure">7. Configure Page</a>
       <a href="#av-matrix">8. A/V Matrix Page</a>
-      <a href="#usb">9. USB Endpoints and USB Matrix</a>
-      <a href="#popups">10. Configuration Popups</a>
-      <a href="#gotchas">11. Gotchas and Field Rules</a>
-      <a href="#troubleshooting">12. Troubleshooting</a>
+      <a href="#multiview">9. Multiview</a>
+      <a href="#usb">10. USB Endpoints and USB Matrix</a>
+      <a href="#popups">11. Configuration Popups</a>
+      <a href="#gotchas">12. Gotchas and Field Rules</a>
+      <a href="#troubleshooting">13. Troubleshooting</a>
     </div>
 
     <section id="before-first-use">
@@ -158,7 +161,7 @@
       <p>This is the first place to check before scanning or sending writes.</p>
       <table>
         <tr><th>Setting</th><th>Purpose</th><th>Notes</th></tr>
-        <tr><td>Version</td><td>Shows the running OmniSuite version, and whether a newer official release exists.</td><td>Read only. The server reports it from the <code>VERSION</code> file it was built from; at the time of writing that is <code>V1.0.7</code>. Always trust what Settings shows over any version printed elsewhere. Underneath it OmniSuite reports one of three answers: <code>No update available &mdash; V1.0.7 is current.</code>, <code>UPDATE AVAILABLE</code> naming the newer release, or <code>Unable to check for updates.</code> A build that is <em>newer</em> than the latest published release is current, not an error. <strong>Check Now</strong> re-checks immediately; <strong>Releases</strong> always opens the official release page. The check is made by the server, cached for several hours, and is never on a polling path — OmniSuite works normally with no Internet, and a failed check changes nothing else. Nothing is downloaded or installed for you: when an update exists and your platform's build can be identified, a download link is offered alongside the release page, and you choose.<br/>When a newer release is found, the <strong>Settings gear</strong> pulses gently so you notice without a dialog interrupting you. Opening Settings stops the pulse for that release; it does not hide the message, which goes on saying an update is available for as long as one is. A later release starts it again, and re-checking the same one does not.</td></tr>
+        <tr><td>Version</td><td>Shows the running OmniSuite version, and whether a newer official release exists.</td><td>Read only. The server reports it from the <code>VERSION</code> file it was built from; this build reports <code>{{OMNI_VERSION}}</code>. Always trust what Settings shows over any version printed elsewhere. Underneath it OmniSuite reports one of three answers: <code>No update available &mdash; {{OMNI_VERSION}} is current.</code>, <code>UPDATE AVAILABLE</code> naming the newer release, or <code>Unable to check for updates.</code> A build that is <em>newer</em> than the latest published release is current, not an error. <strong>Check Now</strong> re-checks immediately; <strong>Releases</strong> always opens the official release page. The check is made by the server, cached for several hours, and is never on a polling path — OmniSuite works normally with no Internet, and a failed check changes nothing else. Nothing is downloaded or installed for you: when an update exists and your platform's build can be identified, a download link is offered alongside the release page, and you choose.<br/>When a newer release is found, the <strong>Settings gear</strong> pulses gently so you notice without a dialog interrupting you. Opening Settings stops the pulse for that release; it does not hide the message, which goes on saying an update is available for as long as one is. A later release starts it again, and re-checking the same one does not.</td></tr>
         <tr><td>Theme</td><td>Switches the UI between Dark and Light.</td><td>Applies to every layout. See <a href="#appearance">Appearance</a>.</td></tr>
         <tr><td>Username</td><td>Device login username.</td><td>Most Omni units use <code>admin</code>.</td></tr>
         <tr><td>Password</td><td>Primary device password.</td><td>The eye button reveals the stored value.</td></tr>
@@ -445,10 +448,134 @@
       <div class="danger">Important: the matrix wires decoder video to <code>ip_input1</code> and decoder audio to <code>ip_input3</code>. When AV is selected, OmniSuite updates both fields. When Video or Audio is selected, it updates only the matching field.</div>
       <p>Routes are queued per decoder. You can click multiple decoders quickly; each decoder keeps only the latest requested route while different decoders can process in parallel.</p>
       <p>Use Lock Headers when the matrix is larger than the viewport. Use Preview to show or hide encoder preview behavior. Use the encoder and decoder filters to reduce the visible matrix without changing the discovered cache.</p>
+      <div class="note">A decoder currently showing a <strong>Multiview</strong> is marked <strong>MULTIVIEW</strong> and has no video crosspoint, because its picture is a composition rather than a route from one encoder. Its audio may still show a source, which is correct. Routing a normal source to it is still allowed and will exit Multiview after a warning &mdash; the saved Multiview is kept. See <a href="#multiview">9. Multiview</a>.</div>
+    </section>
+
+    <section id="multiview">
+      <h2>9. Multiview</h2>
+      <p><strong>Multiview puts several sources on one display at once.</strong> You choose a decoder, choose a layout, drop a source into each window, and the decoder composites them into a single picture. It is built and recalled entirely from the Multiview page.</p>
+      <p>Multiview is <strong>video only</strong>. Sound still comes from one source &mdash; see <em>Audio</em> below.</p>
+
+      <h3>Choosing a decoder</h3>
+      <p>Everything starts with the decoder that will show the Multiview. Only decoders that answered and that support Multiview are offered. A decoder that is switched off or unreachable is not in the list at all.</p>
+      <p>A decoder that <em>is</em> reachable but cannot do Multiview right now is still listed, greyed out, with the reason &mdash; usually <strong>Video Wall</strong> or <strong>Fast Switching</strong>. Those are deliberate settings, so OmniSuite tells you rather than turning them off behind your back. Turn the conflicting feature off on the decoder and it becomes available.</p>
+      <div class="note">OmniSuite remembers the decoder and the Multiview you were working on. Refresh the browser or go to another page and come back, and you are where you left off. If that decoder has since gone offline the selection is cleared rather than left looking valid.</div>
+
+      <h3>Which sources can be used</h3>
+      <p>The source list shows every encoder OmniSuite can use for Multiview, in one of three states:</p>
+      <table>
+        <tr><th>State</th><th>What it means</th><th>What to do</th></tr>
+        <tr><td><strong>Ready</strong></td><td>Usable now.</td><td>Drag it into a window.</td></tr>
+        <tr><td><strong>Configuration required</strong></td><td>The encoder is fine, but something on it still has to be set &mdash; usually its second session has no multicast address.</td><td>Set it on the device. The tile says which field, and cannot be dragged until it is fixed.</td></tr>
+        <tr><td><strong>Not eligible</strong></td><td>Offline, or a model that cannot feed a Multiview window.</td><td>Nothing. These are collected under <em>encoder(s) not eligible</em> with the reason, so a missing encoder is never a mystery.</td></tr>
+      </table>
+
+      <h3>Seeing what is on a source before you use it</h3>
+      <p><strong>Hover over a source tile</strong> and a preview of that encoder appears beside it, so you can tell two similarly named units apart without routing one to find out.</p>
+      <ul>
+        <li><strong>Preview disabled</strong> &mdash; the encoder is not generating a preview. Turn its thumbnail on from the Configure page if you want one.</li>
+        <li><strong>Preview unavailable</strong> &mdash; the picture could not be fetched just now.</li>
+      </ul>
+      <div class="note">Preview is informational only. It never routes anything, never changes a source, and a source you cannot preview is still perfectly usable. OmniSuite never switches preview generation on by itself.</div>
+
+      <h3>Creating a Multiview</h3>
+      <ol>
+        <li>Choose the decoder.</li>
+        <li>Press <strong>+ New Multiview</strong>.</li>
+        <li>Choose a <strong>layout</strong> &mdash; 2x2, Side-by-Side, one of the four Picture-in-Picture positions, one of the four 1+3 arrangements, or 4-Split.</li>
+        <li>Give it a name. The name follows the layout until you type your own.</li>
+        <li><strong>Drag a source onto each window</strong>, or click a source and then click a window.</li>
+        <li>Press <strong>Save Multiview</strong>.</li>
+      </ol>
+      <p>The Configuration panel below the canvas shows exactly what Save will do before you press it, and the confirmation lists every change.</p>
+      <div class="note"><strong>Saving does not change the picture.</strong> It stores the layout on the decoder and leaves the display alone. Nothing appears on screen until you press <strong>Show on Display</strong>.</div>
+
+      <h3>Several Multiviews on one decoder</h3>
+      <p>A decoder holds as many saved Multiviews as you want, and exactly one of them is on the display. They are listed under <em>On this decoder</em>, and the one currently showing is marked. Pick any of them from the <strong>Multiview</strong> dropdown to open it.</p>
+
+      <h3>Showing one on the display</h3>
+      <p><strong>Show on Display</strong> prepares every source the Multiview needs and then switches the display to it. It runs immediately &mdash; choosing a Multiview and pressing the button is the instruction, so there is no extra dialog.</p>
+      <p>Each change is read back from the device afterwards. If anything cannot be confirmed, the whole operation is undone and you are told what failed. A Multiview that is already showing and already correct can be shown again safely; nothing is rewritten.</p>
+
+      <h3>Editing versus changing what is on screen</h3>
+      <p>This is the distinction to hold on to, and the canvas states it in words:</p>
+      <table>
+        <tr><th>The Multiview you have open</th><th>What the canvas says</th><th>What a drop does</th></tr>
+        <tr><td>Not on the display</td><td><em>Not on the display &mdash; changes are saved, and shown when you choose</em></td><td>Edits the saved layout. Nothing on screen changes until you Save and Show.</td></tr>
+        <tr><td>On the display</td><td><strong>LIVE &mdash; changes made on this canvas are applied immediately</strong>, with the canvas outlined</td><td><strong>Changes the picture straight away.</strong></td></tr>
+      </table>
+
+      <h3>Switching a window live</h3>
+      <p>When the Multiview is on the display, <strong>drag a new source onto a window and it switches</strong>. There is no confirmation: the canvas already carries the LIVE banner, and a dialog on every drop would only train you to click through it.</p>
+      <p>Only the window you dropped on changes. The others keep their picture. The window shows <em>Switching&hellip;</em> while it happens and <em>Live</em> once the decoder has confirmed it.</p>
+      <p><strong>A live change that succeeds becomes part of the saved Multiview</strong>, so recalling it later brings back what you last had on screen rather than what you originally saved. A change that fails is undone and the window goes back to the source it is still showing.</p>
+      <p>The <strong>&times;</strong> on a window clears it. On a live Multiview that takes effect immediately too.</p>
+
+      <h3>What the windows show</h3>
+      <p>Each populated window shows that source's live preview where one is available, with the source name, address and the decoder input carrying it laid over the top. A window whose source has no preview keeps the plain appearance and says so. The canvas always reflects what the decoder is <em>actually receiving</em> &mdash; if someone changes a window from the front panel, that is what you will see.</p>
+
+      <h3>Audio</h3>
+      <p>Multiview carries picture only, so <strong>the sound comes from the main window's source</strong> &mdash; the largest window in the layout, or the first window where all windows are the same size. It uses that source's normal audio stream and the decoder's existing audio input.</p>
+      <p>Change the main window and the sound follows it. Change any other window and the sound is left alone.</p>
+
+      <h3>Bitrate</h3>
+      <p>OmniSuite sets the Multiview stream bitrate for you, from the size of the window it feeds:</p>
+      <table>
+        <tr><th>Layout</th><th>Target per window</th></tr>
+        <tr><td>Side-by-Side</td><td>200 Mb/s each</td></tr>
+        <tr><td>2x2</td><td>200 Mb/s each</td></tr>
+        <tr><td>Picture-in-Picture</td><td>300 Mb/s main, 150 Mb/s inset</td></tr>
+        <tr><td>1+3 (any position)</td><td>300 Mb/s main, 150 Mb/s each small window</td></tr>
+        <tr><td>4-Split</td><td>300 Mb/s main, 150 Mb/s each small window</td></tr>
+      </table>
+      <p>Windows of the same size always get the same target.</p>
+      <p>What a source can actually deliver depends on what it is already doing. Each encoder has a 900 Mb/s budget shared between its primary stream and its Multiview stream, so the Multiview stream gets its target <em>or</em> whatever the primary stream leaves &mdash; whichever is smaller.</p>
+      <div class="note"><strong>OmniSuite never reduces the primary stream to make room for Multiview.</strong> Every decoder watching that encoder normally would lose picture for a moment if it did. So a source whose primary stream is at 750 Mb/s gives its Multiview window 150 rather than 200, and the Configuration table shows both numbers &mdash; the bitrate it got, and the target it was aiming for. If you want the higher figure, lower the primary stream on the encoder yourself.</div>
+      <p>A source with almost nothing left is refused by name rather than being used badly.</p>
+
+      <h3>Using one source in more than one window</h3>
+      <p>The same source can fill two windows <strong>of the same size</strong>. It is encoded once and arrives once, so it costs no extra bandwidth.</p>
+      <p>The same source in two windows of <em>different</em> sizes is refused. An encoder produces one picture at one size, so it cannot feed a large window and a small one at the same time. OmniSuite tells you which two windows are in conflict; use a different source for one of them.</p>
+      <p>One source can fill at most two windows.</p>
+
+      <h3>Multiview and the A/V Matrix</h3>
+      <p>A decoder that is currently showing a Multiview is marked <strong>MULTIVIEW</strong> on its row in the A/V Matrix, and no video crosspoint is shown for it &mdash; because the picture is a composition of several sources, not a route from one encoder. Hovering the row explains this.</p>
+      <p><strong>Audio may still show a source on that row, and that is correct.</strong> Multiview sound comes from the main window's source over its ordinary audio path, so the matrix is telling you exactly where the sound is coming from.</p>
+      <p>You can still route a normal source to that decoder from the matrix. Doing so <strong>exits Multiview</strong> and shows the route you asked for. OmniSuite warns you first:</p>
+      <div class="note">Multiview is active on this decoder. Completing this route will exit Multiview and replace the Multiview display with the selected A/V route.</div>
+      <p><strong>The saved Multiview is not deleted.</strong> It stays in the Multiview dropdown and you can show it again whenever you like; it will be rebuilt against whatever the sources are doing at that time.</p>
+      <p>The warning appears <strong>once per session</strong> &mdash; after you have acknowledged it, further routes that exit Multiview during the same session go straight through. Refreshing the page or moving between pages does not bring it back. Ticking <strong>Do not show this again</strong> stops it appearing in future sessions as well.</p>
+      <p>If the route cannot be completed, OmniSuite puts the Multiview back rather than leaving the display blank, and tells you so.</p>
+
+      <h3>Deleting a Multiview</h3>
+      <p><strong>Delete Multiview</strong> removes it from the decoder. If it is the one on the display, OmniSuite moves the display elsewhere first and then releases the decoder inputs it was using.</p>
+
+      <h3>Limits worth knowing</h3>
+      <ul>
+        <li><strong>Multiview is 1920x1080.</strong> The display output is set to 1080p while a Multiview is shown. A Multiview saved at another resolution by an older release is listed but cannot be shown, and says so rather than failing when you press the button.</li>
+        <li><strong>Video Wall must be off</strong> on the decoder.</li>
+        <li><strong>Fast Switching must be off</strong> on the decoders that cannot combine it with Multiview.</li>
+        <li>A layout can use at most four different sources.</li>
+      </ul>
+
+      <h3>Messages you may see</h3>
+      <table>
+        <tr><th>Message</th><th>Meaning</th></tr>
+        <tr><td>VERIFIED</td><td>Everything was written and read back successfully.</td></tr>
+        <tr><td>VERIFIED &mdash; WINDOW NOT LOCKED</td><td>The change worked, but a window is not showing its stream yet. The rest of the picture is live; check that source.</td></tr>
+        <tr><td>NO ACTIVE VIDEO &mdash; ROLLED BACK</td><td>A window never showed its picture, so the change was undone. Nothing was left half-applied.</td></tr>
+        <tr><td>FAILED &mdash; ROLLED BACK</td><td>A device refused a change, so everything already written was put back.</td></tr>
+        <tr><td>&hellip; is assigned to windows that need different sizes</td><td>One source cannot fill two differently sized windows. Change one of them.</td></tr>
+        <tr><td>&hellip; drives at most 2</td><td>One source is in too many windows.</td></tr>
+        <tr><td>Video Wall is enabled</td><td>Turn Video Wall off on the decoder.</td></tr>
+        <tr><td>Multicast configuration required</td><td>That encoder's second session needs a multicast address setting on the device.</td></tr>
+      </table>
+
+      <div class="warn">When you first open the Multiview page after an update, OmniSuite shows a notice listing everything Multiview may change on your equipment, and everything it will never change on its own. It is worth reading once. You can copy it or save it to a file, and tick the box to stop it appearing again for that version.</div>
     </section>
 
     <section id="usb">
-      <h2>9. USB Endpoints and USB Matrix</h2>
+      <h2>10. USB Endpoints and USB Matrix</h2>
       <p>The USB Matrix pairs LEX and REX endpoints. A LEX (local extender, USB host) is where the computer is; a REX (remote extender, USB device) is where the peripherals are. LEX endpoints are columns and REX endpoints are rows.</p>
 
       <h3>Standalone and integrated endpoints</h3>
@@ -527,7 +654,7 @@
     </section>
 
     <section id="popups">
-      <h2>10. Configuration Popups</h2>
+      <h2>11. Configuration Popups</h2>
       <h3>Session Popup</h3>
       <p>Opened from an encoder's Session link on the Configure page. It displays a unit selector at the top so you can move between available encoders without closing the popup.</p>
       <ul>
@@ -578,7 +705,7 @@
     </section>
 
     <section id="gotchas">
-      <h2>11. Gotchas and Field Rules</h2>
+      <h2>12. Gotchas and Field Rules</h2>
       <table>
         <tr><th>Area</th><th>Gotcha</th><th>Best practice</th></tr>
         <tr><td>Live dropdowns and checkboxes</td><td>Writes are queued, but the device can still take time to report the new value.</td><td>Move down the list normally. If a field shows pending, let it finish before changing the same unit again.</td></tr>
@@ -598,7 +725,7 @@
     </section>
 
     <section id="troubleshooting">
-      <h2>12. Troubleshooting</h2>
+      <h2>13. Troubleshooting</h2>
       <p>Most reports of a missing or unresponsive device are answered by the same short sequence. The order matters: there is nothing to gain from rescanning a subnet the PC is not on, and nothing to learn from suspecting OmniSuite while its traffic is being filtered.</p>
       <div class="note">Device missing &rarr; Verify interface/subnet &rarr; Verify IP connectivity &rarr; Verify firewall/security policy &rarr; For routed USB: verify Discovery Network / known address &rarr; Scan again &rarr; Review TS Dump</div>
 

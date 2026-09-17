@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Omni Multiview</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="icon" href="/ui/favicon.ico"/>
+  <link rel="stylesheet" href="/ui/matrix/matrix.css?v=20260915-multiview"/>
+  <link rel="stylesheet" href="/ui/matrix/multiview.css?v=20260916-multiview5"/>
+  <style>
+    .tabs{display:flex;gap:0;}
+    .tab{padding:8px 16px;cursor:pointer;background:transparent;color:var(--muted);border:none;font-size:14px;font-weight:500;border-bottom:2px solid transparent;transition:all .16s;text-decoration:none;border-radius:6px 6px 0 0}
+    /* Tab hover and selection live in ui/templates.css, with the rest of the
+       control system, so the active tab follows the active preset. */
+  </style>
+  <script src="/ui/diagnostics.js?v=20260911-diag"></script>
+  <link rel="stylesheet" href="/ui/templates.css?v=20260910-templates">
+  <link rel="stylesheet" href="/ui/settings.css?v=20260911-settings">
+  <script src="/ui/appearance.js?v=20260910-appearance"></script>
+  <script src="/ui/toast.js?v=20260911-toast"></script>
+  <script src="/ui/confirm.js?v=20260915-confirm"></script>
+  <script src="/ui/settings.js?v=20260911-settings"></script>
+
+  <script>
+    // Apply theme before first paint. This runs in <head>, where document.body
+    // is still null, so the document element is what carries it.
+    (function(){
+      const dark = localStorage.getItem('dark') !== 'false';
+      const apply = ()=>{
+        const root = document.documentElement;
+        root.classList.toggle('light', !dark);
+        if (document.body) document.body.classList.toggle('light', !dark);
+      };
+      if (document.body) apply();
+      else document.addEventListener('DOMContentLoaded', apply, {once:true});
+    })();
+  </script>
+</head>
+<body>
+  <div class="header">
+    <div class="left">
+      <img src="/ui/companylogo.png" alt="Company Logo" class="logo">
+      <h1>OmniSuite Multiview</h1>
+    </div>
+    <div class="controls">
+      <div class="tabs">
+        <a href="/" class="tab">Device Info</a>
+        <a href="/matrix/configure" class="tab">Configure</a>
+        <a href="/matrix" class="tab">A/V Matrix</a>
+        <a href="/matrix/usb" class="tab">USB Matrix</a>
+        <a href="/matrix/multiview" class="tab active" aria-current="page">Multiview</a>
+      </div>
+      <button id="header_gear" class="gear-btn" type="button" title="Settings" aria-label="Settings">&#9881;&#65039;</button>
+    </div>
+  </div>
+
+  <!-- Progressive disclosure: each step appears only once the one before it has
+       been answered, so the page never opens as a half-filled form. -->
+  <div class="mv-toolbar">
+    <div class="mv-field" id="mv_field_decoder">
+      <label for="mv_decoder">Decoder</label>
+      <select id="mv_decoder" class="mv-control"><option value="">Loading…</option></select>
+    </div>
+
+    <div class="mv-field" id="mv_field_target" hidden>
+      <label for="mv_target">Multiview</label>
+      <select id="mv_target" class="mv-control"></select>
+    </div>
+
+    <div class="mv-field mv-field-action" id="mv_field_new" hidden>
+      <label aria-hidden="true">&nbsp;</label>
+      <button id="mv_new" class="mv-control secondary" type="button">+ New Multiview</button>
+    </div>
+
+    <div class="mv-field" id="mv_field_layout" hidden>
+      <label for="mv_layout">Layout</label>
+      <select id="mv_layout" class="mv-control"></select>
+    </div>
+
+    <div class="mv-field" id="mv_field_name" hidden>
+      <label for="mv_name">Name</label>
+      <input type="text" id="mv_name" class="mv-control" autocomplete="off" spellcheck="false"/>
+    </div>
+
+    <div class="mv-toolbar-spacer"></div>
+
+    <div class="mv-field mv-field-action" id="mv_field_reload" hidden>
+      <label aria-hidden="true">&nbsp;</label>
+      <button id="mv_reload" class="mv-control secondary" type="button">Reload decoder</button>
+    </div>
+  </div>
+
+  <!-- One line that says what the page is doing or why it cannot continue.
+       Loading, unreachable and unsupported are three different conditions and
+       are never collapsed into "no Multiviews configured". -->
+  <div id="mv_banner" class="mv-banner" hidden></div>
+
+  <div class="mv-body" id="mv_workspace" hidden>
+    <div>
+      <div class="mv-panel">
+        <h2>Sources</h2>
+        <div id="mv_sources" class="mv-sources"></div>
+        <div id="mv_sources_excluded"></div>
+      </div>
+
+      <div class="mv-panel" style="margin-top:16px;">
+        <h2>On this decoder</h2>
+        <div id="mv_existing" class="mv-existing"></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="mv-panel">
+        <h2>Multiview canvas <span class="mv-canvas-note" id="mv_canvas_note"></span></h2>
+        <!-- Whether a drop edits a preset or changes the display is the one
+             thing an operator must never have to guess, so it is stated on the
+             canvas itself rather than implied by which buttons are enabled. -->
+        <p class="mv-canvas-mode" id="mv_canvas_mode" role="status" hidden></p>
+        <div class="mv-stage-wrap">
+          <div id="mv_stage" class="mv-stage" aria-label="Multiview canvas preview"></div>
+          <div id="mv_caption" class="mv-stage-caption"></div>
+        </div>
+      </div>
+
+      <div class="mv-panel" style="margin-top:16px;">
+        <h2>Configuration</h2>
+        <div id="mv_plan"></div>
+        <div id="mv_notes" class="mv-notes"></div>
+        <!-- Everything an engineer needs and an operator does not: the exact
+             device writes, the bandwidth arithmetic and the decoder's own
+             health fields. Collapsed, so the normal page stays readable. -->
+        <details class="mv-detail" id="mv_engineering">
+          <summary id="mv_engineering_summary">Engineering detail</summary>
+          <div id="mv_engineering_body"></div>
+        </details>
+        <!-- The outcome of the last Save, Show or Delete lives in its own
+             container. Sharing one with the plan meant the refresh that follows
+             a Save wiped the explanation of why it had just failed. -->
+        <div id="mv_result"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pinned to the bottom of the viewport. The Configuration panel grows with
+       the plan, and an action bar that scrolls away below it leaves an operator
+       with a finished design and no visible way to save it. Save is primary and
+       first; Delete is destructive and sits at the far end, well away from it. -->
+  <!-- Shown once per application version, before the page is used. It is a
+       dialog rather than a panel because it has to be read before anything is
+       reconfigured, and dismissed deliberately. -->
+  <div id="mv_notice" class="mv-notice-backdrop" hidden>
+    <div class="mv-notice" role="dialog" aria-modal="true"
+         aria-labelledby="mv_notice_title" aria-describedby="mv_notice_body">
+      <h2 id="mv_notice_title">Before you use Multiview</h2>
+      <div id="mv_notice_body" class="mv-notice-body" tabindex="0"></div>
+      <label class="mv-notice-suppress">
+        <input type="checkbox" id="mv_notice_suppress">
+        <span id="mv_notice_suppress_label">Do not show this notice again for
+          this version</span>
+      </label>
+      <div class="mv-notice-actions">
+        <button id="mv_notice_close" class="primary mv-control" type="button">
+          Continue</button>
+        <button id="mv_notice_copy" class="secondary mv-control" type="button">
+          Copy to clipboard</button>
+        <button id="mv_notice_save" class="secondary mv-control" type="button">
+          Save to file</button>
+        <span id="mv_notice_status" class="mv-notice-status" role="status"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="mv-actions" id="mv_actions" hidden>
+    <button id="mv_save" class="primary mv-control" type="button" disabled>Save Multiview</button>
+    <button id="mv_show" class="secondary mv-control" type="button" hidden>Show on Display</button>
+    <button id="mv_cancel" class="secondary mv-control" type="button" hidden>Cancel</button>
+    <span id="mv_shown" class="mv-shown" hidden></span>
+    <!-- Why Save cannot be used yet. The action is never taken away; the
+         operator is told what is still missing. -->
+    <span id="mv_save_reason" class="mv-reason"></span>
+    <div class="mv-actions-spacer"></div>
+    <span id="mv_status" class="mv-status"></span>
+    <button id="mv_delete" class="btn danger mv-control" type="button" hidden>Delete Multiview</button>
+  </div>
+
+  <script src="/ui/matrix/multiview.js?v=20260916-multiview5"></script>
+</body>
+</html>

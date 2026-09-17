@@ -3646,3 +3646,820 @@ first start, still empty after a restart with no scan, persisting normally once
 a scan has run, and keeping the operator's chosen firmware folder across a
 restart -- while a second installation inherits none of it.
 The local files are untouched; the server reads them from `DATA_DIR`.
+
+## Multiview
+
+The Multiview page (`/matrix/multiview`) configures an OmniStream decoder to
+composite up to four sources onto one HDMI output. It is additive: nothing in
+Scan, Device Info, Configure, the A/V Matrix, the USB Matrix, LLDP, firmware or
+Settings changed to accommodate it.
+
+Phase 1's live findings are in `docs/MULTIVIEW_DISCOVERY.md` and are the
+authority for device behaviour. Three of them decide the whole architecture:
+
+- **There is no `layout` field.** The device stores explicit subframe geometry
+  and silently discards a layout name. Layouts are an OmniSuite abstraction.
+- **A subframe has no size.** A window is as large as the stream arriving on its
+  ip_input, which is set by the *encoder's* scaler. Resizing a window means
+  reconfiguring a device other than the one being edited.
+- **An invalid write is accepted and reported as success.** A nonexistent input,
+  a `0x0` canvas and a `delete: true` flag all return `error: false`.
+
+### One layout engine
+
+`omni_multiview.py` is pure computation -- no Flask, no network, no persisted
+state. It holds the eleven layout templates recovered from the decoder's own web
+application, the canvas snapping rule, the encoder scaler tables, the encoder
+selection rule, the ip_input allocator, the scaler-ownership classifier and the
+planner.
+
+`GET /api/multiview/layouts` returns that geometry precomputed, and the page
+renders the preview from it. The browser derives nothing: the numbers drawn on
+screen are the numbers written to the decoder, so the preview cannot disagree
+with the hardware. A JS test asserts the page contains no rounding, no slice
+arithmetic and no layout table.
+
+Canvas presets carry an `exposed` flag. 3840x2160 and 1920x1080 are offered;
+2560x1440 exists in the table but is not, because six of its window sizes
+(`896x480`, in the two `1+3-horizontal` layouts) have no encoder scaler format.
+Enabling it later is a flag, not a redesign.
+
+### OmniSuite owns the layout, the device owns the geometry
+
+`multiview_meta.json` records, per decoder and per Multiview object, the layout
+name, the friendly name, the requested and actual canvas, and each window's
+geometry, scaler format, encoder, session, ip_input and source. It is keyed by
+hardware MAC, so the record follows a device that changes address, exactly as
+USB associations do.
+
+It is a cache and never the authority. On load the geometry is read from the
+decoder and reconciled: the stored layout is used only where the hardware still
+matches it, otherwise the layout is re-inferred from geometry, and otherwise the
+Multiview is reported as Custom / Unknown. A Multiview built in the device's own
+web UI therefore still shows a sensible layout name, and one edited elsewhere is
+never described by a name it no longer matches.
+
+### The resource planner
+
+Every encoder, session, scaler, ip_input and multicast decision is made in
+`plan_multiview` and nowhere else. The UI consumes its result and the apply
+transaction executes it, so the confirmation summary and the work performed
+cannot describe different things.
+
+Encoder selection is a single rule: a window larger than 1920x1080 must come from
+Encoder 1, because Encoder 2's scaler tops out there and has no pass-through.
+Everything at or below uses Encoder 2, which leaves Encoder 1's native feed
+alone. At a 4K canvas nine of the eleven layouts need Encoder 1 for their main
+window; at 1920x1080 none do, which is why that canvas is the least disruptive.
+
+ip_inputs are allocated from the decoder's own current state. The roles are
+discovered -- which input the HDMI output takes video, audio and aux from, and
+which are claimed by another Multiview -- never assumed from a numbering
+convention. An input already carrying the wanted address and port is reused
+rather than reconfigured, so an unchanged window is not torn down on every apply.
+
+Multicast addresses are read from the encoder's sessions. OmniSuite has no
+allocator and does not need one: the devices generate deterministic,
+per-device-unique destinations themselves. A session with no destination is
+reported as an error rather than filled in.
+
+### Shared scaler ownership
+
+A vc2 scaler belongs to the encoder, so retuning one changes what every decoder
+consuming that session sees. Each window's scaler change is classified:
+
+| Status | Meaning |
+|---|---|
+| `safe` | already correct, or Encoder 1 already passing that size through |
+| `change` | must change, and every Multiview OmniSuite knows of wants the same size |
+| `conflict` | another known Multiview depends on it at a different size |
+| `unknown_external` | must change, with no known consumer -- which is not proof there is none |
+
+`change` and `unknown_external` warn before Apply. `conflict` refuses: the
+operator changes the design rather than the last layout silently winning.
+OmniSuite cannot see a Multiview built in a device's own web UI, and the UI says
+so rather than implying the check is exhaustive.
+
+### The apply transaction
+
+Rebuilt server-side from freshly read device state rather than trusted from the
+page, so what is applied reflects the hardware's current condition.
+
+Stages run in a fixed order: disable the inputs that are changing, then encoder
+scalers, then bitrate, then sessions, then decoder ip_inputs, then remove any
+subframes the new layout does not have, then the Multiview object, then SAP
+Input, then the HDMI output. Inputs come down first so a window never shows torn
+video mid-change, and the output moves last.
+
+**Every stage is read back and compared against the desired state.** This is not
+belt and braces: it is the only thing that distinguishes a write that worked from
+one the device accepted and ignored. Only the fields the mutation named are
+compared, because the device adds read-only status everywhere.
+
+Before the first write, every field the plan may touch is snapshotted. On a
+failure the remaining stages are abandoned and the applied ones are reversed in
+order, each restore read back. The result is reported as `VERIFIED`,
+`FAILED — ROLLED BACK` or `FAILED — ROLLBACK INCOMPLETE`; rollback is
+best-effort by nature, since the devices offer no transaction, and the third
+state exists so that is never glossed over.
+
+The prune step is reversible too: a removed subframe is re-added from the
+snapshot, and idempotently, because restoring the Multiview object itself merges
+the captured subframe list back in first.
+
+Deleting a Multiview moves the HDMI output onto another input first, verified,
+and uses `del_multiview` -- the only mechanism the device has. Shared encoder
+streams are deliberately left configured.
+
+### Source eligibility
+
+Exactly one model may not feed a Multiview window: **AT-OMNI-111-WP**, matched as
+a whole normalised identity in `EXCLUDED_SOURCE_MODELS`.
+
+This is deliberately not a wall-plate rule. **HW-OMNI-E4111-WP is eligible** --
+verified on the bench at .253, where it reports the same two vc2 encoders, six
+sessions and device-generated multicast as any other encoder, and has driven a
+live Multiview window. An earlier `endswith("-WP")` rule excluded it, which was
+wrong; a `111` substring rule would take the plain AT-OMNI-111, which is also
+eligible. Three regression tests name all three models.
+
+The exclusion applies to the Multiview source list only. Discovery, Device Info,
+the matrices and routing are untouched.
+
+### Many saved Multiviews, one active
+
+A decoder holds as many saved Multiviews as an operator wants. Only one of them
+is on the output at a time, and `/api/multiview/state` lists them all with their
+names and layouts; New Multiview is never withdrawn because others exist.
+
+This replaced the Phase 5 one-per-canvas rule. Two saved layouts will routinely
+want the same Encoder 2 at two different sizes, and one scaler has one value --
+so requiring every saved Multiview's resources to coexist is not a stricter
+design, it is an impossible one.
+
+A Multiview built in the device's own web UI is listed as Custom / Unknown,
+never overwritten, and reserves nothing. A metadata record stops counting the
+moment its object is no longer on the device.
+
+### Save, then Show
+
+Two operations, deliberately separate:
+
+| Action | Endpoint | Effect |
+|---|---|---|
+| Save Multiview | `POST /api/multiview/apply` | configures the Multiview, encoders, sessions and ip_inputs. Changes nothing on screen. |
+| Show on Display | `POST /api/multiview/show` | turns off automatic source selection (SAP), then selects the Multiview. The one moment the picture changes. |
+
+Nobody should have to accept a picture change to store a layout, and on a bench
+that separation is what makes experimenting safe. `Show` carries the same
+snapshot, read-back and rollback as `Save`, and refuses a Multiview the decoder
+is not yet offering as a video input.
+
+Wording follows the action, not the device field: "Show on Display", "Currently
+shown on display", "Display is currently showing". `hdmi_output.video.input`
+appears only in the engineering detail.
+
+### Workflow and page states
+
+One state model drives every control's visibility; nothing is inferred from
+whether a field happens to hold a value.
+
+```
+NO_DECODER -> LOADING -> DECODER_SELECTED_EMPTY | DECODER_SELECTED
+                      -> UNREACHABLE | UNSUPPORTED
+DECODER_SELECTED -> CREATE | EDIT -> SAVING -> (VERIFIED | ERROR)
+```
+
+The page opens showing one control: the decoder picker. Choosing a decoder
+reveals the Multiview selector and `+ New Multiview`; the creation controls and
+the workspace appear only once creation or editing has started. Creation is an
+action, never an entry in the dropdown pretending to be a Multiview that exists.
+
+Loading, unreachable and unsupported are three distinct banners. None of them may
+read as "no Multiviews configured", which is a fourth, different condition.
+
+The name defaults to the layout's friendly label and follows it until the
+operator types their own, and never afterwards.
+
+### ip_input allocation
+
+Roles are read from the decoder's own state, never assumed from a numbering
+convention. An input already carrying the exact address and port a window wants
+is **shared** — whatever else it is doing — and nothing is written to it: a
+subframe only references an input, and the hardware refuses to open one
+address:port on two inputs at once. Anything else gets the lowest-numbered input
+with no role and nothing enabled. Audio and aux are never repurposed for a
+different stream.
+
+An input **is** reclaimed when a layout change or a delete stops needing it, but
+only where ownership is provable: OmniSuite owns an input it had to switch on for
+a Multiview it manages. Using one that was already enabled and already carrying
+the stream is sharing, and shared is never owned — that input may also be the
+decoder's video or audio source. Release requires all of: OmniSuite claimed it,
+the new configuration no longer needs it, no other Multiview references it, it
+carries no other role, and it still holds the address it was given. Anything else
+is left alone with the reason reported. Reclamation is cleanup and never fails the
+save that ran it.
+
+Measured on the bench: four consecutive create/change/delete cycles each returned
+the decoder to exactly its starting set of enabled inputs.
+
+### The output resolution follows the canvas
+
+`hdmi_output[0].video.output.resolution` is set from the Multiview canvas when the
+Multiview is **shown**, never when it is saved — changing it changes the
+operator's picture. The preset is recovered from the canvas width, since most
+layouts snap the height. The configured value is verified by read-back; the
+resolution the display negotiated is reported separately and never used as a pass
+condition, because it belongs to the sink rather than to the write.
+
+### Loading
+
+Nothing Multiview-related runs during a scan, and a test asserts the scan
+endpoint references neither the nodes nor the helpers. Measured on the bench with
+a 31-address scan: 1.36s median both with and without Multiview present (+0.2%).
+
+| Data | When |
+|---|---|
+| decoder role, model, hostname, address | already in the scan; reused |
+| `config_get multiview` capability | once per device, cached for an hour, never polled |
+| `multiview`, `ip_input`, `hdmi_output` | on selecting a decoder -- three reads |
+| encoder `vc2`, `sessions`, `hdmi_input` | only for a source actually assigned, when a plan is built |
+
+Opening the page costs nothing until a decoder is chosen. Dragging, dropping and
+clearing a window reach no device at all; they change a local desired-state model
+and schedule a debounced plan preview, which is skipped entirely when the desired
+state has not changed. There is no polling and no observer.
+
+## Multiview: the 1080p / Encoder-2 architecture
+
+Phase 5 replaced the resolution-driven design with a fixed one. The sections
+above describe how the subsystem is built; this describes what it is now allowed
+to do, and the whole of it is validated on hardware in
+`docs/MULTIVIEW_DISCOVERY.md` section W.
+
+### One canvas
+
+`omni_multiview.ACTIVE_CANVAS` is `1920x1080`, and `plan_multiview` refuses
+anything else before it looks at a layout, a source or a decoder. The 4K and
+2560x1440 presets, the 4K scaler table, `encoder_for_window_size` and
+`output_resolution_for_canvas`'s general form all remain, marked unexposed, so
+the capability is a flag change rather than a redesign. Nothing in the active
+path reaches them; `ActiveCanvasOnlyTests` runs every layout the product offers
+and asserts no window ever asks for a size only Encoder 1 can make.
+
+4K went dormant because nine of the eleven layouts need a main window larger than
+1920x1080 at that canvas, and only Encoder 1 can produce one.
+
+### One encoder
+
+| | |
+|---|---|
+| video | `vc2_encoder2` -> `session2` -> reserved decoder input |
+| audio | the main window's source, `session1`, unchanged |
+
+`required_encoder()` returns 2 without consulting the size. Encoder 1's scaler is
+never written; its bitrate is written only when the source's own 900 Mb/s budget
+leaves no room for the window's floor, and then it is a planned, displayed,
+verified, rollback-covered mutation like any other.
+
+Preparation per source, all read back: Encoder 2's physical input, its scaler,
+its bitrate, Session 2's encoder assignment, its video enable, its generated
+multicast destination, and its SAP announcement turned **off**.
+
+### Encoder 2's physical input
+
+Two of four bench sources shipped with `vc2_encoder2.input = ""` -- the web
+application's "Not used". Session 2 can then be fully configured and verified
+while no picture is ever produced.
+
+| Encoder 2 input | Action |
+|---|---|
+| same as Encoder 1's | nothing written |
+| `""` (Not used) | set to Encoder 1's input, read back, announced before Apply |
+| a different active input | refused as a conflict, never overwritten |
+| Encoder 1 has none either | an error; there is nothing to follow |
+
+A controlled A/B could not distinguish the two states over the API: same packet
+rate, same subframe activity, same decoder Input status, and 426 encoder fields
+differing only in the input field itself. The encoder emits its slate, which is a
+valid stream with no picture in it. The fix is preventive because detection is
+not available.
+
+### The reserved decoder input pool
+
+```
+W1 -> ip_input2    W2 -> ip_input4    W3 -> ip_input6    W4 -> ip_input8
+```
+
+Odd inputs belong to the decoder's own roles. A pool input carrying anything
+OmniSuite cannot account for -- an HDMI role, another Multiview's reference, or an
+enabled stream it did not configure -- is refused with the reason, never taken.
+Two exceptions, and only two: windows sharing one stream share one input, because
+the decoder cannot open one address and port twice; and a stream already open on
+an enabled input outside the pool is refused rather than duplicated.
+
+The allocator and `reclaimable_inputs` apply the same ownership rule. They did
+not, briefly, and the asymmetry leaked one input per create/delete cycle while
+feeding our stream into another Multiview's window.
+
+### Bandwidth
+
+| Budget | Covers | Value |
+|---|---|---|
+| source | `vc2_encoder1.bitrate + vc2_encoder2.bitrate` | 900 Mb/s |
+| decoder | the sum of the **unique** streams for one Multiview | 900 Mb/s |
+
+```
+floor        = 150 Mb/s per unique stream          (verified end to end)
+remainder    = 900 - 150 x streams
+extra(s)     = floor_to_10( remainder x area(s) / total_area )
+allocated(s) = min(150 + extra(s), 900)
+bitrate(s)   = allocated, or the source's headroom, or 150 with Encoder 1
+               reduced to 750 -- in that order of preference
+```
+
+`area(s)` is the largest window that source feeds, because one encoder serves all
+of them. `vc2_encoder2` accepts 20 to 900 Mb/s on this firmware and refuses
+anything outside it explicitly.
+
+### Interlocks
+
+| Condition | Effect | Evidence |
+|---|---|---|
+| Video Wall enabled | Multiview refused on any decoder | live, two D4511s |
+| Fast Switching on a 1xx decoder | Multiview refused | live, an AT-OMNI-121 |
+| Fast Switching on a 4xxx decoder | allowed | live, all eleven layouts |
+| Fast Switching, family unrecognised | refused | model coverage |
+
+Neither feature is ever disabled automatically. The family is derived from the
+model identity alone: the last segment of the normalised model with a leading `d`
+stripped, four digits beginning `4` for 4xxx and three beginning `1` for 1xx.
+
+### Show owns everything the operator can perceive
+
+Save configures the Multiview and the sources and writes nothing at all to
+`hdmi_output`. Show performs, in order, each verified and all rolled back
+together:
+
+1. output resolution to `1920x1080`
+2. SAP Input off
+3. the audio ip_input pointed at the main window's Session 1 audio
+4. the Multiview selected as the video input
+5. that ip_input selected as the audio input
+
+and then reads the decoder's own **Input status**. A Show whose writes all
+verified but whose Input status never goes active is `NO ACTIVE VIDEO — ROLLED
+BACK`, with the whole chain captured before the rollback. That fired on a
+`hw-omni-d4111` which received all four streams and composited none of them.
+
+### The page
+
+Toolbar: Decoder, Multiview, + New Multiview, Layout, Name. There is no canvas
+selector, because there is nothing to select. The canvas states `1920x1080`
+beside its heading and the caption separates the display output from the snapped
+compositor canvas. The configuration table is Window / Source / Scaler / Encoder /
+Bitrate / Decoder input, with **Audio: Session 1** under the main window, one line
+of bandwidth summary, and an Engineering detail panel -- closed by default --
+holding the ordered device writes, the per-source bandwidth arithmetic, the audio
+plan and the decoder's own health fields.
+
+Measured in a browser against live hardware: 8 requests on load, 1 per decoder
+selection, **0 in 60 seconds idle**, no console errors. `/api/scan` is unchanged
+at 10.415 s against HEAD's 10.395 s for 254 addresses, paired on the same bench.
+
+## Multiview: saved configurations and recall
+
+Phase 6 separated what a Multiview *is* from what it *costs*. The sections above
+describe the 1080p / Encoder-2 architecture, which is unchanged; this describes
+how many of them a decoder holds and when their resources are actually claimed.
+It is validated on hardware in `docs/MULTIVIEW_DISCOVERY.md` section X.
+
+### Save stores; recall configures
+
+| | |
+|---|---|
+| **Save** | `add_multiview` / `config_set`, subframe pruning, OmniSuite metadata |
+| **Recall** | Encoder 2's input, scaler and bitrate; Encoder 1's bitrate where the budget forces it; Session 2 and its announcement; the decoder inputs; the subframe rebind; the release of pool inputs no longer needed; output resolution; SAP; audio; the selection |
+
+Saving writes nothing to a source and nothing to `hdmi_output`. Recall reads
+every source again first, because another saved Multiview has usually been
+recalled in between and left the encoder somewhere else entirely.
+
+`plan_multiview` returns the two sets separately -- `mutations` for save,
+`activation` for recall -- so the page can say which action does what, and
+neither can reach into the other's territory.
+
+### Allocation is by stream
+
+`WINDOW_IP_INPUTS` is four slots, handed to distinct streams in first-use order:
+
+```
+W1=A W2=B W3=C W4=D  ->  2, 4, 6, 8
+W1=A W2=A W3=B W4=C  ->  2, 2, 4, 6      (ip_input8 untouched)
+W1=A W2=A W3=B W4=B  ->  2, 2, 4, 4
+```
+
+`stream_identity` is the multicast address and UDP port, never the hostname. An
+input anywhere on the decoder already carrying the wanted stream is used where it
+stands, because the hardware will not open one address and port twice; and an
+input this plan has already given to a different stream is never a candidate,
+which is the bookkeeping a live recall matrix caught missing.
+
+### The two-window limit
+
+One decoder ip_input drives at most **two** subframes. Measured: three or four
+windows on one stream left exactly two showing, silently. `MAX_WINDOWS_PER_STREAM`
+is 2 and `check_stream_window_limit` refuses a layout that exceeds it, naming the
+windows that would be black.
+
+### Ownership and cleanup
+
+A pool input is OmniSuite's to reconfigure when a Multiview it manages on that
+decoder references it. Everything else in the pool is judged on what it is
+carrying **right now**: an HDMI role or a stream OmniSuite did not configure is a
+collision; another saved Multiview merely mentioning it is not.
+
+Cleanup follows the active configuration. `_releasable_pool_inputs` is given the
+ownership set explicitly when the object that proves it has already been deleted,
+because reading it afterwards would make every input the deleted Multiview
+configured look like somebody else's and leak it permanently.
+
+### Verification reaches each window
+
+`_await_input_status` checks the composite; `_await_window_lock` checks each
+subframe. A recall whose writes all verified and whose composite is live but
+which left a window dark returns `VERIFIED — WINDOW NOT LOCKED` with that
+window named and the full chain diagnostics attached -- and is not rolled back,
+because the rest of the picture is working.
+
+### Audio
+
+The display's audio follows the main window's source over its ordinary Session 1
+path, applied at recall. The insertion point is the input the display's audio
+already uses, repointed -- `ip_input3` on every bench decoder, verified with each
+of the four sources as the main window, with the decoder reporting active LPCM
+each time. It is never taken from the window pool and never from Session 2.
+
+
+## Multiview: switching a Multiview that is on the display
+
+Phase 6 made a saved Multiview a description and a recall the act of making it
+true. Phase 7 covers what happens *while* one is on the display. It is validated
+on hardware in `docs/MULTIVIEW_DISCOVERY.md` section Y.
+
+The distinction everything else follows from: an **inactive** Multiview's canvas
+is a form, and the **active** one's canvas is the display. Dragging a source onto
+a window means two different things depending on which is open.
+
+| | inactive | active |
+|---|---|---|
+| a drop | edits the preset | switches the display, verified |
+| the display | unchanged until *Show* | changes immediately |
+| what is saved | when *Save* is pressed | when the switch is verified |
+| what the canvas shows | the saved assignment | the decoder's live subscriptions |
+
+### A switch is not a recall
+
+Re-running a recall to change one window would tear down and rebuild windows
+nobody asked about, and each of those is a visible glitch on a display someone
+is watching. `/api/multiview/switch` plans the **whole** Multiview as it would
+be after the change -- so the scaler rule, the two-window limit, both budgets and
+the pool are all applied to the result rather than to one window in isolation --
+and then writes only what the new source and the changed window's decoder input
+require, rebinds that one subframe, releases a pool input the Multiview no longer
+needs, and moves the audio only if the window that changed owns it.
+
+Verification covers the window that changed *and* the windows that did not. A
+switch that lights the window it was asked about while dropping another is
+invisible otherwise, so regressed windows and unlocked windows are reported
+separately -- they have different causes.
+
+A switch that is verified becomes the saved preset. A switch that fails is rolled
+back and the preset is untouched: a display showing one thing while its own
+preset restores another is a trap that only surfaces days later.
+
+A switch aimed at an inactive Multiview is refused with `NOT ACTIVE` rather than
+reinterpreted as an edit. Those are two operations with two different contracts.
+
+### The canvas shows subscriptions
+
+A saved Multiview says what was wanted; the decoder's `ip_input` entries say what
+is arriving. After a recall, or after someone switches a window from the front
+panel, those can disagree, and the canvas shows the second because that is what
+is on the screen. Each window reports one of four origins:
+
+| `source_origin` | meaning |
+|---|---|
+| `subscription` | the arriving stream resolves to a known encoder |
+| `unknown` | a stream is arriving that no discovered encoder claims |
+| `saved` | nothing is arriving; only the preset's record remains |
+| `none` | no stream and no record |
+
+`unknown` is deliberately not collapsed into "empty". Recall reads each source's
+session live, so a re-addressed encoder is subscribed correctly; *naming* the
+encoder behind a window is answered from the discovery cache, because reading
+every encoder when the page opens is exactly the cost the lazy Multiview
+architecture exists to avoid. Between a re-address and the next scan the window
+is therefore correct and reported as unknown -- never named as the wrong device --
+and the saved source is kept as the record of intent.
+
+### Source and decoder eligibility
+
+| state | meaning | offered |
+|---|---|---|
+| READY | usable now | yes, draggable |
+| CONFIGURATION REQUIRED | the device is fine; a field on it must be set | yes, with the reason, not draggable |
+| INELIGIBLE | offline, excluded model, or no supported encoder | no; counted and explained |
+
+Two states would hide the only one an operator can act on: an encoder whose
+Session 2 has no multicast address needs one field set, and omitting it from the
+list sends someone looking for a network fault.
+
+Reachability is one bounded, concurrent TCP probe when the page loads. It is not
+on the scan path and is never polled. Decoders are filtered the same way, with
+one deliberate exception -- a decoder that answers but is barred by Video Wall or
+Fast Switching is still offered, disabled, with the reason, because those are
+switches the operator can turn off and an empty list would never say so.
+
+### Who owns the object
+
+Geometry belongs to Save; resources belong to Recall. A subframe added on the
+device outside OmniSuite survives a recall and is reported as a window that never
+locked, rather than silently deleted -- removing it would be OmniSuite overruling
+a change it did not make. Saving over the object is what prunes it.
+
+### The UI
+
+The active canvas carries a banner reading *"LIVE -- changes made on this canvas
+are applied immediately"* and the stage is outlined; an inactive canvas says the
+opposite in words. Neither is left to be inferred from which buttons are enabled.
+On the active canvas both a drop and a window's clear control go through the
+confirmed live-switch path, and *Save* is relabelled because by the time it is
+reachable the sources have already been applied.
+
+
+## Multiview: source preview
+
+Hovering a source tile shows what is on that encoder, so an operator can tell
+two of them apart without routing one into a window to find out. It is
+validated on hardware in `docs/MULTIVIEW_DISCOVERY.md` section Z.
+
+It is an aid and nothing more. It reads, it never writes, and it has no say in
+whether a source can be used.
+
+### What it uses
+
+| | |
+|---|---|
+| image | `http://<ip>/thumbnail/thumbnail1.jpg`, 320x180 JPEG, unauthenticated on port 80 |
+| fetched by | the browser, directly from the encoder -- the same way the A/V Matrix page has always shown it |
+| enabled state | `vc2_encoder1.thumbnail.enable`, read by `GET /api/multiview/preview?ip=` |
+| generator | 5 fps on the encoder |
+
+The thumbnail belongs to **Encoder 1**. `vc2_encoder2` has no thumbnail fields,
+and Encoder 2 is required to take the same physical input as Encoder 1, so
+Encoder 1's thumbnail is a picture of what the Multiview window will show.
+
+### Why there is a backend call at all
+
+Because the image cannot answer the question. With the thumbnail disabled the
+device still returns HTTP 200 and a placeholder JPEG, so the browser sees a
+successful load either way. `/api/multiview/preview` reads the encoder's own
+configuration and returns one of three states:
+
+| state | the card shows |
+|---|---|
+| `available` | the picture |
+| `disabled` | "Preview disabled", and no image is fetched |
+| `unavailable` | "Preview unavailable", with the reason |
+
+The endpoint returns no credential and puts nothing in the image URL. It refuses
+anything that is not a discovered encoder, so an offline or excluded source
+generates no preview traffic at all.
+
+### Lifecycle
+
+```
+pointer enters a tile
+  -> 300 ms debounce          (cancelled if the pointer leaves first)
+  -> one read of that encoder (abortable; a late answer for a tile the pointer
+                               has left is discarded)
+  -> the card opens and the browser fetches one frame
+pointer leaves, Escape, a drag, a scroll, a re-render
+  -> the card closes and the image's src is dropped, not just hidden
+```
+
+One frame per hover, and no repeating timer: the Multiview page is held to
+"nothing polls", and moving off and back on is what fetches a newer frame.
+
+### What it must not do
+
+The card takes no pointer events, so it cannot swallow a drop. A drag dismisses
+it first. It never changes eligibility: a source whose preview is off, broken or
+unreachable is still perfectly routable, and a source that only needs its
+multicast configured is still previewable -- which is the case where seeing the
+picture helps most.
+
+
+## Multiview: Phase 7B — shared state, previews and fewer dialogs
+
+Validated on hardware in `docs/MULTIVIEW_DISCOVERY.md` section AA.
+
+### Writing only what differs
+
+Every Multiview transaction now reads the devices, diffs the plan against them,
+and writes the difference:
+
+```
+READ current state  ->  PLAN desired state  ->  DIFF  ->  WRITE differences
+                                                      ->  VERIFY
+```
+
+This matters because encoder configuration is **shared**. Encoder 1 may be
+feeding decoders that have nothing to do with Multiview, and a `config_set` is
+an instruction the device acts on rather than a comparison it makes.
+
+Mutations are grouped by target and judged by the state they jointly ask for.
+The decoder-input pair — disable while the source changes, then point and enable
+— is kept or dropped as one, because judging them separately keeps the disable
+and drops the enable, leaving the input off.
+
+Every transaction reports `planned_fields`, `already_correct`,
+`writes_required` and `writes_performed`.
+
+### What actually disturbs a decoder
+
+Measured on the bench with a second decoder watching the shared encoder's
+Session 1 and sampled three times a second:
+
+| write | effect on a decoder watching Session 1 |
+|---|---|
+| `session1.video.stream.destination_address`, **same value** | ~0.5 s blackout, then relock |
+| `session1.video.stream.enabled`, **same value** | ~0.5 s blackout, then relock |
+| `vc2_encoder1.bitrate`, **changed** | ~0.5 s blackout, then relock |
+| `vc2_encoder1.bitrate`, same value | nothing |
+| `session2.video.stream.enabled`, **changed** | ~0.5 s blackout, then relock |
+| everything on `vc2_encoder2`, changed or not | nothing |
+| SAP on either session, same value | nothing |
+
+Multiview never writes Session 1. Its only writes that can disturb an unrelated
+subscriber are a genuine Encoder 1 bitrate reduction, which cannot be avoided,
+and genuinely starting Session 2, which also cannot. Everything else is now
+skipped when it is already correct.
+
+### The operator notice
+
+Shown when the page is newly opened, unless suppressed for the running version.
+The suppression key is `multiview_notice_acknowledged_version` and holds the
+version string, so a new release shows the notice again without any migration.
+It is raised once from page start, never from `render()`, and costs nothing.
+
+Copy and Save produce the same complete plain text, carrying the version, the
+title and a timestamp, and no credential.
+
+### Previews in the windows
+
+A populated window whose source has preview enabled shows that encoder's
+thumbnail, with the source, address, encoder, decoder input and health as an
+overlay on a scrim. A disabled preview keeps the ordinary appearance and says so
+quietly; the device's placeholder JPEG is never displayed.
+
+Visible thumbnails refresh about every five seconds — one timer for the page,
+one image per unique visible source, stopped when the canvas is not on screen
+or the page is hidden. This is the only repeating timer the page has.
+
+### Dialogs
+
+A drop on an active canvas, and Show on Display, both apply immediately. The
+canvas already carries the LIVE banner and the button already carries the
+intent; the transaction behind each is unchanged. Save and Delete still confirm.
+
+
+## Multiview: Phase 8 — the A/V Matrix knows
+
+A decoder showing a Multiview is marked **MULTIVIEW** in the A/V Matrix and has
+no video crosspoint, because its picture is a composition rather than a route
+from one encoder. Its audio crosspoint stays, and is true: Multiview sound comes
+from one source over its ordinary audio path.
+
+This is decided from what the decoder's display is actually selecting, which the
+scan already reads. Saved Multiview objects, a remembered page selection and
+OmniSuite's own metadata are all explicitly not treated as evidence, and nothing
+was added to the scan hot path.
+
+Routing a conventional source to such a decoder still works. It warns first —
+once per browser session, with a "do not show this again" option — and the
+operator's answer travels with the request, so a route that does not carry it is
+refused rather than quietly changing what is on a display. Cancel writes
+nothing at all.
+
+Continuing is one transaction: move the display off the composition, release the
+reserved inputs that Multiview owned, then apply the route, each step verified.
+If the route fails, the Multiview is restored and the failure says whether that
+restoration succeeded. The saved Multiview is never deleted — it can be shown
+again at any time — and the matrix redraws from the route response rather than
+waiting for a rescan.
+
+## Multiview: Phase 7C — bitrate policy and remembered selection
+
+Validated on hardware in `docs/MULTIVIEW_DISCOVERY.md` section AB.
+
+### The Encoder 2 bitrate policy
+
+Targets are stated by the role a window plays, decided from the geometry:
+
+| role | when | target |
+|---|---|---|
+| equal | every window in the layout is the same size | 200 Mb/s |
+| main | the largest window of a mixed layout | 300 Mb/s |
+| small | every other window | 150 Mb/s |
+
+What the device is actually given is
+
+```
+headroom = 900 - current Encoder 1 bitrate
+actual   = min(layout target, headroom)
+```
+
+**Encoder 1 is read and never written.** If a source is running Encoder 1 at
+750, its Multiview window gets 150 rather than 200, and Encoder 1 stays at 750.
+Reducing it would black out every decoder watching that source for about half a
+second — measured in Phase 7B — which is a much worse outcome than a slightly
+softer Multiview window.
+
+A source with less than the 20 Mb/s Encoder 2 needs is refused by name. The
+primary feed is not trimmed to make a Multiview fit.
+
+| layout | windows | roles | targets (Mb/s) | total |
+|---|---|---|---|---|
+| `side-by-side` | 2 | equal / equal | 200 / 200 | 400 |
+| `2x2` | 4 | equal / equal / equal / equal | 200 / 200 / 200 / 200 | 800 |
+| `pip-top-left` | 2 | main / small | 300 / 150 | 450 |
+| `pip-top-right` | 2 | main / small | 300 / 150 | 450 |
+| `pip-bottom-left` | 2 | main / small | 300 / 150 | 450 |
+| `pip-bottom-right` | 2 | main / small | 300 / 150 | 450 |
+| `1+3-horizontal-bottom` | 4 | main / small / small / small | 300 / 150 / 150 / 150 | 750 |
+| `1+3-horizontal-top` | 4 | main / small / small / small | 300 / 150 / 150 / 150 | 750 |
+| `1+3-vertical-right` | 4 | main / small / small / small | 300 / 150 / 150 / 150 | 750 |
+| `1+3-vertical-left` | 4 | main / small / small / small | 300 / 150 / 150 / 150 | 750 |
+| `4-split` | 4 | main / small / small / small | 300 / 150 / 150 / 150 | 750 |
+
+The totals are deliberate: 900 is a ceiling, not something to spend.
+
+### Target and actual are different numbers
+
+The Configuration table shows the configured bitrate, and — only where it falls
+short — the target underneath it. The engineering panel shows the arithmetic in
+the order it happens: layout target, Encoder 1, headroom, Encoder 2.
+
+The previous algorithm shared the decoder's 900 Mb/s out by window area, which
+made two identical Side-by-Side windows "entitled" to 450 Mb/s each and
+explained every real number as a reduction from a figure that meant nothing on
+its own.
+
+### Remembering the selection
+
+The page stores two identifiers — the selected decoder and the selected
+Multiview — and restores them when it next opens, through a refresh or a trip to
+another page. Live state is loaded first and decides: an offline, undiscovered
+or no-longer-capable decoder is dropped, and a deleted Multiview clears only
+itself. Nothing about the devices is cached and nothing is written to a device
+to remember a view.
+
+
+## Build and publish gate
+
+A build intended for publication to Git is **not publication-ready** until every
+item below is satisfied. This is a gate, not a checklist to fill in afterwards.
+
+```
+[ ] Settings-page User Guide reviewed
+[ ] User-visible changes documented in the guide
+[ ] Screenshots / UI references still match the current controls
+[ ] The guide opens correctly from Settings
+[ ] The guide is included in the packaged application
+[ ] No credentials, tokens or secrets anywhere in the guide
+[ ] The guide corresponds to the version being published
+```
+
+If a build needs no documentation change, record it explicitly:
+
+> User Guide reviewed — no update required.
+
+Do not skip the review silently. A build whose guide describes behaviour the
+build does not have is a defect in that build, and it is the one defect the
+operator meets first.
+
+### Where the guide lives
+
+| | |
+|---|---|
+| source | `ui/user-guide.html`, a single static page |
+| reached from | Settings → **User Guide**, and the first-launch notice |
+| served at | `/help`, with the running version substituted in |
+| packaged by | `ui/` being bundled wholesale; `tools/build_release.py` allows it |
+| covered by | `UserGuideTests` — presence, Settings link, serving, version, packaging, structure, and absence of secrets |
+
+The guide carries `{{OMNI_VERSION}}` rather than a typed version string. A
+version bump therefore cannot leave it claiming the wrong release.

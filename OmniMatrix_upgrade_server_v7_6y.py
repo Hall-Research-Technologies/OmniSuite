@@ -3,6 +3,7 @@
 
 # All imports below here
 import os, sys, threading, urllib.request, webbrowser, logging, time, json, re, subprocess, socket, ssl, csv, tempfile, traceback, platform, io, zipfile
+import copy
 import urllib.parse
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, send_from_directory, Response
@@ -12,6 +13,7 @@ import ipaddress
 import websocket
 import requests
 import omni_usb_extender
+import omni_multiview
 
 try:
     import psutil
@@ -2393,14 +2395,37 @@ def usb_matrix_index():
         return send_file(str(idx), mimetype="text/html; charset=utf-8")
     return "<h1>USB Matrix UI not found</h1>", 404
 
+@app.route("/matrix/multiview")
+def multiview_index():
+    idx = ASSET_DIR / "ui" / "matrix" / "multiview.html"
+    if idx.exists():
+        return send_file(str(idx), mimetype="text/html; charset=utf-8")
+    return "<h1>Multiview UI not found</h1>", 404
+
 @app.route("/help")
 def user_guide():
+    """The User Guide, with the running version substituted into it.
+
+    The guide is a release artefact and has to say which release it describes.
+    Leaving that as a hand-typed string in the document meant it was correct
+    only until the next version bump, so the file carries a token and the
+    version is filled in from the same place Settings reads it.
+    """
     idx = ASSET_DIR / "ui" / "user-guide.html"
-    if idx.exists():
+    if not idx.exists():
+        return "<h1>User guide not found</h1>", 404
+    try:
+        body = idx.read_text(encoding="utf-8").replace(
+            "{{OMNI_VERSION}}", _app_version() or "an unknown version")
+    except Exception:
+        # A guide that renders with the token still in it is better than no
+        # guide at all.
         resp = send_file(str(idx), mimetype="text/html; charset=utf-8")
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         return resp
-    return "<h1>User guide not found</h1>", 404
+    resp = Response(body, mimetype="text/html")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
 
 @app.route("/")
 def index():
@@ -7823,6 +7848,14 @@ def api_state_matrix():
             "hdcp_supported_versions": d.get("hdcp_supported_versions") or src.get("hdcp_supported_versions") or [],
             "video_input": d.get("video_input") or src.get("video_input"),
             "audio_input": d.get("audio_input") or src.get("audio_input"),
+            # Whether this decoder's picture is a Multiview composition rather
+            # than a routed encoder. Derived from the video input the scan
+            # already reads, so the matrix learns this for no extra device
+            # traffic at all.
+            "multiview_name": omni_multiview.active_multiview_name(
+                d.get("video_input") or src.get("video_input")),
+            "multiview_active": bool(omni_multiview.active_multiview_name(
+                d.get("video_input") or src.get("video_input"))),
             "video_input_options": d.get("video_input_options") or src.get("video_input_options") or [],
             "audio_input_options": d.get("audio_input_options") or src.get("audio_input_options") or [],
             "stretch_crop_mode": d.get("stretch_crop_mode") or src.get("stretch_crop_mode"),
@@ -7980,6 +8013,43 @@ def api_route_matrix():
             "decoder_codec": _codec_label(decoder_mode),
         }), 200
 
+    # ---- a decoder that is currently compositing a Multiview --------------
+    #
+    # Routing a conventional source to it is allowed, but it has to stop
+    # compositing first, and the caller has to have said so. Without
+    # `exit_multiview` the request is refused rather than silently changing
+    # what is on screen in a way the matrix did not describe.
+    multiview_exit = None
+    try:
+        mv_state, _mv_error = _decoder_state(decoder)
+    except Exception:
+        mv_state = None
+    active_multiview = None
+    if mv_state is not None:
+        active_multiview = omni_multiview.active_multiview_name(
+            ((mv_state.get("hdmi_output") or {}).get("video") or {}).get("input"))
+    if active_multiview:
+        if not data.get("exit_multiview"):
+            return jsonify({
+                "ok": False,
+                "status": "MULTIVIEW ACTIVE",
+                "multiview": active_multiview,
+                "error": ("%s is currently showing the Multiview %s. Routing a "
+                          "source here will exit Multiview."
+                          % (decoder, active_multiview)),
+            }), 409
+        ok, steps, released, message = _exit_active_multiview(
+            decoder, active_multiview, mv_state)
+        multiview_exit = {"multiview": active_multiview, "steps": steps,
+                          "released": released, "ok": ok}
+        if not ok:
+            log.warning("[ROUTE] could not leave Multiview %s on %s: %s",
+                        active_multiview, decoder, message)
+            return jsonify({"ok": False, "status": "FAILED — MULTIVIEW NOT EXITED",
+                            "error": message, "multiview": multiview_exit}), 200
+        log.info("[ROUTE] left Multiview %s on %s, released %s",
+                 active_multiview, decoder, released or "nothing")
+
     decoder_candidates = _password_candidates(decoder_pref_pwd)
     encoder_candidates = _password_candidates(encoder_pref_pwd)
 
@@ -8043,15 +8113,47 @@ def api_route_matrix():
         message = "Route command failed (device may be offline, unreachable, password mismatch, or unsupported AV route)"
         if detail:
             message = f"{message}: {detail}"
-        return jsonify({"ok": False, "error": message}), 200
+        # If the decoder was taken out of Multiview to make room for this route,
+        # the route failing is not the end of the operation: put the Multiview
+        # back rather than leave the display on nothing.
+        body = {"ok": False, "error": message, "status": "FAILED"}
+        if multiview_exit:
+            restored, restore_detail = _restore_multiview_after_failed_route(
+                decoder, multiview_exit["multiview"])
+            multiview_exit["rollback"] = {"restored": restored,
+                                          "detail": restore_detail}
+            body["multiview_exit"] = multiview_exit
+            body["status"] = ("FAILED — ROLLED BACK" if restored
+                              else "FAILED — ROLLBACK INCOMPLETE")
+            log.warning("[ROUTE] route to %s failed after leaving Multiview %s; "
+                        "restore %s", decoder, multiview_exit["multiview"],
+                        "verified" if restored else "INCOMPLETE")
+        return jsonify(body), 200
 
     # Note: Decoder inputs will be fetched by the polling system (every 5 seconds)
     # No need to fetch them here - route response returns immediately
+
+    # ---- the route failed after the Multiview had been left ---------------
+    #
+    # Leaving Multiview and routing are one operation for the operator, so a
+    # half-completed one is put back rather than left as a blank display.
+    if multiview_exit and not ok:
+        restored, message = _restore_multiview_after_failed_route(
+            decoder, multiview_exit["multiview"])
+        multiview_exit["rollback"] = {"restored": restored, "detail": message}
+        log.warning("[ROUTE] route to %s failed after leaving Multiview %s; "
+                    "restore %s", decoder, multiview_exit["multiview"],
+                    "verified" if restored else "INCOMPLETE: %s" % message)
 
     dec_payload = {"ip": decoder}
     try:
         fields = _ws_get_decoder_inputs(decoder, decoder_user, used_decoder_pwd or decoder_pref_pwd, app.config['WS_PORT'], app.config['WS_PATH'], timeout=4, attempts=1, delay=0)
         if fields:
+            # The same derivation the matrix state uses, so the row the page
+            # redraws after a route is as truthful as the one it loaded.
+            name = omni_multiview.active_multiview_name(fields.get("video_input"))
+            fields["multiview_name"] = name
+            fields["multiview_active"] = bool(name)
             dec_payload.update(fields)
             if HAS_MATRIX and decoder in omni_matrix_logic._decoders:
                 omni_matrix_logic._decoders[decoder].update(fields)
@@ -8065,7 +8167,42 @@ def api_route_matrix():
             _save_cache(units)
     except Exception as e:
         log.info("[ROUTE] post-route decoder refresh failed for %s: %s", decoder, e)
-    return jsonify({"ok": bool(ok), "decoder": dec_payload})
+    status = "VERIFIED" if ok else "FAILED"
+    if multiview_exit and not ok:
+        status = ("FAILED — ROLLED BACK"
+                  if (multiview_exit.get("rollback") or {}).get("restored")
+                  else "FAILED — ROLLBACK INCOMPLETE")
+    body = {"ok": bool(ok), "decoder": dec_payload, "status": status}
+    if multiview_exit:
+        body["multiview_exit"] = multiview_exit
+    return jsonify(body)
+
+
+def _restore_multiview_after_failed_route(ip, name):
+    """Put a Multiview back on the display after a route failed to replace it.
+
+    Best effort and reported as such. The saved object was never touched, so
+    this is the ordinary recall path -- the same reconciliation any recall
+    performs, which is what makes it safe to run against whatever state the
+    failed route left behind.
+    """
+    try:
+        state, error = _decoder_state(ip)
+        if state is None:
+            return False, error or "the decoder could not be read"
+        if not any(str(o.get("name") or "") == name for o in state["multiview"]):
+            return False, "%s is no longer on the decoder" % name
+        ok, message = _mv_set(ip, "hdmi_output",
+                              {"name": "hdmi_output1", "video": {"input": name}})
+        if not ok:
+            return False, message
+        good, detail = _verify_mutation({
+            "device": ip, "node": "hdmi_output", "target": "hdmi_output1",
+            "config": {"name": "hdmi_output1", "video": {"input": name}}})
+        return good, detail
+    except Exception as exc:
+        return False, str(exc)
+
 
 @app.route("/api/poll_encoders", methods=["POST"])
 def api_poll_encoders():
@@ -12421,7 +12558,10 @@ def api_get_thumbnail_status():
                 encoder = vc2_cfg[0]
                 thumbnail = encoder.get("thumbnail") or {}
                 enable = thumbnail.get("enable", False)
-                return jsonify({"ok": True, "enable": enable, "used_password": pwd_try})
+                # The password that happened to work is not the browser's
+                # business: it goes into the page, into any log of the response
+                # and into anything that captures traffic. Nothing consumes it.
+                return jsonify({"ok": True, "enable": enable})
             except Exception as e:
                 last_error = str(e)
                 continue
@@ -12505,6 +12645,2348 @@ def main():
     threading.Thread(target=open_when_ready, daemon=True).start()
     while th.is_alive():
         th.join(timeout=0.5)
+
+
+# ==========================================================================
+# Multiview
+# ==========================================================================
+# Multiview is decoder-only, additive, and lazily loaded: nothing here runs
+# during a normal scan. `omni_multiview` owns every layout, scaler and
+# allocation decision; this section only reads devices, writes them, and
+# verifies what it wrote.
+#
+# The one rule that shapes all of it: the decoder accepts invalid values and
+# still answers `error: false`. Transport success is not configuration success,
+# so every mutation is followed by a semantic read-back.
+
+# Stage names used by the show-on-display transaction. They are reported to
+# the operator, so they read as the action rather than as the device field.
+STAGE_OUTPUT_RESOLUTION = "output_resolution"
+STAGE_SAP_SHOW = "sap_input"
+STAGE_AUDIO_INPUT = "audio_ip_input"
+STAGE_AUDIO_SELECT = "audio_input"
+STAGE_SHOW = "show_on_display"
+
+# A Multiview always drives the display at the one canvas this release builds.
+MULTIVIEW_OUTPUT_RESOLUTION = omni_multiview.ACTIVE_CANVAS
+
+# How long a freshly selected input is given to lock before its status is taken
+# as the answer. A bounded wait on one operation, never a poll.
+MULTIVIEW_INPUT_SETTLE = 6.0
+
+# And how long each individual window is given. A window locks within a second
+# of its input being pointed in the ordinary case; this is the bound past which
+# one is reported as not showing.
+MULTIVIEW_WINDOW_SETTLE = 10.0
+
+MULTIVIEW_META = DATA_DIR / "multiview_meta.json"
+
+_multiview_meta_lock = threading.RLock()
+_MULTIVIEW_META = {}
+
+# A capability answer is stable for the life of a device's firmware, so it is
+# cached and never polled. Only a definite answer is cached; an unreachable
+# device stays unknown so it is asked again rather than being written off.
+_multiview_capability_lock = threading.RLock()
+_MULTIVIEW_CAPABILITY = {}
+MULTIVIEW_CAPABILITY_TTL = 3600.0
+# A source that does not answer this costs one short connect instead of six
+# WebSocket timeouts. Matches the preflight the scan already uses.
+MULTIVIEW_PREFLIGHT_TIMEOUT = 0.6
+
+# One Apply or Delete at a time, process-wide. Two transactions interleaving
+# across the same encoder would each snapshot the other's half-applied state,
+# and a rollback would then restore the wrong values.
+_multiview_apply_lock = threading.RLock()
+
+
+def _multiview_meta_key(device):
+    """Identity for persisted Multiview metadata.
+
+    Keyed on the hardware MAC where one is known so the record follows the
+    device across address changes, exactly as USB associations do. An address
+    is only a fallback for a device that has never reported a MAC.
+    """
+    identity = _device_identity(device)
+    if identity:
+        return "mac:" + identity
+    address = str((device or {}).get("ip") or "").strip()
+    return "ip:" + address if address else ""
+
+
+def _load_multiview_meta():
+    """Restore Multiview layout metadata so a restart does not lose it.
+
+    The device stores geometry only; the layout name an operator chose exists
+    nowhere else, so losing this file would turn every Multiview into Custom.
+    """
+    try:
+        if not MULTIVIEW_META.exists():
+            return
+        data = json.loads(MULTIVIEW_META.read_text(encoding="utf-8"))
+        entries = data.get("decoders") if isinstance(data, dict) else None
+        if not isinstance(entries, dict):
+            return
+        with _multiview_meta_lock:
+            for key, entry in entries.items():
+                if isinstance(entry, dict):
+                    _MULTIVIEW_META[key] = entry
+        log.info("[MULTIVIEW] Restored metadata for %d decoder(s)", len(_MULTIVIEW_META))
+    except Exception as e:
+        log.warning("[MULTIVIEW] Could not restore metadata: %s", e)
+
+
+def _save_multiview_meta():
+    tmp = _atomic_tmp_path(MULTIVIEW_META)
+    try:
+        with _multiview_meta_lock:
+            payload = {"decoders": {k: dict(v) for k, v in _MULTIVIEW_META.items()}}
+            MULTIVIEW_META.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, MULTIVIEW_META)
+    except Exception as e:
+        log.info("[MULTIVIEW] Could not persist metadata: %s", e)
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _multiview_meta_for(device):
+    key = _multiview_meta_key(device)
+    if not key:
+        return {}
+    with _multiview_meta_lock:
+        return dict((_MULTIVIEW_META.get(key) or {}).get("multiviews") or {})
+
+
+def _record_multiview_meta(device, object_name, record):
+    key = _multiview_meta_key(device)
+    if not key or not object_name:
+        return
+    with _multiview_meta_lock:
+        entry = _MULTIVIEW_META.setdefault(key, {})
+        entry["decoder_ip"] = device.get("ip")
+        entry["decoder_hostname"] = device.get("hostname")
+        entry.setdefault("multiviews", {})[object_name] = record
+    _save_multiview_meta()
+
+
+def _forget_multiview_meta(device, object_name):
+    key = _multiview_meta_key(device)
+    if not key:
+        return
+    with _multiview_meta_lock:
+        entry = _MULTIVIEW_META.get(key) or {}
+        if (entry.get("multiviews") or {}).pop(object_name, None) is None:
+            return
+    _save_multiview_meta()
+
+
+def _known_multiviews(exclude_decoder_ip=None):
+    """Every Multiview OmniSuite knows about, for scaler-conflict detection.
+
+    This is what makes a conflict detectable at all. It is also why the conflict
+    is reported as "known" rather than "all": a Multiview built in the device's
+    own web UI is invisible here, which is precisely the unknown-external case.
+    """
+    records = []
+    with _multiview_meta_lock:
+        for entry in _MULTIVIEW_META.values():
+            for object_name, record in (entry.get("multiviews") or {}).items():
+                records.append({
+                    "decoder_ip": entry.get("decoder_ip"),
+                    "decoder_hostname": entry.get("decoder_hostname"),
+                    "object_name": object_name,
+                    "windows": record.get("windows") or [],
+                    "current": entry.get("decoder_ip") == exclude_decoder_ip,
+                })
+    return records
+
+
+def _managed_multiviews(device, present_names):
+    """The Multiviews OmniSuite manages on this decoder, as the canvas rule sees them.
+
+    A record counts only while the object is still on the device, so metadata
+    left behind by something deleted elsewhere does not go on reserving a canvas.
+    Objects OmniSuite did not create are absent from this list on purpose: they
+    neither block a canvas nor are ever at risk of being overwritten.
+    """
+    managed = []
+    for name, record in (_multiview_meta_for(device) or {}).items():
+        if name not in present_names:
+            continue
+        managed.append({
+            "object_name": name,
+            "friendly_name": record.get("friendly_name") or name,
+            "canvas": record.get("requested_canvas") or record.get("canvas") or "",
+            "layout": record.get("layout"),
+        })
+    return managed
+
+
+def _multiview_credentials(ip):
+    device = {d.get("ip"): d for d in _load_cache()}.get(ip, {})
+    return (device,
+            device.get("username") or app.config['USERNAME'],
+            device.get("password") or app.config['PASSWORD'],
+            app.config['WS_PORT'], app.config['WS_PATH'], app.config['TIMEOUT'])
+
+
+def _mv_get(ip, node, user=None, pwd=None, timeout=None):
+    """One `config_get`, with the shared fallback-password behaviour.
+
+    An unreachable device is reported as `__unreachable__` rather than as a
+    device that said "no", because the two mean different things: one is unknown
+    and must be retried, the other is a definite capability answer.
+    """
+    device, default_user, default_pwd, ws_port, ws_path, default_timeout = \
+        _multiview_credentials(ip)
+    try:
+        answer = _ws_send_recv_with_fallback(
+            ip, {"id": f"{node}-get", "username": user or default_user,
+                 "config_get": node},
+            timeout or default_timeout, ws_port, ws_path, pwd or default_pwd)
+        return answer if isinstance(answer, dict) else {"__unreachable__": True,
+                                                        "error": "malformed response"}
+    except Exception as e:
+        log.info("[MULTIVIEW] %s %s read failed: %s", ip, node, e)
+        return {"__unreachable__": True, "error": str(e)}
+
+
+def _mv_config(ip, node, **kwargs):
+    """The `config` list from a read, or [] when the device did not answer."""
+    answer = _mv_get(ip, node, **kwargs)
+    config = answer.get("config")
+    return config if isinstance(config, list) else []
+
+
+def _mv_set(ip, node, config):
+    """One `config_set`. Returns (ok, message). Never treated as verification."""
+    device, user, pwd, ws_port, ws_path, timeout = _multiview_credentials(ip)
+    try:
+        answer = _ws_send_recv_with_fallback(
+            ip, {"id": f"{node}-set", "username": user,
+                 "config_set": {"name": node, "config": [config]}},
+            timeout, ws_port, ws_path, pwd)
+    except Exception as e:
+        return False, str(e)
+    if not isinstance(answer, dict):
+        return False, "malformed response"
+    if answer.get("error"):
+        return False, str(answer.get("error_message") or answer.get("error"))
+    return True, ""
+
+
+def _mv_method(ip, method, options):
+    """One `method` call -- the only way to create or delete a named object."""
+    device, user, pwd, ws_port, ws_path, timeout = _multiview_credentials(ip)
+    try:
+        answer = _ws_send_recv_with_fallback(
+            ip, {"id": f"{method}-method", "username": user,
+                 "method": {method: options}},
+            timeout, ws_port, ws_path, pwd)
+    except Exception as e:
+        return False, str(e)
+    if not isinstance(answer, dict):
+        return False, "malformed response"
+    if answer.get("error"):
+        return False, str(answer.get("error_message") or answer.get("error"))
+    return True, ""
+
+
+def _multiview_capability(ip, refresh=False):
+    """Whether this decoder supports Multiview, cached and never polled."""
+    now = time.time()
+    if not refresh:
+        with _multiview_capability_lock:
+            cached = _MULTIVIEW_CAPABILITY.get(ip)
+        if cached and now - cached["at"] < MULTIVIEW_CAPABILITY_TTL:
+            return cached["supported"], cached["reason"], True
+    answer = _mv_get(ip, "multiview")
+    supported, reason = omni_multiview.multiview_capable(answer)
+    if supported is not None:
+        with _multiview_capability_lock:
+            _MULTIVIEW_CAPABILITY[ip] = {"supported": supported, "reason": reason,
+                                         "at": now}
+    return supported, reason, False
+
+
+@app.route("/api/multiview/layouts", methods=["GET"])
+def api_multiview_layouts():
+    """The canonical layout geometry, computed once and consumed by the UI.
+
+    The preview the operator drags sources onto is drawn from this, and the same
+    numbers are written to the decoder, so the picture and the hardware cannot
+    drift apart.
+    """
+    return jsonify({
+        "ok": True,
+        "layouts": omni_multiview.layout_geometry_catalog(),
+        "canvases": [
+            {"id": p["id"], "width": p["width"], "height": p["height"]}
+            for p in omni_multiview.CANVAS_PRESETS if p["exposed"]
+        ],
+        "anchors": list(omni_multiview.ANCHORS),
+        "max_subframes": omni_multiview.MAX_SUBFRAMES,
+        # The one canvas this release plans, applies and shows.
+        # The operator notice is acknowledged per release, so the page has
+        # to know which release it is. It rides with the layout
+        # catalogue because that is already the first thing loaded.
+        "version": _app_version(),
+        "canvas": omni_multiview.ACTIVE_CANVAS,
+        "output_resolution": omni_multiview.ACTIVE_CANVAS,
+        "window_ip_inputs": list(omni_multiview.WINDOW_IP_INPUTS),
+        "main_windows": {name: omni_multiview.main_window_cell(name)
+                         for name in omni_multiview.LAYOUT_ORDER},
+        "budgets": {"source": omni_multiview.SOURCE_VIDEO_BUDGET,
+                    "decoder": omni_multiview.DECODER_MULTIVIEW_BUDGET},
+    })
+
+
+def _reachability(addresses):
+    """One short TCP probe per address, concurrently.
+
+    Not on the scan path and not a poll: the Multiview page asks once when it
+    loads, and the answer decides whether a device is offered at all. A serial
+    version of this was what made an unreachable source cost 27.5 seconds, so
+    it is done in a pool with the same 0.6s bound the planner already uses.
+    """
+    addresses = sorted({a for a in addresses if a})
+    if not addresses:
+        return {}
+
+    def probe(ip):
+        return ip, _tcp_probe(ip, [app.config.get("WS_PORT", 80), 80],
+                              timeout=MULTIVIEW_PREFLIGHT_TIMEOUT)
+
+    if len(addresses) == 1:
+        ip, up = probe(addresses[0])
+        return {ip: up}
+    with ThreadPoolExecutor(max_workers=min(16, len(addresses))) as pool:
+        return dict(pool.map(probe, addresses))
+
+
+@app.route("/api/multiview/decoders", methods=["GET"])
+def api_multiview_decoders():
+    """Decoders that can actually be given a Multiview.
+
+    A decoder that does not answer is not a choice, so it is not offered as one.
+    A decoder that answers but is barred by Video Wall or Fast Switching *is*
+    offered, disabled, with the reason -- the operator can turn those off, and
+    would never guess that was the problem from an empty list.
+
+    `probe=1` asks the devices whose capability is not yet known. Without it the
+    list is answered purely from cache, so opening the page repeatedly costs
+    nothing.
+    """
+    probe = request.args.get("probe") in ("1", "true", "yes")
+    candidates = [d for d in _load_cache()
+                  if str(d.get("role") or d.get("type") or "").lower() == "decoder"]
+    live = _reachability([d.get("ip") for d in candidates]) if probe else {}
+
+    decoders, probed = [], 0
+    for device in candidates:
+        ip = device.get("ip")
+        reachable = live.get(ip) if probe else None
+        with _multiview_capability_lock:
+            cached = _MULTIVIEW_CAPABILITY.get(ip)
+        supported = cached["supported"] if cached else None
+        reason = cached["reason"] if cached else ""
+        if supported is None and probe and ip and reachable is not False:
+            supported, reason, _was_cached = _multiview_capability(ip)
+            probed += 1
+        classification = omni_multiview.classify_decoder(
+            device, reachable=reachable, multiview_supported=supported)
+        decoders.append({
+            "ip": ip,
+            "mac": device.get("mac") or "",
+            "hostname": device.get("hostname") or ip,
+            "model": device.get("model") or "",
+            "multiview_supported": supported,
+            "reachable": reachable,
+            "status": classification["status"],
+            "status_label": omni_multiview.SOURCE_STATUS_LABELS.get(
+                classification["status"], classification["status"]),
+            "reason": classification["reason"] or reason,
+            "detail": classification["detail"],
+        })
+    decoders.sort(key=lambda d: _ip_sort_key(d.get("ip")))
+    offered = [d for d in decoders if d["status"] != omni_multiview.SOURCE_INELIGIBLE
+               or d["reachable"] is not False]
+    return jsonify({"ok": True, "decoders": offered, "probed": probed,
+                    "hidden": len(decoders) - len(offered)})
+
+
+# The still image every OmniStream encoder publishes when its thumbnail
+# generator is running. Encoder 1 only: `vc2_encoder2` carries no thumbnail
+# fields at all, and `thumbnail2.jpg` is a placeholder on every device measured.
+# Encoder 2 takes the same physical input as Encoder 1 -- that is a Phase 5 rule
+# -- so Encoder 1's thumbnail is a picture of what the Multiview window will
+# show, which is exactly what the operator is trying to identify.
+MULTIVIEW_PREVIEW_PATH = "/thumbnail/thumbnail1.jpg"
+
+PREVIEW_AVAILABLE = "available"
+PREVIEW_DISABLED = "disabled"
+PREVIEW_UNAVAILABLE = "unavailable"
+
+
+def _preview_state(ip, device):
+    """Whether this encoder is currently generating a thumbnail.
+
+    Measured, and the reason this is a device read rather than a guess: with the
+    thumbnail disabled the device still serves HTTP 200 and a placeholder JPEG,
+    so the browser sees a successful image load either way. The only thing that
+    distinguishes them is the encoder's own `thumbnail.enable`.
+    """
+    if not omni_multiview.is_eligible_source(device)[0]:
+        # An excluded model is not offered as a source, so it is not previewed.
+        return {"status": PREVIEW_UNAVAILABLE,
+                "reason": "This model is not offered as a Multiview source."}
+
+    encoders = _mv_config(ip, "vc2")
+    if not encoders:
+        return {"status": PREVIEW_UNAVAILABLE,
+                "reason": "The encoder did not answer."}
+
+    first = next((e for e in encoders
+                  if str(e.get("name") or "") == "vc2_encoder1"), None)
+    if first is None:
+        return {"status": PREVIEW_UNAVAILABLE,
+                "reason": "This encoder has no Encoder 1 to preview."}
+
+    thumbnail = first.get("thumbnail") or {}
+    if "enable" not in thumbnail:
+        return {"status": PREVIEW_UNAVAILABLE,
+                "reason": "This encoder does not support preview."}
+    if not thumbnail.get("enable"):
+        return {"status": PREVIEW_DISABLED,
+                "reason": "Preview is turned off on this encoder.",
+                "width": thumbnail.get("width"),
+                "height": thumbnail.get("height")}
+    return {"status": PREVIEW_AVAILABLE, "reason": "",
+            "width": thumbnail.get("width"),
+            "height": thumbnail.get("height"),
+            "framerate": thumbnail.get("framerate")}
+
+
+@app.route("/api/multiview/preview", methods=["GET"])
+def api_multiview_preview():
+    """Can this source be previewed, and from where?
+
+    Called when the operator hovers a source tile and not before -- there is no
+    preview work on page load, on the source listing or on the Scan path. It
+    reads one node from one device and writes nothing.
+
+    The response carries the URL the browser should load. It is built here so
+    the page never assembles a device URL of its own, and it carries no
+    credential: the thumbnail is published unauthenticated on port 80, which is
+    how the Matrix page has always loaded it.
+
+    A preview that cannot be shown is never an eligibility failure. A source
+    that is perfectly routable but whose preview is off is still routable, and
+    this endpoint says nothing about that either way.
+    """
+    ip = str(request.args.get("ip") or "").strip()
+    if not ip:
+        return jsonify({"ok": False, "error": "ip required"}), 400
+
+    device = {d.get("ip"): d for d in _load_cache()}.get(ip)
+    if device is None:
+        return jsonify({"ok": False, "status": PREVIEW_UNAVAILABLE,
+                        "reason": "OmniSuite has not discovered this device."}), 404
+    if str(device.get("role") or device.get("type") or "").lower() != "encoder":
+        return jsonify({"ok": False, "status": PREVIEW_UNAVAILABLE,
+                        "reason": "Only an encoder has a preview."}), 400
+
+    state = _preview_state(ip, device)
+    body = {
+        "ok": True,
+        "ip": ip,
+        "hostname": device.get("hostname") or ip,
+        "model": device.get("model") or "",
+        "status": state["status"],
+        "reason": state.get("reason", ""),
+        "width": state.get("width"),
+        "height": state.get("height"),
+        "framerate": state.get("framerate"),
+    }
+    if state["status"] == PREVIEW_AVAILABLE:
+        body["url"] = "http://%s%s" % (ip, MULTIVIEW_PREVIEW_PATH)
+    return jsonify(body)
+
+
+@app.route("/api/multiview/sources", methods=["GET"])
+def api_multiview_sources():
+    """Encoders that can feed a Multiview window, each with its own state.
+
+    Answered from the existing discovery cache plus one short reachability probe
+    per encoder -- no device configuration is read, so the source list costs a
+    round trip and nothing else. Session detail is loaded later, only for a
+    source actually used.
+
+    Three states rather than a single list: an offline encoder is not a choice,
+    an encoder whose Session 2 has no multicast is a choice the operator can
+    make work, and those two need different words.
+    """
+    probe = request.args.get("probe") not in ("0", "false", "no")
+    devices = list(_load_cache())
+    encoders = [d for d in devices
+                if str(d.get("role") or d.get("type") or "").lower() == "encoder"]
+    live = _reachability([d.get("ip") for d in encoders]) if probe else {}
+
+    sources, excluded = [], []
+    for device in encoders:
+        ip = device.get("ip")
+        classification = omni_multiview.classify_source(
+            device, reachable=live.get(ip) if probe else None)
+        # The scan records an encoder's session multicast under
+        # `sessionN_video_mcast`. `ipN_addr` is the decoder-side field -- the
+        # address a decoder *listens* to -- and reading it here left every tile
+        # showing "not set".
+        entry = {
+            "ip": ip,
+            "mac": device.get("mac") or "",
+            "hostname": device.get("hostname") or ip,
+            "model": device.get("model") or "",
+            "codec": device.get("codec") or "",
+            "reachable": live.get(ip) if probe else None,
+            "status": classification["status"],
+            "status_label": omni_multiview.SOURCE_STATUS_LABELS.get(
+                classification["status"], classification["status"]),
+            "reason": classification["reason"],
+            "detail": classification["detail"],
+            "action": classification["action"],
+            "session1": device.get("session1_video_mcast") or "",
+            "session1_port": device.get("session1_video_port") or "",
+            "session1_audio": device.get("session1_audio_mcast") or "",
+            "session2": device.get("session2_video_mcast") or "",
+            "session2_port": device.get("session2_video_port") or "",
+        }
+        if classification["status"] == omni_multiview.SOURCE_INELIGIBLE:
+            excluded.append(entry)
+        else:
+            sources.append(entry)
+    sources.sort(key=lambda d: (d["status"] != omni_multiview.SOURCE_READY,
+                                _ip_sort_key(d.get("ip"))))
+    excluded.sort(key=lambda d: _ip_sort_key(d.get("ip")))
+    return jsonify({"ok": True, "sources": sources, "excluded": excluded,
+                    "ready": sum(1 for s in sources
+                                 if s["status"] == omni_multiview.SOURCE_READY)})
+
+
+def _decoder_state(ip):
+    """One lazy read of everything the Multiview page needs from a decoder."""
+    multiview = _mv_get(ip, "multiview")
+    supported, reason = omni_multiview.multiview_capable(multiview)
+    if supported is not True:
+        return None, (reason or "This decoder does not expose Multiview.")
+    hdmi = _mv_config(ip, "hdmi_output")
+    device = {d.get("ip"): d for d in _load_cache()}.get(ip, {})
+    return {
+        "ip": ip,
+        # The Fast Switching interlock is decided from the model identity, so
+        # the planner is given it rather than left to guess from the address.
+        "model": device.get("model") or "",
+        "hostname": device.get("hostname") or ip,
+        "multiview": multiview.get("config") or [],
+        "ip_input": _mv_config(ip, "ip_input"),
+        "hdmi_output": hdmi[0] if hdmi else {},
+    }, ""
+
+
+def _showable(obj):
+    """Can this Multiview object be put on the display by this release?
+
+    Returns the two fields the page needs: whether Show is possible and, when
+    it is not, the sentence to put in front of the operator. The canvas rule is
+    the one that bites in practice -- a 4K object saved by an earlier release is
+    still on the decoder and still listed, and clicking Show on it produced a
+    409 with nothing on screen to explain it.
+    """
+    width, height = obj.get("width"), obj.get("height")
+    if omni_multiview.output_resolution_for_canvas(
+            width, height) != MULTIVIEW_OUTPUT_RESOLUTION:
+        return {"showable": False,
+                "not_showable_reason":
+                    "This is a %sx%s Multiview. This release shows %s "
+                    "Multiviews only." % (width, height,
+                                          MULTIVIEW_OUTPUT_RESOLUTION)}
+    return {"showable": True, "not_showable_reason": ""}
+
+
+@app.route("/api/multiview/state", methods=["GET"])
+def api_multiview_state():
+    """The selected decoder's Multiview state. Three reads, on demand only."""
+    ip = (request.args.get("ip") or "").strip()
+    if not ip:
+        return jsonify({"ok": False, "error": "decoder ip required"}), 400
+    state, error = _decoder_state(ip)
+    if state is None:
+        supported, _reason, _cached = _multiview_capability(ip)
+        status = 200 if supported is False else 502
+        return jsonify({"ok": False, "error": error, "supported": supported}), status
+
+    devices = list(_load_cache())
+    device = {d.get("ip"): d for d in devices}.get(ip, {})
+    stored = _multiview_meta_for(device)
+    hdmi = state["hdmi_output"] or {}
+    selected = str((hdmi.get("video") or {}).get("input") or "")
+
+    views = []
+    for obj in state["multiview"]:
+        name = str(obj.get("name") or "")
+        subframes = obj.get("subframes") or []
+        reconciled = omni_multiview.reconcile_layout(
+            stored.get(name), int(obj.get("width") or 0), int(obj.get("height") or 0),
+            subframes)
+        views.append({
+            "name": name,
+            "width": obj.get("width"),
+            "height": obj.get("height"),
+            "slice_info": obj.get("slice_info"),
+            "layout": reconciled["layout"],
+            "layout_label": (omni_multiview.LAYOUTS[reconciled["layout"]]["label"]
+                             if reconciled["layout"] else "Custom / Unknown"),
+            "layout_source": reconciled["source"],
+            "layout_diverged": bool(reconciled.get("diverged")),
+            "stored_layout": reconciled.get("stored_layout"),
+            "canvas": reconciled.get("canvas"),
+            "selected_on_output": name == selected,
+            # The same verdict the show endpoint reaches, reported here so the
+            # page can say why instead of offering an action that 409s. One
+            # copy of the rule, and the page holds none of it.
+            **_showable(obj),
+            "subframes": [_subframe_view(s, state, stored.get(name), devices)
+                          for s in subframes],
+        })
+    views.sort(key=lambda v: v["name"].lower())
+
+    present = {v["name"] for v in views}
+    managed = _managed_multiviews(device, present)
+    # A decoder holds as many saved Multiviews as the operator wants, so the
+    # canvas is never "taken". The list stays in the response because the page
+    # still states which canvas it builds, but nothing gates on availability.
+    canvases = [{"id": omni_multiview.ACTIVE_CANVAS,
+                 "width": 1920, "height": 1080, "available": True,
+                 "used_by": None, "used_by_label": None, "reason": ""}]
+
+    return jsonify({
+        "ok": True,
+        "decoder": {"ip": ip, "hostname": device.get("hostname") or ip,
+                    "model": device.get("model") or "", "mac": device.get("mac") or ""},
+        # Video Wall and Fast Switching bar Multiview outright, so the page is
+        # told before it offers any of it rather than after an attempt fails.
+        "interlocks": omni_multiview.interlocks(device.get("model"), hdmi),
+        "canvas": omni_multiview.ACTIVE_CANVAS,
+        "multiviews": views,
+        "canvases": canvases,
+        "can_create": True,
+        "managed": managed,
+        "hdmi_output": {
+            "video_input": selected,
+            "audio_input": (hdmi.get("audio") or {}).get("input") or "",
+            "aux_input": (hdmi.get("aux") or {}).get("input") or "",
+            "available_inputs": (hdmi.get("video") or {}).get("available_inputs") or [],
+            "sap_enabled": bool((hdmi.get("sap_input") or {}).get("enabled")),
+            "sap_session": (hdmi.get("sap_input") or {}).get("session") or "",
+            "output_status": (hdmi.get("video") or {}).get("output") or {},
+            "output_resolution": ((hdmi.get("video") or {}).get("output") or {})
+                                 .get("resolution") or "",
+            "input_status": (hdmi.get("video") or {}).get("status") or {},
+            "video_wall": omni_multiview.video_wall_enabled(hdmi),
+            "fast_switching": omni_multiview.fast_switching_enabled(hdmi),
+        },
+        "ip_inputs": omni_multiview.classify_ip_inputs(
+            state["ip_input"], hdmi, state["multiview"]),
+    })
+
+
+def _resolve_subscription(address, port, devices=None):
+    """Which encoder session a decoder input is currently listening to.
+
+    Matched on the address *and* the port, because that pair is the stream --
+    an address alone can belong to two sessions on different ports. Encoders
+    only: a decoder records the multicast it listens to in the same field, so
+    searching every device resolves a window's source to another decoder
+    subscribed to the same stream.
+
+    Returns a source dict, or None when nothing discovered carries it. None is
+    an answer the page shows, not a reason to show the window as empty.
+    """
+    if not address:
+        return None
+    wanted = omni_multiview.stream_identity(address, port)
+    for device in (devices if devices is not None else _load_cache()):
+        if not omni_multiview.is_eligible_source(device)[0]:
+            continue
+        for index, session in ((1, "session1"), (2, "session2")):
+            candidate = omni_multiview.stream_identity(
+                device.get("%s_video_mcast" % session),
+                device.get("%s_video_port" % session) or port)
+            if candidate and candidate == wanted:
+                return {"ip": device.get("ip"),
+                        "hostname": device.get("hostname") or device.get("ip"),
+                        "model": device.get("model") or "",
+                        "session": session, "encoder_index": index,
+                        "resolved_from": "subscription"}
+        # Older cache records, kept so a device discovered before the session
+        # fields existed still resolves. Address only; there is no port to pair.
+        for legacy in ("ip1_addr", "ip3_addr"):
+            if device.get(legacy) and str(device[legacy]) == str(address):
+                return {"ip": device.get("ip"),
+                        "hostname": device.get("hostname") or device.get("ip"),
+                        "model": device.get("model") or "",
+                        "session": "", "encoder_index": None,
+                        "resolved_from": "subscription"}
+    return None
+
+
+def _subframe_view(subframe, state, stored, devices=None):
+    """One window as the page shows it, from what the decoder is subscribed to.
+
+    The distinction this exists to keep: a saved Multiview describes what was
+    wanted, and the decoder's inputs say what is actually arriving. After a
+    recall the canvas must show the second, because that is what is on the
+    screen -- and when a live subscription cannot be resolved to a known
+    encoder it is shown as an unknown source rather than erased, since
+    something is plainly playing in that window.
+    """
+    name = str(subframe.get("name") or "")
+    cell, width, height = omni_multiview.parse_subframe_label(name)
+    ip_input = str(subframe.get("input") or "")
+
+    entry = next((i for i in (state.get("ip_input") or ())
+                  if str(i.get("name") or "") == ip_input), {})
+    address = (entry.get("multicast") or {}).get("address") or ""
+    port = entry.get("port")
+    subscribed = bool(ip_input and address and entry.get("enabled"))
+
+    stored_window = next((w for w in ((stored or {}).get("windows") or [])
+                          if w.get("cell") == cell), None)
+    video = subframe.get("video") or {}
+    active = bool((video.get("input") or {}).get("active"))
+
+    source, origin = None, "none"
+    if address:
+        source = _resolve_subscription(address, port, devices)
+        origin = "subscription" if source else "unknown"
+    if source is None and not address and stored_window and stored_window.get("source_ip"):
+        # Nothing is arriving, so the only thing to show is what was saved --
+        # marked as such, because it is not what the decoder is doing.
+        source = {"ip": stored_window.get("source_ip"),
+                  "hostname": stored_window.get("source_hostname")
+                              or stored_window.get("source_ip"),
+                  "model": stored_window.get("source_model") or "",
+                  "session": stored_window.get("session") or "",
+                  "encoder_index": stored_window.get("encoder_index"),
+                  "resolved_from": "saved"}
+        origin = "saved"
+
+    return {
+        "name": name, "cell": cell,
+        "width": width, "height": height,
+        "x": subframe.get("x"), "y": subframe.get("y"),
+        "anchor": subframe.get("anchor"), "priority": subframe.get("priority"),
+        "ip_input": ip_input,
+        "multicast": address,
+        "multicast_port": port,
+        "stream": ("%s:%s" % (address, port)) if address else "",
+        "ip_input_enabled": bool(entry.get("enabled")),
+        "packets": ((entry.get("status") or {}).get("packets")),
+        "subscribed": subscribed,
+        "source": source,
+        "source_origin": origin,
+        "encoder_index": (source or {}).get("encoder_index")
+                         or (stored_window or {}).get("encoder_index"),
+        "saved_source_ip": (stored_window or {}).get("source_ip"),
+        "diverged": bool(stored_window and source
+                         and stored_window.get("source_ip")
+                         and source.get("ip")
+                         and stored_window["source_ip"] != source["ip"]),
+        "input_active": active,
+        "output_active": bool((video.get("output") or {}).get("active")),
+        "health": ("live" if active else
+                   "no signal" if subscribed else
+                   "not subscribed"),
+    }
+
+
+def _encoder_state(ip):
+    """Read one source encoder's vc2, sessions and input, or report it absent.
+
+    A short TCP preflight first, the same one the scan uses. Without it an
+    unreachable encoder costs six WebSocket timeouts -- three nodes, each retried
+    with the fallback password -- which measured 27.5 seconds on the bench and
+    left the page looking like it had simply stopped. Failing in 0.4s turns that
+    into an answer the operator can act on.
+    """
+    device = {d.get("ip"): d for d in _load_cache()}.get(ip, {})
+    absent = {"device": device, "vc2": [], "sessions": [],
+              "input_resolution": "", "reachable": False}
+    if not _tcp_probe(ip, [app.config.get("WS_PORT", 80), 80],
+                      timeout=MULTIVIEW_PREFLIGHT_TIMEOUT):
+        log.info("[MULTIVIEW] source %s did not answer a TCP preflight", ip)
+        return ip, absent
+    vc2 = _mv_config(ip, "vc2")
+    if not vc2:
+        # It answered TCP but not the API: still absent for planning purposes,
+        # and there is no point asking it two more questions.
+        return ip, absent
+    sessions = _mv_config(ip, "sessions")
+    hdmi_input = _mv_config(ip, "hdmi_input")
+    # An encoder reports its input under `video.resolution`, with `active` saying
+    # whether anything is connected. That is not the shape a decoder uses for its
+    # output, and a disconnected input can still report the last size it saw.
+    resolution = ""
+    if hdmi_input:
+        video = hdmi_input[0].get("video") or {}
+        size = video.get("resolution") or {}
+        if video.get("active") and size.get("width") and size.get("height"):
+            resolution = "%sx%s" % (size.get("width"), size.get("height"))
+    return ip, {"device": device, "vc2": vc2, "sessions": sessions,
+                "input_resolution": resolution,
+                "reachable": bool(vc2 and sessions)}
+
+
+def _gather_encoder_states(source_ips):
+    """Read every assigned source concurrently.
+
+    Only the encoders a window is assigned to are contacted, and only when a plan
+    is being built -- dragging a tile reads nothing. Concurrently because one slow
+    source used to delay every other one behind it.
+    """
+    addresses = sorted(set(filter(None, source_ips)))
+    if not addresses:
+        return {}
+    if len(addresses) == 1:
+        ip, state = _encoder_state(addresses[0])
+        return {ip: state}
+    with ThreadPoolExecutor(max_workers=min(8, len(addresses))) as pool:
+        return dict(pool.map(_encoder_state, addresses))
+
+
+def _build_plan(payload):
+    """Read everything the plan depends on, then hand it to the planner."""
+    ip = str(payload.get("decoder") or payload.get("ip") or "").strip()
+    if not ip:
+        return None, ({"ok": False, "error": "decoder ip required"}, 400)
+    state, error = _decoder_state(ip)
+    if state is None:
+        return None, ({"ok": False, "error": error}, 502)
+    assignments = payload.get("assignments") or {}
+    encoder_states = _gather_encoder_states(assignments.values())
+    device = {d.get("ip"): d for d in _load_cache()}.get(ip, {})
+    managed = _managed_multiviews(
+        device, {str(o.get("name") or "") for o in (state.get("multiview") or [])})
+    object_name = payload.get("object_name")
+    plan = omni_multiview.plan_multiview(
+        {"layout": payload.get("layout"),
+         "canvas": payload.get("canvas") or omni_multiview.ACTIVE_CANVAS,
+         "assignments": assignments, "name": payload.get("name"),
+         "object_name": object_name,
+         "update_existing": bool(payload.get("update_existing")),
+         "owned_inputs": _owned_pool_inputs(device, state)},
+        state, encoder_states, _known_multiviews(exclude_decoder_ip=ip),
+        managed=managed,
+        # Nothing records a claim any more: ownership is `owned_inputs`,
+        # from _owned_pool_inputs. See the note on _releasable_pool_inputs.
+        claimed_inputs=())
+    plan["decoder"] = {"ip": ip, "hostname": state.get("hostname") or ip,
+                       "model": state.get("model") or ""}
+    return (plan, state, encoder_states), None
+
+
+@app.route("/api/multiview/plan", methods=["POST"])
+def api_multiview_plan():
+    """What Apply would do, with no mutation whatsoever.
+
+    This is what the confirmation summary is built from, so the operator is shown
+    the same plan that will be executed rather than a description of it.
+    """
+    built, failure = _build_plan(request.get_json(silent=True) or {})
+    if failure:
+        body, status = failure
+        return jsonify(body), status
+    plan, _state, _encoders = built
+    return jsonify({"ok": True, "plan": plan})
+
+
+# --------------------------------------------------------------------------
+# Verified apply
+# --------------------------------------------------------------------------
+
+def _snapshot_fields(entries):
+    """Capture every field the transaction may modify, before it modifies any.
+
+    Read per device and node rather than per field so one read serves several
+    fields, and so the snapshot is a coherent picture of that node.
+    """
+    snapshot = {}
+    for entry in entries:
+        key = (entry["device"], entry["node"])
+        if key in snapshot:
+            continue
+        snapshot[key] = {str(item.get("name") or ""): copy.deepcopy(item)
+                         for item in _mv_config(entry["device"], entry["node"])}
+    return snapshot
+
+
+def _already_applied(mutation):
+    """Does the device already hold what this mutation would write?
+
+    The same comparison `_verify_mutation` makes afterwards, made beforehand, so
+    a transaction can skip the writes that would change nothing. A device that
+    cannot be read is treated as not satisfying anything: the write is attempted
+    and its own verification decides.
+    """
+    try:
+        current = {str(item.get("name") or ""): item
+                   for item in _mv_config(mutation["device"], mutation["node"])}
+    except Exception:
+        return False
+    actual = current.get(mutation.get("target"))
+    if actual is None:
+        return False
+    if mutation.get("method"):
+        # A method call creates or removes something; there is no "already
+        # written" reading of it that is safe to infer from a config read.
+        return False
+    return not _diff_expected(mutation.get("config") or {}, actual)
+
+
+def _merge_config(base, extra):
+    """Deep-merge two config dicts, so a group's end state can be judged at once."""
+    merged = copy.deepcopy(base)
+    for key, value in (extra or {}).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_config(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _count_fields(config):
+    """Leaf fields in a config, excluding the object's own name."""
+    total = 0
+    for key, value in (config or {}).items():
+        if key == "name":
+            continue
+        if isinstance(value, dict):
+            total += _count_fields(value)
+        elif isinstance(value, list):
+            total += 1
+        else:
+            total += 1
+    return total
+
+
+def _read_nodes(mutations):
+    """One read per (device, node) this transaction touches.
+
+    A device that cannot be read yields None, which is treated as satisfying
+    nothing: the writes are attempted and their own verification decides.
+    """
+    current = {}
+    for mutation in mutations:
+        key = (mutation["device"], mutation["node"])
+        if key in current:
+            continue
+        try:
+            current[key] = {str(item.get("name") or ""): item
+                            for item in _mv_config(mutation["device"],
+                                                   mutation["node"])}
+        except Exception:
+            current[key] = None
+    return current
+
+
+def _transaction_diff(mutations):
+    """Split a planned transaction into the writes that are actually needed.
+
+    Returns (needed, skipped, stats). `stats` answers the question a diagnostic
+    should be able to answer about any Multiview transaction: how many fields
+    were planned, how many the devices already held, and how many had to be
+    written.
+    """
+    order = {id(m): index for index, m in enumerate(mutations)}
+    groups = {}
+    for mutation in mutations:
+        # A method call creates or removes something; there is no "already
+        # written" reading of a config that could stand in for it.
+        key = ("method", id(mutation)) if mutation.get("method") else (
+            mutation["device"], mutation["node"], mutation.get("target"))
+        groups.setdefault(key, []).append(mutation)
+
+    current = _read_nodes([m for m in mutations if not m.get("method")])
+    needed, skipped = [], []
+    planned_fields, correct_fields = 0, 0
+
+    for key, group in groups.items():
+        if key[0] == "method":
+            needed.extend(group)
+            continue
+        device, node, target = key
+        desired = {}
+        for mutation in group:
+            desired = _merge_config(desired, mutation.get("config") or {})
+        fields = _count_fields(desired)
+        planned_fields += fields
+
+        items = current.get((device, node))
+        actual = (items or {}).get(target)
+        differences = (["unreadable"] if items is None else
+                       ["missing"] if actual is None else
+                       _diff_expected(desired, actual))
+        if differences:
+            needed.extend(group)
+            correct_fields += max(0, fields - len(differences))
+        else:
+            skipped.extend(group)
+            correct_fields += fields
+
+    needed.sort(key=lambda m: order[id(m)])
+    skipped.sort(key=lambda m: order[id(m)])
+    return needed, skipped, {
+        "planned_fields": planned_fields,
+        "already_correct": correct_fields,
+        "writes_required": len(needed),
+        "planned_mutations": len(mutations),
+        "skipped": [{"step": m["description"], "stage": m["stage"]}
+                    for m in skipped],
+    }
+
+
+def _verify_mutation(mutation):
+    """Read the device back and check it actually holds what we asked for.
+
+    The decoder accepts a nonexistent input, a 0x0 canvas and a bogus delete flag
+    and answers `error: false` to all three, so this is the only thing that
+    distinguishes a write that worked from one that was ignored.
+    """
+    current = {str(item.get("name") or ""): item
+               for item in _mv_config(mutation["device"], mutation["node"])}
+    actual = current.get(mutation["target"])
+    if actual is None:
+        return False, f"{mutation['target']} is not present on {mutation['device']}"
+    if mutation.get("method") == "del_multiview_subframe":
+        # A removal is verified by absence; there are no fields left to compare.
+        remaining = [str(s.get("name") or "") for s in (actual.get("subframes") or [])]
+        if mutation["subframe"] in remaining:
+            return False, f"subframe {mutation['subframe']!r} is still present"
+        return True, ""
+    differences = _diff_expected(mutation["config"], actual)
+    if differences:
+        return False, "; ".join(differences)
+    return True, ""
+
+
+def _diff_expected(expected, actual, path=""):
+    """Every place the device disagrees with what we asked for.
+
+    Only the fields the mutation named are compared. The device adds read-only
+    status everywhere, and comparing whole objects would report those as
+    failures.
+    """
+    differences = []
+    for key, wanted in (expected or {}).items():
+        here = f"{path}.{key}" if path else key
+        if key == "name":
+            continue
+        got = (actual or {}).get(key)
+        if isinstance(wanted, dict):
+            differences.extend(_diff_expected(wanted, got if isinstance(got, dict) else {}, here))
+        elif isinstance(wanted, list):
+            if key == "subframes":
+                differences.extend(_diff_subframes(wanted, got or []))
+            elif list(wanted) != list(got or []):
+                differences.append(f"{here}: wanted {wanted!r}, device has {got!r}")
+        else:
+            if str(got) != str(wanted):
+                differences.append(f"{here}: wanted {wanted!r}, device has {got!r}")
+    return differences
+
+
+def _diff_subframes(expected, actual):
+    """Subframes are matched by name, not by position."""
+    differences = []
+    by_name = {str(item.get("name") or ""): item for item in actual}
+    for wanted in expected:
+        name = str(wanted.get("name") or "")
+        got = by_name.get(name)
+        if got is None:
+            differences.append(f"subframe {name!r} is missing")
+            continue
+        differences.extend(_diff_expected(wanted, got, f"subframe[{name}]"))
+    return differences
+
+
+def _restore_snapshot(snapshot, applied):
+    """Put back only the fields this transaction changed, then read them back.
+
+    Restoration is best-effort by nature -- the devices offer no transaction --
+    so the result says explicitly whether each restore was verified rather than
+    assuming it worked.
+    """
+    results = []
+    for mutation in reversed(applied):
+        key = (mutation["device"], mutation["node"])
+        original = (snapshot.get(key) or {}).get(mutation["target"])
+        if mutation.get("method") == "del_multiview_subframe":
+            was = next((s for s in ((original or {}).get("subframes") or [])
+                        if str(s.get("name") or "") == mutation["subframe"]), None)
+            if was is None:
+                results.append({"step": mutation["description"], "action": "none",
+                                "verified": False,
+                                "error": "the removed subframe was not captured"})
+                continue
+            # Restoring the multiview object itself merges the captured subframe
+            # list back in, so by the time this runs the window is usually
+            # already there. Adding it again would breach the four-subframe cap
+            # and report a rollback failure that had not happened.
+            present = [str(s.get("name") or "") for s in
+                       next((o.get("subframes") or [] for o in
+                             _mv_config(mutation["device"], "multiview")
+                             if o.get("name") == mutation["target"]), [])]
+            if mutation["subframe"] in present:
+                results.append({"step": mutation["description"],
+                                "action": "already restored", "verified": True,
+                                "error": ""})
+                continue
+            ok, message = _mv_method(mutation["device"], "add_multiview_subframe", {
+                "multiview": mutation["target"], "name": was.get("name"),
+                "x": was.get("x", 0), "y": was.get("y", 0),
+                "anchor": was.get("anchor", "top left"),
+                "priority": was.get("priority", 1), "input": was.get("input", "")})
+            restored_now = [str(s.get("name") or "") for s in
+                            next((o.get("subframes") or [] for o in
+                                  _mv_config(mutation["device"], "multiview")
+                                  if o.get("name") == mutation["target"]), [])]
+            verified = ok and mutation["subframe"] in restored_now
+            results.append({"step": mutation["description"], "action": "re-added",
+                            "verified": verified,
+                            "error": "" if verified else (message or "not restored")})
+            continue
+        if original is None:
+            if mutation.get("method") == "add_multiview":
+                ok, message = _mv_method(mutation["device"], "del_multiview",
+                                         {"name": mutation["target"]})
+                present = any(str(o.get("name") or "") == mutation["target"]
+                              for o in _mv_config(mutation["device"], "multiview"))
+                results.append({"step": mutation["description"], "action": "removed",
+                                "verified": ok and not present,
+                                "error": "" if ok else message})
+            else:
+                results.append({"step": mutation["description"], "action": "none",
+                                "verified": False,
+                                "error": "nothing was captured for this field"})
+            continue
+        config = _restore_config(mutation, original)
+        ok, message = _mv_set(mutation["device"], mutation["node"], config)
+        verified = False
+        detail = message
+        if ok:
+            verified, detail = _verify_mutation({**mutation, "config": config})
+        results.append({"step": mutation["description"], "action": "restored",
+                        "verified": verified, "error": "" if verified else detail})
+    return results
+
+
+# The only subframe fields a device accepts. Everything else a subframe reports
+# -- `video.hdcp`, `video.input.active`, `video.output.active` -- describes the
+# stream arriving, not anything that was configured.
+SUBFRAME_SETTABLE = ("name", "x", "y", "anchor", "priority", "input")
+
+
+def _restore_config(mutation, original):
+    """The smallest write that puts the captured value back.
+
+    Only settable fields are carried over. The captured subframe list also holds
+    read-only status, and copying that into the restore made it part of what the
+    read-back then compared: a rollback captured while a window was dark records
+    `video.hdcp: none`, and once the picture is back the device reports `2.2`,
+    so a restore that worked perfectly reported itself as unverified. Measured
+    on the bench -- twice, identically -- as "ROLLBACK INCOMPLETE" against a
+    decoder that had in fact been restored exactly.
+    """
+    config = {"name": mutation["target"]}
+    for key in (mutation.get("config") or {}):
+        if key == "name" or key not in original:
+            continue
+        value = copy.deepcopy(original[key])
+        if key == "subframes" and isinstance(value, list):
+            value = [{k: v for k, v in (item or {}).items()
+                      if k in SUBFRAME_SETTABLE} for item in value]
+        config[key] = value
+    return config
+
+
+def _owned_pool_inputs(device, state, exclude=None):
+    """Pool inputs OmniSuite may reconfigure, because it put them there.
+
+    A pool input is OmniSuite's to reuse when some Multiview it manages on this
+    decoder references it -- that object was created here, so the input under it
+    was configured here. Everything else in the pool is judged on what it is
+    carrying right now, which is the only thing that makes it a live resource.
+
+    A saved Multiview's metadata referencing an input is deliberately not enough
+    on its own: a decoder holds many saved Multiviews and only one is active, so
+    treating every saved reference as a reservation would let the first saved
+    layout lock the pool against all the others.
+    """
+    managed = set(_multiview_meta_for(device) or {})
+    owned = set()
+    for obj in state.get("multiview") or ():
+        name = str(obj.get("name") or "")
+        if name not in managed or (exclude and name == exclude):
+            continue
+        for subframe in obj.get("subframes") or ():
+            target = str(subframe.get("input") or "")
+            if target in omni_multiview.WINDOW_IP_INPUTS:
+                owned.add(target)
+    return owned
+
+
+def _saved_assignments(device, object_name):
+    """The window -> source map OmniSuite recorded when the Multiview was saved."""
+    record = (_multiview_meta_for(device) or {}).get(object_name) or {}
+    return ({w["cell"]: w["source_ip"] for w in (record.get("windows") or [])
+             if w.get("cell") and w.get("source_ip")}, record)
+
+
+@app.route("/api/multiview/apply", methods=["POST"])
+def api_multiview_apply():
+    """Save a Multiview: store its configuration, and change nothing else.
+
+    A decoder holds many saved Multiviews and only one of them is on the output,
+    so saving cannot claim live resources -- two saved layouts will routinely
+    want the same Encoder 2 at different sizes, and making them coexist is not
+    possible even in principle. Saving therefore writes the Multiview object and
+    its metadata; every encoder, session and decoder input is prepared at Show,
+    against the state that exists then.
+
+    The plan is still built from freshly read device state, so what is stored is
+    checked against real sources rather than trusted from the page.
+    """
+    payload = request.get_json(silent=True) or {}
+    built, failure = _build_plan(payload)
+    if failure:
+        body, status = failure
+        return jsonify(body), status
+    plan, state, encoder_states = built
+
+    if not plan.get("ok"):
+        return jsonify({"ok": False, "status": "invalid", "plan": plan,
+                        "error": "; ".join(plan.get("errors") or [])}), 400
+    if plan.get("conflicts"):
+        return jsonify({"ok": False, "status": "conflict", "plan": plan,
+                        "error": "; ".join(plan["conflicts"])}), 409
+    mutations = plan.get("mutations") or []
+    decoder_ip = plan["decoder"]["ip"]
+    device = {d.get("ip"): d for d in _load_cache()}.get(decoder_ip, {})
+
+    with _multiview_apply_lock:
+        snapshot = _snapshot_fields([
+            entry for entry in (plan.get("snapshot") or [])
+            if entry["device"] == decoder_ip and entry["node"] == "multiview"])
+        applied, verified, failures = [], [], []
+
+        for mutation in mutations:
+            if mutation.get("method") in ("add_multiview", "del_multiview_subframe"):
+                ok, message = _mv_method(mutation["device"], mutation["method"],
+                                         dict(mutation["config"]))
+            else:
+                ok, message = _mv_set(mutation["device"], mutation["node"],
+                                      mutation["config"])
+            if not ok:
+                failures.append({"step": mutation["description"],
+                                 "stage": mutation["stage"], "error": message})
+                break
+            applied.append(mutation)
+            # Transport success is not configuration success. Read it back.
+            good, detail = _verify_mutation(mutation)
+            verified.append({"step": mutation["description"], "stage": mutation["stage"],
+                             "verified": good, "detail": detail})
+            if not good:
+                failures.append({"step": mutation["description"],
+                                 "stage": mutation["stage"],
+                                 "error": f"the device accepted the write but does "
+                                          f"not hold it: {detail}"})
+                break
+
+        if failures:
+            rollback = _restore_snapshot(snapshot, applied)
+            complete = all(entry["verified"] for entry in rollback) if rollback else True
+            log.warning("[MULTIVIEW] save failed on %s at %s: %s",
+                        decoder_ip, failures[-1]["stage"], failures[-1]["error"])
+            return jsonify({
+                "ok": False,
+                "status": "FAILED — ROLLED BACK" if complete
+                          else "FAILED — ROLLBACK INCOMPLETE",
+                "plan": plan, "applied": [m["description"] for m in applied],
+                "verified": verified, "failures": failures, "rollback": rollback,
+            }), 200
+
+        _record_multiview_meta(device, plan["object_name"], {
+            "layout": plan["layout"],
+            "friendly_name": plan["friendly_name"],
+            "canvas": f"{plan['canvas']['width']}x{plan['canvas']['height']}",
+            "requested_canvas": "%sx%s" % (plan["requested_canvas"]["width"],
+                                           plan["requested_canvas"]["height"]),
+            "updated": time.time(),
+            "windows": [{
+                "cell": w["cell"], "label": w["label"],
+                "x": w["x"], "y": w["y"], "anchor": w["anchor"],
+                "width": w["width"], "height": w["height"],
+                "scaler_format": w["scaler_format"],
+                "encoder_index": w["encoder_index"],
+                "session": w["session"],
+                "ip_input": (w.get("ip_input") or {}).get("ip_input"),
+                "source_ip": (w.get("source") or {}).get("ip"),
+                "source_hostname": (w.get("source") or {}).get("hostname"),
+                "source_model": (w.get("source") or {}).get("model"),
+                "multicast": (w.get("multicast") or {}).get("address"),
+                "multicast_port": (w.get("multicast") or {}).get("port"),
+                "is_main": w.get("is_main", False),
+            } for w in plan["windows"] if w.get("source")],
+        })
+        log.info("[MULTIVIEW] %s saved on %s (%d verified change(s))",
+                 plan["object_name"], decoder_ip, len(verified))
+        return jsonify({"ok": True, "status": "VERIFIED", "plan": plan,
+                        "applied": [m["description"] for m in applied],
+                        "verified": verified,
+                        "message": "Saved. The display is unchanged; use Show on "
+                                   "Display to put it on screen."})
+
+
+
+
+def _recall_plan(ip, name, state):
+    """Re-plan a saved Multiview against the state the devices are in NOW.
+
+    Nothing about the encoders is assumed to have survived since the Multiview
+    was saved: another saved layout may have been recalled in between and left
+    Encoder 2 at a different size, a different bitrate, or pointed somewhere
+    else entirely. So every source is read again and the whole requirement is
+    recomputed, which is what makes recall a transition rather than a replay.
+
+    Returns (plan, state, encoder_states, record, failure), where `failure` is
+    (message, http status) when the recall cannot be planned at all.
+    """
+    device = {d.get("ip"): d for d in _load_cache()}.get(ip, {})
+    assignments, record = _saved_assignments(device, name)
+    if not assignments:
+        return None, None, None, None, (
+            f"OmniSuite has no record of what feeds {name}, so it cannot be "
+            f"prepared. Open it and save it again.", 409)
+
+    encoder_states = _gather_encoder_states(assignments.values())
+    plan = omni_multiview.plan_multiview(
+        {"layout": record.get("layout"), "canvas": omni_multiview.ACTIVE_CANVAS,
+         "assignments": assignments, "name": record.get("friendly_name"),
+         "object_name": name, "update_existing": True,
+         "owned_inputs": _owned_pool_inputs(device, state)},
+        state, encoder_states, _known_multiviews(exclude_decoder_ip=ip),
+        managed=_managed_multiviews(
+            device, {str(o.get("name") or "") for o in (state.get("multiview") or [])}),
+        claimed_inputs=())
+    plan["decoder"] = {"ip": ip, "hostname": state.get("hostname") or ip,
+                       "model": state.get("model") or ""}
+    return plan, state, encoder_states, record, None
+
+
+def _rebind_subframes(ip, name, plan, state):
+    """Point the object's subframes at the inputs this recall actually allocated.
+
+    The allocation is a function of the saved window-to-source map and each
+    source's current Session 2 destination. A source that has been given a new
+    destination since the Multiview was saved therefore lands on a different
+    input, and the object on the device has to be told.
+    """
+    existing = next((o for o in state.get("multiview") or ()
+                     if str(o.get("name") or "") == name), {})
+    current = {str(s.get("name") or ""): str(s.get("input") or "")
+               for s in (existing.get("subframes") or [])}
+    wanted = {w["label"]: (w.get("ip_input") or {}).get("ip_input") or ""
+              for w in plan["windows"]}
+    changed = {label: value for label, value in wanted.items()
+               if current.get(label) != value}
+    if not changed:
+        return None
+    return {
+        "stage": omni_multiview.STAGE_MULTIVIEW, "device": ip, "node": "multiview",
+        "target": name,
+        "description": "Bind %s to %s" % (
+            name, ", ".join("%s -> %s" % (k.split(" (")[0], v)
+                            for k, v in sorted(changed.items()))),
+        "config": {"name": name, "subframes": [
+            {"name": label, "input": value} for label, value in sorted(changed.items())]},
+    }
+
+
+def _releasable_pool_inputs(ip, device, state, required, owned=None):
+    """Pool inputs OmniSuite owns that the configuration being activated does not need.
+
+    Cleanup is decided from what the ACTIVE configuration requires, never from
+    what some other saved Multiview's metadata mentions: a saved object is a
+    description and reserves nothing. An input carrying an HDMI role, or one
+    carrying something OmniSuite did not configure, is still never touched.
+    """
+    inputs = {str(i.get("name") or ""): i for i in (state.get("ip_input") or ())}
+    hdmi = state.get("hdmi_output") or {}
+    roles = {item["name"]: item for item in omni_multiview.classify_ip_inputs(
+        state.get("ip_input"), hdmi, ())}
+    # Ownership is passed in when the object that proves it has already been
+    # removed -- a delete forgets the metadata, and reading it afterwards would
+    # make every input the deleted Multiview configured look like somebody
+    # else's and leak it permanently.
+    owned = _owned_pool_inputs(device, state) if owned is None else set(owned)
+    release, kept = [], []
+    for name in omni_multiview.WINDOW_IP_INPUTS:
+        entry = inputs.get(name)
+        if entry is None or not entry.get("enabled"):
+            continue
+        if name in (required or ()):
+            kept.append((name, "still required by this Multiview"))
+            continue
+        role = roles.get(name) or {}
+        other = [r for r in (role.get("roles") or []) if not r.startswith("Multiview")]
+        if other:
+            kept.append((name, omni_multiview._describe_roles(other)))
+            continue
+        if name not in owned:
+            kept.append((name, "OmniSuite did not configure it"))
+            continue
+        release.append(name)
+    return release, kept
+
+
+@app.route("/api/multiview/show", methods=["POST"])
+def api_multiview_show():
+    """Recall a saved Multiview: prepare everything it needs, then display it.
+
+    This is where a Multiview becomes real. Saving stored a description; recall
+    reads the devices as they are now, works out the difference, and closes it:
+
+        Encoder 2's input, scaler and bitrate           (per source)
+        Encoder 1's bitrate, only if the budget forces it
+        Session 2 assigned, transmitting, announcing nothing
+        the decoder inputs the distinct streams need
+        the subframes rebound if the allocation moved
+        the pool inputs this configuration no longer needs, released
+        output resolution -> 1920x1080
+        SAP Input off
+        the audio input carrying the main window's Session 1 audio
+        the Multiview selected for video, that input selected for audio
+
+    and then the one check that is not a read-back of our own write: the
+    decoder's Input status. Every step is snapshotted and rolled back together.
+    """
+    payload = request.get_json(silent=True) or {}
+    ip = str(payload.get("decoder") or payload.get("ip") or "").strip()
+    name = str(payload.get("name") or "").strip()
+    if not ip or not name:
+        return jsonify({"ok": False,
+                        "error": "decoder ip and multiview name required"}), 400
+
+    # The cheap refusals come first, and none of them needs OmniSuite's own
+    # records: whether the decoder will take a Multiview at all, and whether
+    # this object is one this release knows how to drive.
+    state, error = _decoder_state(ip)
+    if state is None:
+        return jsonify({"ok": False, "error": error}), 502
+    target = next((o for o in state["multiview"]
+                   if str(o.get("name") or "") == name), None)
+    if target is None:
+        return jsonify({"ok": False, "error": f"{name} is not on this decoder"}), 404
+
+    hdmi = state["hdmi_output"] or {}
+    device = {d.get("ip"): d for d in _load_cache()}.get(ip, {})
+
+    blocked = omni_multiview.interlocks(device.get("model"), hdmi)
+    if blocked:
+        return jsonify({"ok": False, "status": "REFUSED", "interlocks": blocked,
+                        "error": " ".join(e["reason"] for e in blocked)}), 409
+
+    if omni_multiview.output_resolution_for_canvas(
+            target.get("width"), target.get("height")) != MULTIVIEW_OUTPUT_RESOLUTION:
+        return jsonify({"ok": False, "status": "REFUSED",
+                        "error": f"{name} is a {target.get('width')}x"
+                                 f"{target.get('height')} Multiview. This release "
+                                 f"shows {MULTIVIEW_OUTPUT_RESOLUTION} Multiviews "
+                                 f"only."}), 409
+
+    plan, state, encoder_states, record, failure = _recall_plan(ip, name, state)
+    if failure:
+        message, status = failure
+        return jsonify({"ok": False, "error": message}), status
+    if not plan.get("ok"):
+        return jsonify({"ok": False, "status": "invalid", "plan": plan,
+                        "error": "; ".join(plan.get("errors") or [])}), 400
+    if plan.get("conflicts"):
+        return jsonify({"ok": False, "status": "conflict", "plan": plan,
+                        "error": "; ".join(plan["conflicts"])}), 409
+
+    required = {(w.get("ip_input") or {}).get("ip_input")
+                for w in plan["windows"] if w.get("ip_input")}
+    release, kept_pairs = _releasable_pool_inputs(ip, device, state, required)
+    kept = [{"ip_input": n, "reason": r} for n, r in kept_pairs]
+    audio = _show_audio_plan_from_plan(ip, plan, state)
+
+    with _multiview_apply_lock:
+        snapshot = _snapshot_fields(
+            list(plan.get("snapshot") or [])
+            + [{"device": ip, "node": "hdmi_output", "name": "hdmi_output1", "field": "*"}]
+            + [{"device": ip, "node": "ip_input", "name": n, "field": "*"}
+               for n in sorted(set(release) | ({audio["ip_input"]}
+                                               if audio.get("write_ip_input") else set()))])
+        applied, steps = [], []
+
+        mutations = list(plan.get("activation") or [])
+        rebind = _rebind_subframes(ip, name, plan, state)
+        if rebind:
+            mutations.append(rebind)
+        for name_to_release in release:
+            mutations.append({
+                "stage": omni_multiview.STAGE_IP_INPUT_DISABLE, "device": ip,
+                "node": "ip_input", "target": name_to_release,
+                "description": "Release %s, which this Multiview does not use"
+                               % name_to_release,
+                "config": {"name": name_to_release, "enabled": False}})
+
+        current_resolution = ((hdmi.get("video") or {}).get("output") or {}).get("resolution")
+        if current_resolution != MULTIVIEW_OUTPUT_RESOLUTION:
+            mutations.append({
+                "stage": STAGE_OUTPUT_RESOLUTION, "device": ip, "node": "hdmi_output",
+                "target": "hdmi_output1",
+                "description": "Set the display output to %s" % MULTIVIEW_OUTPUT_RESOLUTION,
+                "config": {"name": "hdmi_output1",
+                           "video": {"output": {"resolution": MULTIVIEW_OUTPUT_RESOLUTION}}}})
+        if (hdmi.get("sap_input") or {}).get("enabled"):
+            mutations.append({
+                "stage": STAGE_SAP_SHOW, "device": ip, "node": "hdmi_output",
+                "target": "hdmi_output1",
+                "description": "Turn off automatic source selection (SAP)",
+                "config": {"name": "hdmi_output1", "sap_input": {"enabled": False}}})
+        if audio.get("write_ip_input"):
+            mutations.append({
+                "stage": STAGE_AUDIO_INPUT, "device": ip, "node": "ip_input",
+                "target": audio["ip_input"],
+                "description": "Point %s at %s:%s for the main window's audio"
+                               % (audio["ip_input"], audio["address"], audio["port"]),
+                "config": {"name": audio["ip_input"], "enabled": True,
+                           "port": audio["port"],
+                           "multicast": {"address": audio["address"]}}})
+        if str((hdmi.get("video") or {}).get("input") or "") != name:
+            mutations.append({
+                "stage": STAGE_SHOW, "device": ip, "node": "hdmi_output",
+                "target": "hdmi_output1",
+                "description": f"Show {name} on the display",
+                "config": {"name": "hdmi_output1", "video": {"input": name}}})
+        if audio.get("select") and audio["ip_input"] != (hdmi.get("audio") or {}).get("input"):
+            mutations.append({
+                "stage": STAGE_AUDIO_SELECT, "device": ip, "node": "hdmi_output",
+                "target": "hdmi_output1",
+                "description": "Take the display's audio from %s (%s Session 1)"
+                               % (audio["ip_input"], audio.get("source_hostname")),
+                "config": {"name": "hdmi_output1", "audio": {"input": audio["ip_input"]}}})
+
+        # Read what the devices hold, and write only what differs.
+        #
+        # Encoder configuration is shared: Encoder 1 may be feeding decoders
+        # that have nothing to do with this Multiview, and writing a value a
+        # device already holds is still a write it acts on. A source that is
+        # already prepared correctly must cost zero writes.
+        mutations, skipped, write_plan = _transaction_diff(mutations)
+        already_shown = not mutations
+        for mutation in mutations:
+            if mutation.get("method") in ("add_multiview", "del_multiview_subframe"):
+                ok, message = _mv_method(mutation["device"], mutation["method"],
+                                         dict(mutation["config"]))
+            else:
+                ok, message = _mv_set(mutation["device"], mutation["node"],
+                                      mutation["config"])
+            good, detail = (False, message)
+            if ok:
+                applied.append(mutation)
+                good, detail = _verify_mutation(mutation)
+            steps.append({"step": mutation["description"], "stage": mutation["stage"],
+                          "verified": good, "error": "" if good else detail})
+            if not good:
+                rollback = _restore_snapshot(snapshot, applied)
+                complete = all(e["verified"] for e in rollback) if rollback else True
+                log.warning("[MULTIVIEW] recall of %s failed on %s: %s", name, ip, detail)
+                return jsonify({
+                    "ok": False,
+                    "status": "FAILED — ROLLED BACK" if complete
+                              else "FAILED — ROLLBACK INCOMPLETE",
+                    "plan": plan, "audio": audio, "steps": steps,
+                    "released": release, "kept": kept, "rollback": rollback}), 200
+
+        # Every write held. That is still not proof that a picture exists.
+        status, settled = _await_input_status(ip)
+        if not settled:
+            diagnostics = _show_diagnostics(ip, name, audio)
+            rollback = _restore_snapshot(snapshot, applied)
+            complete = all(e["verified"] for e in rollback) if rollback else True
+            log.warning("[MULTIVIEW] %s on %s reports no active video after a "
+                        "fully verified recall", name, ip)
+            return jsonify({
+                "ok": False,
+                "status": "NO ACTIVE VIDEO — ROLLED BACK" if complete
+                          else "NO ACTIVE VIDEO — ROLLBACK INCOMPLETE",
+                "error": "Every change was accepted and verified, but the decoder "
+                         "reports no active video on this Multiview. The picture "
+                         "is not reaching it.",
+                "input_status": status, "diagnostics": diagnostics, "plan": plan,
+                "audio": audio, "steps": steps, "rollback": rollback}), 200
+
+    # The composite is live. Each window is a separate question, because one can
+    # sit black while the others carry the picture.
+    windows, unlocked = _await_window_lock(ip, name)
+    after = (_mv_config(ip, "hdmi_output") or [{}])[0]
+    output = (after.get("video") or {}).get("output") or {}
+    if unlocked:
+        log.warning("[MULTIVIEW] %s is shown on %s but %d window(s) are not "
+                    "locked: %s", name, ip, len(unlocked),
+                    ", ".join(w["subframe"] for w in unlocked))
+    else:
+        log.info("[MULTIVIEW] %s is now shown on %s at %s (%d write(s) of %d "
+                 "planned; %d of %d field(s) already correct)", name, ip,
+                 output.get("resolution"), len(steps),
+                 write_plan["planned_mutations"], write_plan["already_correct"],
+                 write_plan["planned_fields"])
+    # The A/V Matrix renders from the cache, so it has to be told that this
+    # decoder's picture is now a composition rather than a routed source.
+    _remember_decoder_display(ip, name, (after.get("audio") or {}).get("input"))
+    return jsonify({"ok": True,
+                    "status": "VERIFIED" if not unlocked
+                              else "VERIFIED — WINDOW NOT LOCKED",
+                    "windows": windows,
+                    "unlocked_windows": unlocked,
+                    "diagnostics": _show_diagnostics(ip, name, audio) if unlocked else None,
+                    "steps": steps,
+                    "already_shown": already_shown,
+                    "plan": plan,
+                    "released": release, "kept": kept,
+                    "writes": dict(write_plan,
+                                   writes_performed=len(steps)),
+                    "output_resolution": output.get("resolution"),
+                    # What the sink actually negotiated. It depends on the
+                    # attached display's EDID, so it is reported but never used
+                    # as a pass condition.
+                    "negotiated": (output.get("status") or {}).get("resolution"),
+                    "input_status": status,
+                    "audio": audio,
+                    "sap_enabled": (after.get("sap_input") or {}).get("enabled"),
+                    "audio_input": (after.get("audio") or {}).get("input")})
+
+
+def _show_audio_plan_from_plan(ip, plan, state):
+    """Where the display's audio comes from once this Multiview is shown.
+
+    Multiview is video-only, so the audio follows the main window's source over
+    that source's ordinary Session 1 path -- never a second stream invented for
+    the purpose, and never Session 2.
+
+    The main window is named by the plan, which recomputed it from the layout, so
+    recalling a different Multiview moves the audio with it rather than leaving
+    it on whatever was playing before.
+    """
+    plan_audio = plan.get("audio") or {}
+    result = {"followed": False, "reason": plan_audio.get("reason", ""),
+              "ip_input": "", "select": False, "write_ip_input": False,
+              "main_window": plan_audio.get("main_window"),
+              "source_ip": plan_audio.get("source_ip") or "",
+              "source_hostname": plan_audio.get("source_hostname") or "",
+              "session": "session1",
+              "address": plan_audio.get("address") or "",
+              "port": plan_audio.get("port")}
+    if not plan_audio.get("available"):
+        result["reason"] = result["reason"] or (
+            "The main window has no usable source, so the display's audio is "
+            "left as it is.")
+        return result
+    if not plan_audio.get("enabled"):
+        result["reason"] = ("%s Session 1 audio is not being transmitted, so the "
+                            "display's audio is left alone."
+                            % (result["source_hostname"] or result["source_ip"]))
+        return result
+
+    inputs = state.get("ip_input") or []
+    address, port = result["address"], result["port"]
+    existing = next((str(e.get("name") or "") for e in inputs
+                     if (e.get("multicast") or {}).get("address") == address
+                     and str(e.get("port")) == str(port) and e.get("enabled")), "")
+    if existing:
+        result.update({"followed": True, "ip_input": existing, "select": True,
+                       "write_ip_input": False})
+        return result
+
+    hdmi = state["hdmi_output"] or {}
+    current = str((hdmi.get("audio") or {}).get("input") or "")
+    referenced = {str(s.get("input") or "")
+                  for o in (state.get("multiview") or [])
+                  for s in (o.get("subframes") or [])}
+    if not current.startswith("ip_input"):
+        result["reason"] = ("The display's audio is on %s rather than an input "
+                            "OmniSuite can repoint." % (current or "nothing"))
+        return result
+    if (current in omni_multiview.WINDOW_IP_INPUTS
+            or current == str((hdmi.get("video") or {}).get("input") or "")
+            or current == str((hdmi.get("aux") or {}).get("input") or "")
+            or current in referenced):
+        result["reason"] = ("%s is doing something else as well, so OmniSuite will "
+                            "not repoint it for Multiview audio." % current)
+        return result
+    result.update({"followed": True, "ip_input": current, "select": True,
+                   "write_ip_input": True})
+    return result
+
+
+def _await_window_lock(ip, name, timeout=MULTIVIEW_WINDOW_SETTLE, interval=1.0):
+    """Which of a Multiview's windows are actually showing their stream.
+
+    The decoder's composite Input status can read active while one window sits
+    black, because the other windows are carrying it. A window whose input is
+    receiving packets but whose subframe never reports `video.input.active` is
+    a black rectangle on someone's display, and nothing else in the transaction
+    would notice.
+
+    Reported rather than rolled back: the rest of the picture is live, and
+    taking it away to punish one late window helps nobody. The operator is told
+    which window, and the diagnostics carry the chain behind it.
+    """
+    deadline = time.time() + timeout
+    windows = []
+    while True:
+        target = next((o for o in _mv_config(ip, "multiview")
+                       if str(o.get("name") or "") == name), {})
+        windows = [{
+            "subframe": str(s.get("name") or ""),
+            "ip_input": str(s.get("input") or ""),
+            "active": bool(((s.get("video") or {}).get("input") or {}).get("active")),
+        } for s in (target.get("subframes") or []) if s.get("input")]
+        if all(w["active"] for w in windows):
+            return windows, []
+        if time.time() >= deadline:
+            return windows, [w for w in windows if not w["active"]]
+        time.sleep(interval)
+
+
+def _await_input_status(ip, timeout=MULTIVIEW_INPUT_SETTLE, interval=0.5):
+    """The decoder's HDMI Input status once it has had a moment to settle.
+
+    A freshly selected input takes a beat to lock, so a single immediate read
+    would report every successful show as a failure. This is a bounded settle
+    wait on one operation, not a poll: nothing calls it unless a Multiview has
+    just been shown.
+    """
+    deadline = time.time() + timeout
+    status = {}
+    while True:
+        hdmi = (_mv_config(ip, "hdmi_output") or [{}])[0]
+        video = (hdmi.get("video") or {}).get("status") or {}
+        resolution = video.get("resolution") or {}
+        status = {
+            "active": bool(video.get("active")),
+            "width": resolution.get("width"), "height": resolution.get("height"),
+            "framerate": video.get("framerate"),
+            "colorspace": video.get("colorspace"),
+            "label": ("%sx%s" % (resolution.get("width"), resolution.get("height"))
+                      if video.get("active") else "No active video"),
+        }
+        if status["active"]:
+            return status, True
+        if time.time() >= deadline:
+            return status, False
+        time.sleep(interval)
+
+
+def _show_diagnostics(ip, name, audio):
+    """The whole chain, captured while it is still broken.
+
+    Called only when a fully verified show produced no picture, and before any
+    rollback, so the state that explains the failure still exists.
+    """
+    hdmi = (_mv_config(ip, "hdmi_output") or [{}])[0]
+    inputs = {str(i.get("name") or ""): i for i in _mv_config(ip, "ip_input")}
+    multiview = next((o for o in _mv_config(ip, "multiview")
+                      if str(o.get("name") or "") == name), {})
+    device = {d.get("ip"): d for d in _load_cache()}.get(ip, {})
+    record = (_multiview_meta_for(device) or {}).get(name) or {}
+
+    windows = []
+    for subframe in multiview.get("subframes") or []:
+        input_name = str(subframe.get("input") or "")
+        entry = inputs.get(input_name) or {}
+        stored = next((w for w in (record.get("windows") or [])
+                       if w.get("label") == str(subframe.get("name") or "")), {})
+        window = {
+            "subframe": subframe.get("name"),
+            "ip_input": input_name,
+            "ip_input_enabled": entry.get("enabled"),
+            "ip_input_address": (entry.get("multicast") or {}).get("address"),
+            "ip_input_port": entry.get("port"),
+            "packets": ((entry.get("status") or {}).get("packets")),
+            "subframe_input_active": ((subframe.get("video") or {}).get("input") or {}).get("active"),
+            "subframe_output_active": ((subframe.get("video") or {}).get("output") or {}).get("active"),
+            "source_ip": stored.get("source_ip"),
+        }
+        if stored.get("source_ip"):
+            _address, source = _encoder_state(stored["source_ip"])
+            encoders = {str(e.get("name") or ""): e for e in (source.get("vc2") or [])}
+            sessions = {str(s.get("name") or ""): s for s in (source.get("sessions") or [])}
+            encoder2 = encoders.get("vc2_encoder2") or {}
+            session2 = sessions.get("session2") or {}
+            window["source"] = {
+                "reachable": source.get("reachable"),
+                "encoder1_input": (encoders.get("vc2_encoder1") or {}).get("input"),
+                "encoder1_bitrate": (encoders.get("vc2_encoder1") or {}).get("bitrate"),
+                "encoder2_input": encoder2.get("input"),
+                "encoder2_bitrate": encoder2.get("bitrate"),
+                "encoder2_scaler": encoder2.get("scaler"),
+                "session2_encoder": (session2.get("video") or {}).get("encoder"),
+                "session2_enabled": (((session2.get("video") or {}).get("stream") or {})
+                                     .get("enabled")),
+                "session2_address": (((session2.get("video") or {}).get("stream") or {})
+                                     .get("destination_address")),
+                "session2_port": (((session2.get("video") or {}).get("stream") or {})
+                                  .get("destination_port")),
+                "session2_sap": (session2.get("sap") or {}).get("enabled"),
+                "hdmi_input_active": source.get("input_resolution") or "",
+            }
+        windows.append(window)
+
+    return {
+        "captured": time.time(),
+        "decoder": {
+            "ip": ip,
+            "video_input": (hdmi.get("video") or {}).get("input"),
+            "audio_input": (hdmi.get("audio") or {}).get("input"),
+            "aux_input": (hdmi.get("aux") or {}).get("input"),
+            "output_resolution": ((hdmi.get("video") or {}).get("output") or {}).get("resolution"),
+            "input_status": (hdmi.get("video") or {}).get("status"),
+            "output_status": (((hdmi.get("video") or {}).get("output") or {})
+                              .get("status")),
+            "sap_enabled": (hdmi.get("sap_input") or {}).get("enabled"),
+            "sap_session": (hdmi.get("sap_input") or {}).get("session"),
+            "video_wall": omni_multiview.video_wall_enabled(hdmi),
+            "fast_switching": omni_multiview.fast_switching_enabled(hdmi),
+            "multiview": {"name": multiview.get("name"),
+                          "width": multiview.get("width"),
+                          "height": multiview.get("height"),
+                          "subframes": len(multiview.get("subframes") or [])},
+            "pool": {n: {"enabled": (inputs.get(n) or {}).get("enabled"),
+                         "address": ((inputs.get(n) or {}).get("multicast") or {}).get("address"),
+                         "port": (inputs.get(n) or {}).get("port"),
+                         "packets": ((inputs.get(n) or {}).get("status") or {}).get("packets")}
+                     for n in omni_multiview.WINDOW_IP_INPUTS},
+        },
+        "audio": audio,
+        "windows": windows,
+    }
+
+
+@app.route("/api/multiview/switch", methods=["POST"])
+def api_multiview_switch():
+    """Change one window of the Multiview that is on the display, now.
+
+    An active Multiview is a switching surface, not a form. Dragging a source
+    onto a live window is the operation, and it is expected to take effect --
+    so this does the smallest verified transaction that gets there rather than
+    tearing the Multiview down and rebuilding it:
+
+        prepare that source's Encoder 2 and Session 2 if they need it
+        point the window's decoder input at the stream, or move the window to
+            the input that already carries it
+        rebind just that subframe
+        release a pool input nothing needs any more
+        follow the audio if the window that changed owns it
+        verify the window locks, and that the others still hold
+
+    Every other window is left exactly as it is. A change that succeeds becomes
+    the saved preset, because a display showing one thing while its own preset
+    restores another is a trap; a change that fails is rolled back and the
+    preset is left alone.
+    """
+    payload = request.get_json(silent=True) or {}
+    ip = str(payload.get("decoder") or payload.get("ip") or "").strip()
+    name = str(payload.get("name") or "").strip()
+    cell = str(payload.get("cell") or "").strip()
+    source_ip = str(payload.get("source") or "").strip()
+    if not ip or not name or not cell:
+        return jsonify({"ok": False,
+                        "error": "decoder, multiview name and window required"}), 400
+
+    state, error = _decoder_state(ip)
+    if state is None:
+        return jsonify({"ok": False, "error": error}), 502
+    target = next((o for o in state["multiview"]
+                   if str(o.get("name") or "") == name), None)
+    if target is None:
+        return jsonify({"ok": False, "error": f"{name} is not on this decoder"}), 404
+
+    hdmi = state["hdmi_output"] or {}
+    device = {d.get("ip"): d for d in _load_cache()}.get(ip, {})
+
+    # This endpoint exists for the Multiview that is on screen. An inactive one
+    # is edited and saved, which is a different operation with a different
+    # contract, and conflating them is what this phase set out to stop.
+    if str((hdmi.get("video") or {}).get("input") or "") != name:
+        return jsonify({"ok": False, "status": "NOT ACTIVE",
+                        "error": f"{name} is not on the display. Change it and "
+                                 f"save it, then show it."}), 409
+
+    blocked = omni_multiview.interlocks(device.get("model"), hdmi)
+    if blocked:
+        return jsonify({"ok": False, "status": "REFUSED", "interlocks": blocked,
+                        "error": " ".join(e["reason"] for e in blocked)}), 409
+
+    assignments, record = _saved_assignments(device, name)
+    if not record:
+        return jsonify({"ok": False,
+                        "error": f"OmniSuite has no record of {name}, so one of "
+                                 f"its windows cannot be switched."}), 409
+    if cell not in {w.get("cell") for w in (record.get("windows") or [])} \
+            and cell not in assignments:
+        layout = record.get("layout")
+        cells = [c[0] for c in omni_multiview.LAYOUTS.get(layout, {}).get("cells", ())]
+        if cell not in cells:
+            return jsonify({"ok": False,
+                            "error": f"{name} has no window called {cell}."}), 400
+
+    wanted = dict(assignments)
+    if source_ip:
+        wanted[cell] = source_ip
+    else:
+        wanted.pop(cell, None)
+
+    # Plan the whole Multiview as it would be after the change, so every rule --
+    # the scaler conflict, the two-window limit, the budgets, the pool -- is
+    # applied to the result rather than to the one window in isolation.
+    encoder_states = _gather_encoder_states(wanted.values())
+    after = omni_multiview.plan_multiview(
+        {"layout": record.get("layout"), "canvas": omni_multiview.ACTIVE_CANVAS,
+         "assignments": wanted, "name": record.get("friendly_name"),
+         "object_name": name, "update_existing": True,
+         "owned_inputs": _owned_pool_inputs(device, state)},
+        state, encoder_states, _known_multiviews(exclude_decoder_ip=ip),
+        managed=_managed_multiviews(
+            device, {str(o.get("name") or "") for o in (state.get("multiview") or [])}),
+        claimed_inputs=())
+    after["decoder"] = {"ip": ip, "hostname": state.get("hostname") or ip,
+                        "model": state.get("model") or ""}
+    if not after.get("ok"):
+        return jsonify({"ok": False, "status": "invalid", "plan": after,
+                        "error": "; ".join(after.get("errors") or [])}), 400
+    if after.get("conflicts"):
+        return jsonify({"ok": False, "status": "conflict", "plan": after,
+                        "error": "; ".join(after["conflicts"])}), 409
+
+    changed = next((w for w in after["windows"] if w["cell"] == cell), None)
+    if changed is None:
+        return jsonify({"ok": False, "error": f"{cell} is not a window of this "
+                                              f"layout."}), 400
+
+    # Everything the new configuration needs that the devices do not already
+    # hold, and nothing else.
+    #
+    # This used to keep only the changed source's mutations and the changed
+    # window's decoder input, on the assumption that a switch touches one
+    # window. It does not: taking a source off one window can un-share a stream,
+    # and the re-plan then moves a *different* window to another pool input.
+    # That input's mutation was dropped, so the subframe was rebound to an input
+    # left disabled and pointing at the old stream, and the window went black --
+    # measured on the bench, in the one switch of 36 that had to reshuffle.
+    #
+    # Filtering by "is this already true?" is still the smallest transaction,
+    # because a window nobody disturbed already matches and produces no write,
+    # and it does not depend on predicting which resources a re-plan will move.
+    required = {(w.get("ip_input") or {}).get("ip_input")
+                for w in after["windows"] if w.get("ip_input")}
+    activation = list(after.get("activation") or [])
+    rebind = _rebind_subframes(ip, name, after, state)
+    release, kept_pairs = _releasable_pool_inputs(ip, device, state, required)
+    kept = [{"ip_input": n, "reason": r} for n, r in kept_pairs]
+    audio = _show_audio_plan_from_plan(ip, after, state)
+    audio_moves = (audio.get("write_ip_input")
+                   or (audio.get("select")
+                       and audio["ip_input"] != (hdmi.get("audio") or {}).get("input")))
+
+    before_windows = {str(s.get("name") or ""):
+                      bool(((s.get("video") or {}).get("input") or {}).get("active"))
+                      for s in (target.get("subframes") or [])}
+
+    with _multiview_apply_lock:
+        snapshot = _snapshot_fields(
+            [e for e in (after.get("snapshot") or []) if e["device"] == source_ip]
+            + [{"device": ip, "node": "multiview", "name": name, "field": "*"}]
+            + [{"device": ip, "node": "ip_input", "name": n, "field": "*"}
+               for n in sorted(set(release) | required
+                               | ({audio["ip_input"]} if audio.get("write_ip_input")
+                                  else set()))
+               if n]
+            + ([{"device": ip, "node": "hdmi_output", "name": "hdmi_output1",
+                 "field": "*"}] if audio_moves else []))
+
+        mutations = list(activation)
+        if rebind:
+            mutations.append(rebind)
+        for target_input in release:
+            mutations.append({
+                "stage": omni_multiview.STAGE_IP_INPUT_DISABLE, "device": ip,
+                "node": "ip_input", "target": target_input,
+                "description": "Release %s, which this Multiview no longer uses"
+                               % target_input,
+                "config": {"name": target_input, "enabled": False}})
+        if audio.get("write_ip_input"):
+            mutations.append({
+                "stage": STAGE_AUDIO_INPUT, "device": ip, "node": "ip_input",
+                "target": audio["ip_input"],
+                "description": "Point %s at %s:%s for the main window's audio"
+                               % (audio["ip_input"], audio["address"], audio["port"]),
+                "config": {"name": audio["ip_input"], "enabled": True,
+                           "port": audio["port"],
+                           "multicast": {"address": audio["address"]}}})
+        if audio.get("select") and audio["ip_input"] != (hdmi.get("audio") or {}).get("input"):
+            mutations.append({
+                "stage": STAGE_AUDIO_SELECT, "device": ip, "node": "hdmi_output",
+                "target": "hdmi_output1",
+                "description": "Take the display's audio from %s (%s Session 1)"
+                               % (audio["ip_input"], audio.get("source_hostname")),
+                "config": {"name": "hdmi_output1",
+                           "audio": {"input": audio["ip_input"]}}})
+
+        order = {stage: index for index, stage
+                 in enumerate(omni_multiview.STAGE_ORDER)}
+        mutations.sort(key=lambda m: order.get(m["stage"], len(omni_multiview.STAGE_ORDER)))
+        # The same rule as Show: a field the device already holds is not written.
+        mutations, skipped, write_plan = _transaction_diff(mutations)
+
+        applied, steps = [], []
+        for mutation in mutations:
+            if mutation.get("method") in ("add_multiview", "del_multiview_subframe"):
+                ok, message = _mv_method(mutation["device"], mutation["method"],
+                                         dict(mutation["config"]))
+            else:
+                ok, message = _mv_set(mutation["device"], mutation["node"],
+                                      mutation["config"])
+            good, detail = (False, message)
+            if ok:
+                applied.append(mutation)
+                good, detail = _verify_mutation(mutation)
+            steps.append({"step": mutation["description"], "stage": mutation["stage"],
+                          "verified": good, "error": "" if good else detail})
+            if not good:
+                rollback = _restore_snapshot(snapshot, applied)
+                complete = all(e["verified"] for e in rollback) if rollback else True
+                log.warning("[MULTIVIEW] switching %s of %s on %s failed: %s",
+                            cell, name, ip, detail)
+                return jsonify({
+                    "ok": False,
+                    "status": "FAILED — ROLLED BACK" if complete
+                              else "FAILED — ROLLBACK INCOMPLETE",
+                    "error": detail, "cell": cell, "plan": after,
+                    "steps": steps, "rollback": rollback,
+                    # The preset is untouched, so the page can put the window
+                    # back to what is actually on the decoder.
+                    "restored_source": assignments.get(cell) or None}), 200
+
+        windows, unlocked = _await_window_lock(ip, name)
+
+    # The window that changed has to have taken; the ones that did not change
+    # have to still be showing what they were.
+    now = {w["subframe"]: w["active"] for w in windows}
+    regressions = [label for label, was in before_windows.items()
+                   if was and not now.get(label, False)
+                   and label != changed["label"]]
+
+    # A switch that lit the window it was asked about but darkened another has
+    # not succeeded. The operator changed one window and lost a different one,
+    # which is worse than the switch simply not working, so it is undone and
+    # reported rather than recorded as the new preset.
+    failed_window = changed["label"] in [w["subframe"] for w in unlocked]
+    if failed_window or regressions:
+        diagnostics = _show_diagnostics(ip, name, audio)
+        with _multiview_apply_lock:
+            rollback = _restore_snapshot(snapshot, applied)
+        complete = all(e["verified"] for e in rollback) if rollback else True
+        if failed_window:
+            log.warning("[MULTIVIEW] %s of %s on %s never locked", cell, name, ip)
+            explanation = ("The window was configured and verified, but never "
+                           "showed its stream. The change has been undone.")
+        else:
+            log.warning("[MULTIVIEW] switching %s of %s on %s darkened %s",
+                        cell, name, ip, ", ".join(regressions))
+            explanation = ("The window switched, but %s stopped showing video. "
+                           "The change has been undone."
+                           % ", ".join(regressions))
+        return jsonify({
+            "ok": False,
+            "status": "NO ACTIVE VIDEO — ROLLED BACK" if complete
+                      else "NO ACTIVE VIDEO — ROLLBACK INCOMPLETE",
+            "error": explanation,
+            "cell": cell, "plan": after, "steps": steps, "windows": windows,
+            "regressed_windows": regressions,
+            "diagnostics": diagnostics, "rollback": rollback,
+            "restored_source": assignments.get(cell) or None}), 200
+
+    # It took. The preset becomes what the display is actually doing.
+    _record_multiview_meta(device, name, {
+        "layout": after["layout"],
+        "friendly_name": after["friendly_name"],
+        "canvas": f"{after['canvas']['width']}x{after['canvas']['height']}",
+        "requested_canvas": "%sx%s" % (after["requested_canvas"]["width"],
+                                       after["requested_canvas"]["height"]),
+        "updated": time.time(),
+        "windows": [{
+            "cell": w["cell"], "label": w["label"],
+            "x": w["x"], "y": w["y"], "anchor": w["anchor"],
+            "width": w["width"], "height": w["height"],
+            "scaler_format": w["scaler_format"],
+            "encoder_index": w["encoder_index"], "session": w["session"],
+            "ip_input": (w.get("ip_input") or {}).get("ip_input"),
+            "source_ip": (w.get("source") or {}).get("ip"),
+            "source_hostname": (w.get("source") or {}).get("hostname"),
+            "source_model": (w.get("source") or {}).get("model"),
+            "multicast": (w.get("multicast") or {}).get("address"),
+            "multicast_port": (w.get("multicast") or {}).get("port"),
+            "is_main": w.get("is_main", False),
+        } for w in after["windows"] if w.get("source")],
+    })
+
+    status, settled = _await_input_status(ip)
+    log.info("[MULTIVIEW] %s of %s on %s is now %s (%d write(s) of %d planned; "
+             "%d of %d field(s) already correct)",
+             cell, name, ip, source_ip or "cleared", len(steps),
+             write_plan["planned_mutations"], write_plan["already_correct"],
+             write_plan["planned_fields"])
+    return jsonify({
+        "ok": True,
+        "status": "VERIFIED" if (settled and not unlocked and not regressions)
+                  else "VERIFIED — WINDOW NOT LOCKED",
+        "cell": cell, "source": source_ip or None,
+        "plan": after, "steps": steps,
+        "windows": windows, "unlocked_windows": unlocked,
+        "regressed_windows": regressions,
+        "released": release, "kept": kept, "audio": audio,
+        "writes": dict(write_plan, writes_performed=len(steps)),
+        "input_status": status,
+        "saved": True,
+    })
+
+
+def _remember_decoder_display(ip, video_input, audio_input=None):
+    """Record what a decoder is now displaying, for the A/V Matrix to read.
+
+    The matrix renders from the discovery cache. Without this, taking a decoder
+    into or out of Multiview would be invisible there until the next scan, and
+    the alternative -- polling the decoder so the matrix can notice -- is exactly
+    what the cache exists to avoid.
+    """
+    try:
+        units = _load_cache() or []
+        for unit in units:
+            if unit.get("ip") != ip:
+                continue
+            unit["video_input"] = video_input
+            if audio_input is not None:
+                unit["audio_input"] = audio_input
+            _save_cache(units)
+            if HAS_MATRIX and ip in omni_matrix_logic._decoders:
+                omni_matrix_logic._decoders[ip]["video_input"] = video_input
+                if audio_input is not None:
+                    omni_matrix_logic._decoders[ip]["audio_input"] = audio_input
+            return
+    except Exception as exc:
+        log.info("[MULTIVIEW] could not record the display state of %s: %s", ip, exc)
+
+
+def _exit_active_multiview(ip, name, state, fallback=""):
+    """Take the display off a Multiview and release what it was using.
+
+    This is NOT deletion. The saved object stays exactly where it is and can be
+    recalled later; what changes is that the decoder stops compositing it. The
+    A/V Matrix needs this when an operator routes a conventional source to a
+    decoder that happens to be showing a Multiview.
+
+    Returns (ok, steps, released, error).
+    """
+    hdmi = state["hdmi_output"] or {}
+    device = {d.get("ip"): d for d in _load_cache()}.get(ip, {})
+    owned_before = _owned_pool_inputs(device, state)
+
+    available = [i for i in ((hdmi.get("video") or {}).get("available_inputs") or [])
+                 if i and i != name]
+    if fallback and fallback not in available:
+        return False, [], [], "%s is not an available video input" % fallback
+    if not fallback:
+        fallback = next((i for i in available if i.startswith("ip_input")),
+                        available[0] if available else "")
+    if not fallback:
+        return False, [], [], (
+            "The display is on this Multiview and the decoder offers no other "
+            "video input to move it to.")
+
+    steps = []
+    ok, message = _mv_set(ip, "hdmi_output",
+                          {"name": "hdmi_output1", "video": {"input": fallback}})
+    good, detail = (False, message)
+    if ok:
+        good, detail = _verify_mutation({
+            "device": ip, "node": "hdmi_output", "target": "hdmi_output1",
+            "config": {"name": "hdmi_output1", "video": {"input": fallback}}})
+    steps.append({"step": "Move the display off %s to %s" % (name, fallback),
+                  "verified": good, "error": "" if good else detail})
+    if not good:
+        return False, steps, [], detail
+    _remember_decoder_display(ip, fallback)
+
+    # Release only what the configuration now on the display does not need,
+    # and only inputs OmniSuite put there -- established before the move, from
+    # the object that proves it configured them.
+    after, _error = _decoder_state(ip)
+    released = []
+    if after is not None:
+        release, _kept = _releasable_pool_inputs(ip, device, after, set(),
+                                                 owned=owned_before)
+        for target in release:
+            ok, message = _mv_set(ip, "ip_input",
+                                  {"name": target, "enabled": False})
+            verified = False
+            if ok:
+                verified, message = _verify_mutation({
+                    "device": ip, "node": "ip_input", "target": target,
+                    "config": {"name": target, "enabled": False}})
+            steps.append({"step": "Release %s" % target, "verified": verified,
+                          "error": "" if verified else message})
+            if verified:
+                released.append(target)
+    return True, steps, released, ""
+
+
+@app.route("/api/multiview/delete", methods=["POST"])
+def api_multiview_delete():
+    """Delete one saved Multiview, leaving every other one alone.
+
+    A decoder holds many saved Multiviews and only one is active, so deleting an
+    inactive one is purely a metadata-and-object removal: it must not disturb the
+    display or release a single input, because the inputs belong to whatever is
+    on screen, not to the object being removed.
+
+    Deleting the *active* one moves the output off it first, verified, and only
+    then releases the pool inputs -- and even then by asking what the
+    configuration now on the output still requires, never by replaying what the
+    deleted object happened to reference.
+
+    `del_multiview` is the only deletion mechanism the device has; `config_set`
+    omission and a `delete: true` flag are both accepted and silently ignored.
+    """
+    payload = request.get_json(silent=True) or {}
+    ip = str(payload.get("decoder") or payload.get("ip") or "").strip()
+    name = str(payload.get("name") or "").strip()
+    if not ip or not name:
+        return jsonify({"ok": False, "error": "decoder ip and multiview name required"}), 400
+
+    state, error = _decoder_state(ip)
+    if state is None:
+        return jsonify({"ok": False, "error": error}), 502
+    if not any(str(o.get("name") or "") == name for o in state["multiview"]):
+        return jsonify({"ok": False, "error": f"{name} is not on this decoder"}), 404
+
+    hdmi = state["hdmi_output"] or {}
+    was_active = str((hdmi.get("video") or {}).get("input") or "") == name
+    # Established while the object still exists, because it is the object that
+    # proves OmniSuite configured the inputs underneath it.
+    owned_before = _owned_pool_inputs(
+        {d.get("ip"): d for d in _load_cache()}.get(ip, {}), state)
+    steps = []
+    with _multiview_apply_lock:
+        if was_active:
+            # Never leave the output pointing at an object that is about to
+            # stop existing.
+            fallback = str(payload.get("fallback_input") or "").strip()
+            available = [i for i in ((hdmi.get("video") or {}).get("available_inputs") or [])
+                         if i and i != name]
+            if fallback and fallback not in available:
+                return jsonify({"ok": False,
+                                "error": f"{fallback} is not an available video input"}), 400
+            if not fallback:
+                fallback = next((i for i in available if i.startswith("ip_input")),
+                                available[0] if available else "")
+            if not fallback:
+                return jsonify({"ok": False, "error":
+                                "The output is on this Multiview and the decoder offers "
+                                "no other video input to fall back to."}), 409
+            ok, message = _mv_set(ip, "hdmi_output",
+                                  {"name": "hdmi_output1", "video": {"input": fallback}})
+            good = False
+            if ok:
+                good, message = _verify_mutation(
+                    {"device": ip, "node": "hdmi_output", "target": "hdmi_output1",
+                     "config": {"name": "hdmi_output1", "video": {"input": fallback}}})
+            steps.append({"step": f"Select {fallback} on the HDMI output",
+                          "verified": good, "error": "" if good else message})
+            if not good:
+                return jsonify({"ok": False, "status": "FAILED",
+                                "error": "Could not move the HDMI output off this "
+                                         "Multiview, so it was not deleted.",
+                                "steps": steps}), 200
+
+        ok, message = _mv_method(ip, "del_multiview", {"name": name})
+        remaining = [str(o.get("name") or "") for o in _mv_config(ip, "multiview")]
+        gone = name not in remaining
+        steps.append({"step": f"Delete {name}", "verified": ok and gone,
+                      "error": "" if (ok and gone) else (message or "the object is still present")})
+        if not (ok and gone):
+            return jsonify({"ok": False, "status": "FAILED", "steps": steps,
+                            "error": message or f"{name} is still present after deletion"}), 200
+
+    device = {d.get("ip"): d for d in _load_cache()}.get(ip, {})
+    _forget_multiview_meta(device, name)
+
+    # Cleanup is decided from what is on the output NOW. Deleting an inactive
+    # Multiview releases nothing: the enabled inputs belong to whatever is
+    # displayed, and a saved object never reserved them in the first place.
+    reclamation = {"reclaimed": [], "kept": [], "skipped": not was_active}
+    if was_active:
+        after = _decoder_state(ip)[0] or {}
+        reclaimed, kept = _releasable_pool_inputs(ip, device, after, required=(),
+                                                  owned=owned_before)
+        done = []
+        for target in reclaimed:
+            ok, message = _mv_set(ip, "ip_input", {"name": target, "enabled": False})
+            verified = False
+            if ok:
+                verified, message = _verify_mutation({
+                    "device": ip, "node": "ip_input", "target": target,
+                    "config": {"name": target, "enabled": False}})
+            done.append({"ip_input": target, "verified": verified,
+                         "error": "" if verified else message})
+            if not verified:
+                log.info("[MULTIVIEW] could not release %s on %s: %s", target, ip, message)
+        reclamation = {"reclaimed": done,
+                       "kept": [{"ip_input": n, "reason": r} for n, r in kept],
+                       "skipped": False}
+    log.info("[MULTIVIEW] %s deleted from %s (%s)", name, ip,
+             "was active" if was_active else "was not active")
+    # Shared encoder streams are deliberately left alone. Proving no other
+    # decoder still needs one is not possible from here, and a conservative
+    # leftover stream is cheaper than an outage somewhere else.
+    return jsonify({"ok": True, "status": "VERIFIED", "steps": steps,
+                    "was_active": was_active,
+                    "remaining": remaining, "reclamation": reclamation})
+
+
+# Restore Multiview metadata now that the helpers above are defined. The device
+# stores geometry only, so the layout an operator chose lives here and nowhere
+# else; without this a restart would show every Multiview as Custom.
+_load_multiview_meta()
+
 
 if __name__ == "__main__":
     main()

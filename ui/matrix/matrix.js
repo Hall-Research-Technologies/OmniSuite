@@ -330,6 +330,10 @@ function omniConfirm(options = {}) {
       <h3 class="confirm-title"></h3>
       <div class="confirm-message"></div>
       <div class="confirm-summary" style="display:none;"></div>
+      <label class="confirm-suppress" style="display:none;">
+        <input type="checkbox" class="confirm-suppress-box">
+        <span class="confirm-suppress-label"></span>
+      </label>
       <div class="confirm-actions">
         <button type="button" class="confirm-cancel">Cancel</button>
         <button type="button" class="confirm-ok">Continue</button>
@@ -359,6 +363,20 @@ function omniConfirm(options = {}) {
   }
   okBtn.textContent = options.confirmText || 'Continue';
   okBtn.classList.toggle('confirm-danger', !!options.danger);
+
+  // A caller that offers "do not show again" gets the checkbox back with the
+  // answer, so the preference is the caller's to store rather than something
+  // this dialog decides on its behalf.
+  const suppressWrap = backdrop.querySelector('.confirm-suppress');
+  const suppressBox = backdrop.querySelector('.confirm-suppress-box');
+  const suppressLabel = backdrop.querySelector('.confirm-suppress-label');
+  if (options.suppressLabel) {
+    suppressLabel.textContent = options.suppressLabel;
+    suppressBox.checked = false;
+    suppressWrap.style.display = '';
+  } else {
+    suppressWrap.style.display = 'none';
+  }
   backdrop.classList.remove('hidden');
 
   return new Promise(resolve => {
@@ -370,16 +388,68 @@ function omniConfirm(options = {}) {
       document.removeEventListener('keydown', onKeydown);
       resolve(result);
     };
-    const onOk = () => cleanup(true);
-    const onCancel = () => cleanup(false);
-    const onBackdrop = (event) => { if (event.target === backdrop) cleanup(false); };
-    const onKeydown = (event) => { if (event.key === 'Escape') cleanup(false); };
+    const onOk = () => cleanup(options.suppressLabel
+      ? {ok: true, suppress: !!suppressBox.checked} : true);
+    const onCancel = () => cleanup(options.suppressLabel
+      ? {ok: false, suppress: false} : false);
+    const dismissed = () => (options.suppressLabel
+      ? {ok: false, suppress: false} : false);
+    const onBackdrop = (event) => { if (event.target === backdrop) cleanup(dismissed()); };
+    const onKeydown = (event) => { if (event.key === 'Escape') cleanup(dismissed()); };
     okBtn.addEventListener('click', onOk);
     cancelBtn.addEventListener('click', onCancel);
     backdrop.addEventListener('click', onBackdrop);
     document.addEventListener('keydown', onKeydown);
     okBtn.focus();
   });
+}
+
+// ---- leaving Multiview for a conventional route ---------------------------
+//
+// Session-scoped so a page refresh and a trip to another page do not ask again,
+// and a genuinely new browser session does. The permanent preference uses
+// localStorage, the same idiom the Multiview notice uses, and outranks it.
+const MV_ROUTE_SESSION_KEY = 'matrix_multiview_exit_acknowledged';
+const MV_ROUTE_FOREVER_KEY = 'matrix_multiview_exit_suppressed';
+
+function multiviewWarningSuppressed(){
+  try {
+    if (localStorage.getItem(MV_ROUTE_FOREVER_KEY) === 'true') return true;
+    return sessionStorage.getItem(MV_ROUTE_SESSION_KEY) === 'true';
+  } catch (err) {
+    return false;              // storage refused: ask, rather than assume
+  }
+}
+
+function rememberMultiviewWarning(forever){
+  try {
+    sessionStorage.setItem(MV_ROUTE_SESSION_KEY, 'true');
+    if (forever) localStorage.setItem(MV_ROUTE_FOREVER_KEY, 'true');
+  } catch (err) { /* not fatal */ }
+}
+
+// Returns true when the route may proceed. Nothing is written to any device
+// before this resolves.
+async function confirmMultiviewExit(dec, multiviewName){
+  if (multiviewWarningSuppressed()) return true;
+  const who = dec.host ? `${dec.host} (${dec.ip})` : dec.ip;
+  const answer = await omniConfirm({
+    title: 'Multiview is active on this decoder',
+    message: `Completing this route will exit Multiview on ${who} and replace `
+      + 'the Multiview display with the selected A/V route. The saved Multiview '
+      + 'is kept and can be shown again later.',
+    summary: [
+      {label: 'Decoder', value: who},
+      {label: 'Currently showing', value: multiviewName},
+      {label: 'After this route', value: 'the source you selected'},
+      {label: 'Saved Multiview', value: 'kept, not deleted'},
+    ],
+    confirmText: 'Continue',
+    suppressLabel: 'Do not show this again',
+  });
+  const ok = answer === true || (answer && answer.ok);
+  if (ok) rememberMultiviewWarning(!!(answer && answer.suppress));
+  return !!ok;
 }
 
 // ---- IP sort helpers ----
@@ -487,7 +557,20 @@ function stopConfigImportPoll(ip) {
   configImportPollTimers.delete(ip);
 }
 
+// ---- decoders that are compositing a Multiview ----------------------------
+//
+// The server derives this from the decoder's current HDMI video input, which
+// the ordinary scan already reads -- a saved Multiview, a remembered selection
+// or a piece of metadata proves nothing about what is on screen.
+function decoderMultiview(dec){
+  return (dec && dec.multiview_active) ? (dec.multiview_name || 'Multiview') : null;
+}
+
 function videoMatchesEncoder(dec, enc){
+  // A decoder showing a Multiview is not showing any single encoder. Its
+  // ip_input1 may still hold whatever it last watched, and drawing a crosspoint
+  // from that would describe a picture nobody is looking at.
+  if (decoderMultiview(dec)) return false;
   return (dec.ip1_addr === enc.v_mcast) && (Number(dec.ip1_port) === Number(enc.v_port));
 }
 
@@ -557,7 +640,15 @@ function enqueueRouteWrite(decoderIp, encoderIp, mode) {
   const prior = routeQueues.get(decoderIp) || Promise.resolve();
   const run = prior.catch(()=>{}).then(async () => {
     if(routeLatest.get(decoderIp) !== token) return {ok: true, skipped: true, decoderIp};
-    const res = await postJSON('/api/route', {decoder: decoderIp, encoder: encoderIp, mode});
+    // `exit_multiview` is the operator's answer travelling with the request.
+    // Without it the server refuses to take a decoder out of Multiview, so a
+    // route can never silently change what is on a display.
+    const target = (lastState?._rawDecoders || lastState?.decoders || [])
+      .find(d => d.ip === decoderIp);
+    const res = await postJSON('/api/route', {
+      decoder: decoderIp, encoder: encoderIp, mode,
+      exit_multiview: !!decoderMultiview(target),
+    });
     if(routeLatest.get(decoderIp) !== token) return {ok: true, skipped: true, decoderIp};
     routeLatest.delete(decoderIp);
     if(res.decoder && lastState && Array.isArray(lastState.decoders)) {
@@ -2306,7 +2397,20 @@ function render(s){
                 </span>
               </td>`;
     }).join('');
-    return `<tr><td style="width:28px;min-width:28px;max-width:28px;padding:0 1px;"><input type="checkbox" class="group-checkbox" data-dec-ip="${d.ip}" style="width:14px;height:14px;vertical-align:middle;" ${checkedGroup}></td><th class="row-head"><a href="http://${d.ip}" target="_blank" style="color:inherit;text-decoration:none;cursor:pointer;" title="Open ${d.ip} in new tab">${d.ip}</a><br/><small>${escAttr(d.host || '')}</small></th>${cells}</tr>`;
+    // A decoder compositing a Multiview says so on its own row, because no
+    // crosspoint on that row describes the picture.
+    const mvName = decoderMultiview(d);
+    const mvTitle = mvName
+      ? `Multiview is currently active on this decoder.\n\n`
+        + `Showing: ${mvName}\n\n`
+        + `Routing a normal A/V source to this decoder will exit Multiview and `
+        + `display the requested route. The saved Multiview is kept and can be `
+        + `shown again later.`
+      : '';
+    const mvBadge = mvName
+      ? `<br/><span class="mv-badge" title="${escAttr(mvTitle)}">MULTIVIEW</span>`
+      : '';
+    return `<tr class="${mvName ? 'dec-multiview' : ''}"><td style="width:28px;min-width:28px;max-width:28px;padding:0 1px;"><input type="checkbox" class="group-checkbox" data-dec-ip="${d.ip}" style="width:14px;height:14px;vertical-align:middle;" ${checkedGroup}></td><th class="row-head"${mvName ? ` title="${escAttr(mvTitle)}"` : ''}><a href="http://${d.ip}" target="_blank" style="color:inherit;text-decoration:none;cursor:pointer;" title="Open ${d.ip} in new tab">${d.ip}</a><br/><small>${escAttr(d.host || '')}</small>${mvBadge}</th>${cells}</tr>`;
   }).join('');
   t.innerHTML = head + rows;
 
@@ -2328,6 +2432,20 @@ function render(s){
         toast(routeCodecMismatchMessage(encoderUnit, decoderUnit), false);
         e.stopPropagation();
         return;
+      }
+
+      // A decoder that is compositing a Multiview has to leave it before it can
+      // show a routed source. Ask once per session, before anything is written.
+      const decodersNow = lastState?._rawDecoders || lastState?.decoders || [];
+      const mvTargets = [decoderUnit].filter(u => u && decoderMultiview(u));
+      if (mvTargets.length) {
+        const proceed = await confirmMultiviewExit(
+          decoderUnit, decoderMultiview(decoderUnit));
+        if (!proceed) {
+          // Cancel writes nothing at all.
+          e.stopPropagation();
+          return;
+        }
       }
 
       // If any group checkboxes are checked, do group routing

@@ -71,6 +71,14 @@ def _fenced_ws_send_recv(url, payload, timeout=None, *args, **kwargs):
         _WS_WRITES.append((url, fields.get("config_set")))
         raise AssertionError(
             f"a test tried to write {fields.get('config_set')!r} to {url}")
+    # `method` is the OmniStream API's third verb and it is a write: add_logo,
+    # delete_logo, add_multiview and del_multiview all travel this way and none
+    # of them carries a `config_set` key. Fencing only `config_set` left every
+    # method call able to reach a real device.
+    if "method" in fields:
+        _WS_WRITES.append((url, fields.get("method")))
+        raise AssertionError(
+            f"a test tried to call method {fields.get('method')!r} on {url}")
     handler = _WS_ANSWER["handler"]
     answer = handler(url, fields.get("config_get")) if handler else None
     if answer is None:
@@ -381,7 +389,7 @@ class ServerTestBase(unittest.TestCase):
             del _WS_WRITES[:]
             raise AssertionError(
                 "this test tried to write configuration to physical hardware: "
-                + ", ".join(f"{url} config_set={name!r}" for url, name in attempts))
+                + ", ".join(f"{url} wrote {name!r}" for url, name in attempts))
 
     # The parent facts an integrated endpoint is derived from. These used to
     # arrive from a real usb_icron read of the bench, which is why fencing the
@@ -3117,6 +3125,69 @@ class HardwareIsolationTests(ServerTestBase):
     devices. Nine mutating endpoints had no test at all, so nothing would have
     noticed when one of them reached a live unit from a unit test.
     """
+
+    def test_the_fence_refuses_a_method_call_not_only_a_config_set(self):
+        """`method` is the API's third verb, and it writes.
+
+        add_logo, delete_logo, add_multiview and del_multiview all travel as
+        `method` and none of them carries a `config_set` key, so a fence that
+        watched only `config_set` let every one of them through to whatever
+        address the fixture named.
+        """
+        with self.assertRaises(AssertionError):
+            _fenced_ws_send_recv("ws://192.0.2.1:80/wsapp/",
+                                 {"method": {"del_multiview": {"name": "x"}}})
+        with self.assertRaises(AssertionError):
+            _fenced_ws_send_recv("ws://192.0.2.1:80/wsapp/",
+                                 {"method": {"add_multiview": {"name": "multiviewX"}}})
+        # The subframe verb is the one a live switch uses, and it is the one an
+        # `add_multiview`-shaped fence would be least likely to have thought of.
+        with self.assertRaises(AssertionError):
+            _fenced_ws_send_recv(
+                "ws://192.0.2.1:80/wsapp/",
+                {"method": {"del_multiview_subframe": {
+                    "name": "multiviewX", "subframe": "top_left (960x544)"}}})
+        # Every attempt was recorded, which is the other half of the guarantee.
+        self.assertEqual(len(_WS_WRITES), 3)
+        # Cleared because this test trips the fence deliberately, and cleanup
+        # fails any test that left a recorded write behind.
+        del _WS_WRITES[:]
+
+    def test_no_multiview_verb_reaches_a_device_whatever_the_endpoint(self):
+        """The fence is on the verb, so a new endpoint inherits it for free.
+
+        Phase 7 added a live-switch endpoint that writes encoder scalers,
+        decoder inputs and subframes. It reaches hardware through the same two
+        verbs as everything before it, and this asserts that -- rather than
+        asserting that one endpoint happens to be stubbed today.
+        """
+        verbs = [
+            {"config_set": {"name": "vc2_encoder2", "config": []}},
+            {"config_set": {"name": "ip_input", "config": []}},
+            {"config_set": {"name": "hdmi_output", "config": []}},
+            {"method": {"add_multiview_subframe": {"name": "multiviewX"}}},
+            {"method": {"del_multiview_subframe": {"name": "multiviewX"}}},
+            {"method": {"del_multiview": {"name": "multiviewX"}}},
+        ]
+        for payload in verbs:
+            with self.subTest(payload=payload):
+                with self.assertRaises(AssertionError):
+                    _fenced_ws_send_recv("ws://192.0.2.1:80/wsapp/", payload)
+        self.assertEqual(len(_WS_WRITES), len(verbs))
+        del _WS_WRITES[:]
+
+    def test_the_fence_still_refuses_a_config_set(self):
+        with self.assertRaises(AssertionError):
+            _fenced_ws_send_recv("ws://192.0.2.1:80/wsapp/",
+                                 {"config_set": {"name": "multiview", "config": []}})
+        self.assertEqual(len(_WS_WRITES), 1)
+        del _WS_WRITES[:]
+
+    def test_the_fence_still_allows_a_read(self):
+        # Reads are a normal part of these tests; only writes are refused.
+        with self.assertRaises(OSError):
+            _fenced_ws_send_recv("ws://192.0.2.1:80/wsapp/",
+                                 {"config_get": "multiview"})
 
     def test_github_is_fenced_for_the_whole_process(self):
         """Per-test stubbing is not enough on its own.

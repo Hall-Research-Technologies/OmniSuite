@@ -340,3 +340,25 @@ body.compact .mirror-scroll::-webkit-scrollbar{ height:10px; }
   .encoder-output-body,.encoder-output-two,.encoder-output-grid{grid-template-columns:1fr}
   .encoder-thumbnail-preview-row{grid-template-columns:1fr}
 }
+
+/* ---- a decoder that is compositing a Multiview ----
+ * No crosspoint on that row describes what is on the display, so the row says
+ * what is, and says it in the matrix's own vocabulary rather than a colour the
+ * operator has to learn. */
+.mv-badge{
+  display:inline-block; margin-top:3px; padding:1px 5px;
+  font-size:9px; font-weight:700; letter-spacing:.06em;
+  border-radius:4px; white-space:nowrap;
+  color:var(--accent); border:1px solid var(--accent);
+  background:color-mix(in srgb, var(--accent) 12%, transparent);
+}
+tr.dec-multiview .row-head{cursor:help;}
+/* The video radios on that row are all unselected; dim them so the row reads
+ * as "not routed here" rather than "we forgot to draw one". */
+tr.dec-multiview .radio-wrap input[type="radio"]{opacity:.35;}
+
+/* The optional "do not show again" line in a confirmation. */
+.confirm-suppress{
+  display:flex; align-items:center; gap:8px;
+  margin-top:10px; font-size:12px; color:var(--muted);
+}

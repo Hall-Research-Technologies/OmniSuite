@@ -1,0 +1,376 @@
+/* Multiview workspace.
+ *
+ * Every colour here is a semantic token set by the active preset. Nothing names
+ * a hue, so all ten palettes and both appearance modes are covered by
+ * construction and a preset change reaches this page like any other.
+ */
+
+.mv-toolbar{
+  display:flex; flex-wrap:wrap; align-items:flex-end; gap:14px;
+  padding:12px 16px; border-bottom:1px solid var(--border); background:var(--card);
+}
+.mv-field{display:flex; flex-direction:column; gap:5px; min-width:190px;}
+.mv-field[hidden]{display:none;}
+.mv-field-action{min-width:auto;}
+.mv-field label{
+  font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);
+  line-height:16px; height:16px; white-space:nowrap;
+}
+
+/* One control family. Every control in the toolbar -- select, text input and
+ * button alike -- resolves to the same box, so the row reads as one row instead
+ * of three heights. Buttons are included deliberately: a button styled by the
+ * shared sheet sits 3-4px taller than a select, which is exactly the kind of
+ * difference that looks like a mistake. */
+.mv-control{
+  box-sizing:border-box;
+  height:34px; min-height:34px; line-height:20px;
+  padding:6px 10px; border-radius:6px;
+  border:1px solid var(--border); background:var(--panel-2); color:var(--text);
+  font-family:inherit; font-size:13px; font-weight:400;
+  margin:0; vertical-align:middle;
+}
+select.mv-control{padding-right:8px;}
+button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
+.mv-control:focus-visible{outline:2px solid var(--focus-ring); outline-offset:2px;}
+.mv-control:disabled{opacity:.55; cursor:not-allowed;}
+/* A read-only control is not a disabled one: it still reads at full contrast,
+ * it simply cannot be changed here. */
+.mv-control[data-readonly="true"]{
+  opacity:1; cursor:default; background:var(--card); color:var(--muted);
+}
+.mv-toolbar-spacer{flex:1 1 auto;}
+
+/* The banner carries loading, unreachable and unsupported -- three different
+ * conditions that must never read as "no Multiviews configured". */
+.mv-banner{
+  margin:0; padding:10px 16px; font-size:13px; line-height:1.45;
+  border-bottom:1px solid var(--border); background:var(--panel-2); color:var(--text);
+}
+.mv-banner[hidden]{display:none;}
+.mv-banner.info{border-left:3px solid var(--state-info);}
+.mv-banner.warn{border-left:3px solid var(--state-warning);}
+.mv-banner.error{border-left:3px solid var(--state-error);}
+.mv-banner.muted{color:var(--muted);}
+
+.mv-body{
+  display:grid; grid-template-columns:minmax(240px,300px) 1fr; gap:16px;
+  padding:16px; align-items:start;
+}
+@media (max-width:980px){ .mv-body{grid-template-columns:1fr;} }
+
+.mv-panel{
+  background:var(--card); border:1px solid var(--border); border-radius:10px;
+  padding:12px; color:var(--text);
+}
+.mv-panel h2{
+  margin:0 0 10px; font-size:12px; text-transform:uppercase; letter-spacing:.07em;
+  color:var(--muted); font-weight:600;
+}
+
+/* ---- source tiles ---- */
+.mv-sources{display:flex; flex-direction:column; gap:8px; max-height:60vh; overflow:auto;}
+.mv-source{
+  border:1px solid var(--border); border-radius:8px; padding:8px 10px;
+  background:var(--panel-2); cursor:grab; user-select:none;
+}
+.mv-source:hover{background:var(--selected-tint);}
+.mv-source:focus-visible{outline:2px solid var(--focus-ring); outline-offset:2px;}
+.mv-source.dragging{opacity:.5; cursor:grabbing;}
+/* A source discovered from the cache can still fail to answer. It stays in the
+ * list -- it may already be feeding an input -- but it says so. */
+.mv-source.unreachable{border-color:var(--state-warning);}
+.mv-source-warning{
+  font-size:11px; color:var(--state-warning); margin-top:3px; font-weight:500;
+}
+.mv-source-name{font-weight:600; font-size:13px; line-height:1.25;}
+.mv-source-meta{font-size:11px; color:var(--muted); margin-top:2px; line-height:1.4;}
+.mv-source-streams{font-size:11px; color:var(--muted); margin-top:3px;}
+.mv-empty{color:var(--muted); font-size:12px; padding:6px 2px;}
+
+/* ---- canvas preview ----
+ * The stage keeps the selected canvas's aspect ratio, and every window is
+ * positioned as a percentage of the same geometry the server will write, so the
+ * preview cannot drift away from the hardware. */
+.mv-stage-wrap{display:flex; flex-direction:column; gap:8px;}
+.mv-stage{
+  position:relative; width:100%; background:var(--bg);
+  border:1px solid var(--border); border-radius:8px; overflow:hidden;
+}
+.mv-window{
+  position:absolute; box-sizing:border-box;
+  border:2px dashed var(--border); border-radius:6px;
+  background:var(--panel-2);
+  display:flex; flex-direction:column; justify-content:center; align-items:center;
+  gap:2px; padding:6px; text-align:center; overflow:hidden;
+  transition:background .14s, border-color .14s;
+}
+.mv-window.assigned{
+  border-style:solid; border-color:var(--accent);
+  background:var(--selected-tint-strong);
+}
+.mv-window.drop-target{
+  border-color:var(--accent);
+  background:color-mix(in srgb, var(--state-selection) 34%, transparent);
+}
+.mv-window.conflict{border-color:var(--state-error);}
+.mv-window-index{
+  position:absolute; top:4px; left:6px; font-size:10px; font-weight:700;
+  color:var(--muted); letter-spacing:.05em;
+}
+.mv-window-clear{
+  position:absolute; top:3px; right:4px; width:20px; height:20px; line-height:1;
+  border:1px solid var(--border); border-radius:5px; background:var(--card);
+  color:var(--muted); font-size:13px; cursor:pointer; padding:0;
+}
+.mv-window-clear:hover{background:var(--selected-tint); color:var(--text);}
+.mv-window-clear:focus-visible{outline:2px solid var(--focus-ring); outline-offset:1px;}
+.mv-window-title{font-size:13px; font-weight:600; word-break:break-word;}
+.mv-window-sub{font-size:11px; color:var(--muted); line-height:1.35;}
+.mv-window-tag{
+  font-size:10px; padding:1px 6px; border-radius:99px;
+  border:1px solid var(--border); color:var(--muted);
+}
+.mv-window.assigned .mv-window-tag{border-color:var(--accent); color:var(--text);}
+.mv-window-hint{font-size:11px; color:var(--muted);}
+
+.mv-stage-caption{
+  display:flex; flex-wrap:wrap; gap:14px; font-size:12px; color:var(--muted);
+}
+.mv-stage-caption strong{color:var(--text); font-weight:600;}
+
+/* ---- information / warnings ---- */
+.mv-notes{display:flex; flex-direction:column; gap:6px; margin-top:10px;}
+.mv-note{
+  font-size:12px; line-height:1.45; padding:8px 10px; border-radius:7px;
+  border:1px solid var(--border); background:var(--panel-2);
+}
+/* Advisory is not an error: it gets its own semantic state rather than
+ * borrowing the danger treatment. */
+.mv-note.info{border-left:3px solid var(--state-info);}
+.mv-note.warn{border-left:3px solid var(--state-warning);}
+.mv-note.error{border-left:3px solid var(--state-error);}
+.mv-note.ok{border-left:3px solid var(--state-success);}
+
+.mv-table{width:100%; border-collapse:collapse; font-size:12px; margin-top:4px;}
+.mv-table th,.mv-table td{
+  text-align:left; padding:5px 8px; border-bottom:1px solid var(--border);
+  white-space:nowrap;
+}
+.mv-table th{color:var(--muted); font-weight:600; font-size:11px;
+  text-transform:uppercase; letter-spacing:.05em;}
+.mv-table td.mv-wrap{white-space:normal;}
+
+/* Pinned to the bottom of the viewport, so a long Configuration panel can
+ * never push the primary action out of sight. */
+.mv-actions{
+  position:sticky; bottom:0; z-index:40;
+  display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  padding:12px 16px; border-top:1px solid var(--border); background:var(--card);
+  box-shadow:0 -6px 18px color-mix(in srgb, var(--bg) 55%, transparent);
+}
+/* Delete keeps its distance from Save, so a mis-aimed click cannot destroy
+ * what the operator was trying to keep. */
+.mv-actions .btn.danger{margin-left:18px;}
+.mv-reason{font-size:12px; color:var(--muted); line-height:1.4;}
+.mv-reason.blocking{color:var(--state-warning);}
+.mv-status{font-size:12px; color:var(--muted);}
+.mv-status.ok{color:var(--state-success);}
+.mv-status.bad{color:var(--state-error);}
+
+.mv-existing{display:flex; flex-direction:column; gap:8px;}
+.mv-existing-item{
+  border:1px solid var(--border); border-radius:8px; padding:8px 10px;
+  background:var(--panel-2); font-size:12px;
+}
+.mv-existing-item.current{border-color:var(--accent); background:var(--selected-tint);}
+.mv-badge{
+  display:inline-block; font-size:10px; padding:1px 6px; border-radius:99px;
+  border:1px solid var(--border); color:var(--muted); margin-left:6px;
+}
+.mv-badge.on-output{border-color:var(--state-success); color:var(--state-success);}
+.mv-badge.custom{border-color:var(--state-warning); color:var(--state-warning);}
+
+.mv-detail{margin-top:10px;}
+.mv-detail summary{cursor:pointer; font-size:12px; color:var(--muted);}
+.mv-detail summary:focus-visible{outline:2px solid var(--focus-ring); outline-offset:2px;}
+.mv-detail pre{
+  margin:8px 0 0; padding:10px; border-radius:7px; background:var(--panel-2);
+  border:1px solid var(--border); font-size:11px; overflow:auto; max-height:300px;
+  color:var(--text); white-space:pre-wrap; word-break:break-word;
+}
+
+/* The action bar shares the same control family as the toolbar. */
+.mv-actions[hidden]{display:none;}
+.mv-actions-spacer{flex:1 1 auto;}
+.mv-shown{
+  font-size:12px; color:var(--state-success); display:inline-flex; align-items:center;
+  gap:6px;
+}
+.mv-shown[hidden]{display:none;}
+.mv-shown::before{
+  content:""; width:8px; height:8px; border-radius:50%;
+  background:var(--state-success); flex:0 0 auto;
+}
+.mv-shown.not-shown{color:var(--muted);}
+.mv-shown.not-shown::before{background:var(--muted);}
+.mv-body[hidden]{display:none;}
+
+.mv-existing-item.shown{border-color:var(--state-success);}
+
+/* ---------------------------------------------------------------- Phase 5 */
+/* The canvas is fixed, so it is stated rather than chosen. A control that can
+   only hold one value is not a choice; it is a label wearing a select's box. */
+.mv-canvas-note{font-size:12px;font-weight:500;color:var(--muted);margin-left:8px}
+
+/* The window that owns the display's audio says so where the source is named,
+   because nothing else on the page answers "where does the sound come from". */
+.mv-window-audio{font-size:11px;color:var(--muted);margin-top:2px}
+
+.mv-summary{font-size:12px;color:var(--muted);margin-top:10px}
+
+/* Engineering detail sits below the operator's view and stays closed. */
+#mv_engineering{margin-top:12px}
+#mv_engineering > summary{cursor:pointer;font-size:12px;color:var(--muted)}
+.mv-detail-head{font-size:12px;font-weight:600;margin:10px 0 4px}
+
+/* ---- live vs preset ----
+ * Phase 7 gave the canvas two meanings: on an inactive Multiview a drop edits a
+ * saved preset, and on the active one it changes what is on the display now.
+ * Nothing about the geometry distinguishes them, so the difference is carried
+ * by a banner that states it in words and a border that is visible from across
+ * a rack room -- never by which buttons happen to be enabled. */
+.mv-canvas-mode{
+  margin:0 0 10px; padding:7px 10px; border-radius:6px;
+  font-size:12px; font-weight:500; line-height:1.4;
+  color:var(--muted); background:var(--panel-2);
+  border:1px solid var(--border);
+}
+.mv-canvas-mode.live{
+  color:var(--text); font-weight:600;
+  border-color:var(--state-error);
+  background:color-mix(in srgb, var(--state-error) 14%, transparent);
+}
+.mv-stage.live{
+  border-color:var(--state-error); border-width:2px;
+  box-shadow:0 0 0 3px color-mix(in srgb, var(--state-error) 18%, transparent);
+}
+
+/* A window's health is what the decoder reports, not what was asked for:
+ * `live` is locked and showing, `no signal` is subscribed with nothing
+ * arriving, and the two must not look alike. */
+.mv-window.health-no-signal{border-color:var(--state-warning); border-style:solid;}
+.mv-window.health-no-signal .mv-window-tag{border-color:var(--state-warning);}
+
+/* An encoder that is merely missing its Session 2 multicast is a source the
+ * operator can fix, so it is shown and explained rather than hidden. It cannot
+ * be dragged until it is fixed, and it is dimmed to say so. */
+.mv-source.needs-work{
+  border-color:var(--state-warning); border-style:dashed;
+  cursor:not-allowed; opacity:.85;
+}
+.mv-source.needs-work:hover{background:var(--panel-2);}
+
+/* ---- source preview ----
+ * A read-only identification aid: hover a source and see what is on it before
+ * deciding where it goes. Every colour is a semantic token, so it follows the
+ * active preset and both light and dark without a theme of its own. */
+.mv-preview{
+  position:fixed; z-index:1200; width:340px; max-width:min(44vw, 340px);
+  box-sizing:border-box; padding:10px;
+  background:var(--card); color:var(--text);
+  border:1px solid var(--border); border-radius:10px;
+  box-shadow:0 10px 28px color-mix(in srgb, var(--bg) 62%, transparent);
+  pointer-events:none;           /* never intercepts a drag or a drop */
+}
+.mv-preview[hidden]{display:none;}
+.mv-preview-name{font-size:13px; font-weight:600; line-height:1.25;}
+.mv-preview-meta{font-size:11px; color:var(--muted); margin-top:2px;}
+/* 16:9, so the shape of the card does not jump between a picture and a
+ * message, and the picture is the dominant element either way. */
+.mv-preview-frame{
+  margin-top:8px; aspect-ratio:16 / 9; width:100%;
+  background:var(--bg); border:1px solid var(--border); border-radius:6px;
+  overflow:hidden; display:flex; align-items:center; justify-content:center;
+  flex-direction:column; gap:4px;
+}
+.mv-preview-frame img{width:100%; height:100%; object-fit:contain; display:block;}
+.mv-preview-note{font-size:12px; color:var(--muted); font-weight:500;}
+.mv-preview-why{font-size:11px; color:var(--muted); padding:0 10px;
+  text-align:center; line-height:1.35;}
+.mv-preview-streams{
+  display:flex; justify-content:space-between; gap:10px;
+  margin-top:8px; font-size:11px; color:var(--muted);
+}
+.mv-preview-warning{
+  margin-top:6px; font-size:11px; font-weight:500; color:var(--state-warning);
+}
+
+/* ---- the picture in the window ----
+ * A window showing the encoder's own thumbnail is a picture of the display
+ * rather than a diagram of it. The image sits behind the text; the text sits on
+ * a scrim so it stays readable over a night sky or a white slide alike. */
+.mv-window-shot{
+  position:absolute; inset:0; width:100%; height:100%;
+  object-fit:cover;            /* fill an odd window shape without distorting */
+  display:block; z-index:0;
+}
+.mv-window.has-shot{border-style:solid; background:var(--bg);}
+.mv-window-overlay{
+  position:relative; z-index:1;
+  display:flex; flex-direction:column; align-items:center; gap:2px;
+  max-width:100%; padding:4px 6px; border-radius:6px; text-align:center;
+}
+/* Only scrim the text when there is video under it. */
+.mv-window.has-shot .mv-window-overlay{
+  background:color-mix(in srgb, var(--bg) 72%, transparent);
+  backdrop-filter:blur(2px);
+}
+.mv-window.has-shot .mv-window-index{
+  background:color-mix(in srgb, var(--bg) 72%, transparent);
+  padding:1px 4px; border-radius:4px; z-index:1;
+}
+.mv-window.has-shot .mv-window-clear{z-index:2;}
+.mv-window-preview-note{font-size:10px; color:var(--muted); margin-top:2px;}
+.mv-window-state{
+  font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
+  margin-top:3px; color:var(--muted);
+}
+.mv-window-live{color:var(--state-ok, var(--accent));}
+.mv-window.switching{border-color:var(--accent); border-style:solid;}
+.mv-window.switching .mv-window-state{color:var(--accent);}
+
+/* ---- operator notice ----
+ * Shown once per application version, before the page is used. */
+.mv-notice-backdrop{
+  position:fixed; inset:0; z-index:1400;
+  display:flex; align-items:center; justify-content:center; padding:24px;
+  background:color-mix(in srgb, var(--bg) 78%, transparent);
+}
+.mv-notice-backdrop[hidden]{display:none;}
+.mv-notice{
+  width:min(720px, 100%); max-height:min(82vh, 820px);
+  display:flex; flex-direction:column; gap:12px;
+  background:var(--card); color:var(--text);
+  border:1px solid var(--border); border-radius:12px; padding:20px;
+  box-shadow:0 18px 48px color-mix(in srgb, var(--bg) 62%, transparent);
+}
+.mv-notice h2{margin:0; font-size:17px;}
+.mv-notice h3{margin:14px 0 6px; font-size:13px; font-weight:600;}
+.mv-notice-body{overflow:auto; font-size:13px; line-height:1.5;}
+.mv-notice-body:focus-visible{outline:2px solid var(--focus-ring); outline-offset:2px;}
+.mv-notice-intro{margin:0; color:var(--muted);}
+.mv-notice-closing{margin:14px 0 0; color:var(--muted); font-size:12px;}
+.mv-notice-list{margin:0; padding-left:20px; display:flex; flex-direction:column; gap:4px;}
+.mv-notice-wont li{color:var(--muted);}
+.mv-notice-suppress{display:flex; align-items:center; gap:8px; font-size:12px;}
+.mv-notice-actions{
+  display:flex; flex-wrap:wrap; align-items:center; gap:8px;
+  border-top:1px solid var(--border); padding-top:12px;
+}
+.mv-notice-status{font-size:12px; color:var(--muted);}
+
+/* The layout target, shown under the configured bitrate only when the source
+ * could not meet it -- so the number that is lower than the policy explains
+ * itself without the engineering panel. */
+.mv-bitrate-target{font-size:11px; color:var(--muted); margin-top:2px;}
