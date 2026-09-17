@@ -59,6 +59,10 @@
     // target may light up for a drop it would refuse. dataTransfer cannot be
     // read during dragover, so the answer is held here for the duration.
     dragging: null,          // {ip, multiview: bool, normal: bool} | null
+    // What the operator has typed into the source filter. A view concern and
+    // nothing else: it hides cards, and it is not part of any preset, any
+    // assignment or any eligibility decision.
+    sourceFilter: '',
   };
 
   let stateSeq = 0;
@@ -997,15 +1001,51 @@
     card.style.visibility = '';
   }
 
+  // Does this source match what the operator typed? Matched against the
+  // things they would actually search by. Deliberately a pure predicate over
+  // an already-loaded source: filtering asks no device anything, and cannot
+  // change what a source is.
+  function sourceMatchesFilter(source) {
+    const needle = (state.sourceFilter || '').trim().toLowerCase();
+    if (!needle) return true;
+    return [source.hostname, source.model, source.ip, source.codec,
+            source.status_label, source.reason]
+      .some((field) => String(field || '').toLowerCase().indexOf(needle) >= 0);
+  }
+
+  function renderSourceFilter(shown, total) {
+    const clear = el('mv_source_filter_clear');
+    const count = el('mv_source_count');
+    const active = !!(state.sourceFilter || '').trim();
+    if (clear) clear.hidden = !active;
+    if (count) {
+      count.hidden = !active;
+      count.textContent = active
+        ? (shown + ' of ' + total + ' source' + (total === 1 ? '' : 's'))
+        : '';
+    }
+  }
+
   function renderSources() {
     const container = el('mv_sources');
     closePreview();
     container.replaceChildren();
+    // Hidden, not removed: `state.sources` is what the server said, and the
+    // filter is a view over it. Eligibility, drag capability and assignments
+    // are all decided from the source itself, exactly as when nothing is
+    // filtered.
+    const visible = state.sources.filter(sourceMatchesFilter);
+    const hiddenExcluded = state.excluded.filter(sourceMatchesFilter);
+    renderSourceFilter(visible.length + hiddenExcluded.length,
+                       state.sources.length + state.excluded.length);
     if (!state.sources.length) {
       container.appendChild(node('div', 'mv-empty',
         'No eligible encoders were discovered. Run a scan from Device Info.'));
+    } else if (!visible.length && !hiddenExcluded.length) {
+      container.appendChild(node('div', 'mv-sources-empty',
+        'No source matches “' + (state.sourceFilter || '').trim() + '”.'));
     }
-    state.sources.forEach((source) => {
+    visible.forEach((source) => {
       const ready = source.status !== 'configuration_required';
       // A conventional route is a different question, answered by the server's
       // own rule rather than by reusing the Multiview verdict. An encoder whose
@@ -1087,11 +1127,11 @@
 
     const excluded = el('mv_sources_excluded');
     excluded.replaceChildren();
-    if (state.excluded.length) {
+    if (hiddenExcluded.length) {
       const detail = node('details', 'mv-detail');
       detail.appendChild(node('summary', null,
-        state.excluded.length + ' encoder(s) not eligible'));
-      state.excluded.forEach((entry) => {
+        hiddenExcluded.length + ' encoder(s) not eligible'));
+      hiddenExcluded.forEach((entry) => {
         // Ineligible for a Multiview WINDOW is not ineligible for everything.
         // A model excluded from Multiview still has an ordinary Session 1
         // stream, and the display output can take it. Rendering these as text
@@ -3134,6 +3174,28 @@
     el('mv_notice_copy').addEventListener('click', copyNotice);
     el('mv_notice_save').addEventListener('click', saveNotice);
 
+    const filter = el('mv_source_filter');
+    if (filter) {
+      // Local only. No request is made, nothing is re-read, and nothing but
+      // the source cards is redrawn -- so the canvas, its previews and the
+      // display output all stay exactly as they were.
+      filter.addEventListener('input', () => {
+        state.sourceFilter = filter.value || '';
+        renderSources();
+      });
+      filter.addEventListener('search', () => {
+        state.sourceFilter = filter.value || '';
+        renderSources();
+      });
+    }
+    const clearFilter = el('mv_source_filter_clear');
+    if (clearFilter) {
+      clearFilter.addEventListener('click', () => {
+        state.sourceFilter = '';
+        if (filter) { filter.value = ''; filter.focus(); }
+        renderSources();
+      });
+    }
     el('mv_install').addEventListener('click', installStandardLayouts);
     el('mv_save').addEventListener('click', save);
     el('mv_show').addEventListener('click', showOnDisplay);

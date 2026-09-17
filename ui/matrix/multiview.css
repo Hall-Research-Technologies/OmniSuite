@@ -69,7 +69,11 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
 }
 
 /* ---- source tiles ---- */
-.mv-sources{display:flex; flex-direction:column; gap:8px; max-height:60vh; overflow:auto;}
+/* The panel around it owns the scrolling now, so this must not have a
+   scroller of its own: two nested ones meant the inner list scrolled
+   while the outer region never overflowed, and the heading and filter
+   scrolled away with the cards. */
+.mv-sources{display:flex; flex-direction:column; gap:8px;}
 .mv-source{
   border:1px solid var(--border); border-radius:8px; padding:8px 10px;
   background:var(--panel-2); cursor:grab; user-select:none;
@@ -480,15 +484,35 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
 /* A small screen, centred, so the panel reads as "this is the display" rather
    than as another status card. Responsive between two sensible sizes; never the
    width of the page, and never big enough to compete with the canvas. */
+/* The screen first, the facts beside it. Centring a small screen in a wide
+   card left a band of dead space and made the panel read as decoration; this
+   uses the width for something and lines up with the rest of the page.
+   `wrap` is the whole responsive story: when there is no room beside the
+   screen, the details go underneath by themselves. */
 .mv-output-stage {
   display: flex;
-  justify-content: center;
-  padding: 4px 0 12px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 16px;
+  padding: 4px 0 4px;
+}
+
+.mv-output-side {
+  flex: 1 1 260px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* Optically centred against the screen on a wide row, and harmless when it
+     wraps underneath. */
+  padding-top: 2px;
 }
 
 .mv-output {
   position: relative;
-  width: clamp(220px, 46%, 320px);
+  flex: 0 0 auto;
+  width: clamp(220px, 34vw, 320px);
   aspect-ratio: 16 / 9;
   padding: 6px;
   border: 1px solid var(--edge);
@@ -609,9 +633,9 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
 .mv-output-body {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: 4px;
-  text-align: center;
+  text-align: left;
 }
 .mv-output-main { min-width: 0; max-width: 100%; }
 .mv-output-title {
@@ -628,11 +652,11 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
   white-space: nowrap;
 }
 .mv-output-hint {
-  margin: 8px auto 0;
-  max-width: 44ch;
+  margin: 4px 0 0;
+  max-width: 52ch;
   color: var(--text-muted);
   font-size: 12px;
-  text-align: center;
+  text-align: left;
 }
 
 /* The canvas says whether this composition is the one on the display. Stated
@@ -701,4 +725,109 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
 .mv-notice-important dd {
   margin: 2px 0 0;
   color: var(--text-muted);
+}
+
+
+/* ---------------------------------------------------------------- sources
+   A long source list used to decide how tall the page was, which pushed the
+   canvas -- the thing being dropped onto -- off the screen exactly when an
+   operator was looking for something to drop. The list now scrolls inside its
+   own panel and the canvas stays where it is.
+
+   Sized from the viewport rather than in fixed pixels, so it is sensible on a
+   large monitor and still usable in a small window. The floor keeps it from
+   collapsing to a slit on a short screen; the page itself still scrolls, so
+   nothing below the workspace becomes unreachable. */
+.mv-sources-panel {
+  display: flex;
+  flex-direction: column;
+  /* Never taller than the room actually available beside the canvas. */
+  max-height: clamp(260px, calc(100vh - 260px), 760px);
+  min-height: 0;
+}
+
+.mv-sources-head {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mv-sources-head h2 { margin-bottom: 0; }
+
+.mv-sources-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin-top: 10px;
+  padding-right: 4px;
+  /* A scrollbar that belongs to the application rather than to the platform's
+     default light-on-dark assumption. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--edge) transparent;
+}
+.mv-sources-scroll::-webkit-scrollbar { width: 10px; }
+.mv-sources-scroll::-webkit-scrollbar-track { background: transparent; }
+.mv-sources-scroll::-webkit-scrollbar-thumb {
+  background: var(--edge);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.mv-sources-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+  background-clip: content-box;
+}
+
+/* ---- the filter -------------------------------------------------------- */
+.mv-filter { position: relative; display: flex; }
+
+.mv-filter-input {
+  width: 100%;
+  padding: 6px 28px 6px 10px;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  background: var(--surface-elevated);
+  color: var(--text);
+  font-size: 13px;
+}
+.mv-filter-input::placeholder { color: var(--text-muted); }
+.mv-filter-input:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--action-primary));
+  outline-offset: 1px;
+}
+/* The browser's own search affordance would sit on top of ours. */
+.mv-filter-input::-webkit-search-decoration,
+.mv-filter-input::-webkit-search-cancel-button { appearance: none; }
+
+.mv-filter-clear {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.mv-filter-clear:hover { color: var(--text); }
+.mv-filter-clear[hidden] { display: none; }
+
+.mv-filter-count {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.mv-filter-count[hidden] { display: none; }
+
+.mv-sources-empty {
+  padding: 14px 4px;
+  color: var(--text-muted);
+  font-size: 13px;
 }

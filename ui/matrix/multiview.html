@@ -209,18 +209,40 @@
         <div id="mv_output" class="mv-output" aria-live="polite" tabindex="0">
           <div class="mv-screen" id="mv_output_screen"></div>
         </div>
+        <!-- The space beside the screen carries the facts, rather than being
+             empty. It wraps underneath when there is no room for it. -->
+        <div class="mv-output-side">
+          <div class="mv-output-body" id="mv_output_body"></div>
+          <p class="mv-output-hint" id="mv_output_hint" hidden></p>
+        </div>
       </div>
-      <div class="mv-output-body" id="mv_output_body"></div>
-      <p class="mv-output-hint" id="mv_output_hint" hidden></p>
     </div>
   </div>
 
   <div class="mv-body" id="mv_workspace" hidden>
     <div>
-      <div class="mv-panel">
-        <h2>Sources</h2>
-        <div id="mv_sources" class="mv-sources"></div>
-        <div id="mv_sources_excluded"></div>
+      <!-- The canvas is the workspace and must stay on screen while an
+           operator looks for a source, so the list scrolls inside its own
+           panel rather than making the page taller. The heading and the filter
+           stay put; only the cards move. -->
+      <div class="mv-panel mv-sources-panel">
+        <div class="mv-sources-head">
+          <h2>Sources</h2>
+          <div class="mv-filter">
+            <input id="mv_source_filter" class="mv-control mv-filter-input" type="search"
+                   placeholder="Filter sources…" autocomplete="off"
+                   aria-label="Filter sources by name, model or address">
+            <button id="mv_source_filter_clear" class="mv-filter-clear"
+                    type="button" hidden aria-label="Clear the source filter"
+                    title="Clear the filter">&times;</button>
+          </div>
+          <p class="mv-filter-count" id="mv_source_count" hidden
+             role="status"></p>
+        </div>
+        <div class="mv-sources-scroll" id="mv_sources_scroll">
+          <div id="mv_sources" class="mv-sources"></div>
+          <div id="mv_sources_excluded"></div>
+        </div>
       </div>
 
       <div class="mv-panel" style="margin-top:16px;">

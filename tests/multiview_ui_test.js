@@ -1074,11 +1074,16 @@ async function selectDecoder(ip) {
   });
 
   await check('every toolbar and action control shares one control class', () => {
-    // The notice is a dialog shown before the page is used, not part of the
-    // toolbar; its buttons carry mv-control, its checkbox is a checkbox.
+    // Two exceptions, both affordances that live INSIDE another control
+    // rather than beside it in a row: the notice's checkbox, and the small
+    // clear cross inside the source filter. Everything that sits in a row
+    // with other controls carries the shared class, including the filter
+    // input itself.
+    const INSIDE_ANOTHER_CONTROL = ['mv_notice_suppress',
+                                    'mv_source_filter_clear'];
     const controls = Array.from(PAGE_HTML.matchAll(
       /<(select|input|button)[^>]*\sid="(mv_[^"]+)"[^>]*>/g))
-      .filter(([, , id]) => id !== 'mv_notice_suppress');
+      .filter(([, , id]) => INSIDE_ANOTHER_CONTROL.indexOf(id) < 0);
     assert(controls.length >= 8, 'found only ' + controls.length + ' controls');
     controls.forEach(([markup, tag, id]) => {
       assert(/class="[^"]*\bmv-control\b/.test(markup),
@@ -3335,6 +3340,299 @@ async function selectDecoder(ip) {
     const tiles = detail.findAll(n => n._classes && n._classes.has('route-only'));
     assert(!tiles.some(t => t.deepText.includes('enc-offline-01')),
       'an offline encoder was offered as a draggable source');
+  });
+
+  // ---- the workspace: finding a source without losing the canvas ---------
+
+  const filterInput = () => REGISTRY.get('mv_source_filter');
+  const sourceCards = () => REGISTRY.get('mv_sources').children
+    .filter(n => n._classes && n._classes.has('mv-source'));
+  const cardNames = () => sourceCards().map(
+    c => (c.children[0] || {}).textContent);
+
+  function typeFilter(value) {
+    const input = filterInput();
+    input.value = value;
+    input.dispatch('input');
+  }
+
+  async function openWorkspace() {
+    displayOutput = OUTPUT_SOURCE;
+    stateResponse = stateBody([EXISTING_VIEW]);
+    await selectDecoder('192.0.2.10');
+    REGISTRY.get('mv_target').value = 'multiview2x2';
+    REGISTRY.get('mv_target').dispatch('change');
+    await flush();
+    typeFilter('');
+  }
+
+  await check('the sources list scrolls inside its own panel', () => {
+    const page = fs.readFileSync(PAGE, 'utf8');
+    // The cards are in a scroll region; the heading and the filter are not, so
+    // they stay put while the list moves.
+    const scroll = page.indexOf('id="mv_sources_scroll"');
+    const cards = page.indexOf('id="mv_sources"');
+    const filter = page.indexOf('id="mv_source_filter"');
+    assert(scroll > 0 && cards > scroll,
+      'the source cards are not inside the scroll region');
+    // By id, not by class name: a renamed wrapper still contains the class as
+    // a substring, so matching the class proved nothing about where it is.
+    assert(filter > 0 && filter < scroll,
+      'the filter scrolls away with the cards instead of staying put');
+    const heading = page.indexOf('<h2>Sources</h2>');
+    assert(heading > 0 && heading < scroll,
+      'the Sources heading scrolls away with the cards');
+
+    const css = fs.readFileSync(STYLE, 'utf8');
+    const rule = css.slice(css.indexOf('.mv-sources-scroll {'),
+                           css.indexOf('.mv-sources-scroll::'));
+    assert(/overflow-y:\s*auto/.test(rule),
+      'the source region does not scroll: ' + rule);
+    assert(/min-height:\s*0/.test(rule),
+      'a flex child without min-height:0 will not scroll, it will stretch');
+  });
+
+  await check('its height comes from the viewport, not from one monitor', () => {
+    const css = fs.readFileSync(STYLE, 'utf8');
+    const rule = css.slice(css.indexOf('.mv-sources-panel {'),
+                           css.indexOf('.mv-sources-head'));
+    assert(/max-height:\s*clamp\(/.test(rule),
+      'the panel height is not responsive: ' + rule);
+    assert(/vh/.test(rule),
+      'the panel height is not related to the viewport: ' + rule);
+    // A floor, so it never collapses to a slit on a short window.
+    const clamp = rule.match(/max-height:\s*clamp\(([^;]*)\)/)[1];
+    assert(/^\s*\d+px/.test(clamp),
+      'the height has no sensible minimum: ' + clamp);
+  });
+
+  await check('the last card in the list keeps its identity and drops',
+    async () => {
+      // Whatever the list length, a card at the end of the scroll region is an
+      // ordinary card: it carries its own address and a window accepts it.
+      // Large-population scrolling is exercised in the browser review, where
+      // real scrolling exists.
+      await openWorkspace();
+      const cards = sourceCards();
+      const last = cards[cards.length - 1];
+      assert(last, 'there are no source cards at all');
+      const ip = last.dataset.ip;
+      last.dispatch('dragstart', {dataTransfer: {setData: () => {},
+                                                 effectAllowed: ''}});
+      const box = REGISTRY.get('mv_stage').children[0];
+      let prevented = false;
+      box.dispatch('dragover', {preventDefault: () => { prevented = true; },
+                                dataTransfer: {dropEffect: ''}});
+      box.dispatch('drop', {preventDefault: () => {},
+                            dataTransfer: {getData: () => ip}});
+      await flush();
+      assertEqual(last.dataset.ip, ip, 'the card lost its identity');
+      if (last.dataset.status !== 'configuration_required') {
+        assertEqual(prevented, true, 'a window refused the last source');
+      }
+      last.dispatch('dragend', {});
+    });
+
+  // ---- the filter --------------------------------------------------------
+  await check('it filters by hostname', async () => {
+    await openWorkspace();
+    const all = cardNames().length;
+    typeFilter('enc-test');
+    assert(cardNames().length < all, 'nothing was filtered out');
+    assert(cardNames().every(n => /enc-test/i.test(n)),
+      'a non-matching source survived: ' + cardNames().join(', '));
+  });
+
+  await check('it filters by model', () => {
+    typeFilter('HW-OMNI-E4111-WP');
+    assert(cardNames().length >= 1, 'the model matched nothing');
+    assert(cardNames().some(n => /new-wp-01/.test(n)),
+      'the wall plate was not found by its model: ' + cardNames().join(', '));
+  });
+
+  await check('it filters by IP address', () => {
+    typeFilter('192.0.2.25');
+    assertEqual(cardNames().length, 1, cardNames().join(', '));
+    assert(/enc-unconfigured-01/.test(cardNames()[0]), cardNames()[0]);
+  });
+
+  await check('it is case insensitive', () => {
+    typeFilter('ENC-TEST-01');
+    const upper = cardNames();
+    typeFilter('enc-test-01');
+    assertEqual(cardNames(), upper, 'case changed the result');
+    assertEqual(upper.length, 1, upper.join(', '));
+  });
+
+  await check('whitespace alone is the same as no filter', () => {
+    typeFilter('');
+    const all = cardNames();
+    typeFilter('   ');
+    assertEqual(cardNames(), all, 'a whitespace filter hid something');
+    assert(REGISTRY.get('mv_source_count').hidden,
+      'a whitespace filter is reported as an active one');
+  });
+
+  await check('clearing restores the whole list', () => {
+    typeFilter('');
+    const all = cardNames();
+    typeFilter('enc-test-01');
+    assert(cardNames().length < all.length, 'the filter did nothing');
+    assert(!REGISTRY.get('mv_source_filter_clear').hidden,
+      'the clear control is not offered while a filter is active');
+    REGISTRY.get('mv_source_filter_clear').dispatch('click');
+    assertEqual(cardNames(), all, 'clearing did not restore every source');
+    assertEqual(filterInput().value, '', 'the filter box still holds text');
+    assert(REGISTRY.get('mv_source_filter_clear').hidden,
+      'the clear control lingers with no filter');
+  });
+
+  await check('a filter that matches nothing says so', () => {
+    typeFilter('zzzz-no-such-encoder');
+    assertEqual(sourceCards().length, 0, 'something matched');
+    assert(/no source matches/i.test(REGISTRY.get('mv_sources').deepText),
+      'the empty result is not explained: '
+      + REGISTRY.get('mv_sources').deepText);
+    typeFilter('');
+  });
+
+  await check('filtering only hides: eligibility is untouched', () => {
+    typeFilter('');
+    const before = sourceCards().map(c => [c.dataset.ip, c.dataset.status,
+                                           c.dataset.normalRoute,
+                                           c.draggable]);
+    typeFilter('enc');
+    const after = sourceCards().map(c => [c.dataset.ip, c.dataset.status,
+                                          c.dataset.normalRoute, c.draggable]);
+    after.forEach((row) => {
+      const was = before.find(b => b[0] === row[0]);
+      assert(was, row[0] + ' appeared only while filtered');
+      assertEqual(row, was, 'filtering changed what ' + row[0] + ' is');
+    });
+    typeFilter('');
+  });
+
+  await check('and the reason on a Configuration Required source survives', () => {
+    typeFilter('enc-unconfigured-01');
+    const card = sourceCards()[0];
+    assert(card, 'the source was filtered away entirely');
+    assert(card.deepText.includes('Multicast configuration required'),
+      'the reason was lost: ' + card.deepText);
+    assert(card._classes.has('needs-work'),
+      'it no longer looks like a source that needs work');
+    typeFilter('');
+  });
+
+  await check('filtering changes no assignment and no dirty state', async () => {
+    await openWorkspace();
+    const box = REGISTRY.get('mv_stage').children[1]
+                || REGISTRY.get('mv_stage').children[0];
+    box.dispatch('drop', {preventDefault: () => {},
+                          dataTransfer: {getData: () => '192.0.2.24'}});
+    await flush();
+    const canvasBefore = REGISTRY.get('mv_stage').deepText;
+    const dirtyBefore = REGISTRY.get('mv_edit_state').textContent;
+    assert(/unsaved/i.test(dirtyBefore), 'the editor is not dirty to begin with');
+
+    typeFilter('enc-test');
+    typeFilter('');
+    assertEqual(REGISTRY.get('mv_stage').deepText, canvasBefore,
+      'filtering altered the canvas');
+    assertEqual(REGISTRY.get('mv_edit_state').textContent, dirtyBefore,
+      'filtering altered the dirty state');
+  });
+
+  await check('filtering asks no device anything', async () => {
+    const before = requests.length;
+    typeFilter('enc');
+    typeFilter('192.0.2');
+    typeFilter('');
+    await flush();
+    assertEqual(requests.slice(before).length, 0,
+      'filtering made requests: '
+      + requests.slice(before).map(r => r.url).join(', '));
+  });
+
+  await check('filtering an ACTIVE Multiview writes nothing', async () => {
+    stateResponse = stateBody([LIVE_VIEW]);
+    displayOutput = OUTPUT_MULTIVIEW;
+    await selectDecoder('192.0.2.10');
+    REGISTRY.get('mv_target').value = 'multiview2x2';
+    REGISTRY.get('mv_target').dispatch('change');
+    await flush();
+    const before = requests.length;
+    typeFilter('enc-test');
+    typeFilter('');
+    await flush();
+    assertEqual(requests.slice(before).filter(r => r.method === 'POST').length,
+      0, 'filtering a live Multiview wrote to a device');
+  });
+
+  await check('the filter is not part of the preset', async () => {
+    await openWorkspace();
+    typeFilter('enc-test');
+    const box = REGISTRY.get('mv_stage').children[1]
+                || REGISTRY.get('mv_stage').children[0];
+    box.dispatch('drop', {preventDefault: () => {},
+                          dataTransfer: {getData: () => '192.0.2.20'}});
+    await flush();
+    const before = requests.length;
+    confirmAnswer = true;
+    REGISTRY.get('mv_save').dispatch('click');
+    await flush();
+    const saved = requests.slice(before).find(
+      r => r.url.startsWith('/api/multiview/apply'));
+    assert(saved, 'the save did not happen');
+    const body = JSON.stringify(saved.payload);
+    assert(!/enc-test/.test(body.replace(/"assignments":\{[^}]*\}/, '')),
+      'the filter text was persisted with the preset: ' + body);
+    typeFilter('');
+  });
+
+  // ---- the display output sits where the page starts ---------------------
+  await check('the display output is laid out left to right', () => {
+    const css = fs.readFileSync(STYLE, 'utf8');
+    const rule = css.slice(css.indexOf('.mv-output-stage {'),
+                           css.indexOf('.mv-output-side'));
+    assert(/justify-content:\s*flex-start/.test(rule),
+      'the screen is still centred in the card: ' + rule);
+    assert(/flex-wrap:\s*wrap/.test(rule),
+      'the row cannot wrap, so a narrow window will overflow: ' + rule);
+
+    const page = fs.readFileSync(PAGE, 'utf8');
+    const screen = page.indexOf('id="mv_output"');
+    const side = page.indexOf('mv-output-side');
+    const body = page.indexOf('id="mv_output_body"');
+    assert(screen > 0 && side > screen,
+      'the details do not follow the screen');
+    assert(body > side, 'the status text is not inside the side column');
+  });
+
+  await check('and it stacks instead of overflowing when narrow', () => {
+    const css = fs.readFileSync(STYLE, 'utf8');
+    const side = css.slice(css.indexOf('.mv-output-side {'),
+                           css.indexOf('.mv-output-body'));
+    // A basis with room to shrink, beside a screen that does not grow: the
+    // pair wraps rather than forcing the page sideways.
+    assert(/flex:\s*1 1 \d+px/.test(side),
+      'the details column cannot shrink: ' + side);
+    assert(/min-width:\s*0/.test(side),
+      'without min-width:0 long text forces horizontal overflow: ' + side);
+    const screen = css.slice(css.indexOf('.mv-output {'),
+                             css.indexOf('.mv-screen {'));
+    assert(/flex:\s*0 0 auto/.test(screen),
+      'the screen can stretch, which defeats the fixed small size');
+    assert(/vw/.test(screen),
+      'the screen width does not follow the viewport: ' + screen);
+  });
+
+  await check('the status text is no longer centred in dead space', () => {
+    const css = fs.readFileSync(STYLE, 'utf8');
+    const body = css.slice(css.indexOf('.mv-output-body {'),
+                           css.indexOf('.mv-output-main'));
+    assert(/align-items:\s*flex-start/.test(body),
+      'the status column is still centred: ' + body);
+    assert(/text-align:\s*left/.test(body), body);
   });
 
   // ---- Show on Display = save, then show ---------------------------------
