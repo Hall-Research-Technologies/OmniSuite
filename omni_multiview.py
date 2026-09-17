@@ -848,6 +848,52 @@ def device_object_name(friendly, existing=()):
     return candidate + str(len(taken) + 1)
 
 
+# The standard layout library. Every layout this release runs, in the order an
+# operator meets them, each one a LAYOUT -- geometry and nothing else. Installing
+# them claims no encoder, no session and no decoder input, because a layout is a
+# description of a shape and not a reservation of anything.
+STANDARD_LAYOUTS = ("2x2", "side-by-side",
+                    "pip-top-left", "pip-top-right",
+                    "pip-bottom-left", "pip-bottom-right",
+                    "1+3-horizontal-bottom", "1+3-horizontal-top",
+                    "1+3-vertical-right", "1+3-vertical-left",
+                    "4-split")
+
+
+def standard_layout_object(layout_name, existing_names=(), slice_info=None):
+    """The device object for a standard layout with nothing assigned.
+
+    Every window is a real subframe with an empty input. That is how the decoder
+    represents an unassigned window: measured on the bench, `input: ""` is
+    accepted, preserved on readback, and a Multiview made entirely of them
+    composites and keeps the display active.
+
+    Returns (object_name, config, windows) -- or (None, None, []) for a layout
+    this release does not run.
+    """
+    if layout_name not in LAYOUTS:
+        return None, None, []
+    friendly = LAYOUTS[layout_name]["label"]
+    preset = canvas_preset(ACTIVE_CANVAS)
+    slice_width = ((slice_info or {}).get("width") or {}).get("min") or SLICE_WIDTH
+    slice_height = ((slice_info or {}).get("height") or {}).get("min") or SLICE_HEIGHT
+    geometry = compute_windows(layout_name, preset["width"], preset["height"],
+                               slice_width, slice_height)
+    object_name = device_object_name(friendly, existing_names)
+    subframes = [{
+        "name": subframe_label(window["cell"], window["width"], window["height"]),
+        "x": window["x"], "y": window["y"], "anchor": window["anchor"],
+        "priority": window["priority"],
+        # Deliberately empty. A layout assigns nothing.
+        "input": "",
+    } for window in geometry["windows"]]
+    config = {"name": object_name,
+              "width": geometry["canvas"]["width"],
+              "height": geometry["canvas"]["height"],
+              "subframes": subframes}
+    return object_name, config, geometry["windows"]
+
+
 def validate_object_name(name):
     """The device's own rules, applied before we send anything."""
     text = str(name or "")
@@ -1687,6 +1733,10 @@ def plan_multiview(desired, decoder_state, encoder_states,
     layout_name = desired.get("layout")
     canvas_id = desired.get("canvas") or ACTIVE_CANVAS
     errors, warnings, conflicts = [], [], []
+    # Conflicts the preset can never resolve, whatever the hardware does. Kept
+    # apart from `conflicts`, which are about what other decoders are doing
+    # right now and are therefore a Show-time question.
+    preset_conflicts = []
 
     if layout_name not in LAYOUTS:
         errors.append("Unknown layout %r." % layout_name)
@@ -1700,9 +1750,10 @@ def plan_multiview(desired, decoder_state, encoder_states,
             % (ACTIVE_CANVAS, canvas_id,
                (" " + preset["note"]) if preset and preset.get("note") else ""))
     if errors:
-        return {"ok": False, "errors": errors, "warnings": [], "conflicts": [],
-                "windows": [], "mutations": [], "activation": [],
-                "unique_streams": [], "snapshot": []}
+        return {"ok": False, "preset_ok": False, "preset_errors": list(errors),
+                "preset_conflicts": [], "activation_errors": [], "errors": errors, "warnings": [],
+                "conflicts": [], "windows": [], "mutations": [],
+                "activation": [], "unique_streams": [], "snapshot": []}
     preset = canvas_preset(canvas_id)
 
     hdmi_output = decoder_state.get("hdmi_output") or {}
@@ -1714,9 +1765,15 @@ def plan_multiview(desired, decoder_state, encoder_states,
     for entry in blocked:
         errors.append(entry["reason"])
     if blocked:
-        return {"ok": False, "errors": errors, "warnings": [], "conflicts": [],
-                "interlocks": blocked, "windows": [], "mutations": [],
-                "activation": [], "unique_streams": [], "snapshot": []}
+        # Video Wall and Fast Switching are properties of the decoder, not of
+        # the hardware a source happens to be in right now, and OmniSuite will
+        # not turn either of them off. A Multiview cannot be built for this
+        # decoder at all, so this refuses the preset as well as the execution.
+        return {"ok": False, "preset_ok": False, "preset_errors": list(errors),
+                "preset_conflicts": [], "activation_errors": [], "errors": errors, "warnings": [],
+                "conflicts": [], "interlocks": blocked, "windows": [],
+                "mutations": [], "activation": [], "unique_streams": [],
+                "snapshot": []}
 
     geometry = compute_windows(layout_name, preset["width"], preset["height"],
                                slice_width, slice_height)
@@ -1747,6 +1804,14 @@ def plan_multiview(desired, decoder_state, encoder_states,
             "modify it, or give this one a different name." % object_name)
     if not updating and len(existing_multiviews) and desired.get("update_existing"):
         errors.append("No Multiview called %s exists on this decoder." % object_name)
+
+    # Everything above this line is a statement about the PRESET: is the layout
+    # known, is the canvas one this release runs, is the name legal, does it
+    # collide. Everything below it is a statement about the hardware as it is
+    # right now: did the encoder answer, has it a second encoder, is there
+    # headroom, is an input free. The two are different questions and a preset
+    # is allowed to fail the second one -- that is what Show is for.
+    structural_errors = len(errors)
 
     assignments = desired.get("assignments") or {}
     main_cell = main_window_cell(layout_name)
@@ -1794,11 +1859,22 @@ def plan_multiview(desired, decoder_state, encoder_states,
                                      "port": entry["multicast"]["port"]})
         windows.append(entry)
 
-    if not any(w["source"] for w in windows):
-        errors.append("Assign at least one source before applying.")
+    # A Multiview with no sources assigned is a layout, and a layout is a
+    # perfectly good thing to save. This used to be refused because Save and
+    # Show shared one verdict; they no longer do. Showing one is legal too: the
+    # decoder composites an all-empty Multiview and keeps its output active,
+    # measured on the bench at 1920x1080 with every window "not subscribed".
+    # So nothing replaces this check.
 
-    _check_intra_plan_scaler_conflicts(windows, conflicts)
-    check_stream_window_limit(windows, errors)
+    _check_intra_plan_scaler_conflicts(windows, preset_conflicts)
+    conflicts.extend(preset_conflicts)
+    # A decoder input drives at most two subframes. That is a fixed property of
+    # the decoder, not of what anything happens to be doing right now, so a
+    # preset asking one stream to fill three windows can never execute and is
+    # refused as a preset rather than deferred to Show.
+    structural_stream_errors = []
+    check_stream_window_limit(windows, structural_stream_errors)
+    errors.extend(structural_stream_errors)
 
     ip_assignments, ip_errors, collisions = allocate_window_inputs(
         requirements, decoder_state.get("ip_input"), hdmi_output,
@@ -1822,8 +1898,24 @@ def plan_multiview(desired, decoder_state, encoder_states,
                                     existing_multiviews,
                                     exclude_multiview=object_name)
 
+    # Two questions, two answers.
+    #
+    #   preset_ok   may this be SAVED -- a well-formed layout, a legal name, and
+    #               source references that are structurally valid
+    #   ok          may this be SHOWN -- can every assigned source actually be
+    #               prepared on the hardware as it stands
+    #
+    # `ok` is computed exactly as before, so every execution check still gates
+    # Show. What changed is that Save no longer asks it.
+    preset_errors = (errors[:structural_errors] + preset_conflicts
+                     + structural_stream_errors)
+    activation_errors = errors[structural_errors:]
     return {
         "ok": not errors,
+        "preset_ok": not preset_errors,
+        "preset_errors": preset_errors,
+        "preset_conflicts": preset_conflicts,
+        "activation_errors": activation_errors,
         "object_name": object_name,
         "friendly_name": desired.get("name") or LAYOUTS[layout_name]["label"],
         "updating": updating,
@@ -2000,7 +2092,14 @@ def _plan_audio(windows, main_cell, encoder_states, warnings):
 
 def _plan_source(window, source_ip, encoder_states, known_multiviews,
                  errors, warnings, conflicts, decoder_state):
-    """Resolve one window's encoder, session, scaler, input and multicast."""
+    """Resolve one window's encoder, session, scaler, input and multicast.
+
+    Everything this refuses is a statement about NOW -- the encoder did not
+    answer, it has no second encoder, its session has no destination. None of
+    them is a reason to refuse to REMEMBER that the operator wants this source
+    in this window, so each one also names itself on the window, and the saved
+    preset keeps the assignment either way.
+    """
     state = (encoder_states or {}).get(source_ip) or {}
     device = state.get("device") or {}
     source = {
@@ -2015,6 +2114,7 @@ def _plan_source(window, source_ip, encoder_states, known_multiviews,
             "Encoder %s did not answer, so its Session %d cannot be prepared for "
             "window %s." % (source["hostname"], window["encoder_index"], window["cell"]))
         source["error"] = "unreachable"
+        source["unavailable"] = "This encoder did not answer."
         return source
 
     sessions = _by_name(state.get("sessions"))
@@ -2028,6 +2128,7 @@ def _plan_source(window, source_ip, encoder_states, known_multiviews,
             "%s has no %s, so it cannot feed a Multiview window."
             % (source["hostname"], window["encoder"]))
         source["error"] = "no encoder 2"
+        source["unavailable"] = "This encoder has no second encoder."
         return source
 
     stream = _session_stream(session, "video")
@@ -2039,6 +2140,8 @@ def _plan_source(window, source_ip, encoder_states, known_multiviews,
             "(it generates its own default) before using it in a Multiview."
             % (source["hostname"], window["session"]))
         source["error"] = "no destination"
+        source["unavailable"] = ("Session 2 on this encoder has no multicast "
+                                 "destination.")
         return source
     source["multicast"] = {"address": address, "port": port,
                            "generated": bool(stream.get("destination_generate_applied")),

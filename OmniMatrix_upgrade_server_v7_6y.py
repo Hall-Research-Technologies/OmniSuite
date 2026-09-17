@@ -12920,7 +12920,17 @@ def _record_multiview_meta(device, object_name, record):
         entry = _MULTIVIEW_META.setdefault(key, {})
         entry["decoder_ip"] = device.get("ip")
         entry["decoder_hostname"] = device.get("hostname")
-        entry.setdefault("multiviews", {})[object_name] = record
+        # Which standard layout this came from is a fact about where the object
+        # came from, not about its current contents, so it survives being saved
+        # over. Without this, showing an installed layout turned it into an
+        # ordinary preset and Install Standard Layouts would create a duplicate
+        # of it -- measured on the bench, where a shown layout stopped being
+        # recognised as one of the eleven.
+        previous = (entry.setdefault("multiviews", {}) or {}).get(object_name) or {}
+        for inherited in ("standard_layout", "standard"):
+            if inherited in previous and inherited not in record:
+                record[inherited] = previous[inherited]
+        entry["multiviews"][object_name] = record
     _save_multiview_meta()
 
 
@@ -13540,6 +13550,168 @@ def _showable(obj):
     return {"showable": True, "not_showable_reason": ""}
 
 
+def _install_standard_layouts(ip):
+    """Put the standard layout library on one decoder. Returns a report.
+
+    The whole point of this operation is what it does NOT do. It writes one
+    Multiview object per missing layout and nothing else: no encoder input, no
+    scaler, no bitrate, no Session 2, no decoder subscription and no display
+    change. A layout is a shape, and a shape reserves nothing.
+
+    Idempotent by layout identity, not by name. A preset an operator renamed is
+    still that standard layout and is left alone; an object OmniSuite did not
+    create is never overwritten, whatever it is called.
+    """
+    state, error = _decoder_state(ip)
+    if state is None:
+        return None, error or "the decoder could not be read"
+
+    devices = _load_cache() or []
+    device = {d.get("ip"): d for d in devices}.get(ip, {})
+    present = {str(o.get("name") or "") for o in (state.get("multiview") or ())}
+    stored = _multiview_meta_for(device) or {}
+
+    # Which standard layouts this decoder already has. Identity first: a record
+    # that names the layout it was installed from, whose object is still there.
+    installed_layout = {}
+    for object_name, record in stored.items():
+        if object_name not in present:
+            continue
+        layout = record.get("standard_layout") or (
+            record.get("layout") if record.get("standard") else None)
+        if layout:
+            installed_layout.setdefault(layout, object_name)
+
+    existing, installed, skipped, conflicts = [], [], [], []
+    for layout in omni_multiview.STANDARD_LAYOUTS:
+        friendly = omni_multiview.LAYOUTS[layout]["label"]
+        known = installed_layout.get(layout)
+        if known:
+            existing.append({"layout": layout, "friendly_name": friendly,
+                             "object_name": known})
+            continue
+        # The name this layout naturally takes. Asked for WITHOUT collision
+        # avoidance on purpose: if something else already has it, installing a
+        # near-duplicate under a numbered name would be worse than saying so.
+        natural, config, windows = omni_multiview.standard_layout_object(layout)
+        object_name = natural
+        if not object_name:
+            skipped.append({"layout": layout, "friendly_name": friendly,
+                            "reason": "this release does not run that layout"})
+            continue
+        if object_name in present:
+            # The name is taken by something OmniSuite did not install. It is
+            # somebody's work; it is reported, never replaced.
+            conflicts.append({"layout": layout, "friendly_name": friendly,
+                              "object_name": object_name,
+                              "reason": "%s already exists on this decoder and "
+                                        "was not created by OmniSuite."
+                                        % object_name})
+            continue
+        ok, message = _mv_method(ip, "add_multiview", dict(config))
+        landed = any(str(o.get("name") or "") == object_name
+                     for o in _mv_config(ip, "multiview"))
+        if not (ok and landed):
+            skipped.append({"layout": layout, "friendly_name": friendly,
+                            "object_name": object_name,
+                            "reason": message or "the decoder did not create it"})
+            continue
+        present.add(object_name)
+        _record_multiview_meta(device, object_name, {
+            "layout": layout,
+            "standard_layout": layout,
+            "standard": True,
+            "friendly_name": friendly,
+            "canvas": "%sx%s" % (config["width"], config["height"]),
+            "requested_canvas": omni_multiview.ACTIVE_CANVAS,
+            "updated": time.time(),
+            # No source, no input, no multicast: there is nothing to record
+            # about resources a layout does not use.
+            "windows": [{"cell": w["cell"],
+                         "label": omni_multiview.subframe_label(
+                             w["cell"], w["width"], w["height"]),
+                         "x": w["x"], "y": w["y"], "anchor": w["anchor"],
+                         "width": w["width"], "height": w["height"],
+                         "is_main": w["cell"] == omni_multiview.main_window_cell(layout),
+                         } for w in windows],
+        })
+        installed.append({"layout": layout, "friendly_name": friendly,
+                          "object_name": object_name})
+
+    log.info("[MULTIVIEW] standard layouts on %s: %d installed, %d already "
+             "present, %d skipped, %d conflict(s)",
+             ip, len(installed), len(existing), len(skipped), len(conflicts))
+    return {"decoder": ip,
+            "hostname": device.get("hostname") or ip,
+            "available": len(omni_multiview.STANDARD_LAYOUTS),
+            "installed": installed, "existing": existing,
+            "skipped": skipped, "conflicts": conflicts}, ""
+
+
+@app.route("/api/multiview/layouts/install", methods=["POST"])
+def api_multiview_layouts_install():
+    """Install the standard layout library, and change no display anywhere.
+
+    Accepts a single decoder or a group. For a group every member gets the same
+    library, which is what makes a group able to show a common layout later --
+    and still nothing is shown and no encoder is touched.
+    """
+    payload = request.get_json(silent=True) or {}
+    group_id = (payload.get("group") or "").strip()
+    if group_id:
+        group = _find_group(group_id)
+        if group is None:
+            return jsonify({"ok": False, "error": "No such group."}), 404
+        targets = [m.get("ip") for m in (group.get("members") or ()) if m.get("ip")]
+        label = group.get("name")
+    else:
+        ip = (payload.get("decoder") or "").strip()
+        if not ip:
+            return jsonify({"ok": False, "error": "decoder ip required"}), 400
+        targets, label = [ip], ip
+
+    reports, problems = [], []
+    for target in targets:
+        report, error = _install_standard_layouts(target)
+        if report is None:
+            problems.append({"decoder": target, "error": error})
+            continue
+        reports.append(report)
+
+    installed = sum(len(r["installed"]) for r in reports)
+    existing = sum(len(r["existing"]) for r in reports)
+    conflicts = [c for r in reports for c in r["conflicts"]]
+    skipped = [s for r in reports for s in r["skipped"]]
+    total = len(omni_multiview.STANDARD_LAYOUTS)
+
+    if not reports:
+        return jsonify({"ok": False, "status": "FAILED",
+                        "error": (problems[0]["error"] if problems
+                                  else "nothing to install"),
+                        "problems": problems}), 502
+
+    if len(targets) == 1:
+        message = ("%d standard layouts available \u2014 %d installed, %d already "
+                   "existed." % (total, installed, existing))
+    else:
+        message = ("%d standard layouts on each of %d decoders \u2014 %d "
+                   "installed, %d already existed."
+                   % (total, len(reports), installed, existing))
+    if conflicts:
+        message += (" %d name(s) already in use by something OmniSuite did not "
+                    "create, and left alone." % len(conflicts))
+
+    return jsonify({
+        "ok": True, "status": "VERIFIED", "target": label,
+        "available": total, "installed": installed, "existing": existing,
+        "conflicts": conflicts, "skipped": skipped,
+        "problems": problems, "decoders": reports,
+        "message": message,
+        # Said plainly, because it is the promise the operation makes.
+        "display_changed": False, "encoder_writes": 0,
+    })
+
+
 @app.route("/api/multiview/state", methods=["GET"])
 def api_multiview_state():
     """The selected decoder's Multiview state. Three reads, on demand only."""
@@ -13870,7 +14042,11 @@ def _plan_refusal(plan, operation):
       anything else             -> 400, this cannot be built as asked
     """
     unreachable = _unreachable_sources(plan)
-    reasons = list(plan.get("errors") or [])
+    # A refused Save is refused for a preset reason, and quoting an execution
+    # error at an operator who was only trying to store a layout would name a
+    # problem that is not in their way.
+    reasons = list((plan.get("preset_errors") if operation == "save"
+                    else plan.get("errors")) or [])
     if unreachable:
         names = ", ".join(sorted({entry["hostname"] for entry in unreachable}))
         return {
@@ -14421,7 +14597,16 @@ def api_multiview_apply():
         return jsonify(body), status
     plan, state, encoder_states = built
 
-    if not plan.get("ok") or plan.get("conflicts"):
+    # Save asks the PRESET question, not the execution question. A source that
+    # is offline, has no second encoder or has no Session 2 destination cannot
+    # be prepared right now, and none of that is a reason to refuse to remember
+    # that the operator wants it in that window. Scaler conflicts are the same:
+    # two saved layouts wanting one encoder at two sizes is normal, and only
+    # showing one of them is a decision.
+    #
+    # Everything those checks protect is still enforced, at Show, against the
+    # state that exists then -- which is the only state that can be protected.
+    if not plan.get("preset_ok"):
         body, status = _plan_refusal(plan, "save")
         return jsonify(body), status
     body, status = _apply_saved_plan(plan, plan["decoder"]["ip"])
@@ -14444,10 +14629,14 @@ def _recall_plan(ip, name, state):
     """
     device = {d.get("ip"): d for d in _load_cache()}.get(ip, {})
     assignments, record = _saved_assignments(device, name)
-    if not assignments:
+    # "No assignments" and "no record" are different things. A layout with
+    # nothing assigned is a perfectly good Multiview -- the decoder composites
+    # it and keeps its output active -- so only the second is a refusal.
+    if not record:
         return None, None, None, None, (
             f"OmniSuite has no record of what feeds {name}, so it cannot be "
             f"prepared. Open it and save it again.", 409)
+    assignments = assignments or {}
 
     encoder_states = _gather_encoder_states(assignments.values())
     plan = omni_multiview.plan_multiview(

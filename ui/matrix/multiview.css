@@ -568,3 +568,27 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
   color: var(--state-success);
   border-color: var(--state-success);
 }
+
+
+/* ---------------------------------------------------------------- empty windows
+   A window with nothing in it is part of the layout, not a fault. On an active
+   Multiview it is the thing an operator drops a source onto, so it says what it
+   is rather than merely being blank. */
+.mv-window-empty {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px dashed var(--edge);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* A source that cannot feed a Multiview window but can still be routed
+   normally. Shown as a tile, because it is draggable -- to the display output,
+   and nowhere else. */
+.mv-source.route-only { opacity: .88; }
+.mv-source.route-only .mv-source-name { color: var(--text-muted); }

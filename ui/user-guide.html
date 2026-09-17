@@ -524,6 +524,31 @@
       <p>If a source cannot be reached, OmniSuite tries a few times before giving up, then tells you which one it was and that <strong>nothing was changed</strong>. That is different from a Multiview that cannot be built &mdash; the message says which it is, so you know whether to fix the layout or go and look at the equipment.</p>
       <div class="note">Very occasionally a window stays black after a layout change even though everything is configured correctly. OmniSuite notices and says which window rather than reporting success. Showing a different Multiview and then showing this one again clears it.</div>
 
+      <h3>Standard layouts</h3>
+      <p><strong>Install Standard Layouts</strong> puts the eleven standard Multiview shapes on the selected decoder &mdash; 2&times;2, Side by Side, the four PiP corners, the four 1+3 arrangements and 4-Split &mdash; ready to use.</p>
+      <div class="note"><strong>Installing them changes nothing on screen.</strong> No source is configured, no bandwidth is used and the display carries on showing whatever it was showing. A layout is a shape, not a booking.</div>
+      <p>It is safe to press more than once. Layouts already there are left alone, and only the missing ones are added; the message afterwards says how many of each. If you have renamed one, OmniSuite still recognises it and will not add a duplicate. If a name is already taken by a Multiview you built yourself, that one is left untouched and reported.</p>
+      <p>With a group selected, the same eleven layouts are installed on every decoder in it &mdash; again without showing anything.</p>
+
+      <h3>A Multiview can be saved before it is finished</h3>
+      <p>You do not have to fill in every window before you can save. A Multiview may be saved with <strong>all, some or none</strong> of its windows assigned, and you can come back and finish it later.</p>
+      <p>Empty windows are marked <strong>Empty</strong> on the canvas. They are part of the layout: they simply have nothing in them yet.</p>
+      <p>You can also save a window pointing at a source that is <strong>switched off right now</strong>, or one that still needs configuring. OmniSuite remembers what you asked for. It tells you the truth when you try to <strong>Show</strong> it, which is the moment it actually matters.</p>
+      <div class="note"><strong>Saved Multiviews do not reserve anything.</strong> A saved layout holds no bandwidth and no encoder. That is why two of them can happily want the same source in different sizes &mdash; only showing one of them is a decision.</div>
+
+      <h3>Selecting is not showing</h3>
+      <p>Choosing a Multiview from the dropdown opens it for editing. It does <strong>not</strong> put it on the display. Nothing reaches the screen until you press <strong>Show on Display</strong>.</p>
+      <p>The canvas says which you are looking at: <strong>LIVE</strong> when this Multiview is the one on the display, <strong>INACTIVE</strong> when it is saved on the decoder but not currently shown. The Display output panel above always shows what the decoder is really doing.</p>
+
+      <h3>Filling windows while it is on the display</h3>
+      <p>When a Multiview is <strong>LIVE</strong>, dragging a source into an empty window puts it on screen straight away. Only then is that source prepared &mdash; that is the point at which bandwidth is actually used.</p>
+      <p>The <strong>&times;</strong> on a window clears it. The window becomes Empty again, the other windows carry on untouched, and the Multiview itself is not deleted.</p>
+
+      <h3>What OmniSuite checks when you press Show</h3>
+      <p>Show is where everything is checked against the equipment as it is at that moment: whether each source is reachable, whether it has the bandwidth, whether the sizes work, and whether anything else is already using it.</p>
+      <p><strong>Two displays can share a source</strong> when they need it at the same size &mdash; that is normal and costs nothing extra.</p>
+      <p>If another display is already using that source at a <strong>different</strong> size, Show is refused and says so, naming the source and the display already using it. OmniSuite will not resize a source out from under a screen somebody is watching. Change the layout, or use a different source for that window.</p>
+
       <h3>Display output: what is actually on the screen</h3>
       <p>Above the canvas is a small <strong>Display output</strong> panel. It shows what the decoder is putting on its screen right now, which is not always the Multiview you happen to have open.</p>
       <table>

@@ -319,6 +319,10 @@
     el('mv_copy').title = currentView() ? ''
       : 'Choose a Multiview to copy.';
     el('mv_groups').disabled = busy;
+    el('mv_install').disabled = busy || !haveDecoder;
+    el('mv_install').title = haveDecoder
+      ? 'Install the standard Multiview layouts. The display is not changed.'
+      : 'Choose a decoder first.';
     el('mv_target').disabled = busy;
     el('mv_decoder').disabled = busy;
     el('mv_layout').disabled = busy;
@@ -989,8 +993,48 @@
       detail.appendChild(node('summary', null,
         state.excluded.length + ' encoder(s) not eligible'));
       state.excluded.forEach((entry) => {
-        detail.appendChild(node('div', 'mv-source-meta',
-          entry.hostname + ' (' + (entry.model || '') + ') — ' + (entry.reason || '')));
+        // Ineligible for a Multiview WINDOW is not ineligible for everything.
+        // A model excluded from Multiview still has an ordinary Session 1
+        // stream, and the display output can take it. Rendering these as text
+        // made a perfectly routable encoder unreachable from this page.
+        const routable = entry.normal_route === 'ready';
+        if (!routable) {
+          detail.appendChild(node('div', 'mv-source-meta',
+            entry.hostname + ' (' + (entry.model || '') + ') — '
+            + (entry.reason || '')));
+          return;
+        }
+        const tile = node('div', 'mv-source needs-work route-only');
+        tile.draggable = true;
+        tile.tabIndex = 0;
+        tile.dataset.ip = entry.ip;
+        tile.dataset.status = entry.status || '';
+        tile.dataset.normalRoute = entry.normal_route || '';
+        tile.setAttribute('role', 'button');
+        tile.setAttribute('aria-label',
+          'Source ' + entry.hostname + ' at ' + entry.ip + '. '
+          + (entry.reason || 'Not eligible for Multiview.')
+          + ' Can still be routed to the display output.');
+        tile.appendChild(node('div', 'mv-source-name', entry.hostname));
+        tile.appendChild(node('div', 'mv-source-meta',
+          (entry.model || 'Encoder') + ' · ' + entry.ip));
+        tile.appendChild(node('div', 'mv-source-warning', entry.reason || ''));
+        tile.appendChild(node('div', 'mv-source-meta',
+          'Display output only — not available for a Multiview window'));
+        tile.addEventListener('dragstart', (event) => {
+          closePreview();
+          tile.classList.add('dragging');
+          state.dragging = {ip: entry.ip, multiview: false, normal: true};
+          renderDisplayOutputArming();
+          event.dataTransfer.setData('text/plain', entry.ip);
+          event.dataTransfer.effectAllowed = 'copy';
+        });
+        tile.addEventListener('dragend', () => {
+          tile.classList.remove('dragging');
+          state.dragging = null;
+          renderDisplayOutputArming();
+        });
+        detail.appendChild(tile);
       });
       excluded.appendChild(detail);
     }
@@ -1131,7 +1175,10 @@
   // and this page implements none of them a second time.
   async function routeToDisplay(ip) {
     if (activeGroup()) return;                 // status only, by design
-    const source = state.sources.find((entry) => entry.ip === ip);
+    // Either list: a source excluded from Multiview windows can still be a
+    // perfectly ordinary conventional source.
+    const source = state.sources.concat(state.excluded)
+      .find((entry) => entry.ip === ip);
     if (!source || source.normal_route !== 'ready') {
       notify(source && source.normal_route_reason
         ? source.normal_route_reason
@@ -1282,12 +1329,19 @@
         overlay.appendChild(node('div', 'mv-window-tag',
           windowTag(window_, subframe)));
       } else {
+        // Part of the layout, not a fault. A Multiview with empty windows is a
+        // perfectly good Multiview -- the decoder composites it and keeps the
+        // display active -- so the window says what it is instead of looking
+        // like something that failed to load.
+        box.classList.add('is-empty');
+        overlay.appendChild(node('div', 'mv-window-empty', 'Empty'));
         overlay.appendChild(node('div', 'mv-window-title',
           prettyCell(window_.cell)));
         overlay.appendChild(node('div', 'mv-window-sub',
           window_.width + 'x' + window_.height));
         overlay.appendChild(node('div', 'mv-window-hint',
-          isLive() ? 'Drop a source to switch' : 'Drop a source here'));
+          isLive() ? 'Drop a source here to show it now'
+                   : 'Drop a source here'));
       }
       // A preview that cannot be shown is said quietly, and never instead of
       // the source information -- the window is still routable either way. The
@@ -2199,6 +2253,47 @@
 
   // ---------------------------------------------------------------- editing
 
+  async function installStandardLayouts() {
+    const group = activeGroup();
+    const where = group ? group.name : decoderLabel();
+    const confirmed = await window.omniConfirm({
+      title: 'Install standard layouts',
+      message: 'Installs the standard Multiview layout presets on ' + where
+        + '. This does not change the display and does not configure any '
+        + 'source stream.',
+      summary: [
+        {label: 'Layouts', value: '2x2, Side-by-Side, four PiP positions, '
+                                  + 'four 1+3 positions and 4-Split'},
+        {label: 'Display', value: 'unchanged'},
+        {label: 'Sources', value: 'untouched — nothing is prepared until you '
+                                  + 'Show a Multiview'},
+        {label: 'Existing', value: 'layouts already installed are left alone'},
+      ],
+      confirmText: 'Install',
+    });
+    if (!(confirmed === true || (confirmed && confirmed.ok))) return;
+
+    setStatus('Installing standard layouts on ' + where + '…', null);
+    el('mv_install').disabled = true;
+    try {
+      const body = await getJSON('/api/multiview/layouts/install', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(group ? {group: group.id}
+                                   : {decoder: readingDecoder()}),
+      });
+      setStatus(body.message || 'Installed.', !!body.ok);
+      notify(body.message || 'Standard layouts installed.', 'ok');
+      (body.conflicts || []).forEach((conflict) => notify(conflict.reason));
+      await loadDecoderState(readingDecoder(), state.editing);
+    } catch (err) {
+      setStatus('FAILED — ' + err.message, false);
+      notify(err.message);
+    } finally {
+      el('mv_install').disabled = false;
+    }
+  }
+
   function startCreate() {
     if (!state.canCreate) return;
     state.editing = null;
@@ -2748,6 +2843,7 @@
     el('mv_notice_copy').addEventListener('click', copyNotice);
     el('mv_notice_save').addEventListener('click', saveNotice);
 
+    el('mv_install').addEventListener('click', installStandardLayouts);
     el('mv_save').addEventListener('click', save);
     el('mv_show').addEventListener('click', showOnDisplay);
     el('mv_delete').addEventListener('click', remove);

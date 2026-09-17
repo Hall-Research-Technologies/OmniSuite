@@ -3488,3 +3488,124 @@ route call forced to fail, the real rollback ran against the real decoder and
 all six checks passed. The two surfaces then agreed across
 `Multiview → route → Show → failed route → rollback`, 4 of 4, and the decoder
 was left on the Multiview it was found on.
+
+## AH. Phase 8F: what an empty window really is
+
+### AH.1 The discovery gate
+
+Nothing was implemented until decoder 192.168.100.32 had been asked. Raw object
+writes and semantic readback, one variable at a time, with the display
+untouched:
+
+| probe | result |
+|---|---|
+| 4 windows, every one assigned | accepted |
+| 4 windows, one with `input: ""` | **accepted, and the empty input survives readback** |
+| 1 window only, assigned | accepted — an object may hold fewer windows than its layout |
+| 1 window only, `input: ""` | accepted |
+| no subframes at all | accepted, geometry retained |
+| no `subframes` key | accepted, geometry retained |
+| name only | accepted, but the object defaults to **3840x2160** |
+| a window pointing at `ip_input99`, which does not exist | **accepted and stored as-is** |
+
+Then, with the display changed deliberately and restored afterwards:
+
+```
+show a fully EMPTY 2x2
+  display        : multiviewP8FEmpty
+  output status  : active=True, resolution 1920x1080
+  input status   : active=True, 1920x1088
+  every window   : health="not subscribed", subscribed=False
+```
+
+and a partial one, through the shipping endpoints:
+
+```
+C. apply partial 2x2 (2 assigned, 2 empty)  -> VERIFIED
+G. show it                                   -> VERIFIED
+     top_left      health=live  packets=61043
+     top_right     health=live  packets=3365
+     bottom_left   health=not subscribed
+     bottom_right  health=not subscribed
+D. assign bottom_left live                   -> VERIFIED, others untouched
+F. clear top_right live                      -> VERIFIED, others untouched
+   the display survived all of it            -> True
+```
+
+### AH.2 The decision
+
+**Model A.** An unassigned window is a real subframe with an empty input,
+because that is what the hardware itself does. No virtual representation was
+invented, and none was needed: the decoder composites an all-empty Multiview and
+keeps its output active.
+
+Two device behaviours recorded because they cost time to find:
+
+- An object created with **only a name** defaults to 3840x2160. Geometry is
+  always written explicitly.
+- The decoder answers **any** rejected method call with
+  `Invalid username/password`. An object name that does not start with
+  `multiview` produces it; so does a malformed `add_multiview`. It is not an
+  authentication problem, and reading it as one sends you a long way in the
+  wrong direction.
+- The decoder does **not** validate the input a subframe points at. OmniSuite
+  must, because nothing downstream will.
+
+### AH.3 What the code already had
+
+`_build_mutations` had documented and implemented the save/activation split
+since Phase 7B: saving writes the Multiview object and nothing else. The
+planner's **errors** had not been split the same way, so a Save inherited every
+execution refusal. That, and the single line `"Assign at least one source before
+applying."`, were the whole of what stood between the existing architecture and
+the one this phase asked for.
+
+### AH.4 Live results
+
+Section 27, with a Multiview genuinely active on .32 and 192.168.100.142 feeding
+its main window at 1280x720:
+
+```
+before: encoder2_input hdmi_input1 | scaler 1280x720 | bitrate 200
+        session2 enabled=True dest=239.100.132.254:1000 sap=False
+  install 11 standard layouts        VERIFIED (9 installed, 2 conflicts left alone)
+  save a preset referencing .142     VERIFIED
+  edit its assignments               VERIFIED
+  save a preset with no sources      VERIFIED
+after : identical
+display still multiview13HorizontalBottom, all four windows live
+```
+
+Section 29 ran the whole operator workflow on .32 and passed 20 of 20, including
+showing an empty layout, filling two windows live, clearing one, confirming that
+merely reading another preset moved nothing, and finding the partial assignment
+intact after a round trip.
+
+Section 28, cross-decoder:
+
+```
+.32 uses 192.168.100.142 Encoder 2 at 1280x720
+.161 SAVES a preset wanting it at 960x544      -> allowed
+.161 SHOWS it                                   -> HTTP 409 conflict
+   "Window top_left needs Encoder 2 on hw-omni-e4111-08414 scaled to 960x544,
+    but multiview13HorizontalBottom on hw-omni-d4511-085c6 already depends on
+    it at a different size."
+   .142 scaler unchanged, .32 still showing, all four windows live,
+   .161 display untouched
+```
+
+The compatible-size half of section 28 could not be completed on the bench: the
+second decoder's Show reached the known black-window condition and rolled back.
+That run still shows the plan was allowed rather than refused, the shared
+encoder was not re-scaled, and the active decoder was undisturbed. Compatible
+reuse is covered by simulator tests. **The black-window behaviour is unchanged
+and is not claimed to be fixed.**
+
+### AH.5 A defect this phase introduced
+
+Showing an installed standard layout saved over its metadata and lost the marker
+recording which of the eleven it came from, so a later install would have
+created a duplicate of a layout the decoder already had. Found because bench
+cleanup removed 8 of 9 installed layouts and left one behind. The identity now
+survives being saved over, and `test_showing_a_standard_layout_does_not_make_it_a_duplicate`
+holds it.

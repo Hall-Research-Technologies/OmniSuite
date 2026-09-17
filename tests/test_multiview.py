@@ -2099,6 +2099,435 @@ class MatrixOverlayFreshnessTests(MultiviewTestBase):
 
 
 # ==========================================================================
+# A preset is not an execution
+# ==========================================================================
+
+class PresetVersusExecutionTests(MultiviewTestBase):
+    """Saving a layout must never configure a source.
+
+    A decoder holds many saved Multiviews and only one is on the output, so two
+    saved layouts will routinely want the same Encoder 2 at two sizes. Making a
+    saved layout own live resources is therefore not merely wasteful, it is
+    impossible in principle -- and a Save that prepared an encoder would change
+    a picture on somebody else's screen.
+
+    This is a durable safety invariant, not a preference. A regression here
+    breaks an active display somewhere else in the building.
+    """
+
+    def _encoder_writes(self, *devices):
+        writes = []
+        for device in devices:
+            writes.extend([w for w in device.writes if w[0] != "config_get"])
+        return writes
+
+    def _save(self, **extra):
+        payload = {"decoder": DECODER_IP, "layout": "2x2",
+                   "canvas": mv.ACTIVE_CANVAS, "name": "Preset",
+                   "assignments": {}}
+        payload.update(extra)
+        return self.client.post("/api/multiview/apply", json=payload)
+
+    # ---- the invariant, one operation at a time ---------------------------
+    def test_saving_an_empty_preset_writes_no_encoder(self):
+        self.decoder()
+        encoder = self.encoder(ENCODER_IP)
+        encoder.writes = []
+        body = self._save().get_json()
+        self.assertTrue(body["ok"], body)
+        self.assertEqual(self._encoder_writes(encoder), [])
+
+    def test_saving_a_partial_preset_writes_no_encoder(self):
+        self.decoder()
+        encoder = self.encoder(ENCODER_IP)
+        encoder.writes = []
+        body = self._save(assignments={"top_left": ENCODER_IP}).get_json()
+        self.assertTrue(body["ok"], body)
+        self.assertEqual(self._encoder_writes(encoder), [])
+
+    def test_saving_a_fully_assigned_preset_writes_no_encoder(self):
+        """The one most likely to be assumed to need preparation. It does not."""
+        self.decoder()
+        encoder = self.encoder(ENCODER_IP)
+        second = self.encoder(ENCODER2_IP)
+        encoder.writes, second.writes = [], []
+        body = self._save(assignments={
+            "top_left": ENCODER_IP, "top_right": ENCODER2_IP,
+            "bottom_left": ENCODER_IP, "bottom_right": ENCODER2_IP}).get_json()
+        self.assertTrue(body["ok"], body)
+        self.assertEqual(self._encoder_writes(encoder, second), [])
+
+    def test_editing_an_inactive_preset_writes_no_encoder(self):
+        self.decoder()
+        encoder = self.encoder(ENCODER_IP)
+        first = self._save(assignments={"top_left": ENCODER_IP}).get_json()
+        name = first["plan"]["object_name"]
+        encoder.writes = []
+        again = self._save(object_name=name, update_existing=True,
+                           assignments={"top_left": ENCODER_IP,
+                                        "top_right": ENCODER_IP}).get_json()
+        self.assertTrue(again["ok"], again)
+        self.assertEqual(self._encoder_writes(encoder), [])
+
+    def test_installing_standard_layouts_writes_no_encoder(self):
+        self.decoder()
+        encoder = self.encoder(ENCODER_IP)
+        encoder.writes = []
+        body = self.client.post("/api/multiview/layouts/install",
+                                json={"decoder": DECODER_IP}).get_json()
+        self.assertTrue(body["ok"], body)
+        self.assertEqual(self._encoder_writes(encoder), [])
+
+    def test_copying_a_preset_writes_no_encoder(self):
+        decoder = self.decoder()
+        self.decoder(ip=DECODER2_IP)
+        encoder = self.encoder(ENCODER_IP)
+        saved = self._save(assignments={"top_left": ENCODER_IP}).get_json()
+        encoder.writes = []
+        copied = self.client.post("/api/multiview/copy", json={
+            "source_decoder": DECODER_IP, "target_decoder": DECODER2_IP,
+            "name": saved["plan"]["object_name"]}).get_json()
+        self.assertTrue(copied.get("ok"), copied)
+        self.assertEqual(self._encoder_writes(encoder), [])
+        self.assertIsNotNone(decoder)
+
+    # ---- and what it does instead ----------------------------------------
+    def test_saving_writes_the_object_and_only_the_object(self):
+        decoder = self.decoder()
+        self.encoder(ENCODER_IP)
+        decoder.writes = []
+        self._save(assignments={"top_left": ENCODER_IP})
+        nodes = {w[1] for w in decoder.writes if w[0] != "config_get"}
+        methods = {w[1] for w in decoder.writes if w[0] == "method"}
+        self.assertTrue(nodes <= {"multiview"} or methods,
+                        "saving touched more than the Multiview object: %s"
+                        % decoder.writes)
+        self.assertEqual(
+            [e for e in decoder.nodes["ip_input"]
+             if e["name"] in ("ip_input2", "ip_input4", "ip_input6", "ip_input8")
+             and e.get("enabled")], [],
+            "saving subscribed a decoder input")
+
+    def test_saving_never_changes_the_display(self):
+        decoder = self.decoder()
+        self.encoder(ENCODER_IP)
+        before = decoder.nodes["hdmi_output"][0]["video"]["input"]
+        self._save(assignments={"top_left": ENCODER_IP})
+        self.assertEqual(decoder.nodes["hdmi_output"][0]["video"]["input"],
+                         before, "saving changed what is on the display")
+
+
+# ==========================================================================
+# The standard layout library
+# ==========================================================================
+
+class StandardLayoutInstallTests(MultiviewTestBase):
+    """Eleven layouts an operator can have without configuring anything.
+
+    A layout is a shape. Installing one claims no encoder, no session, no
+    multicast and no decoder input, and changes no display -- which is what
+    makes it safe to put the whole library on every decoder in a group.
+    """
+
+    def _install(self, **payload):
+        return self.client.post("/api/multiview/layouts/install",
+                                json=payload or {"decoder": DECODER_IP})
+
+    def test_it_installs_every_standard_layout(self):
+        decoder = self.decoder()
+        body = self._install().get_json()
+        self.assertTrue(body["ok"], body)
+        self.assertEqual(body["available"], 11)
+        self.assertEqual(body["installed"], 11)
+        self.assertEqual(len(decoder.nodes["multiview"]), 11)
+
+    def test_every_installed_layout_is_empty(self):
+        decoder = self.decoder()
+        self._install()
+        for obj in decoder.nodes["multiview"]:
+            inputs = [s.get("input") for s in obj.get("subframes") or []]
+            self.assertTrue(inputs, "%s has no windows" % obj.get("name"))
+            self.assertEqual([i for i in inputs if i], [],
+                             "%s was installed with a source assigned: %s"
+                             % (obj.get("name"), inputs))
+
+    def test_the_geometry_is_the_layout_geometry(self):
+        decoder = self.decoder()
+        self._install()
+        by_name = {str(o.get("name") or ""): o for o in decoder.nodes["multiview"]}
+        for layout in mv.STANDARD_LAYOUTS:
+            name, config, windows = mv.standard_layout_object(layout)
+            stored = by_name.get(name)
+            self.assertIsNotNone(stored, "%s was not installed" % layout)
+            self.assertEqual(len(stored.get("subframes") or []), len(windows),
+                             "%s has the wrong number of windows" % layout)
+
+    def test_a_second_install_creates_nothing(self):
+        decoder = self.decoder()
+        self._install()
+        body = self._install().get_json()
+        self.assertEqual(body["installed"], 0)
+        self.assertEqual(body["existing"], 11)
+        self.assertEqual(len(decoder.nodes["multiview"]), 11,
+                         "a second install duplicated the library")
+
+    def test_it_installs_only_what_is_missing(self):
+        decoder = self.decoder()
+        self._install()
+        # Four of them go away, as if an operator had deleted them.
+        removed = sorted(str(o.get("name") or "")
+                         for o in decoder.nodes["multiview"])[:4]
+        decoder.nodes["multiview"] = [
+            o for o in decoder.nodes["multiview"]
+            if str(o.get("name") or "") not in removed]
+        body = self._install().get_json()
+        self.assertEqual(body["installed"], 4, body["message"])
+        self.assertEqual(body["existing"], 7)
+        self.assertEqual(len(decoder.nodes["multiview"]), 11)
+
+    def test_it_identifies_a_layout_by_identity_not_by_its_name(self):
+        """An operator who renamed a standard layout still has that layout."""
+        decoder = self.decoder()
+        self._install()
+        device = {"ip": DECODER_IP, "mac": "00:00:5E:00:53:10"}
+        stored = srv._multiview_meta_for(device)
+        target = next(name for name, record in stored.items()
+                      if record.get("standard_layout") == "2x2")
+        self.assertTrue(any(str(o.get("name") or "") == target
+                            for o in decoder.nodes["multiview"]))
+        body = self._install().get_json()
+        self.assertEqual(body["installed"], 0,
+                         "a layout was reinstalled although it is already there")
+
+    def test_showing_a_standard_layout_does_not_make_it_a_duplicate(self):
+        """Measured on the bench: a shown layout stopped being one of the eleven.
+
+        Saving over a record replaced it wholesale, so the marker that says
+        which standard layout it came from was lost -- and the next install
+        created a second copy of a layout the decoder already had.
+        """
+        decoder = self.decoder()
+        self.encoder(ENCODER_IP)
+        self._install()
+        device = {"ip": DECODER_IP, "mac": "00:00:5E:00:53:10"}
+        target = next(name for name, record
+                      in srv._multiview_meta_for(device).items()
+                      if record.get("standard_layout") == "2x2")
+        # The operator puts a source in it and saves, exactly as they would.
+        saved = self.client.post("/api/multiview/apply", json={
+            "decoder": DECODER_IP, "layout": "2x2", "canvas": mv.ACTIVE_CANVAS,
+            "name": "2x2", "object_name": target, "update_existing": True,
+            "assignments": {"top_left": ENCODER_IP}}).get_json()
+        self.assertTrue(saved["ok"], saved)
+        record = srv._multiview_meta_for(device).get(target) or {}
+        self.assertEqual(record.get("standard_layout"), "2x2",
+                         "saving over a standard layout forgot what it was")
+        body = self._install().get_json()
+        self.assertEqual(body["installed"], 0,
+                         "a layout that is already installed was installed again")
+        self.assertEqual(len(decoder.nodes["multiview"]), 11,
+                         "the library was duplicated")
+
+    def test_it_never_overwrites_something_it_did_not_create(self):
+        """Somebody else's object with the same name is reported, not replaced."""
+        decoder = self.decoder()
+        name, _config, _windows = mv.standard_layout_object("2x2")
+        decoder.nodes["multiview"].append(
+            {"name": name, "width": 1920, "height": 1088,
+             "subframes": [{"name": "theirs (1920x1088)", "input": "ip_input2"}]})
+        body = self._install().get_json()
+        self.assertTrue(body["ok"], body)
+        conflicts = {c["object_name"] for c in body["conflicts"]}
+        self.assertIn(name, conflicts, body)
+        theirs = next(o for o in decoder.nodes["multiview"]
+                      if str(o.get("name") or "") == name)
+        self.assertEqual([s.get("name") for s in theirs["subframes"]],
+                         ["theirs (1920x1088)"],
+                         "an object OmniSuite did not create was overwritten")
+
+    def test_it_changes_no_display_and_no_decoder_input(self):
+        decoder = self.decoder()
+        before_display = decoder.nodes["hdmi_output"][0]["video"]["input"]
+        before_inputs = copy.deepcopy(decoder.nodes["ip_input"])
+        self._install()
+        self.assertEqual(decoder.nodes["hdmi_output"][0]["video"]["input"],
+                         before_display)
+        self.assertEqual(decoder.nodes["ip_input"], before_inputs,
+                         "installing layouts changed a decoder subscription")
+
+    def test_it_says_plainly_that_it_changes_nothing(self):
+        self.decoder()
+        body = self._install().get_json()
+        self.assertFalse(body["display_changed"])
+        self.assertEqual(body["encoder_writes"], 0)
+        self.assertIn("installed", body["message"])
+
+    def test_an_unreadable_decoder_is_reported_rather_than_guessed(self):
+        body = self._install(decoder="192.0.2.99")
+        self.assertEqual(body.status_code, 502)
+        self.assertFalse(body.get_json()["ok"])
+
+    def test_the_library_is_the_eleven_layouts_this_release_runs(self):
+        self.assertEqual(sorted(mv.STANDARD_LAYOUTS), sorted(mv.LAYOUTS))
+
+    def test_every_standard_layout_has_a_friendly_name(self):
+        """Operators read names, not device object identifiers."""
+        for layout in mv.STANDARD_LAYOUTS:
+            label = mv.LAYOUTS[layout]["label"]
+            self.assertTrue(label and not label.startswith("multiview"), label)
+            name, _config, _windows = mv.standard_layout_object(layout)
+            self.assertTrue(name.startswith(mv.NAME_PREFIX),
+                            "%s is not a legal device name" % name)
+
+
+# ==========================================================================
+# Showing a preset that is not fully assigned
+# ==========================================================================
+
+class PartialShowTests(MultiviewTestBase):
+    """Empty windows cost nothing, and the assigned ones still work.
+
+    Measured on the bench first: a Multiview whose subframes carry `input: ""`
+    is accepted, preserved on readback, composited, and leaves the decoder's
+    output active. Unassigned windows subscribe to nothing.
+    """
+
+    def _save_and_show(self, assignments):
+        self.decoder()
+        body = self.client.post("/api/multiview/apply", json={
+            "decoder": DECODER_IP, "layout": "2x2", "canvas": mv.ACTIVE_CANVAS,
+            "name": "Partial", "assignments": assignments}).get_json()
+        self.assertTrue(body["ok"], body)
+        name = body["plan"]["object_name"]
+        shown = self.client.post("/api/multiview/show",
+                                 json={"decoder": DECODER_IP, "name": name})
+        return name, shown
+
+    def test_a_partial_multiview_can_be_shown(self):
+        self.encoder(ENCODER_IP)
+        name, shown = self._save_and_show({"top_left": ENCODER_IP})
+        self.assertEqual(shown.status_code, 200, shown.get_json())
+        self.assertTrue(shown.get_json()["ok"], shown.get_json())
+        decoder = self.devices[DECODER_IP]
+        self.assertEqual(decoder.nodes["hdmi_output"][0]["video"]["input"], name)
+
+    def test_an_empty_multiview_can_be_shown(self):
+        self.encoder(ENCODER_IP)
+        name, shown = self._save_and_show({})
+        self.assertEqual(shown.status_code, 200, shown.get_json())
+        self.assertTrue(shown.get_json()["ok"], shown.get_json())
+        decoder = self.devices[DECODER_IP]
+        self.assertEqual(decoder.nodes["hdmi_output"][0]["video"]["input"], name)
+
+    def test_an_empty_multiview_prepares_nothing(self):
+        encoder = self.encoder(ENCODER_IP)
+        encoder.writes = []
+        self._save_and_show({})
+        self.assertEqual([w for w in encoder.writes if w[0] != "config_get"], [],
+                         "an empty Multiview prepared an encoder")
+        decoder = self.devices[DECODER_IP]
+        self.assertEqual(
+            [e["name"] for e in decoder.nodes["ip_input"]
+             if e["name"].startswith("ip_input") and e.get("enabled")
+             and e["name"] not in ("ip_input1", "ip_input3")], [],
+            "an empty Multiview subscribed a decoder input")
+
+    def test_only_the_assigned_sources_are_prepared(self):
+        encoder = self.encoder(ENCODER_IP)
+        second = self.encoder(ENCODER2_IP)
+        encoder.writes, second.writes = [], []
+        self._save_and_show({"top_left": ENCODER_IP})
+        self.assertTrue([w for w in encoder.writes if w[0] != "config_get"],
+                        "the assigned source was not prepared")
+        self.assertEqual([w for w in second.writes if w[0] != "config_get"], [],
+                         "an unassigned source was prepared anyway")
+
+    def test_empty_windows_consume_no_bandwidth(self):
+        self.decoder()
+        self.encoder(ENCODER_IP)
+        plan = self.client.post("/api/multiview/plan", json={
+            "decoder": DECODER_IP, "layout": "2x2", "canvas": mv.ACTIVE_CANVAS,
+            "name": "Partial",
+            "assignments": {"top_left": ENCODER_IP}}).get_json()["plan"]
+        self.assertEqual(len(plan["unique_streams"]), 1,
+                         "empty windows were counted as streams")
+        assigned = [w for w in plan["windows"] if w["source"]]
+        self.assertEqual(len(assigned), 1)
+        self.assertEqual([w["bitrate"] for w in plan["windows"] if not w["source"]],
+                         [None, None, None],
+                         "an empty window was given a bitrate")
+
+    def test_empty_windows_claim_no_decoder_input(self):
+        self.decoder()
+        self.encoder(ENCODER_IP)
+        plan = self.client.post("/api/multiview/plan", json={
+            "decoder": DECODER_IP, "layout": "2x2", "canvas": mv.ACTIVE_CANVAS,
+            "name": "Partial",
+            "assignments": {"top_left": ENCODER_IP}}).get_json()["plan"]
+        claimed = [(w.get("ip_input") or {}).get("ip_input")
+                   for w in plan["windows"] if not w["source"]]
+        self.assertEqual([c for c in claimed if c], [],
+                         "an empty window was allocated a decoder input")
+
+    def test_the_object_records_an_empty_window_as_an_empty_input(self):
+        """Model A: the decoder's own representation, measured on the bench."""
+        self.encoder(ENCODER_IP)
+        name, _shown = self._save_and_show({"top_left": ENCODER_IP})
+        decoder = self.devices[DECODER_IP]
+        obj = next(o for o in decoder.nodes["multiview"]
+                   if str(o.get("name") or "") == name)
+        empties = [s for s in obj["subframes"] if not s.get("input")]
+        self.assertEqual(len(empties), 3, obj["subframes"])
+        for subframe in empties:
+            self.assertEqual(subframe.get("input"), "")
+
+    def test_filling_an_empty_window_live_prepares_only_then(self):
+        encoder = self.encoder(ENCODER_IP)
+        second = self.encoder(ENCODER2_IP)
+        name, _shown = self._save_and_show({"top_left": ENCODER_IP})
+        second.writes = []
+        switched = self.client.post("/api/multiview/switch", json={
+            "decoder": DECODER_IP, "name": name, "cell": "top_right",
+            "source": ENCODER2_IP}).get_json()
+        self.assertTrue(switched["ok"], switched)
+        self.assertTrue([w for w in second.writes if w[0] != "config_get"],
+                        "filling an empty window prepared nothing")
+        self.assertIsNotNone(encoder)
+
+    def test_clearing_a_window_live_leaves_the_others_alone(self):
+        self.encoder(ENCODER_IP)
+        second = self.encoder(ENCODER2_IP)
+        name, _shown = self._save_and_show({"top_left": ENCODER_IP,
+                                            "top_right": ENCODER2_IP})
+        cleared = self.client.post("/api/multiview/switch", json={
+            "decoder": DECODER_IP, "name": name, "cell": "top_right",
+            "source": ""}).get_json()
+        self.assertTrue(cleared["ok"], cleared)
+        decoder = self.devices[DECODER_IP]
+        obj = next(o for o in decoder.nodes["multiview"]
+                   if str(o.get("name") or "") == name)
+        by_cell = {str(s.get("name") or "").split(" (")[0]: s.get("input")
+                   for s in obj["subframes"]}
+        self.assertEqual(by_cell.get("top_right"), "",
+                         "the cleared window is not empty: %s" % by_cell)
+        self.assertTrue(by_cell.get("top_left"),
+                        "clearing one window disturbed another: %s" % by_cell)
+        self.assertEqual(decoder.nodes["hdmi_output"][0]["video"]["input"], name,
+                         "clearing a window took the Multiview off the display")
+
+    def test_the_multiview_is_not_deleted_by_clearing_its_last_window(self):
+        self.encoder(ENCODER_IP)
+        name, _shown = self._save_and_show({"top_left": ENCODER_IP})
+        self.client.post("/api/multiview/switch", json={
+            "decoder": DECODER_IP, "name": name, "cell": "top_left",
+            "source": ""})
+        decoder = self.devices[DECODER_IP]
+        self.assertTrue(any(str(o.get("name") or "") == name
+                            for o in decoder.nodes["multiview"]),
+                        "clearing the last window deleted the Multiview")
+
+
+# ==========================================================================
 # Display output: what the decoder is actually showing
 # ==========================================================================
 
@@ -2676,14 +3105,38 @@ class RefusalClassificationTests(MultiviewTestBase):
         self.encoder(ENCODER_IP)
 
     def _save_with_unreachable_source(self):
-        # A second source that is not registered, so it cannot be read.
-        return self.client.post("/api/multiview/apply", json={
+        """Saving one is allowed now: a preset records intent, not a reservation.
+
+        The source is simply not registered, so it cannot be read.
+        """
+        response = self.client.post("/api/multiview/apply", json={
             "decoder": DECODER_IP, "layout": "side-by-side",
             "canvas": mv.ACTIVE_CANVAS, "name": "Pair",
             "assignments": {"left": ENCODER_IP, "right": ENCODER2_IP}})
+        assert response.status_code == 200, response.get_json()
+        return response
+
+    def _show_with_unreachable_source(self):
+        """...and showing it is where the missing device actually matters."""
+        saved = self._save_with_unreachable_source().get_json()
+        return self.client.post(
+            "/api/multiview/show",
+            json={"decoder": DECODER_IP, "name": saved["plan"]["object_name"]})
+
+    def test_saving_a_preset_with_an_offline_source_is_allowed(self):
+        """It is a note of what the operator wants, not a claim on hardware."""
+        body = self._save_with_unreachable_source().get_json()
+        self.assertTrue(body["ok"], body)
+        stored = srv._multiview_meta_for(
+            {"ip": DECODER_IP, "mac": "00:00:5E:00:53:10"})
+        record = stored.get(body["plan"]["object_name"]) or {}
+        kept = {w.get("cell"): w.get("source_ip") for w in record.get("windows") or []}
+        self.assertEqual(kept.get("right"), ENCODER2_IP,
+                         "the offline source was erased from the saved preset: %s"
+                         % kept)
 
     def test_an_unreachable_source_is_not_reported_as_an_invalid_request(self):
-        response = self._save_with_unreachable_source()
+        response = self._show_with_unreachable_source()
         self.assertEqual(response.status_code, 503,
                          "a device that did not answer was reported as a bad "
                          "request")
@@ -2692,17 +3145,25 @@ class RefusalClassificationTests(MultiviewTestBase):
         self.assertEqual(body["status"], "DEVICE UNREACHABLE")
 
     def test_it_names_the_device_and_the_window(self):
-        body = self._save_with_unreachable_source().get_json()
+        body = self._show_with_unreachable_source().get_json()
         entry = body["unreachable"][0]
         self.assertEqual(entry["ip"], ENCODER2_IP)
         self.assertEqual(entry["window"], "right")
         self.assertEqual(entry["attempts"], srv.MULTIVIEW_READ_ATTEMPTS)
 
     def test_it_says_that_nothing_was_changed(self):
-        body = self._save_with_unreachable_source().get_json()
+        body = self._show_with_unreachable_source().get_json()
         self.assertEqual(body["writes"], 0)
         self.assertIn("No device was changed", body["error"])
-        self.assertEqual(self.devices[DECODER_IP].nodes["multiview"], [],
+        # The preset itself was saved first -- that is the point of the split --
+        # so what must be untouched is the DISPLAY and the decoder's inputs, not
+        # the existence of the object.
+        self.assertEqual(
+            self.devices[DECODER_IP].nodes["hdmi_output"][0]["video"]["input"],
+            "ip_input1", "a refused Show still changed the display")
+        self.assertEqual(
+            [e for e in self.devices[DECODER_IP].nodes["ip_input"]
+             if e["name"] in ("ip_input2", "ip_input4") and e.get("enabled")], [],
                          "a refusal still created something")
 
     def test_a_genuinely_invalid_request_is_still_a_bad_request(self):
@@ -3906,10 +4367,31 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(plan["conflicts"])
         self.assertIn("multiviewOther", plan["conflicts"][0])
 
-    def test_a_plan_with_no_sources_is_refused(self):
+    def test_a_plan_with_no_sources_is_a_layout_worth_saving(self):
+        """It was refused because Save and Show shared one verdict.
+
+        A Multiview with nothing assigned is a layout. The decoder composites
+        one and keeps its output active -- measured on the bench at 1920x1080,
+        every window "not subscribed" -- so there is nothing to protect anyone
+        from here.
+        """
         plan = mv.plan_multiview(self._desired(assignments={}),
                                  self._state(), self._encoders())
-        self.assertFalse(plan["ok"])
+        self.assertTrue(plan["preset_ok"], plan["preset_errors"])
+        self.assertTrue(plan["ok"], plan["errors"])
+        self.assertEqual([w for w in plan["windows"] if w["source"]], [],
+                         "an empty layout resolved a source from nowhere")
+
+    def test_an_empty_preset_prepares_no_encoder_at_all(self):
+        """The whole point: geometry is not a resource claim."""
+        plan = mv.plan_multiview(self._desired(assignments={}),
+                                 self._state(), self._encoders())
+        self.assertEqual(plan["activation"], [],
+                         "an empty layout claimed execution resources: %s"
+                         % [m["description"] for m in plan["activation"]])
+        stages = {m["stage"] for m in plan["mutations"]}
+        self.assertEqual(stages, {mv.STAGE_MULTIVIEW},
+                         "saving an empty layout writes more than the object")
 
     def test_an_unreachable_encoder_is_reported_not_guessed(self):
         plan = mv.plan_multiview(self._desired(), self._state(), {})
@@ -4436,21 +4918,65 @@ class ApplyTransactionTests(MultiviewTestBase):
         non_multiview = [d for d in second["applied"] if "multiview" not in d.lower()]
         self.assertEqual(non_multiview, [], non_multiview)
 
-    def test_a_conflicting_scaler_is_refused_rather_than_retuned(self):
-        decoder = self.decoder()
-        encoder = self.encoder()
+    def _other_decoder_uses_the_encoder_at(self, scaler_format):
         srv._record_multiview_meta(
             {"ip": "192.0.2.99", "mac": "00:00:5E:00:53:99", "hostname": "dec-b"},
             "multiviewOther",
-            {"layout": "2x2", "windows": [{"source_ip": ENCODER_IP, "encoder_index": 2,
-                                           "scaler_format": "1280x720"}]})
+            {"layout": "2x2", "windows": [{"source_ip": ENCODER_IP,
+                                           "encoder_index": 2,
+                                           "scaler_format": scaler_format}]})
+
+    def test_a_conflicting_scaler_may_be_saved_and_is_refused_at_show(self):
+        """Two saved layouts wanting one encoder at two sizes is normal.
+
+        Only showing one of them is a decision, and that is where the other
+        decoder can actually be disturbed. Saving is where it used to be
+        refused, which meant a preset could not even be written down.
+        """
+        decoder = self.decoder()
+        encoder = self.encoder()
+        self._other_decoder_uses_the_encoder_at("1280x720")
+
         response = self._apply()
-        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.status_code, 200, response.get_json())
         body = response.get_json()
-        self.assertEqual(body["status"], "conflict")
-        # Nothing was written anywhere.
-        self.assertEqual([w for w in encoder.writes if w[0] != "config_get"], [])
-        self.assertEqual(decoder.nodes["multiview"], [])
+        self.assertTrue(body["ok"], body)
+        name = body["plan"]["object_name"]
+        self.assertEqual([w for w in encoder.writes if w[0] != "config_get"], [],
+                         "saving a conflicted preset configured the encoder")
+
+        encoder.writes = []
+        shown = self.client.post("/api/multiview/show",
+                                 json={"decoder": DECODER_IP, "name": name})
+        self.assertEqual(shown.status_code, 409, shown.get_json())
+        detail = shown.get_json()
+        self.assertEqual(detail["status"], "conflict")
+        self.assertIn("dec-b", str(detail.get("error")),
+                      "the refusal does not name the decoder already using it")
+        self.assertEqual([w for w in encoder.writes if w[0] != "config_get"], [],
+                         "a refused Show still wrote to the encoder")
+        self.assertNotEqual(
+            decoder.nodes["hdmi_output"][0]["video"]["input"], name,
+            "a refused Show still changed the display")
+
+    def test_a_compatible_scaler_is_reused_rather_than_refused(self):
+        """Same encoder, same size, two decoders. That is sharing, not conflict."""
+        self.decoder()
+        encoder = self.encoder(
+            vc2=_vc2(encoder2_scaler={"enable": True, "width": 960, "height": 544}))
+        self._other_decoder_uses_the_encoder_at("960x544")
+        body = self._apply().get_json()
+        self.assertTrue(body["ok"], body)
+        name = body["plan"]["object_name"]
+        shown = self.client.post("/api/multiview/show",
+                                 json={"decoder": DECODER_IP, "name": name})
+        self.assertEqual(shown.status_code, 200, shown.get_json())
+        self.assertTrue(shown.get_json()["ok"], shown.get_json())
+        rescales = [w for w in encoder.writes
+                    if w[0] != "config_get" and "scaler" in str(w).lower()]
+        self.assertEqual(rescales, [],
+                         "an encoder already at the right size was re-scaled: %s"
+                         % rescales)
 
     def test_an_invalid_plan_is_refused_before_any_write(self):
         decoder = self.decoder()

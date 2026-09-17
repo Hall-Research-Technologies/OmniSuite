@@ -224,11 +224,16 @@ const DECODERS = {ok: true, probed: 1, decoders: [
                       {ip: '192.0.2.12', hostname: 'dec-test-03',
                        discovered: true}]}]};
 const SOURCES = {ok: true, ready: 2, excluded: [
+  // Excluded from Multiview by model, and a completely ordinary Session 1
+  // source. Section 25: the first fact must not imply the second.
   {ip: '192.0.2.22', hostname: 'old-wp-01', model: 'AT-OMNI-111-WP',
    status: 'ineligible',
-   reason: 'AT-OMNI-111-WP is not supported as a Multiview source'},
+   reason: 'AT-OMNI-111-WP is not supported as a Multiview source',
+   normal_route: 'ready', normal_route_reason: '',
+   session1: '233.252.0.22'},
   {ip: '192.0.2.23', hostname: 'enc-offline-01', model: 'hw-omni-e4111',
    status: 'ineligible', reason: 'Offline',
+   normal_route: 'blocked', normal_route_reason: 'Offline',
    detail: 'The encoder did not answer.'}], sources: [
   {ip: '192.0.2.20', hostname: 'enc-test-01', model: 'hw-omni-e4111',
    status: 'ready', status_label: 'Ready', reason: '', detail: '', action: '',
@@ -361,6 +366,11 @@ let stateResponse = stateBody([]);
 let stateError = null;
 // The ordinary A/V Matrix route, which is what a drop on Display Output asks
 // for. The page must send this request and must not invent one of its own.
+let installResponse = {ok: true, status: 'VERIFIED', available: 11,
+                       installed: 8, existing: 3, conflicts: [], skipped: [],
+                       display_changed: false, encoder_writes: 0,
+                       message: '11 standard layouts available \u2014 8 installed, '
+                                + '3 already existed.'};
 let routeResponse = {ok: true, status: 'VERIFIED',
                      decoder: {ip: '192.0.2.10', video_input: 'ip_input1',
                                multiview_active: false, multiview_name: null}};
@@ -469,6 +479,8 @@ function stubFetch(url, options) {
     ? json(copyResponse)
     : Promise.resolve({ok: false, status: 409,
                        json: () => Promise.resolve(copyResponse)});
+  if (url.startsWith('/api/multiview/layouts/install'))
+    return json(installResponse);
   if (url.startsWith('/api/multiview/layouts')) return json(LAYOUT_CATALOG);
   if (url.startsWith('/api/multiview/decoders')) return json(DECODERS);
   if (url.startsWith('/api/multiview/sources')) return json(SOURCES);
@@ -3195,6 +3207,129 @@ async function selectDecoder(ip) {
     assertEqual(literals, [],
       'the panel hard-codes a colour, so one appearance will be wrong: '
       + literals.join(' '));
+  });
+
+  // ---- Phase 8F: presets, layouts and empty windows ----------------------
+
+  await check('Install Standard Layouts is offered once a decoder is chosen',
+    async () => {
+      await openWith(OUTPUT_SOURCE, [EXISTING_VIEW]);
+      const button = REGISTRY.get('mv_install');
+      assert(button, 'there is no Install Standard Layouts control');
+      assertEqual(button.disabled, false, 'it is disabled with a decoder chosen');
+    });
+
+  await check('it says what it does before it does it', async () => {
+    confirmCalls = 0;
+    confirmAnswer = false;
+    const before = requests.length;
+    REGISTRY.get('mv_install').dispatch('click');
+    await flush();
+    assertEqual(confirmCalls, 1, 'it installed without asking');
+    const text = JSON.stringify(lastConfirmOptions || {});
+    assert(/does not change the display/i.test(text),
+      'the dialog does not promise the display is left alone: ' + text);
+    assert(/does not configure any source/i.test(text),
+      'the dialog does not promise sources are untouched: ' + text);
+    assertEqual(requests.slice(before)
+      .filter(r => r.url.startsWith('/api/multiview/layouts/install')).length, 0,
+      'Cancel still installed');
+    confirmAnswer = true;
+  });
+
+  await check('accepting it installs, and reports what happened', async () => {
+    const before = requests.length;
+    REGISTRY.get('mv_install').dispatch('click');
+    await flush();
+    const calls = requests.slice(before)
+      .filter(r => r.url.startsWith('/api/multiview/layouts/install'));
+    assertEqual(calls.length, 1, 'expected exactly one install request');
+    assertEqual(calls[0].method, 'POST', 'install method');
+    assertEqual(calls[0].payload.decoder, '192.0.2.10', 'install target');
+    const status = REGISTRY.get('mv_status').textContent;
+    assert(/8 installed/.test(status) && /3 already existed/.test(status),
+      'the outcome is not reported: ' + status);
+  });
+
+  await check('installing sends no plan, save or show', () => {
+    // It is a layout operation. If it ever starts preparing anything, these
+    // are the requests that would appear.
+    const after = requests.slice(-8).map(r => r.url);
+    ['/api/multiview/apply', '/api/multiview/show', '/api/multiview/switch']
+      .forEach((forbidden) => {
+        assert(!after.some(u => u.startsWith(forbidden)),
+          'installing layouts reached ' + forbidden);
+      });
+  });
+
+  await check('an empty window says it is empty', async () => {
+    // A Multiview window with nothing in it is part of the layout, not a fault.
+    stateResponse = stateBody([Object.assign({}, EXISTING_VIEW, {
+      subframes: EXISTING_VIEW.subframes.slice(0, 1)})]);
+    displayOutput = OUTPUT_SOURCE;
+    await selectDecoder('192.0.2.10');
+    REGISTRY.get('mv_target').value = 'multiview2x2';
+    REGISTRY.get('mv_target').dispatch('change');
+    await flush();
+    const boxes = REGISTRY.get('mv_stage').children;
+    const empties = boxes.filter(b => /empty/i.test(b.deepText));
+    assert(empties.length >= 1,
+      'no window says it is empty: ' + boxes.map(b => b.deepText).join(' | '));
+    assert(empties[0]._classes.has('is-empty'),
+      'an empty window is not marked as one');
+  });
+
+  // ---- section 25: two eligibilities, two destinations --------------------
+  await check('a Multiview-excluded source is still offered for the display',
+    async () => {
+      await openWith(OUTPUT_SOURCE, [EXISTING_VIEW]);
+      const detail = REGISTRY.get('mv_sources_excluded');
+      const tile = detail.findAll(n => n._classes && n._classes.has('route-only'))[0];
+      assert(tile, 'an excluded but routable source was rendered as plain text');
+      assert(tile.deepText.includes('old-wp-01'), tile.deepText);
+      assertEqual(tile.draggable, true,
+        'a perfectly routable encoder could not be dragged anywhere');
+      assert(/display output only/i.test(tile.deepText),
+        'the tile does not say where it CAN go: ' + tile.deepText);
+    });
+
+  await check('and it can be dropped on Display Output', async () => {
+    const detail = REGISTRY.get('mv_sources_excluded');
+    const tile = detail.findAll(n => n._classes && n._classes.has('route-only'))[0];
+    tile.dispatch('dragstart', {dataTransfer: {setData: () => {},
+                                               effectAllowed: ''}});
+    const before = requests.length;
+    const result = dropOnOutput('192.0.2.22');
+    await flush();
+    assert(result.offered, 'Display Output refused a valid Session 1 source');
+    const routes = requests.slice(before)
+      .filter(r => r.url.startsWith('/api/route'));
+    assertEqual(routes.length, 1, 'the conventional route was not sent');
+    assertEqual(routes[0].payload.encoder, '192.0.2.22', 'encoder');
+    tile.dispatch('dragend', {});
+  });
+
+  await check('but a Multiview window still refuses it', async () => {
+    const detail = REGISTRY.get('mv_sources_excluded');
+    const tile = detail.findAll(n => n._classes && n._classes.has('route-only'))[0];
+    tile.dispatch('dragstart', {dataTransfer: {setData: () => {},
+                                               effectAllowed: ''}});
+    const box = REGISTRY.get('mv_stage').children[0];
+    let prevented = false;
+    box.dispatch('dragover', {preventDefault: () => { prevented = true; },
+                              dataTransfer: {dropEffect: ''}});
+    assertEqual(prevented, false,
+      'a window accepted a source excluded from Multiview');
+    tile.dispatch('dragend', {});
+  });
+
+  await check('a source that is offline is still only text', () => {
+    const detail = REGISTRY.get('mv_sources_excluded');
+    assert(detail.deepText.includes('enc-offline-01'),
+      'the offline encoder vanished from the list');
+    const tiles = detail.findAll(n => n._classes && n._classes.has('route-only'));
+    assert(!tiles.some(t => t.deepText.includes('enc-offline-01')),
+      'an offline encoder was offered as a draggable source');
   });
 
   // =======================================================================

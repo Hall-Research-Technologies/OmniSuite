@@ -500,6 +500,30 @@
 - `tests/test_fence.py` proves it, including by running the suite in a fresh interpreter through `python -m unittest` with no help from `run_tests.py`.
 - A test must not write a bench address into a test file, as a target or otherwise; use a documentation range, or RFC 2544's 198.18.0.0/15 when a routable-looking address is needed.
 
+### A layout is not a preset is not an execution
+
+Four things, and collapsing any two of them is how a saved layout comes to change somebody's picture:
+
+| | is | owns |
+|---|---|---|
+| **Layout** | geometry: how many windows, where, what size | nothing |
+| **Preset** | a layout plus zero or more desired source assignments | nothing |
+| **Active Multiview** | a preset reconciled against the hardware as it is *now* | encoders, sessions, decoder inputs |
+| **Display output** | what the decoder is actually showing | the screen |
+
+- **Creating, installing, copying, editing or saving an inactive preset must never configure Encoder 2.** Not its input, not its scaler, not its bitrate, not Session 2, not the Session 2 multicast, not SAP, not a decoder `ip_input`, not the HDMI output. Those are execution resources and they are prepared at Show and nowhere else. `_build_mutations` returns `save` and `activation` separately for exactly this reason, and `PresetVersusExecutionTests` is a durable fence around it: a regression here breaks a picture on somebody else's screen.
+- **A preset does not have to be executable at the moment it is saved.** A source may be offline, may have no Session 2 destination, may have no second encoder at all. Save asks the preset question (`preset_ok`); Show asks the execution question (`ok`). The offline assignment stays in the record, because it is what the operator asked for.
+- **What is structural stays structural.** A layout this release does not run, an illegal name, one source needed at two sizes in the same Multiview, one stream asked to fill three windows — none of those can ever execute whatever the hardware does, so they refuse the preset too. The test is "could any state of the world make this work", not "is it inconvenient".
+- **Show-time planning is not weakened by any of this.** Reachability, Encoder 2 input, headroom, scaler, Session 2, SAP, duplicate sharing, the two-subframes-per-stream limit, the decoder input pool, both 900 Mb/s budgets, Video Wall, Fast Switching and cross-decoder conflicts are all still evaluated against live state when Show is pressed. A saved configuration is not evidence that activation is possible.
+
+### An empty window is a window
+
+- **The decoder represents an unassigned window as a real subframe with `input: ""`.** Measured on the bench: the write is accepted, the empty input is preserved on readback, an object made entirely of them composites, and the decoder's output stays active at 1920x1080 with every window reporting "not subscribed". OmniSuite therefore stores layouts the way the hardware does (Model A) rather than inventing a virtual representation.
+- **An empty window consumes nothing** — no Encoder 2 stream, no Session 2, no multicast, no bandwidth, no decoder input. Show prepares only the unique sources actually assigned.
+- **A Multiview with empty windows is still LIVE when it is on the display.** Emptiness is a property of a window, not of the composition, and calling the whole thing INACTIVE because three of four windows are empty would be false.
+- **The decoder reports a rejected method call as "Invalid username/password" whatever the real reason.** An illegal object name produces it, and so does a malformed `add_multiview`. Never read that message as an authentication problem without checking the request first.
+- **One Encoder 2 has one scaler.** Two decoders may share a source when they want the same size, and a decoder asking for a different size is refused before any write, naming the source, both sizes and the decoder already using it. The already-active decoder is never changed to accommodate the one asking.
+
 ### Display output and the canvas answer different questions
 
 - **The Display Output panel says what the decoder is putting on its screen. The canvas says whether the composition you have open is that thing.** They are not two views of one fact, and a page that merges them will tell an operator that a preset they are editing is on air.

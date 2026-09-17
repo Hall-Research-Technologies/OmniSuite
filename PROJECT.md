@@ -4538,6 +4538,96 @@ scan path or to idle.
 **Encoder 1 is read. It is never written.** That was true before and is asserted
 now.
 
+## Phase 8F — Separating presets from execution
+
+A Multiview could not be saved unless every window had a source that was online,
+had a second encoder, had a Session 2 destination and did not clash with any
+other decoder. That made a saved layout a reservation rather than a description,
+and it meant an operator could not write down what they wanted until the room
+happened to be in the right state.
+
+### What the bench proved first
+
+Nothing was implemented until the decoder had been asked. On 192.168.100.32:
+
+| question | answer |
+|---|---|
+| does an object accept a subframe with no input | yes, and `input: ""` survives readback |
+| can an object hold fewer subframes than the layout | yes |
+| can an object hold none at all | yes, and it keeps its geometry |
+| does a fully empty Multiview display | yes — output active, 1920x1080, every window "not subscribed" |
+| can a source be added to an empty window later | yes, verified |
+| can a source be cleared later | yes, and the other windows are untouched |
+| does it validate the input name | no — `ip_input99` is accepted and stored |
+
+So **Model A**: an unassigned window is a real subframe with an empty input,
+which is what the hardware itself does. No virtual representation was invented.
+
+Two device behaviours worth remembering: an object created with only a name
+defaults to 3840x2160, so geometry is always written explicitly; and the decoder
+answers any rejected method call — including one with an illegal object name
+— with "Invalid username/password", which is not an authentication problem.
+
+### What changed
+
+The `save` / `activation` split already existed in `_build_mutations`: saving
+wrote the Multiview object and nothing else. What was missing was the same split
+in the **errors**. `plan_multiview` now returns two verdicts:
+
+- `preset_ok` — is this a well-formed layout with a legal name and structurally
+  valid references
+- `ok` — can every assigned source be prepared on the hardware as it stands
+
+Save asks the first. Show asks the second, and every execution check that used to
+block a Save still blocks a Show, unchanged.
+
+Structural failures still refuse a preset, because no state of the world could
+make them work: an unknown layout, a canvas this release does not run, an
+illegal name, one source needed at two sizes in the same Multiview, one stream
+asked to fill three windows, and a decoder with Video Wall or Fast Switching on.
+
+### Install Standard Layouts
+
+One action puts the eleven standard layouts on a decoder or on every member of a
+group. Measured: **zero encoder writes, zero session writes, zero decoder
+subscriptions, no display change** — one `add_multiview` per missing layout and
+nothing else.
+
+It is idempotent by layout identity rather than by name, so a preset an operator
+renamed is still recognised as that layout, and an object OmniSuite did not
+create is reported as a conflict and never overwritten. On the bench it installed
+9 of 11 and left the operator's own `multiview2x2` and
+`multiview13HorizontalBottom` alone.
+
+### Live results
+
+- **Section 27**: with a Multiview active on .32, install + save-referencing-that-source
+  + edit + empty-save left the encoder's Encoder 2 and Session 2 state
+  **byte-identical**, the display unmoved and every window still live. 8 of 8.
+- **Section 29**: install → show an empty layout → fill two windows live → clear
+  one → read another preset (nothing moved) → show it → come back and find the
+  partial assignment intact. 20 of 20.
+- **Section 28**: .32 using an encoder at 1280x720; another decoder saved a
+  preset wanting it at 960x544 — allowed — and was refused at Show with 409,
+  naming the encoder, both sizes and the decoder already using it. The scaler was
+  unchanged and .32 kept all four windows live.
+
+### One defect this phase introduced and fixed
+
+Showing an installed standard layout saved over its metadata record and lost the
+marker saying which of the eleven it came from, so the next install would have
+created a duplicate. Found by the bench leaving one object behind during
+cleanup. The identity now survives being saved over, and a test holds it.
+
+### An honest limit
+
+Section 28's compatible-reuse half could not be completed on the bench: the
+second decoder's Show ended in the known black-window condition and rolled back.
+What that run does prove is that the plan was allowed rather than refused, the
+shared encoder was not re-scaled, and the already-active decoder was untouched.
+Compatible reuse itself is covered by simulator tests. The black-window
+behaviour is unchanged and is not claimed to be fixed.
+
 ## Phase 8E — Display output: what is actually on the screen
 
 The Multiview page could say a great deal about the composition an operator had
