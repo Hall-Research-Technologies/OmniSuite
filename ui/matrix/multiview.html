@@ -159,9 +159,10 @@
       <h3 id="mv_groups_title">Decoder groups</h3>
       <p class="mv-dialog-note">
         A group is a set of decoders meant to show the same Multiview — the
-        screens over a bar, or a row of monitors. Grouping them lets OmniSuite
-        check the whole set together before it changes anything, because the
-        encoders behind the windows are shared.
+        screens over a bar, or a row of monitors. This panel is for deciding
+        which decoders are in a group. To <strong>use</strong> one, close this and
+        pick it from the target list at the top of the page: everything else
+        works exactly as it does for a single decoder.
       </p>
       <div class="mv-groups-body">
         <div class="mv-groups-list">
@@ -183,11 +184,7 @@
           <div class="mv-dialog-actions mv-group-actions">
             <button id="mv_group_save" class="mv-control primary" type="button">Save group</button>
             <button id="mv_group_delete" class="mv-control danger" type="button">Delete group</button>
-          </div>
-          <div class="mv-dialog-actions mv-group-actions">
-            <button id="mv_group_copy" class="mv-control secondary" type="button">Save Multiview to group</button>
-            <button id="mv_group_show" class="mv-control primary" type="button">Show on group</button>
-            <button id="mv_group_check" class="mv-control secondary" type="button">Check group</button>
+            <button id="mv_group_use" class="mv-control secondary" type="button">Work on this group</button>
           </div>
         </div>
       </div>

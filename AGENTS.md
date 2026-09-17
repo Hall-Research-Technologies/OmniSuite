@@ -456,6 +456,27 @@
 - Group-wide live changes happen **only while a visible group context is shown**. A drag that moves six displays must never look like a drag that moves one.
 - Drift is **reported, never corrected**. A grouped decoder routed away from the A/V Matrix is DRIFTED, and only the decoder the operator routed leaves Multiview. Do not poll to discover this; read on the actions the operator already takes.
 
+### Warnings have two lifetimes, and both are version-scoped
+
+- **Acknowledging a warning is not the same as suppressing it.** Pressing Continue means "I have read it" and lasts the browser session, surviving a refresh and navigation. Ticking "do not show again" is a preference and lasts the application version. Two records, two keys; neither overwrites the other, and neither touches any other warning's preference.
+- Both record the VERSION they were given against, through the shared `omniSuppression` store. A release that changes what an operation does asks again by itself. Never require the operator to clear browser storage.
+- A missing preference store, or storage that throws, means **show the warning**. Absence of a record is not consent.
+
+### Operator documentation states what the code does
+
+- The Multiview notice claimed OmniSuite might "adjust Encoder 1 or Encoder 2 bit rates" long after Phase 7C made Encoder 1 read-only. **When a policy changes, the operator-facing text that describes it changes in the same build**, and the promise belongs in the list of things OmniSuite will never do.
+
+### A group is a target, not a second interface
+
+- Persisted groups appear in the same selector as the decoders, in their own labelled section, and are never presented as pseudo-devices. Selecting one scopes everything that follows: the same canvas, layouts, sources, previews, drag and drop, Save and Show.
+- The scope is stated, not implied: a visible context bar, and button labels that say how many displays an action changes.
+- A group's own state comes from reading every member. One member's live state is **never** reported as the group's.
+- The Groups panel is membership management. Choosing what a group shows, and changing it, belongs in the ordinary workflow.
+
+### A stylesheet must not ask for a colour nobody defines
+
+- `var(--x)` with no definition and no fallback resolves to nothing, silently. A dialog whose surface did that had no background at all and the canvas read through its text. Tokens used are checked against tokens defined, and a dialog surface is one of the opaque theme surfaces.
+
 ### The hardware fence belongs to the tests
 
 - **The fence lives in `tests/_fence.py` and is installed by the test package**, so it is present through `run_tests.py`, `python -m unittest`, discovery, an IDE and any mutation harness. It must never again depend on one runner remembering to install it.

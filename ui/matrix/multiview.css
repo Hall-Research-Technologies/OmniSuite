@@ -385,7 +385,7 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
   display:flex; flex-direction:column; gap:8px;
   padding:10px 12px; margin:0 0 10px;
   border:1px solid var(--border); border-radius:8px;
-  background:var(--panel);
+  background:var(--panel-2);
 }
 .mv-editbar[hidden]{display:none;}
 .mv-editbar-head{
@@ -421,25 +421,37 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
   background:var(--backdrop-veil);
 }
 .mv-dialog-backdrop[hidden]{display:none;}
+/* The dialog surface is opaque. `--card` is the same token the shared
+ * confirmation uses, so this follows the theme rather than inventing a colour;
+ * the backdrop behind it stays translucent. An earlier version asked for
+ * `--panel`, which is defined nowhere, so the surface had no background at all
+ * and the Multiview canvas read straight through the text. */
 .mv-dialog{
   width:min(420px, 100%); margin:auto;
   display:flex; flex-direction:column; gap:12px;
   padding:16px; border-radius:10px;
-  border:1px solid var(--border); background:var(--panel);
+  border:1px solid var(--border); background:var(--card);
+  box-shadow:0 18px 50px var(--backdrop-veil);
 }
 .mv-dialog-wide{width:min(720px, 100%);}
 .mv-dialog h3{margin:0; font-size:15px;}
 .mv-dialog-note{margin:0; font-size:12px; color:var(--muted); line-height:1.5;}
-.mv-dialog-status{font-size:12px; min-height:16px;}
+.mv-dialog-status{font-size:12px; min-height:16px; color:var(--text);}
 .mv-dialog-actions{display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap;}
 .mv-groups-body{display:flex; gap:16px; flex-wrap:wrap;}
 .mv-groups-list{display:flex; flex-direction:column; gap:6px; min-width:200px; flex:1 1 200px;}
+.mv-groups-list select{background:var(--panel-2); color:var(--text);}
 .mv-groups-detail{display:flex; flex-direction:column; gap:10px; flex:2 1 300px;}
 .mv-group-members{
   display:flex; flex-direction:column; gap:4px;
   max-height:160px; overflow:auto;
   padding:6px; border:1px solid var(--border); border-radius:6px;
+  background:var(--panel-2); color:var(--text);
 }
+.mv-group-member{padding:3px 4px; border-radius:4px;}
+.mv-group-member:hover{background:var(--selected-tint);}
+/* A ticked decoder has to be obvious at a glance in a list of nine. */
+.mv-group-member.chosen{background:var(--selected-tint-strong); font-weight:600;}
 .mv-group-member{display:flex; align-items:center; gap:8px; font-size:12px;}
 .mv-group-state{font-size:12px;}
 .mv-group-state-head{font-weight:600; margin-bottom:4px;}

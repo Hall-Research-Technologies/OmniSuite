@@ -68,6 +68,30 @@
         localStorage.removeItem(key);
       } catch (err) { /* nothing to undo */ }
     },
+
+    // The lighter level: acknowledged for this browser session. It survives a
+    // refresh and a trip to another page, which is what "I have read it" means
+    // to the person who read it, and a genuinely new session asks again.
+    //
+    // Version-scoped as well, so a release that changes what an operation does
+    // asks again even inside a session that acknowledged the old one.
+    suppressedForSession: function (key, version) {
+      if (!key || !version) return false;
+      try {
+        return sessionStorage.getItem(key) === String(version);
+      } catch (err) {
+        return false;
+      }
+    },
+    rememberForSession: function (key, version) {
+      if (!key || !version) return false;
+      try {
+        sessionStorage.setItem(key, String(version));
+        return true;
+      } catch (err) {
+        return false;                    // not fatal: the warning simply returns
+      }
+    },
   };
 
   window.omniConfirm = function omniConfirm(options) {

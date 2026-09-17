@@ -456,6 +456,11 @@
       <p><strong>Multiview puts several sources on one display at once.</strong> You choose a decoder, choose a layout, drop a source into each window, and the decoder composites them into a single picture. It is built and recalled entirely from the Multiview page.</p>
       <p>Multiview is <strong>video only</strong>. Sound still comes from one source &mdash; see <em>Audio</em> below.</p>
 
+      <h3>The notice you see the first time</h3>
+      <p>Multiview configures equipment other people may be using, so the first time you open the page it explains what it can change. <strong>Continue</strong> means you have read it, and it stays out of your way for the rest of the session &mdash; refreshing or moving between pages does not bring it back.</p>
+      <p>Tick <strong>Do not show this notice again</strong> and it stays away in future sessions too. That preference is kept for the version of OmniSuite you agreed to; after an upgrade the notice appears once more, because a new release may change what Multiview does.</p>
+      <div class="note">OmniSuite sets the Multiview stream's bit rate within whatever a source has spare after its primary stream. <strong>It never reduces that primary stream to make room</strong> &mdash; a Multiview window gets a smaller share instead, because reducing the primary stream would disturb everyone already watching it.</div>
+
       <h3>Choosing a decoder</h3>
       <p>Everything starts with the decoder that will show the Multiview. Only decoders that answered and that support Multiview are offered. A decoder that is switched off or unreachable is not in the list at all.</p>
       <p>A decoder that <em>is</em> reachable but cannot do Multiview right now is still listed, greyed out, with the reason &mdash; usually <strong>Video Wall</strong> or <strong>Fast Switching</strong>. Those are deliberate settings, so OmniSuite tells you rather than turning them off behind your back. Turn the conflicting feature off on the decoder and it becomes available.</p>
@@ -567,21 +572,24 @@
       <h3>Decoder groups</h3>
       <p>A <strong>group</strong> is a set of decoders meant to show the same thing &mdash; the screens over a bar, a row of monitors, an overflow area. Press <strong>Groups&hellip;</strong> to create one, name it, and tick the decoders that belong to it. Groups are remembered by OmniSuite; they are still there tomorrow.</p>
       <p>If you never need groups, you never have to make one. The page works exactly as it always has for a single decoder.</p>
-      <p>With a group selected you can:</p>
+
+      <h3>Using a group</h3>
+      <p><strong>A group is chosen the same way a decoder is.</strong> The list at the top of the page has two sections &mdash; <em>Groups</em> and <em>Decoders</em> &mdash; and picking a group tells OmniSuite that what you do next applies to all of it. A bar across the page names the group and how many decoders it covers, so a change that moves six screens never looks like a change that moves one.</p>
+      <p>Everything after that is the page you already know: the same canvas, the same layouts, the same source list, the same hover previews, the same drag and drop. There is no second Multiview interface to learn.</p>
       <table>
-        <tr><th>Action</th><th>What it does</th></tr>
-        <tr><td><strong>Save Multiview to group</strong></td><td>Saves this Multiview on every decoder in the group. <strong>No picture changes.</strong></td></tr>
-        <tr><td><strong>Show on group</strong></td><td>Puts it on every screen in the group. This does change what people are watching, so it asks first.</td></tr>
-        <tr><td><strong>Check group</strong></td><td>Reads the decoders and reports whether they are still in step.</td></tr>
+        <tr><th>With a group selected</th><th>What it does</th></tr>
+        <tr><td><strong>Save group Multiview</strong></td><td>Saves the layout and sources on every decoder in the group. <strong>No picture changes.</strong></td></tr>
+        <tr><td><strong>Show on <em>n</em> displays</strong></td><td>Puts it on every screen in the group. This changes what people are watching, so it asks first.</td></tr>
+        <tr><td><strong>Dragging a source onto a window</strong></td><td>While the group is live, changes that window on every decoder at once &mdash; checked across the whole group first.</td></tr>
       </table>
+      <div class="note">The <strong>Groups&hellip;</strong> panel is only for deciding which decoders are in a group. Choosing what a group shows, and changing it, happens in the normal workflow once the group is selected.</div>
 
       <h3>When a group cannot show something</h3>
       <p>The encoders behind the windows are shared. <strong>An encoder sends one picture size at a time</strong>, so if one decoder in the group wants a source as a large window and another wants the same source as a small one, that cannot be done &mdash; by any product, not just this one.</p>
       <p>OmniSuite works this out <strong>before it changes anything</strong> and refuses the whole operation, naming the source and the decoders that disagree about it. Give that source the same window size on every decoder in the group and it will go through. Nothing is written to any device by a refused group operation.</p>
 
       <h3>Changing a source across a whole group</h3>
-      <p>After you show a Multiview on a group, a bar appears saying which group you are working in and how many decoders it covers. While that bar is showing, <strong>dragging a new source onto a window changes it on every decoder in the group</strong>, checked and applied together.</p>
-      <p>Press <strong>Leave group context</strong> and you are back to working on the one decoder. A single-decoder change never moves the rest of the group.</p>
+      <p>While a group is selected and live, <strong>dragging a new source onto a window changes it on every decoder in the group</strong>, checked and applied together. Pick a single decoder from the list again and you are back to working on that one alone; a single-decoder change never moves the rest of the group.</p>
 
       <h3>When a group falls out of step</h3>
       <p><strong>Check group</strong> reports each decoder as:</p>
@@ -591,7 +599,7 @@
         <tr><td><strong>Drifted</strong></td><td>Showing something else &mdash; someone routed it from the A/V Matrix, it was changed elsewhere, or it restarted.</td></tr>
         <tr><td><strong>Offline</strong></td><td>The decoder did not answer.</td></tr>
       </table>
-      <p>OmniSuite does not quietly put a drifted decoder back, because it cannot know that you did not mean it. Use <strong>Show on group</strong> again when you want them back in step.</p>
+      <p>OmniSuite does not quietly put a drifted decoder back, because it cannot know that you did not mean it. Select the group and show its Multiview again when you want them back in step.</p>
       <div class="note">Showing on a group configures the decoders one after another and confirms each one. If one fails, the ones already changed are put back and you are told whether that succeeded. These are separate devices on a network, so this is a careful best effort rather than a guarantee that all of them change at the same instant.</div>
 
       <h3>Multiview and the A/V Matrix</h3>

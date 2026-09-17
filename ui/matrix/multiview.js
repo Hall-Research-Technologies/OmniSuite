@@ -113,13 +113,74 @@
     });
   }
 
+  // ---- targets: a decoder, or a group of them ----------------------------
+  //
+  // `GROUP_PREFIX` keeps the two apart in one <select> without inventing
+  // pseudo-devices: a group's value is never a valid address, so nothing that
+  // expects a decoder can be handed one by accident.
+  const GROUP_PREFIX = 'group:';
+
+  function targetIsGroup(value) {
+    return String(value || '').startsWith(GROUP_PREFIX);
+  }
+
+  function selectedTarget() {
+    return el('mv_decoder').value || '';
+  }
+
+  function selectedGroupId() {
+    const value = selectedTarget();
+    return targetIsGroup(value) ? value.substring(GROUP_PREFIX.length) : '';
+  }
+
+  // The group being worked on, or null when the target is a single decoder.
+  function activeGroup() {
+    const id = selectedGroupId();
+    return id ? (groups.list.find((group) => group.id === id) || null) : null;
+  }
+
+  // Which decoder the page reads its canvas and its Multiview list from. For a
+  // group that is a member: the definition is the same on all of them, and one
+  // of them has to be asked. Never presented as the group's own state -- the
+  // group's state is what `groups.state` reports across every member.
+  function readingDecoder() {
+    const group = activeGroup();
+    if (!group) return selectedTarget();
+    const online = (group.members || []).find((member) => member.discovered);
+    return (online || (group.members || [])[0] || {}).ip || '';
+  }
+
   async function loadDecoders(probe) {
     const body = await getJSON('/api/multiview/decoders' + (probe ? '?probe=1' : ''));
     state.decoders = body.decoders || [];
+    groups.list = body.groups || [];
     const select = el('mv_decoder');
     const previous = select.value;
     select.replaceChildren();
-    select.appendChild(new Option('Select a decoder…', ''));
+    select.appendChild(new Option('Select a target…', ''));
+
+    // Two headed sections rather than one flat list, so a group is never
+    // mistaken for a decoder. Groups first: an installation that has made one
+    // is usually working with it.
+    if (groups.list.length) {
+      const groupBand = document.createElement('optgroup');
+      groupBand.label = 'Groups';
+      groups.list.forEach((group) => {
+        const count = (group.members || []).length;
+        const option = new Option(
+          group.name + '  —  ' + count + (count === 1 ? ' decoder' : ' decoders'),
+          GROUP_PREFIX + group.id);
+        if (!count) {
+          option.disabled = true;
+          option.text += '  — no decoders in it yet';
+        }
+        groupBand.appendChild(option);
+      });
+      select.appendChild(groupBand);
+    }
+
+    const decoderBand = document.createElement('optgroup');
+    decoderBand.label = 'Decoders';
     state.decoders.forEach((decoder) => {
       const option = new Option(
         decoder.hostname + '  (' + decoder.ip + ')', decoder.ip);
@@ -129,8 +190,9 @@
         option.disabled = true;
         option.text += '  — no Multiview support';
       }
-      select.appendChild(option);
+      decoderBand.appendChild(option);
     });
+    select.appendChild(decoderBand);
     if (previous) select.value = previous;
   }
 
@@ -427,7 +489,11 @@
   // operator's terms, and is shown once per application version -- suppression
   // records the version it was acknowledged for, so a release that changes what
   // Multiview touches shows it again by itself.
+  // Two records, two lifetimes. Pressing Continue is an acknowledgement for
+  // this session; ticking the box is a preference for this version. Separate
+  // keys, so neither can overwrite or corrupt the other.
   const NOTICE_KEY = 'multiview_notice_acknowledged_version';
+  const NOTICE_SESSION_KEY = 'multiview_notice_acknowledged_session';
   const NOTICE_TITLE = 'Before you use Multiview';
 
   const NOTICE = {
@@ -449,14 +515,16 @@
       'take the display\u2019s sound from the main window\u2019s source, over '
       + 'its ordinary Session 1 audio, using the audio input the display '
       + 'already uses',
-      'adjust Encoder 1 or Encoder 2 bit rates, but only where the measured '
-      + '900 Mb/s limits leave no alternative',
+      'set the Multiview stream\u2019s bit rate, within whatever the source '
+      + 'has spare after its primary stream',
       'change a window immediately, while it is on screen, when you drop a new '
       + 'source onto an active Multiview',
       'reconcile all of the above when you recall a different Multiview',
     ],
     wontHeading: 'OmniSuite will never do these on its own:',
     wont: [
+      'reduce the source\u2019s primary stream to make room for a Multiview '
+      + 'window \u2014 a window gets a smaller share instead',
       'turn off Video Wall',
       'turn off Fast Switching where it conflicts',
       'change an encoder just because you opened this page',
@@ -508,11 +576,15 @@
   }
 
   function noticeAcknowledged() {
-    try {
-      return localStorage.getItem(NOTICE_KEY) === state.version && !!state.version;
-    } catch (err) {
-      return false;                       // storage refused: show it
+    if (!state.version) return false;
+    const store = suppressionStore();
+    if (!store) {
+      // The shared dialog did not load. Show the notice: a missing preference
+      // store is not consent.
+      return false;
     }
+    return store.suppressed(NOTICE_KEY, state.version)
+      || store.suppressedForSession(NOTICE_SESSION_KEY, state.version);
   }
 
   function showNotice() {
@@ -524,13 +596,16 @@
   }
 
   function closeNotice() {
-    // The checkbox records the version it was acknowledged for. It is never a
-    // plain "hidden = true", so the next release asks again by itself.
-    try {
-      if (el('mv_notice_suppress').checked && state.version) {
-        localStorage.setItem(NOTICE_KEY, state.version);
+    // Closing it is itself an acknowledgement, for this session. The checkbox
+    // adds the longer one. Both record the version they were given against, so
+    // the next release asks again by itself and nobody has to clear anything.
+    const store = suppressionStore();
+    if (store && state.version) {
+      store.rememberForSession(NOTICE_SESSION_KEY, state.version);
+      if (el('mv_notice_suppress').checked) {
+        store.remember(NOTICE_KEY, state.version);
       }
-    } catch (err) { /* not fatal; it will simply be shown again */ }
+    }
     el('mv_notice').hidden = true;
   }
 
@@ -1151,7 +1226,7 @@
     await runTransaction(
       'Changing ' + prettyCell(cell) + ' on ' + group.name + '…',
       '/api/multiview/groups/show',
-      {group: group.id, source_decoder: el('mv_decoder').value,
+      {group: group.id, source_decoder: readingDecoder(),
        name: view.name, cell: cell, source: ip || ''},
       async (body) => {
         if (body.ok) await checkGroup();
@@ -1174,7 +1249,7 @@
 
     await runTransaction((ip ? 'Switching ' : 'Clearing ') + prettyCell(cell) + '…',
                          '/api/multiview/switch',
-                         {decoder: el('mv_decoder').value, name: view.name,
+                         {decoder: readingDecoder(), name: view.name,
                           cell: cell, source: ip},
                          (body) => {
       state.switching = null;
@@ -1292,7 +1367,7 @@
 
   function desiredState() {
     return {
-      decoder: el('mv_decoder').value,
+      decoder: readingDecoder(),
       layout: el('mv_layout').value,
       canvas: state.canvas,
       name: el('mv_name').value,
@@ -1575,7 +1650,17 @@
     save.title = blocker || '';
     // On the active Multiview a source change has already been applied by the
     // time Save is reachable, so the button must not promise to do it again.
-    save.textContent = isLive() ? 'Save layout and name' : 'Save Multiview';
+    const group = activeGroup();
+    save.textContent = group
+      ? 'Save group Multiview'
+      : (isLive() ? 'Save layout and name' : 'Save Multiview');
+    const showButton = el('mv_show');
+    if (showButton) {
+      const count = group ? (group.members || []).length : 0;
+      showButton.textContent = group
+        ? 'Show on ' + count + (count === 1 ? ' display' : ' displays')
+        : 'Show on Display';
+    }
     const reason = el('mv_save_reason');
     reason.textContent = blocker;
     const quiet = !blocker || blocker === 'Checking the sources…'
@@ -1592,6 +1677,8 @@
   // own -- nobody has to remember, and nobody has to clear browser storage.
   const SAVE_CONFIRM_KEY = 'multiview_save_confirm_suppressed_version';
 
+  // The shared store, used by the operator notice near the top of this file as
+  // well as by the Save confirmation below it.
   function suppressionStore() {
     return window.omniSuppression || null;
   }
@@ -1655,6 +1742,29 @@
       if (confirmed && confirmed.suppress) rememberSaveConfirmSuppressed();
     }
 
+    const group = activeGroup();
+    if (group) {
+      // Saving in group context updates the definition on every member, and
+      // changes no display -- the same promise as a single-decoder Save.
+      await runTransaction(
+        'Saving to ' + group.name + '…', '/api/multiview/apply', desiredState(),
+        async (body) => {
+          if (!(body.ok && body.plan)) return;
+          state.editing = body.plan.object_name;
+          const copied = await getJSON('/api/multiview/groups/copy', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({group: group.id,
+                                  source_decoder: readingDecoder(),
+                                  name: body.plan.object_name}),
+          }).catch((err) => ({ok: false, error: err.message}));
+          if (!copied.ok) {
+            notify('Saved here, but not on every decoder in the group: '
+                   + (copied.error || 'see the group for details'));
+          }
+        });
+      return;
+    }
     await runTransaction('Saving…', '/api/multiview/apply', desiredState(),
                          (body) => {
                            if (body.ok && body.plan) state.editing = body.plan.object_name;
@@ -1675,13 +1785,38 @@
       notify(view.not_showable_reason || 'This Multiview cannot be shown.');
       return;
     }
+    const group = activeGroup();
+    if (group) {
+      // The group-wide planner: every member planned before anything is
+      // written, refused as a whole on a shared-encoder conflict, rolled back
+      // together on a failure.
+      const answer = await window.omniConfirm({
+        title: 'Show this on every decoder in the group?',
+        message: 'Each decoder in ' + group.name + ' is reconfigured and '
+          + 'switched to ' + (view.friendly_name || view.name)
+          + '. Their current pictures change.',
+        summary: [{label: 'Group', value: group.name},
+                  {label: 'Decoders', value: (group.members || []).length},
+                  {label: 'Multiview', value: view.friendly_name || view.name}],
+        confirmText: 'Show on group',
+      });
+      if (!(answer === true || (answer && answer.ok))) return;
+      await runTransaction(
+        'Showing on ' + group.name + '…', '/api/multiview/groups/show',
+        {group: group.id, source_decoder: readingDecoder(), name: view.name},
+        async (body) => { if (body.ok) await checkGroup(); });
+      return;
+    }
     await runTransaction('Showing on display…', '/api/multiview/show',
-                         {decoder: el('mv_decoder').value, name: view.name});
+                         {decoder: readingDecoder(), name: view.name});
   }
 
   async function remove() {
     const view = currentView();
     if (!view) return;
+    // Deleting is per decoder even in group context: removing a saved preset
+    // from six decoders at once is not something to do behind one button.
+
     const confirmed = await window.omniConfirm({
       title: 'Delete Multiview',
       message: view.selected_on_output
@@ -1700,7 +1835,7 @@
     });
     if (!confirmed) return;
     await runTransaction('Deleting…', '/api/multiview/delete',
-                         {decoder: el('mv_decoder').value, name: view.name},
+                         {decoder: readingDecoder(), name: view.name},
                          (body) => {
       if (!body.ok) return;
       state.editing = null;
@@ -1746,13 +1881,23 @@
       if (onSuccess) onSuccess(body);
     } catch (err) {
       state.outcome = 'ERROR';
-      setStatus('FAILED — ' + err.message, false);
-      notify(err.message);
+      // A refused group operation carries the reason it was refused: which
+      // source conflicts, and which decoders disagree about it. "FAILED —
+      // refused" is not something an operator can act on.
+      const detail = err.body || {};
+      const reasons = (detail.conflicts || []).map((c) => c.detail)
+        .concat(detail.problems || []);
+      const message = reasons.length ? reasons.join('  ') : err.message;
+      setStatus('FAILED — ' + message, false);
+      notify(message);
     }
     state.planSignature = '';
     const keep = state.editing;
     if (keep) rememberTarget(keep);
-    await loadDecoderState(el('mv_decoder').value, keep);
+    // For a group this re-reads one member, which is where the canvas comes
+    // from; the group's own state is refreshed by checkGroup().
+    await loadDecoderState(readingDecoder(), keep);
+    if (activeGroup()) await checkGroup();
     // A failed transaction changed nothing on the device, so the editor must
     // still show what the operator was trying to save -- and Save must still
     // be offered. Re-reading the decoder would otherwise quietly revert them.
@@ -1761,7 +1906,13 @@
   }
 
   function decoderLabel() {
-    const ip = el('mv_decoder').value;
+    const group = activeGroup();
+    if (group) {
+      const count = (group.members || []).length;
+      return group.name + ' — group of ' + count
+        + (count === 1 ? ' decoder' : ' decoders');
+    }
+    const ip = readingDecoder();
     const decoder = state.decoders.find((d) => d.ip === ip);
     return decoder ? decoder.hostname + ' (' + ip + ')' : ip;
   }
@@ -1878,7 +2029,7 @@
     if (!view) return;
     const select = el('mv_copy_target');
     const options = state.decoders
-      .filter((decoder) => decoder.ip !== el('mv_decoder').value)
+      .filter((decoder) => decoder.ip !== readingDecoder())
       .filter((decoder) => decoder.multiview_supported !== false);
     select.replaceChildren();
     options.forEach((decoder) => {
@@ -1912,7 +2063,7 @@
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
-          source_decoder: el('mv_decoder').value,
+          source_decoder: readingDecoder(),
           target_decoder: target,
           name: view.name,
           on_conflict: onConflict || '',
@@ -2004,9 +2155,7 @@
         members.appendChild(row);
       });
     el('mv_group_delete').disabled = !group;
-    el('mv_group_copy').disabled = !group || !currentView();
-    el('mv_group_show').disabled = !group || !currentView();
-    el('mv_group_check').disabled = !group;
+    el('mv_group_use').disabled = !group || !(group.members || []).length;
     renderGroupState();
   }
 
@@ -2072,6 +2221,8 @@
     groups.selected = body.group.id;
     el('mv_groups_status').textContent = 'Saved. No decoder was changed.';
     await loadGroups();
+    await loadDecoders(false);          // it is a target from now on
+    renderGroupDetail();
   }
 
   async function deleteGroup() {
@@ -2090,52 +2241,31 @@
     const body = await groupRequest('/api/multiview/groups/delete',
                                     {id: group.id}, 'Deleting…');
     if (!body) return;
-    if (groups.context && groups.context.id === group.id) leaveGroupContext();
+    if (groups.context && groups.context.id === group.id) {
+      leaveGroupContext();
+      el('mv_decoder').value = '';
+      rememberDecoder('');
+      setMode(MODE.NO_DECODER);
+    }
     groups.selected = '';
     el('mv_groups_status').textContent = body.message;
     await loadGroups();
+    await loadDecoders(false);
+    renderGroupDetail();
   }
 
-  async function copyToGroup() {
+  // Close the panel and make this group the target. Everything the operator
+  // does next -- layout, sources, Save, Show, live changes -- is the ordinary
+  // workflow, now scoped to the group. Copying and showing moved there, so the
+  // panel no longer has its own versions of them.
+  async function useSelectedGroup() {
     const group = selectedGroup();
-    const view = currentView();
-    if (!group || !view) return;
-    const body = await groupRequest('/api/multiview/groups/copy', {
-      group: group.id,
-      source_decoder: el('mv_decoder').value,
-      name: view.name,
-    }, 'Saving to every decoder in the group…');
-    if (!body) return;
-    (body.warnings || []).forEach((warning) => notify(warning));
-    el('mv_groups_status').textContent = body.message;
-  }
-
-  async function showOnGroup() {
-    const group = selectedGroup();
-    const view = currentView();
-    if (!group || !view) return;
-    const answer = await window.omniConfirm({
-      title: 'Show this on every decoder in the group?',
-      message: 'Each decoder in ' + group.name + ' will be reconfigured and '
-        + 'switched to ' + (view.friendly_name || view.name) + '. Their current '
-        + 'pictures change.',
-      summary: [{label: 'Group', value: group.name},
-                {label: 'Decoders', value: group.members.length},
-                {label: 'Multiview', value: view.friendly_name || view.name}],
-      confirmText: 'Show on group',
-    });
-    if (!(answer === true || (answer && answer.ok))) return;
-    const body = await groupRequest('/api/multiview/groups/show', {
-      group: group.id,
-      source_decoder: el('mv_decoder').value,
-      name: view.name,
-    }, 'Showing on the group…');
-    if (!body) return;
-    el('mv_groups_status').textContent = body.message;
-    if (body.ok) {
-      enterGroupContext(group);
-      await checkGroup();
-    }
+    if (!group) return;
+    closeGroupsDialog();
+    await loadDecoders(false);
+    el('mv_decoder').value = GROUP_PREFIX + group.id;
+    rememberDecoder(el('mv_decoder').value);
+    await selectGroupTarget();
   }
 
   async function checkGroup() {
@@ -2149,6 +2279,44 @@
     }
     renderGroupState();
     renderGroupContext();
+  }
+
+  // ---- selecting a group as the target ------------------------------------
+  //
+  // The group's state is read from every member; the canvas is populated from
+  // one of them, because the definition is the same on all of them and
+  // something has to be read. The two are never conflated: one decoder's live
+  // state is not reported as the group's.
+  async function selectGroupTarget() {
+    const group = activeGroup();
+    if (!group) { setMode(MODE.NO_DECODER); return; }
+    enterGroupContext(group);
+    setMode(MODE.LOADING);
+    await checkGroup();
+
+    const reading = readingDecoder();
+    if (!reading) {
+      setMode(MODE.UNREACHABLE, 'No decoder in this group is available.');
+      return;
+    }
+    await loadDecoderState(reading, intendedGroupMultiview());
+    // loadDecoderState picks whatever that one decoder is showing. For a group
+    // the intended Multiview is the group's, so say so when they differ.
+    const intended = intendedGroupMultiview();
+    if (intended && el('mv_target').value !== intended
+        && (state.decoderState.multiviews || [])
+             .some((view) => view.name === intended)) {
+      el('mv_target').value = intended;
+      loadIntoEditor(intended);
+    }
+    renderGroupContext();
+  }
+
+  function intendedGroupMultiview() {
+    const report = groups.state;
+    const group = activeGroup();
+    if (!report || !group || report.group.id !== group.id) return '';
+    return report.expected || '';
   }
 
   // ---- group context (§16) ------------------------------------------------
@@ -2227,8 +2395,18 @@
       el('mv_target').value = '';
       el('mv_result').replaceChildren();
       setStatus('');
-      if (event.target.value) await loadDecoderState(event.target.value);
-      else setMode(MODE.NO_DECODER);
+      groups.state = null;
+      if (!event.target.value) {
+        leaveGroupContext();
+        setMode(MODE.NO_DECODER);
+        return;
+      }
+      if (targetIsGroup(event.target.value)) {
+        await selectGroupTarget();
+        return;
+      }
+      leaveGroupContext();
+      await loadDecoderState(event.target.value);
     });
 
     el('mv_target').addEventListener('change', (event) => {
@@ -2259,10 +2437,8 @@
     });
     el('mv_group_save').addEventListener('click', saveGroup);
     el('mv_group_delete').addEventListener('click', deleteGroup);
-    el('mv_group_copy').addEventListener('click', copyToGroup);
-    el('mv_group_show').addEventListener('click', showOnGroup);
-    el('mv_group_check').addEventListener('click', checkGroup);
-    el('mv_group_leave').addEventListener('click', leaveGroupContext);
+    el('mv_group_use').addEventListener('click', useSelectedGroup);
+    el('mv_group_leave').addEventListener('click', checkGroup);
 
     // Escape closes whichever panel is open, like every other dialog here.
     document.addEventListener('keydown', (event) => {

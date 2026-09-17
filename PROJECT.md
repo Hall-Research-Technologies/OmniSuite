@@ -4390,6 +4390,34 @@ decoder routed normally from the A/V Matrix leaves Multiview by itself and is
 then reported as DRIFTED; OmniSuite never silently puts it back, because it
 cannot know the operator did not mean it.
 
+## Multiview: Phase 8B corrections — the notice, and groups as targets
+
+The introductory notice reappeared on every page load because closing it
+recorded nothing unless the "do not show again" box was ticked: one level of
+suppression where an operator reasonably expects two. Continue now means "I have
+read it" and lasts the session; the checkbox is a preference and lasts the
+version. Both are version-scoped, so a release that changes what Multiview
+touches asks again without anyone clearing storage, and a missing or unusable
+store shows the notice rather than assuming consent.
+
+The notice also still said OmniSuite might adjust Encoder 1's bitrate, which
+Phase 7C made untrue. It now says what the code does, and the promise not to
+reduce a source's primary stream sits with the other things OmniSuite will never
+do on its own.
+
+The Groups dialog was unreadable over a populated canvas, and not because it was
+styled to be translucent: it asked for `var(--panel)`, a token defined in no
+stylesheet, so its background resolved to nothing. CSS fails silently like that,
+so the stylesheet's tokens are now checked against the tokens that exist.
+
+The larger correction is that a group is a target rather than a second
+interface. Persisted groups appear in the same selector as the decoders, in
+their own section, and selecting one scopes the ordinary workflow: the same
+canvas, the same layouts and sources, the same drag and drop, Save and Show.
+What changes is said out loud -- a context bar naming the group, and buttons that
+read "Show on 6 displays" rather than "Show on Display". The Groups panel is now
+only for deciding which decoders are in a group.
+
 ## The test fence belongs to the tests
 
 Phase 8 found the hardware fence living in `run_tests.py`, which meant a plain

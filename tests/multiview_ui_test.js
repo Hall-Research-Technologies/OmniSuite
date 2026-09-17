@@ -217,7 +217,12 @@ const DECODERS = {ok: true, probed: 1, decoders: [
    multiview_supported: false, reason: 'Config node not found'},
   // Somewhere for a copy to go, and a second member for a group.
   {ip: '192.0.2.12', hostname: 'dec-test-03', model: 'hw-omni-d4511',
-   multiview_supported: true}]};
+   multiview_supported: true}],
+  groups: [{id: 'g1', name: 'Sports Bar',
+            members: [{ip: '192.0.2.10', hostname: 'dec-test-01',
+                       discovered: true},
+                      {ip: '192.0.2.12', hostname: 'dec-test-03',
+                       discovered: true}]}]};
 const SOURCES = {ok: true, ready: 2, excluded: [
   {ip: '192.0.2.22', hostname: 'old-wp-01', model: 'AT-OMNI-111-WP',
    status: 'ineligible',
@@ -478,6 +483,19 @@ const sandbox = {
       _store: store,
     };
   })(),
+  // Session storage, which is where a "for this session" acknowledgement goes.
+  // Separate from localStorage, exactly as in a browser, so a test can end the
+  // session without touching the permanent preferences.
+  sessionStorage: (() => {
+    const store = new Map();
+    return {
+      getItem: (key) => (store.has(key) ? store.get(key) : null),
+      setItem: (key, value) => store.set(key, String(value)),
+      removeItem: (key) => store.delete(key),
+      clear: () => store.clear(),
+      _store: store,
+    };
+  })(),
   // `new Image()` is how the page preloads one frame per unique source before
   // pointing every window at it.
   Image: function Image() {
@@ -574,6 +592,17 @@ async function tick(times) {
 }
 
 const hidden = (id) => REGISTRY.get(id).hidden;
+
+// Every option in the target selector, whichever section it sits in.
+function targetOptions() {
+  const select = REGISTRY.get('mv_decoder');
+  const out = [];
+  (select.children || []).forEach((child) => {
+    if (child.tagName === 'OPTGROUP') out.push(...(child.children || []));
+    else out.push(child);
+  });
+  return out;
+}
 const windowBoxes = () => REGISTRY.get('mv_stage').children;
 const banner = () => REGISTRY.get('mv_banner').deepText.trim();
 async function selectDecoder(ip) {
@@ -610,8 +639,9 @@ async function selectDecoder(ip) {
   });
 
   await check('an unsupported decoder is offered but disabled, not hidden', () => {
-    const legacy = REGISTRY.get('mv_decoder').children
-      .find(o => o.value === '192.0.2.11');
+    // The selector is now grouped into Groups and Decoders, so the options sit
+    // inside those sections rather than directly under the select.
+    const legacy = targetOptions().find(o => o.value === '192.0.2.11');
     assert(legacy, 'the unsupported decoder was hidden');
     assert(legacy.disabled, 'the unsupported decoder was selectable');
   });
@@ -1893,11 +1923,11 @@ async function selectDecoder(ip) {
     });
 
   await check('the same version does not show it again', () => {
-    // `noticeAcknowledged()` is what start() consults.
     assertEqual(sandbox.localStorage.getItem('multiview_notice_acknowledged_version'),
                 'V1.0.7');
-    assert(/localStorage\.getItem\(NOTICE_KEY\) === state\.version/
-      .test(sourceWithoutComments),
+    // Behaviour, not the shape of the expression that produces it: the next
+    // section reloads the page and looks at whether the notice comes back.
+    assert(/NOTICE_KEY, state\.version/.test(sourceWithoutComments),
       'suppression is not compared against the running version');
   });
 
@@ -2242,6 +2272,44 @@ async function selectDecoder(ip) {
     forcedPlan = null;
   });
 
+  await check('every colour the stylesheet asks for is actually defined', () => {
+    // A var() with no definition and no fallback resolves to nothing. For a
+    // background that means transparent, which is how the Groups dialog came
+    // to have the canvas showing through it.
+    const stylesheets = [STYLE,
+                         path.join(ROOT, 'ui', 'templates.css'),
+                         path.join(ROOT, 'ui', 'matrix', 'matrix.css')]
+      .filter(file => fs.existsSync(file))
+      .map(file => fs.readFileSync(file, 'utf8'));
+    const defined = new Set();
+    stylesheets.forEach((sheet) => {
+      for (const match of sheet.matchAll(/(--[a-z0-9-]+)\s*:/gi)) {
+        defined.add(match[1]);
+      }
+    });
+    const missing = new Set();
+    for (const match of style.matchAll(/var\(\s*(--[a-z0-9-]+)\s*([,)])/gi)) {
+      // A var() with a fallback still renders something, so only the ones
+      // without a fallback can disappear.
+      if (match[2] === ')' && !defined.has(match[1])) missing.add(match[1]);
+    }
+    assert(missing.size === 0,
+      'multiview.css uses colour tokens that are defined nowhere, so they '
+      + 'resolve to nothing: ' + [...missing].join(', '));
+  });
+
+  await check('the dialogs have an opaque surface of their own', () => {
+    // Over a populated canvas a translucent dialog is unreadable. The backdrop
+    // behind it may be translucent; the card may not.
+    const dialog = style.match(/\.mv-dialog\{[^}]*\}/);
+    assert(dialog, 'the dialog has no styling at all');
+    assert(/background:\s*var\(--(card|panel-2|bg)\)/.test(dialog[0]),
+      'the dialog surface is not one of the opaque theme surfaces: ' + dialog[0]);
+    const members = style.match(/\.mv-group-members\{[^}]*\}/);
+    assert(members && /background:\s*var\(--/.test(members[0]),
+      'the member list has no surface of its own');
+  });
+
   await check('Delete is kept well away from Save in the action bar', () => {
     const order = PAGE_HTML.slice(PAGE_HTML.indexOf('id="mv_actions"'));
     assert(order.indexOf('id="mv_save"') < order.indexOf('id="mv_delete"'),
@@ -2535,34 +2603,104 @@ async function selectDecoder(ip) {
            'saving a group reached a device');
   });
 
-  await check('Save to group is not Show on group', async () => {
-    requests.length = 0;
-    REGISTRY.get('mv_group_copy').dispatch('click');
+  await check('a group appears in the target selector, apart from the decoders',
+              async () => {
+    REGISTRY.get('mv_groups_close').dispatch('click');
     await flush();
-    assert(requests.some(r => r.url === '/api/multiview/groups/copy'),
-           'no group copy was sent');
-    assert(!requests.some(r => r.url === '/api/multiview/groups/show'),
-           'saving to the group also showed it');
+    const select = REGISTRY.get('mv_decoder');
+    const bands = (select.children || []).filter(c => c.tagName === 'OPTGROUP');
+    assert(bands.length === 2, 'the selector is not divided into sections');
+    assert(bands.some(b => b.label === 'Groups'), 'no Groups section');
+    assert(bands.some(b => b.label === 'Decoders'), 'no Decoders section');
+    const groupOption = targetOptions().find(o => o.value === 'group:g1');
+    assert(groupOption, 'the saved group is not offered as a target');
+    assert(/Sports Bar/.test(groupOption.text), groupOption.text);
+    assert(/2 decoders/.test(groupOption.text),
+           'the group does not say how many decoders it covers: '
+           + groupOption.text);
+    // The individual decoders are still there, unchanged.
+    assert(targetOptions().some(o => o.value === '192.0.2.10'),
+           'the individual decoders disappeared');
   });
 
-  await check('Show on group asks first, and names what changes', async () => {
+  await check('selecting a group enters a visible group context', async () => {
+    stateResponse = stateBody([LIVE_VIEW]);
+    await selectDecoder('group:g1');
+    await flush();
+    assert(!hidden('mv_group_context'),
+           'nothing says that changes now move several displays');
+    assert(/Sports Bar/.test(
+             REGISTRY.get('mv_group_context_name').textContent),
+           'the context does not name the group');
+    assert(/2 decoders/.test(
+             REGISTRY.get('mv_group_context_detail').textContent),
+           REGISTRY.get('mv_group_context_detail').textContent);
+  });
+
+  await check('the group uses the ordinary canvas and Multiview list',
+              async () => {
+    assert(!hidden('mv_workspace'), 'the canvas is not shown for a group');
+    assert(!hidden('mv_field_target'), 'the Multiview list is not shown');
+    assert(REGISTRY.get('mv_target').value === 'multiview2x2',
+           'the group did not open its Multiview: '
+           + REGISTRY.get('mv_target').value);
+  });
+
+  await check('the buttons say the operation covers the group', () => {
+    assert(/group/i.test(REGISTRY.get('mv_save').textContent),
+           REGISTRY.get('mv_save').textContent);
+    assert(/2 displays/.test(REGISTRY.get('mv_show').textContent),
+           'Show does not say how many displays it changes: '
+           + REGISTRY.get('mv_show').textContent);
+  });
+
+  await check('Save in group context saves, and shows nothing', async () => {
+    requests.length = 0;
+    REGISTRY.get('mv_name').value = 'Renamed for the group';
+    REGISTRY.get('mv_name').dispatch('input');
+    await flush();
+    confirmAnswer = {ok: true, suppress: false};
+    REGISTRY.get('mv_save').dispatch('click');
+    await flush();
+    assert(requests.some(r => r.url === '/api/multiview/apply'),
+           'nothing was saved');
+    assert(requests.some(r => r.url === '/api/multiview/groups/copy'),
+           'the group members were not given the definition');
+    assert(!requests.some(r => r.url.startsWith('/api/multiview/groups/show')),
+           'saving in group context also showed it');
+  });
+
+  await check('Show in group context asks first and names what changes',
+              async () => {
     confirmAnswer = {ok: false};
     confirmCalls = 0;
     requests.length = 0;
-    REGISTRY.get('mv_group_show').dispatch('click');
+    REGISTRY.get('mv_show').dispatch('click');
     await flush();
-    assert(confirmCalls === 1, 'Show on group did not ask');
+    assert(confirmCalls === 1, 'Show on the group did not ask');
     assert(/pictures change/.test(lastConfirmOptions.message),
            lastConfirmOptions.message);
-    assert(!requests.some(r => r.url === '/api/multiview/groups/show'),
+    assert(!requests.some(r => r.url.startsWith('/api/multiview/groups/show')),
            'cancelling still showed it on the group');
   });
 
-  await check('a refused group operation shows the conflict it was refused for',
+  await check('Show in group context invokes the group planner', async () => {
+    confirmAnswer = {ok: true};
+    requests.length = 0;
+    REGISTRY.get('mv_show').dispatch('click');
+    await flush();
+    const call = requests.find(r => r.url === '/api/multiview/groups/show');
+    assert(call, 'the group planner was not invoked: '
+           + requests.map(r => r.url).join(', '));
+    assert(call.payload.group === 'g1', call.payload);
+    assert(!requests.some(r => r.url === '/api/multiview/show'),
+           'it also showed on one decoder by itself');
+  });
+
+  await check('a refused group operation shows the conflict it names',
               async () => {
     groupShowResponse = {
-      ok: false, status: 'REFUSED', writes: 0,
-      error: 'refused',
+      ok: false, status: 'REFUSED', writes: 0, error: 'refused',
       conflicts: [{source: 'enc-test-01',
                    detail: 'enc-test-01 can only send one picture size at a '
                      + 'time, and this group asks it for 1280x720 for '
@@ -2570,25 +2708,43 @@ async function selectDecoder(ip) {
       problems: [],
     };
     confirmAnswer = {ok: true};
-    REGISTRY.get('mv_group_show').dispatch('click');
+    REGISTRY.get('mv_show').dispatch('click');
     await flush();
-    const status = REGISTRY.get('mv_groups_status').textContent;
-    assert(/one picture size/.test(status), status);
-    assert(/enc-test-01/.test(status), status);
-    assert(/dec-test-03/.test(status), status);
+    const shown = REGISTRY.get('mv_status').textContent
+      + ' ' + REGISTRY.get('mv_result').deepText
+      + ' ' + toasts.map(t => t.message).join(' ');
+    assert(/one picture size/.test(shown), shown.slice(0, 300));
+    assert(/enc-test-01/.test(shown), shown.slice(0, 300));
     groupShowResponse = {ok: true, status: 'VERIFIED', shown: [],
                          shared_sources: [],
                          group: {id: 'g1', name: 'Sports Bar'},
                          message: 'Every decoder in the group is showing it.'};
   });
 
+  await check('the Groups panel is membership management only', async () => {
+    REGISTRY.get('mv_groups').dispatch('click');
+    await flush();
+    ['mv_group_copy', 'mv_group_show', 'mv_group_check'].forEach((id) => {
+      assert(!REGISTRY.get(id),
+             id + ' is still in the Groups panel; those operations belong in '
+             + 'the ordinary workflow');
+    });
+    assert(REGISTRY.get('mv_group_save'), 'a group cannot be saved');
+    assert(REGISTRY.get('mv_group_delete'), 'a group cannot be deleted');
+    assert(REGISTRY.get('mv_group_members'), 'membership cannot be edited');
+    REGISTRY.get('mv_groups_close').dispatch('click');
+  });
+
   // ---- §16 group context -------------------------------------------------
-  await check('showing on a group enters a visible group context', async () => {
+  await check('the group context survives an operation', async () => {
     confirmAnswer = {ok: true};
-    REGISTRY.get('mv_group_show').dispatch('click');
+    stateResponse = stateBody([LIVE_VIEW]);
+    await selectDecoder('group:g1');
+    await flush();
+    REGISTRY.get('mv_show').dispatch('click');
     await flush();
     assert(!hidden('mv_group_context'),
-           'nothing says that changes now move several displays');
+           'the group context was lost after showing on the group');
     assert(/decoders in/.test(REGISTRY.get('mv_group_context_detail').textContent),
            REGISTRY.get('mv_group_context_detail').textContent);
   });
@@ -2598,7 +2754,9 @@ async function selectDecoder(ip) {
     REGISTRY.get('mv_groups_close').dispatch('click');
     // A live change is only live on the Multiview that is on the display.
     stateResponse = stateBody([LIVE_VIEW]);
-    await selectDecoder('192.0.2.10');
+    // Group context is now the selected target, not a mode entered from a
+    // dialog: choosing the group IS choosing to work on all of it.
+    await selectDecoder('group:g1');
     await flush();
     requests.length = 0;
     windowBoxes()[0].dispatch('drop',
@@ -2613,9 +2771,13 @@ async function selectDecoder(ip) {
            'the change was also applied to this decoder alone');
   });
 
-  await check('leaving group context makes changes single-decoder again',
-              async () => {
-    REGISTRY.get('mv_group_leave').dispatch('click');
+  await check('choosing a decoder again makes changes single-decoder', async () => {
+    await selectDecoder('192.0.2.10');
+    await flush();
+    assert(hidden('mv_group_context'),
+           'the group context banner stayed after choosing one decoder');
+    REGISTRY.get('mv_target').value = 'multiview2x2';
+    REGISTRY.get('mv_target').dispatch('change');
     await flush();
     assert(REGISTRY.get('mv_target').value === 'multiview2x2',
            'the live Multiview is no longer selected, so this proves nothing');
@@ -2628,6 +2790,161 @@ async function selectDecoder(ip) {
            'the single-decoder path was not used after leaving group context');
     assert(!requests.some(r => r.url === '/api/multiview/groups/show'),
            'a single-decoder change still went to the group');
+  });
+
+  // =======================================================================
+  // The operator notice: two suppression levels
+  // =======================================================================
+  //
+  // Pressing Continue is "I have read it" and lasts the session. Ticking the
+  // box is a preference and lasts the version. Reloading the page here is a
+  // real reload: the module runs again, start() runs again, and storage and the
+  // DOM persist exactly as they do in a browser.
+
+  const NOTICE_VERSION_KEY = 'multiview_notice_acknowledged_version';
+  const NOTICE_SESSION_KEY = 'multiview_notice_acknowledged_session';
+
+  async function reloadPage() {
+    REGISTRY.get('mv_notice').hidden = true;      // as a fresh document would be
+    vm.runInContext(fs.readFileSync(SOURCE, 'utf8'), sandbox, {filename: SOURCE});
+    await flush();
+    return !REGISTRY.get('mv_notice').hidden;
+  }
+
+  function endSession() {
+    sandbox.sessionStorage.clear();               // a new browser session
+  }
+
+  function forgetEverything() {
+    sandbox.localStorage.removeItem(NOTICE_VERSION_KEY);
+    sandbox.sessionStorage.removeItem(NOTICE_SESSION_KEY);
+  }
+
+  async function pressContinue(tickTheBox) {
+    REGISTRY.get('mv_notice_suppress').checked = !!tickTheBox;
+    REGISTRY.get('mv_notice_close').dispatch('click');
+    await flush(3);
+  }
+
+  await check('1. a fresh session shows the notice', async () => {
+    forgetEverything();
+    assert(await reloadPage(), 'the notice did not appear in a fresh session');
+  });
+
+  await check('2. Continue records an acknowledgement for the session only',
+              async () => {
+    await pressContinue(false);
+    assertEqual(sandbox.sessionStorage.getItem(NOTICE_SESSION_KEY), 'V1.0.7',
+                'the session acknowledgement was not recorded');
+    assertEqual(sandbox.localStorage.getItem(NOTICE_VERSION_KEY), null,
+                'pressing Continue silently suppressed it for ever');
+  });
+
+  await check('3. a refresh does not show it again', async () => {
+    assert(!(await reloadPage()),
+           'the notice came back after a refresh, having been acknowledged');
+  });
+
+  await check('4. navigating away and back does not show it again', async () => {
+    // Leaving the page and returning is a fresh document against the same
+    // session storage, which is what reloading is here.
+    assert(!(await reloadPage()), 'the notice came back after navigation');
+    assert(!(await reloadPage()), 'the notice came back on a later visit');
+  });
+
+  await check('5. a genuinely new session shows it again', async () => {
+    endSession();
+    assert(await reloadPage(), 'a new browser session was not asked');
+  });
+
+  await check('6/7. ticking the box records the version as well', async () => {
+    await pressContinue(true);
+    assertEqual(sandbox.localStorage.getItem(NOTICE_VERSION_KEY), 'V1.0.7');
+    assertEqual(sandbox.sessionStorage.getItem(NOTICE_SESSION_KEY), 'V1.0.7',
+                'the session record was dropped when the box was ticked');
+  });
+
+  await check('8. a refresh still does not show it', async () => {
+    assert(!(await reloadPage()), 'the notice came back after a refresh');
+  });
+
+  await check('9. a new session with the same version does not show it',
+              async () => {
+    endSession();
+    assert(!(await reloadPage()),
+           'the permanent preference did not survive a new session');
+  });
+
+  await check('10. a new application version shows it again', async () => {
+    // Nothing is cleared by hand. The stored version simply stops matching.
+    sandbox.localStorage.setItem(NOTICE_VERSION_KEY, 'V1.0.6');
+    sandbox.sessionStorage.setItem(NOTICE_SESSION_KEY, 'V1.0.6');
+    assert(await reloadPage(),
+           'a version the operator never acknowledged skipped the notice');
+  });
+
+  await check('the two records never overwrite each other', async () => {
+    forgetEverything();
+    await reloadPage();
+    await pressContinue(false);            // session only
+    assertEqual(sandbox.localStorage.getItem(NOTICE_VERSION_KEY), null);
+    endSession();
+    await reloadPage();
+    await pressContinue(true);             // now the permanent one
+    assertEqual(sandbox.localStorage.getItem(NOTICE_VERSION_KEY), 'V1.0.7');
+    assertEqual(sandbox.sessionStorage.getItem(NOTICE_SESSION_KEY), 'V1.0.7');
+  });
+
+  await check('no unrelated warning preference is touched', async () => {
+    sandbox.localStorage.setItem('matrix_multiview_exit_suppressed', 'true');
+    sandbox.localStorage.setItem('multiview_save_confirm_suppressed_version',
+                                 'V1.0.7');
+    forgetEverything();
+    await reloadPage();
+    await pressContinue(true);
+    assertEqual(sandbox.localStorage.getItem('matrix_multiview_exit_suppressed'),
+                'true', 'the A/V Matrix preference was changed');
+    assertEqual(
+      sandbox.localStorage.getItem('multiview_save_confirm_suppressed_version'),
+      'V1.0.7', 'the Save confirmation preference was changed');
+  });
+
+  await check('a missing preference store shows the notice', async () => {
+    // confirm.js owns the store. If it did not load, there is no record of any
+    // acknowledgement -- which is not the same as having been given one.
+    const real = sandbox.window.omniSuppression;
+    sandbox.window.omniSuppression = undefined;
+    try {
+      assert(await reloadPage(),
+             'with no preference store the notice was skipped anyway');
+    } finally {
+      sandbox.window.omniSuppression = real;
+    }
+  });
+
+  await check('storage that refuses to answer shows the notice', async () => {
+    const realSession = sandbox.sessionStorage.getItem;
+    const realLocal = sandbox.localStorage.getItem;
+    sandbox.sessionStorage.getItem = () => { throw new Error('disabled'); };
+    sandbox.localStorage.getItem = () => { throw new Error('disabled'); };
+    try {
+      assert(await reloadPage(),
+             'a browser with storage disabled was treated as having agreed');
+    } finally {
+      sandbox.sessionStorage.getItem = realSession;
+      sandbox.localStorage.getItem = realLocal;
+    }
+  });
+
+  await check('the notice no longer claims Encoder 1 may be reduced', () => {
+    forgetEverything();
+    showNoticeFromTest();
+    const text = noticeText();
+    assert(!/adjust Encoder 1/i.test(text),
+           'the notice still says Encoder 1 may be adjusted');
+    assert(/never/i.test(text) && /primary stream/i.test(text),
+           'the notice does not promise the primary stream is left alone: '
+           + text.slice(0, 400));
   });
 
   console.log(failures.length

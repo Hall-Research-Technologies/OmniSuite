@@ -13114,7 +13114,18 @@ def api_multiview_decoders():
     decoders.sort(key=lambda d: _ip_sort_key(d.get("ip")))
     offered = [d for d in decoders if d["status"] != omni_multiview.SOURCE_INELIGIBLE
                or d["reachable"] is not False]
+
+    # Saved groups are targets too, and they belong in the same list the
+    # operator already uses to choose what they are working on. Read from the
+    # stored groups only -- no device is touched to answer this.
+    units = _load_cache()
+    with _multiview_groups_lock:
+        stored = [dict(g) for g in _MULTIVIEW_GROUPS.values()]
+    stored.sort(key=lambda g: (g.get("name") or "").lower())
+    groups = [_group_view(group, units) for group in stored]
+
     return jsonify({"ok": True, "decoders": offered, "probed": probed,
+                    "groups": groups,
                     "hidden": len(decoders) - len(offered)})
 
 
