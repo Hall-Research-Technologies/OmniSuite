@@ -2435,6 +2435,25 @@ def multiview_index():
         return send_file(str(idx), mimetype="text/html; charset=utf-8")
     return "<h1>Multiview UI not found</h1>", 404
 
+@app.route("/license")
+def license_text():
+    """The licence the running build was made from, as plain text.
+
+    Served from the file rather than restated in the UI: a summary in a dialog
+    is a convenience, and the terms are whatever LICENSE says.
+    """
+    for candidate in (ASSET_DIR / "LICENSE", CWD / "LICENSE"):
+        try:
+            if candidate.exists():
+                # Flask adds the charset itself; naming it here too produced
+                # "text/plain; charset=utf-8; charset=utf-8".
+                return Response(candidate.read_text(encoding="utf-8"),
+                                mimetype="text/plain")
+        except Exception as exc:
+            log.info("Could not read %s: %s", candidate, type(exc).__name__)
+    return "LICENSE not found", 404
+
+
 @app.route("/help")
 def user_guide():
     """The User Guide, with the running version substituted into it.

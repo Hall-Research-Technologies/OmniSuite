@@ -8,7 +8,7 @@ OmniSuite runs on the management PC, talks to each device directly, and presents
 one inventory: discovery, configuration, A/V routing, USB routing, firmware,
 diagnostics and reporting.
 
-**Version: V1.0.7**
+**Version: V1.1.0**
 
 ---
 
@@ -22,6 +22,13 @@ diagnostics and reporting.
   config export and import.
 - **A/V Matrix** — encoders across the top, decoders down the side, with
   separate AV, Video and Audio routing modes.
+- **Multiview** — build a multi-window picture on a decoder from several
+  encoders. Eleven standard layouts, saved presets that may be left empty or
+  partly filled, live source switching on the picture that is on screen, and
+  synchronized decoder groups. Every change is read back from the device and
+  undone if it cannot be confirmed.
+- **Display output** — a small view of what a decoder is actually showing, and
+  a drop target for putting an ordinary source back on the screen.
 - **USB Matrix** — LEX and REX endpoints with one-click routing. Clicking a cell
   states the relationship you want and OmniSuite reconciles the hardware to it;
   there is no unpair-then-pair step to perform.
@@ -53,7 +60,9 @@ diagnostics and reporting.
 | ![Device Info](docs/images/device-info.png) | ![Configure](docs/images/configure.png) |
 | **A/V Matrix** — encoders to decoders, with AV / Video / Audio modes | **USB Matrix** — LEX hosts to REX devices |
 | ![A/V Matrix](docs/images/av-matrix.png) | ![USB Matrix](docs/images/usb-matrix.png) |
-| **Settings** — version, credentials, appearance | **Device Log** — the Engineering notice shown before any log is collected |
+| **Multiview** — the workspace: sources on the left, the canvas, and the display output above it | **Multiview on air** — a layout showing on a decoder, with its windows live |
+| ![Multiview workspace](docs/images/multiview-workspace.png) | ![Multiview live](docs/images/multiview-live.png) |
+| **Settings** — version, credentials, appearance, and who publishes it | **Device Log** — the Engineering notice shown before any log is collected |
 | ![Settings](docs/images/settings.png) | ![Device log warning](docs/images/device-log-warning.png) |
 
 The bundled [User Guide](ui/user-guide.html) is also
@@ -68,10 +77,10 @@ Get the archive for your machine from the
 
 | Platform | Artifact |
 |---|---|
-| Windows x86-64 | `OmniSuite-V1.0.7-Windows-x86_64.zip` |
-| macOS Apple Silicon | `OmniSuite-V1.0.7-macOS-arm64.zip` |
-| macOS Intel | `OmniSuite-V1.0.7-macOS-x86_64.zip` |
-| Ubuntu Linux x86-64 | `OmniSuite-V1.0.7-Ubuntu-x86_64.tar.gz` |
+| Windows x86-64 | `OmniSuite-V1.1.0-Windows-x86_64.zip` |
+| macOS Apple Silicon | `OmniSuite-V1.1.0-macOS-arm64.zip` |
+| macOS Intel | `OmniSuite-V1.1.0-macOS-x86_64.zip` |
+| Ubuntu Linux x86-64 | `OmniSuite-V1.1.0-Ubuntu-x86_64.tar.gz` |
 
 Each release also carries `SHA256SUMS.txt`. To check a download:
 
@@ -79,7 +88,7 @@ Each release also carries `SHA256SUMS.txt`. To check a download:
 sha256sum -c SHA256SUMS.txt          # Linux / macOS
 ```
 ```powershell
-Get-FileHash .\OmniSuite-V1.0.7-Windows-x86_64.zip -Algorithm SHA256
+Get-FileHash .\OmniSuite-V1.1.0-Windows-x86_64.zip -Algorithm SHA256
 ```
 
 See **[Supported platforms](#supported-platforms)** below for what has actually
@@ -229,44 +238,64 @@ devices. Treat those platforms as ready to try, not as field-proven.
 
 ## Version
 
-**V1.0.7.** `VERSION` in this repository is the single source of truth; Settings
-reports what the running build was made from, and the release artifacts take
-their names from it.
+**V1.1.0.** `VERSION` in this repository is the single source of truth; Settings
+reports what the running build was made from, the User Guide states the version
+it describes, and the release artifacts take their names from it.
 
 ---
 
-## Known issues since V1.0.7
+## Known limitations
 
-Reported after the release and fixed on `main`. **The V1.0.7 downloads on the
-Releases page do not contain these fixes** — they will appear in the next
-release.
-
-| Issue | Status |
+| Area | Behaviour |
 |---|---|
-| Settings/Appearance controls were inconsistent across pages. Light mode could not be selected from Configure, the A/V Matrix or the USB Matrix, even though Device Info behaved correctly. | **Fixed on `main`**; not yet in a published release. |
+| Multiview | A decoder occasionally leaves one window black after a layout change even though the configuration is correct and the stream is arriving. OmniSuite detects this and reports which window rather than claiming success. Showing another Multiview and returning clears it. This is decoder firmware behaviour and is not fixed by this release. |
+| Multiview | A decoder with Video Wall enabled cannot run Multiview, and Fast Switching prevents it on the affected 1xx family. OmniSuite reports the reason and does not turn either feature off for you. |
 
-See the **Unreleased** section of [CHANGELOG.md](CHANGELOG.md) for the detail.
+See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 ---
 
 ## License
 
-OmniSuite is **source available**, published by Hall Research Technologies under the
-**[PolyForm Noncommercial License 1.0.0](LICENSE)**.
+Copyright © 2026 **Hall Research Technologies LLC**.
 
-> OmniSuite source is available for noncommercial use, modification and
-> redistribution under the PolyForm Noncommercial License 1.0.0.
-> See [LICENSE](LICENSE) for the governing terms.
+OmniSuite is **source available**. That is deliberately not the same thing as
+*open source*: the source can be read, but redistribution of modified versions
+is not intended to be permitted, so it does not meet the OSI definition and is
+not described as open source here.
 
-In plain language: read it, run it, change it, and pass it on — for
-noncommercial purposes. Selling it, or otherwise exploiting it commercially, is
-not licensed. The licence itself defines what counts as a noncommercial purpose,
-and it makes room for personal use, charitable and government organisations, and
-fair use.
+**The governing terms are in [LICENSE](LICENSE), and nothing in this README
+changes them.** This section is a summary for convenience; where the two
+differ, LICENSE governs.
 
-Source available is **not** the same as OSI Open Source, and this is not
-freeware: OmniSuite is Hall Research / Atlona product software carrying company
-branding, offered under a licence with a noncommercial limit.
+### Current licence
 
-This summary is a convenience and nothing more. Where it and
-[LICENSE](LICENSE) differ, **LICENSE governs**.
+The repository currently carries the **PolyForm Noncommercial License 1.0.0**,
+which permits noncommercial use only.
+
+### Intended licence — not yet in force
+
+Hall Research Technologies LLC intends to move OmniSuite to terms that also
+permit **business and commercial use**, while continuing to prohibit selling it
+and distributing modified versions:
+
+| Intended to be allowed | Intended not to be allowed |
+|---|---|
+| Personal use | Selling OmniSuite |
+| Business and commercial use | Charging a licence fee for OmniSuite |
+| Reading the source | Distributing modified versions |
+| Modifying it for your own use | Selling modified versions |
+| Modifying it for internal business use | Rebranding and redistributing it |
+| Redistributing the original, unmodified OmniSuite free of charge | Sublicensing it as another product |
+
+> **This table describes intent, not the licence currently in force.** Until an
+> approved replacement licence text is installed in [LICENSE](LICENSE), the
+> PolyForm Noncommercial terms above are what apply. The two disagree about
+> commercial use, and LICENSE is what governs.
+
+### Third-party software
+
+OmniSuite bundles third-party libraries, each under its own licence and
+copyright, listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Hall Research Technologies
+LLC claims no ownership of those components.

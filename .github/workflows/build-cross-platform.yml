@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: "Override version (example: V1.0.7)"
+        description: "Override version (example: V1.1.0)"
         required: false
         type: string
   push:
@@ -328,5 +328,5 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          body_path: RELEASE_NOTES_V1.0.7.md
+          body_path: RELEASE_NOTES_V1.1.0.md
           files: release-assets/*

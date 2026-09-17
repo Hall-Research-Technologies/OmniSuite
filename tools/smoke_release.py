@@ -11,7 +11,7 @@ read rather than guessed -- it is chosen at runtime and will not be 8080 on a
 machine where something else already holds that port.
 
 Usage:
-    python tools/smoke_release.py --artifact release/OmniSuite-V1.0.7-....zip
+    python tools/smoke_release.py --artifact release/OmniSuite-V1.1.0-....zip
     python tools/smoke_release.py --binary dist/windows/OmniSuite.exe
 """
 from __future__ import annotations
@@ -50,6 +50,15 @@ REQUIRED_PATHS = [
     ("/matrix/configure", "text/html"),
     ("/matrix", "text/html"),
     ("/matrix/usb", "text/html"),
+    # The release's headline feature, and what it needs in order to draw
+    # itself. A gate that never opens the new page is not a gate.
+    ("/matrix/multiview", "text/html"),
+    ("/ui/matrix/multiview.js", None),
+    ("/ui/matrix/multiview.css", None),
+    ("/ui/confirm.js", None),
+    # Settings links to this. A package that omits the file gives a dead link
+    # in the About area of every installation.
+    ("/license", "text/plain"),
 ]
 
 
@@ -278,6 +287,14 @@ def run(binary: Path, expected_version: str, scope: Path | None = None) -> int:
     # not inherit a port from whatever else the machine is doing.
     env["OMNI_SMOKE"] = "1"
     env.pop("OMNI_PORT", None)
+    # ...and it must be a FIRST run. Without this the packaged binary reads
+    # whatever OmniSuite data already exists on the machine -- on a developer's
+    # workstation that is a firmware folder and a full device cache, so the
+    # clean-start checks below would be measuring the host rather than the
+    # package. An empty directory is what a new user actually has.
+    first_run_data = Path(tempfile.mkdtemp(prefix="omnisuite-firstrun-"))
+    env["OMNI_DATA_DIR"] = str(first_run_data)
+    log(f"first-run data directory {first_run_data}")
 
     log(f"launching {binary}")
     # start_new_session puts the launcher in its own process group so the whole
@@ -354,6 +371,50 @@ def run(binary: Path, expected_version: str, scope: Path | None = None) -> int:
                 failures.append(f"{path} content-type {content_type!r}")
             else:
                 log(f"  {path} OK ({len(body)} bytes)")
+
+        # A first run knows nothing. A build that arrives carrying the machine
+        # it was made on fails here rather than in front of whoever downloaded
+        # it: no firmware folder chosen, and no devices until the first Scan.
+        import json as _json
+        try:
+            status, _ctype, body = get(f"http://127.0.0.1:{port}/api/config")
+            settings = _json.loads(body) if status == 200 else {}
+        except Exception as exc:
+            settings = {}
+            failures.append(f"/api/config raised {type(exc).__name__}")
+        chosen = (settings or {}).get("firmware_path")
+        if chosen:
+            failures.append(
+                f"a packaged build arrived with firmware_path {chosen!r}")
+        else:
+            log("  clean start: no firmware folder configured")
+
+        try:
+            status, _ctype, body = get(f"http://127.0.0.1:{port}/api/state")
+            state = _json.loads(body) if status == 200 else {}
+        except Exception as exc:
+            state = {}
+            failures.append(f"/api/state raised {type(exc).__name__}")
+        known = len((state or {}).get("encoders") or []) \
+            + len((state or {}).get("decoders") or [])
+        if known:
+            failures.append(
+                f"a first run already knows {known} device(s); discovery must "
+                "start from nothing")
+        else:
+            log("  clean start: no devices until the first Scan")
+
+        # The licence the About area links to has to be the real thing.
+        try:
+            status, _ctype, body = get(f"http://127.0.0.1:{port}/license")
+            text = body.decode("utf-8", "replace") if status == 200 else ""
+        except Exception as exc:
+            text = ""
+            failures.append(f"/license raised {type(exc).__name__}")
+        if "Copyright" not in text:
+            failures.append("/license does not carry a copyright line")
+        else:
+            log(f"  licence served, {len(text)} bytes")
     finally:
         log("stopping")
         # --onefile runs a bootloader that spawns the application as a CHILD, so

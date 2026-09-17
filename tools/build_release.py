@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "OmniMatrix_upgrade_server_v7_6y.py"
 LAUNCHER = ROOT / "app_launcher.py"
 VERSION_FILE = ROOT / "VERSION"
+LICENSE_FILE = ROOT / "LICENSE"
+THIRD_PARTY_FILE = ROOT / "THIRD_PARTY_NOTICES.md"
 RELEASE_DIR = ROOT / "release"
 APP_ICON = ROOT / "omnimatrix.ico"
 HEADER_LOGO = ROOT / "hallway.png"
@@ -27,6 +29,8 @@ FOOTER_LOGO = ROOT / "atlona.png"
 ALLOWED_DATA = {
     "ui",            # pages, scripts, styles and the User Guide the app serves
     "VERSION",       # reported by /api/config and by the updater
+    "LICENSE",       # served at /license and linked from Settings
+    "THIRD_PARTY_NOTICES.md",  # the bundled libraries and their own licences
     "omnimatrix.ico",
     "hallway.png",
     "atlona.png",
@@ -252,6 +256,12 @@ def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
         "--collect-data",
         "PIL",
     ]
+
+    # The application serves its own licence at /license, and the notices for the
+    # libraries bundled into this executable have to accompany it.
+    for document in (LICENSE_FILE, THIRD_PARTY_FILE):
+        if document.exists():
+            cmd.extend(["--add-data", f"{document}{data_sep}."])
 
     if APP_ICON.exists():
         cmd.append(f"--icon={APP_ICON}")

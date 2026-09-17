@@ -1,9 +1,47 @@
 # Changelog
 
-## Unreleased
+## V1.1.0 - 2026-09-17
 
-Fixed on `main` and **not yet part of a published release**. The V1.0.7
-binaries on the Releases page do not contain these changes.
+Multiview: a decoder can show several encoders at once as a saved, editable
+layout, with a display-output view that reports what the decoder is actually
+showing. See [RELEASE_NOTES_V1.1.0.md](RELEASE_NOTES_V1.1.0.md) for the
+user-facing summary.
+
+- Added Multiview: eleven standard layouts, saved presets, empty and partial
+  layouts, live source switching on an active Multiview, synchronized decoder
+  groups, copy to another decoder, and source previews.
+- Separated presets from execution: creating, installing, editing, copying and
+  saving a Multiview configures no encoder and changes no display. Encoder 2,
+  Session 2 and the decoder's inputs are prepared only when a Multiview is
+  shown or changed live.
+- Made Show on Display save the current editor state first and then show what
+  it saved, so an operator never has to press Save first. A preset that saves
+  but cannot be shown is kept, and the reason is reported.
+- Added Display Output: what the decoder is actually displaying, derived from
+  its own output selection, with a drop target that routes a source normally
+  over Session 1 and exits Multiview first when needed.
+- Made the A/V Matrix aware of Multiview, including exiting it for a
+  conventional route, with rollback if that route then fails.
+- Added bandwidth planning across the shared 900 Mb/s encoder budget, with a
+  20 Mb/s minimum for the Multiview stream. Encoder 1 is read and never
+  reduced.
+- Added cross-decoder scaler protection: two displays may share a source at the
+  same size, and a request for an incompatible size is refused before any write
+  rather than disturbing the display already using it.
+- Added a source filter and an independently scrolling source list, so the
+  canvas stays visible while a long inventory is searched.
+- Added an About area in Settings naming the publisher and linking to the
+  licence, which the application now serves from the build it was made from.
+- Added `THIRD_PARTY_NOTICES.md`, listing the bundled third-party components
+  and their licences, and shipped it with the application.
+- Fixed a test-isolation defect where background startup work could land in a
+  later test and be reported as that test's failure.
+- Fixed the A/V Matrix reporting a decoder's Multiview state from a stale
+  cached value while naming a Multiview as its current input.
+- Fixed a failed-route rollback restoring the Multiview without recording it,
+  which left the A/V Matrix showing a route that had been undone.
+
+Also in this release, previously listed as unreleased:
 
 - Fixed Settings/Appearance behaving differently from page to page. Light mode
   could not be selected from Configure, the A/V Matrix or the USB Matrix even

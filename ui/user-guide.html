@@ -163,6 +163,7 @@
         <tr><th>Setting</th><th>Purpose</th><th>Notes</th></tr>
         <tr><td>Version</td><td>Shows the running OmniSuite version, and whether a newer official release exists.</td><td>Read only. The server reports it from the <code>VERSION</code> file it was built from; this build reports <code>{{OMNI_VERSION}}</code>. Always trust what Settings shows over any version printed elsewhere. Underneath it OmniSuite reports one of three answers: <code>No update available &mdash; {{OMNI_VERSION}} is current.</code>, <code>UPDATE AVAILABLE</code> naming the newer release, or <code>Unable to check for updates.</code> A build that is <em>newer</em> than the latest published release is current, not an error. <strong>Check Now</strong> re-checks immediately; <strong>Releases</strong> always opens the official release page. The check is made by the server, cached for several hours, and is never on a polling path — OmniSuite works normally with no Internet, and a failed check changes nothing else. Nothing is downloaded or installed for you: when an update exists and your platform's build can be identified, a download link is offered alongside the release page, and you choose.<br/>When a newer release is found, the <strong>Settings gear</strong> pulses gently so you notice without a dialog interrupting you. Opening Settings stops the pulse for that release; it does not hide the message, which goes on saying an update is available for as long as one is. A later release starts it again, and re-checking the same one does not.</td></tr>
         <tr><td>Theme</td><td>Switches the UI between Dark and Light.</td><td>Applies to every layout. See <a href="#appearance">Appearance</a>.</td></tr>
+        <tr><td>About</td><td>Who publishes OmniSuite and on what terms.</td><td>Names the copyright holder and links to the <strong>License</strong>, which the application serves from the file the running build was made from. The summary in the dialog is a convenience; the licence text is what governs use.</td></tr>
         <tr><td>Username</td><td>Device login username.</td><td>Most Omni units use <code>admin</code>.</td></tr>
         <tr><td>Password</td><td>Primary device password.</td><td>The eye button reveals the stored value.</td></tr>
         <tr><td>Fallback Password</td><td>Secondary password tried when the primary password fails.</td><td>Useful while normalizing mixed fleets.</td></tr>
@@ -983,6 +984,14 @@
         <li><strong>A blank USB Firmware is deliberate.</strong> It means that endpoint has never reported one; it is never filled in from the parent's firmware.</li>
       </ol>
       <div class="warn">Nothing in this section asks you to clear the inventory. <strong>Clear Units is not the fix for stale data</strong> &mdash; scanning again is, and it keeps everything OmniSuite has already learned. Clear Units is for deliberately starting from an empty inventory.</div>
+    </section>
+
+    <section id="about">
+      <h2>About OmniSuite</h2>
+      <p>OmniSuite {{OMNI_VERSION}} is published by <strong>Hall Research Technologies LLC</strong>.</p>
+      <p>Copyright &copy; 2026 Hall Research Technologies LLC.</p>
+      <p>OmniSuite is source-available software provided free of charge. See <a href="/license" target="_blank" rel="noopener noreferrer">LICENSE</a> for complete terms. The summary here and in Settings is a convenience and nothing more &mdash; where it and the licence differ, the licence governs.</p>
+      <p>OmniSuite includes third-party software, each component under its own licence and copyright. Those are listed in the <code>THIRD_PARTY_NOTICES.md</code> file that ships with the application.</p>
     </section>
   </div>
 </body>

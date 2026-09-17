@@ -97,3 +97,18 @@ border-radius:6px;background:var(--panel-2);color:var(--fg);cursor:pointer;font-
     box-shadow:0 0 0 3px var(--state-warning,var(--accent));
   }
 }
+
+
+/* The About line in Settings. Quiet: it is a statement of fact, not a banner,
+   and it appears once in the application rather than on every page. */
+.cfg-about { align-items: flex-start; }
+.cfg-about-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-muted, var(--muted));
+  line-height: 1.5;
+}
+.cfg-about-terms { margin-top: 2px; }
+.cfg-about-text a { color: inherit; text-decoration: underline; }
+.cfg-about-text a:hover { color: var(--text, var(--fg)); }

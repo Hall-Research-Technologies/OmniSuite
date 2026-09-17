@@ -4146,14 +4146,39 @@ class UpdateCheckTests(ServerTestBase):
         self.assertFalse(body["update_available"])
         self.assertEqual(body["status"], srv.UPDATE_CURRENT)
 
+    @staticmethod
+    def _bumped(installed):
+        """One newer patch, minor and major than whatever is installed.
+
+        Derived rather than written down: hard-coded "newer" versions stop
+        being newer the moment the product reaches them, which is a test that
+        has to be edited at every release for no reason.
+        """
+        digits = [int(part) for part in
+                  re.findall(r"\d+", str(installed or ""))[:3]]
+        while len(digits) < 3:
+            digits.append(0)
+        major, minor, patch = digits
+        return ("%d.%d.%d" % (major, minor, patch + 1),
+                "%d.%d.0" % (major, minor + 1),
+                "%d.0.0" % (major + 1))
+
     def test_a_newer_patch_minor_or_major_is_an_update(self):
-        for newer in ("1.0.8", "1.1.0", "2.0.0"):
+        for newer in self._bumped(srv._app_version()):
             with self.subTest(newer=newer):
                 self._clear_update_cache()
                 self.stub_github(self.release(f"V{newer}"))
                 body = self.check()
                 self.assertTrue(body["update_available"], newer)
                 self.assertEqual(body["latest_version"], f"V{newer}")
+
+    def test_the_newer_fixtures_really_are_newer_than_this_build(self):
+        """Otherwise the test above could pass by asserting nothing."""
+        installed = srv._app_version()
+        for newer in self._bumped(installed):
+            self.assertTrue(srv._version_is_newer(newer, installed),
+                            "%s is not newer than the installed %s"
+                            % (newer, installed))
 
     def test_an_installed_version_newer_than_github_is_not_an_update(self):
         self.stub_github(self.release("V1.0.1"))
@@ -4221,7 +4246,8 @@ class UpdateCheckTests(ServerTestBase):
         self.assertEqual(self.check()["status"], srv.UPDATE_UNABLE)
 
     def test_a_release_with_no_assets_still_reports_the_update(self):
-        self.stub_github(self.release("V1.0.8", assets=[]))
+        newer = self._bumped(srv._app_version())[0]
+        self.stub_github(self.release(f"V{newer}", assets=[]))
         body = self.check()
         self.assertTrue(body["update_available"])
         self.assertIsNone(body["asset"])

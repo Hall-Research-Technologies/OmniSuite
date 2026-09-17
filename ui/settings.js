@@ -100,6 +100,24 @@ const SETTINGS_MODAL_HTML = `
         </div>
       </div>
     </div>
+    <!-- Who made it and on what terms. Deliberately small and deliberately in
+         one place: this belongs in Settings, not on every page. The version
+         above is the authoritative one, so it is not repeated here. -->
+    <div class="modal-row cfg-about">
+      <label>About</label>
+      <div class="cfg-about-text">
+        <div>Copyright &copy; 2026 Hall Research Technologies LLC</div>
+        <!-- Deliberately does not summarise what use is permitted. The
+             intended policy allows business use; the licence currently in the
+             repository does not, and the application must not tell an operator
+             something its own LICENSE contradicts. When the approved licence is
+             installed this can state the permission directly. -->
+        <div class="cfg-about-terms">Source-available software, provided free of
+          charge. See the
+          <a href="/license" target="_blank" rel="noopener noreferrer">License</a>
+          for the terms that govern its use.</div>
+      </div>
+    </div>
     <div id="cfg_error" class="modal-error"></div>
     <div class="modal-buttons">
       <button id="cfg_user_guide" class="btn secondary" type="button" style="margin-right:auto;">User Guide</button>
