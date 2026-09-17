@@ -183,6 +183,9 @@ class FakeDevice:
         self.nodes = copy.deepcopy(nodes)
         self.unreachable = unreachable
         self.writes = []
+        # Inputs whose window never reports itself locked, however correct the
+        # configuration is. Empty unless a test is modelling that failure.
+        self.never_locks = set()
         # Reads are recorded as well as writes, because "how much does opening
         # this page cost" is a question about reads, and the lazy Multiview
         # architecture is a claim that can only be checked by counting them.
@@ -225,7 +228,11 @@ class FakeDevice:
                 if i.get("enabled") and (i.get("multicast") or {}).get("address")}
         for obj in multiviews:
             for subframe in obj.get("subframes") or []:
-                active = str(subframe.get("input") or "") in live
+                target = str(subframe.get("input") or "")
+                # Measured on the bench: a window can stay black while its input
+                # is enabled and its packets are arriving. `never_locks` models
+                # exactly that, so the recovery path can be tested.
+                active = target in live and target not in self.never_locks
                 subframe.setdefault("video", {})
                 subframe["video"]["input"] = {"active": active}
                 subframe["video"]["output"] = {"active": active}
@@ -1265,6 +1272,30 @@ class DecoderGroupTests(MultiviewTestBase):
         self.assertEqual(self.second.nodes["hdmi_output"][0]["video"].get("input"),
                          before, "a copy to the group changed a display")
 
+    def test_a_group_copy_keeps_a_window_whose_source_is_offline(self):
+        """The same rule as a single copy: a saved Multiview names sources.
+
+        An encoder being switched off this afternoon is not a reason to throw
+        away an assignment the operator made deliberately.
+        """
+        group_id = self._group()
+        name = self._saved_on_first(
+            layout="side-by-side",
+            assignments={"left": ENCODER_IP, "right": ENCODER2_IP})
+        del self.devices[ENCODER2_IP]              # stops answering
+        body = self.client.post("/api/multiview/groups/copy", json={
+            "group": group_id, "source_decoder": DECODER_IP, "name": name,
+        }).get_json()
+        self.assertTrue(body.get("ok"),
+                        "an offline source refused the whole group copy: %s"
+                        % (body.get("problems") or body.get("error")))
+        self.assertTrue(body.get("warnings"),
+                        "the offline source was not mentioned")
+        target = next(o for o in self.second.nodes["multiview"]
+                      if o.get("name") == name)
+        self.assertEqual(len(target.get("subframes") or []), 2,
+                         "the offline source's window was dropped")
+
     # ---- the conflict this whole idea exists for ---------------------------
     def test_one_encoder_cannot_be_asked_for_two_window_sizes(self):
         """§12/§23: refuse the group before anything is written.
@@ -1556,6 +1587,495 @@ class ShowOnGroupTests(MultiviewTestBase):
         for pattern in ('"password"', 'used_password', '"secret"', '"token"',
                         'password=', 'password:'):
             self.assertNotIn(pattern, raw)
+
+
+# ==========================================================================
+# Transient failures, and what may be retried
+# ==========================================================================
+
+class RetryPolicyTests(MultiviewTestBase):
+    """A read may be repeated. A write may not, until the device is asked.
+
+    The difference is whether the operation changed anything. A read that fails
+    changed nothing, so trying again is free. A write whose reply was lost may
+    already have arrived, so repeating it is how one instruction becomes two --
+    the device is read first, and only a `config_set`, which is idempotent by
+    nature, is ever sent a second time.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.decoder()
+        self.encoder(ENCODER_IP)
+        # No real waiting: the delays are policy, not behaviour under test.
+        patcher = mock.patch.object(srv.time, "sleep", lambda seconds: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _failing_transport(self, failures, error="connection reset"):
+        """Fail the first `failures` calls, then behave normally."""
+        real = self._transport
+        state = {"calls": 0}
+
+        def flaky(ip, payload, timeout, ws_port, ws_path, primary_pwd=None):
+            state["calls"] += 1
+            if state["calls"] <= failures:
+                raise OSError(error)
+            return real(ip, payload, timeout, ws_port, ws_path, primary_pwd)
+
+        return mock.patch.object(srv, "_ws_send_recv_with_fallback", flaky), state
+
+    # ---- reads -------------------------------------------------------------
+    def test_a_read_that_fails_once_succeeds_on_the_second_attempt(self):
+        patcher, state = self._failing_transport(1)
+        with patcher:
+            answer = srv._mv_get(DECODER_IP, "multiview")
+        self.assertNotIn("__unreachable__", answer, answer)
+        self.assertEqual(state["calls"], 2, "the read was not retried exactly once")
+
+    def test_a_read_that_fails_twice_succeeds_on_the_third(self):
+        patcher, state = self._failing_transport(2)
+        with patcher:
+            answer = srv._mv_get(DECODER_IP, "multiview")
+        self.assertNotIn("__unreachable__", answer, answer)
+        self.assertEqual(state["calls"], 3)
+
+    def test_a_read_is_not_attempted_more_than_three_times(self):
+        patcher, state = self._failing_transport(99)
+        with patcher:
+            answer = srv._mv_get(DECODER_IP, "multiview")
+        self.assertTrue(answer.get("__unreachable__"), answer)
+        self.assertEqual(state["calls"], srv.MULTIVIEW_READ_ATTEMPTS,
+                         "the retry loop is not bounded at %d"
+                         % srv.MULTIVIEW_READ_ATTEMPTS)
+
+    def test_the_failure_says_the_device_did_not_answer(self):
+        patcher, _state = self._failing_transport(99)
+        with patcher:
+            answer = srv._mv_get(DECODER_IP, "multiview")
+        self.assertEqual(answer.get("__attempts__"), srv.MULTIVIEW_READ_ATTEMPTS)
+        self.assertIn("connection reset", answer.get("error", ""))
+
+    def test_a_device_that_answers_with_an_error_is_not_asked_again(self):
+        """An error in a reply is the device's opinion, not a lost packet."""
+        calls = {"n": 0}
+
+        def refusing(ip, payload, timeout, ws_port, ws_path, primary_pwd=None):
+            calls["n"] += 1
+            return {"error": True, "error_message": "no such node"}
+
+        with mock.patch.object(srv, "_ws_send_recv_with_fallback", refusing):
+            answer = srv._mv_get(DECODER_IP, "nonsense")
+        self.assertEqual(calls["n"], 1,
+                         "a definite answer was retried as though it were a miss")
+        self.assertNotIn("__unreachable__", answer)
+
+    def test_which_attempt_succeeded_is_recorded(self):
+        srv._attempt_log(clear=True)
+        patcher, _state = self._failing_transport(1)
+        with patcher:
+            srv._mv_get(DECODER_IP, "multiview")
+        retried = srv._retried_reads()
+        self.assertTrue(retried, "nothing recorded that the first read missed")
+        self.assertEqual(retried[0]["attempt"], 2)
+
+    # ---- writes ------------------------------------------------------------
+    def test_a_write_whose_reply_was_lost_but_which_arrived_is_not_repeated(self):
+        """The dangerous case: the device did the work, the answer went missing."""
+        device = self.devices[DECODER_IP]
+        calls = {"n": 0}
+        real = self._transport
+
+        def lose_the_reply(ip, payload, timeout, ws_port, ws_path, primary_pwd=None):
+            if "config_set" in payload:
+                calls["n"] += 1
+                real(ip, payload, timeout, ws_port, ws_path, primary_pwd)
+                raise OSError("the reply was lost")   # ...after it landed
+            return real(ip, payload, timeout, ws_port, ws_path, primary_pwd)
+
+        with mock.patch.object(srv, "_ws_send_recv_with_fallback", lose_the_reply):
+            ok, message = srv._mv_set(DECODER_IP, "ip_input",
+                                      {"name": "ip_input2", "enabled": True})
+        self.assertTrue(ok, message)
+        self.assertEqual(calls["n"], 1,
+                         "the write was sent twice although it had arrived")
+
+    def test_a_write_that_did_not_arrive_is_retried_once(self):
+        calls = {"n": 0}
+        real = self._transport
+
+        def drop_the_first(ip, payload, timeout, ws_port, ws_path, primary_pwd=None):
+            if "config_set" in payload:
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise OSError("never reached the device")
+            return real(ip, payload, timeout, ws_port, ws_path, primary_pwd)
+
+        with mock.patch.object(srv, "_ws_send_recv_with_fallback", drop_the_first):
+            ok, message = srv._mv_set(DECODER_IP, "ip_input",
+                                      {"name": "ip_input4", "enabled": True})
+        self.assertTrue(ok, message)
+        self.assertEqual(calls["n"], 2, "the lost write was not retried once")
+        entry = next(i for i in self.devices[DECODER_IP].nodes["ip_input"]
+                     if i["name"] == "ip_input4")
+        self.assertTrue(entry["enabled"])
+
+    def test_a_write_is_never_retried_more_than_once(self):
+        calls = {"n": 0}
+
+        def always_fail(ip, payload, timeout, ws_port, ws_path, primary_pwd=None):
+            if "config_set" in payload:
+                calls["n"] += 1
+                raise OSError("gone")
+            return self._transport(ip, payload, timeout, ws_port, ws_path,
+                                   primary_pwd)
+
+        with mock.patch.object(srv, "_ws_send_recv_with_fallback", always_fail):
+            ok, _message = srv._mv_set(DECODER_IP, "ip_input",
+                                       {"name": "ip_input6", "enabled": True})
+        self.assertFalse(ok)
+        self.assertLessEqual(calls["n"], 2,
+                             "a write was attempted %d times" % calls["n"])
+
+    def test_a_write_the_device_refused_is_not_retried(self):
+        """A refusal is a decision. Asking again produces the same decision."""
+        calls = {"n": 0}
+
+        def refuse(ip, payload, timeout, ws_port, ws_path, primary_pwd=None):
+            calls["n"] += 1
+            return {"error": True, "error_message": "read-only field"}
+
+        with mock.patch.object(srv, "_ws_send_recv_with_fallback", refuse):
+            ok, message = srv._mv_set(DECODER_IP, "ip_input",
+                                      {"name": "ip_input2", "enabled": True})
+        self.assertFalse(ok)
+        self.assertEqual(calls["n"], 1, "a refusal was retried")
+        self.assertIn("read-only", message)
+
+    def test_a_method_whose_reply_was_lost_is_never_repeated(self):
+        """add_multiview twice is two objects. The device is read instead."""
+        calls = {"n": 0}
+        real = self._transport
+
+        def lose_the_reply(ip, payload, timeout, ws_port, ws_path, primary_pwd=None):
+            if "method" in payload:
+                calls["n"] += 1
+                real(ip, payload, timeout, ws_port, ws_path, primary_pwd)
+                raise OSError("the reply was lost")
+            return real(ip, payload, timeout, ws_port, ws_path, primary_pwd)
+
+        with mock.patch.object(srv, "_ws_send_recv_with_fallback", lose_the_reply):
+            ok, _message = srv._mv_method(
+                DECODER_IP, "add_multiview",
+                {"name": "multiviewOnce", "width": 1920, "height": 1088})
+        self.assertFalse(ok, "a lost method reply was reported as success")
+        self.assertEqual(calls["n"], 1, "the method was sent twice")
+        names = [str(o.get("name") or "")
+                 for o in self.devices[DECODER_IP].nodes["multiview"]]
+        self.assertEqual(names.count("multiviewOnce"), 1,
+                         "the object was created twice: %s" % names)
+
+    # ---- what must never be retried ---------------------------------------
+    def test_a_deterministic_refusal_is_not_retried(self):
+        """§5: Video Wall will still be on the second time."""
+        self.decoder(hdmi=_hdmi_output(wall=True))
+        self.encoder(ENCODER_IP)
+        device = self.devices[DECODER_IP]
+        device.reads = []
+        response = self.client.post("/api/multiview/show",
+                                    json={"decoder": DECODER_IP,
+                                          "name": "multiviewAnything"})
+        self.assertIn(response.status_code, (404, 409))
+        self.assertLessEqual(
+            len([r for r in device.reads if r == "multiview"]), 3,
+            "a deterministic refusal read the device repeatedly")
+
+    def test_one_unreachable_source_does_not_stop_the_healthy_ones(self):
+        """§6: the other sources are still read, concurrently."""
+        self.encoder(ENCODER2_IP)
+        seen = set()
+        real = self._transport
+
+        def one_is_away(ip, payload, timeout, ws_port, ws_path, primary_pwd=None):
+            seen.add(ip)
+            if ip == ENCODER2_IP:
+                raise OSError("away")
+            return real(ip, payload, timeout, ws_port, ws_path, primary_pwd)
+
+        with mock.patch.object(srv, "_ws_send_recv_with_fallback", one_is_away):
+            states = srv._gather_encoder_states([ENCODER_IP, ENCODER2_IP])
+        self.assertIn(ENCODER_IP, seen)
+        self.assertIn(ENCODER2_IP, seen)
+        self.assertIsNotNone(states.get(ENCODER_IP),
+                             "a healthy source was abandoned")
+
+    def test_each_unique_source_is_read_once(self):
+        """§9: the same encoder in two windows is one encoder."""
+        reads = []
+        real = self._transport
+
+        def counting(ip, payload, timeout, ws_port, ws_path, primary_pwd=None):
+            if "config_get" in payload:
+                reads.append((ip, payload.get("config_get")))
+            return real(ip, payload, timeout, ws_port, ws_path, primary_pwd)
+
+        with mock.patch.object(srv, "_ws_send_recv_with_fallback", counting):
+            srv._gather_encoder_states([ENCODER_IP, ENCODER_IP, ENCODER_IP])
+        addresses = {ip for ip, _node in reads}
+        self.assertEqual(addresses, {ENCODER_IP})
+        per_node = collections.Counter(node for _ip, node in reads)
+        for node, count in per_node.items():
+            self.assertEqual(count, 1,
+                             "%s was read %d times for one source" % (node, count))
+
+
+# ==========================================================================
+# A window that did not lock
+# ==========================================================================
+
+class UnlockedWindowTests(MultiviewTestBase):
+    """Measured on the bench: after some transitions a window stays black.
+
+    Every field is correct and its packets are arriving, so the next Show
+    concluded there was nothing to write and did nothing at all -- which made
+    the operator's only obvious remedy a guaranteed no-op. "The configuration
+    matches" is not the same as "the picture is on the screen".
+    """
+
+    def setUp(self):
+        super().setUp()
+        srv._MULTIVIEW_UNLOCKED.clear()
+        self.addCleanup(srv._MULTIVIEW_UNLOCKED.clear)
+
+    def test_a_black_window_is_remembered(self):
+        srv._remember_unlocked(DECODER_IP, "multiviewLive",
+                               [{"subframe": "right (960x544)",
+                                 "ip_input": "ip_input4", "active": False}])
+        self.assertEqual(srv._previously_unlocked(DECODER_IP, "multiviewLive"),
+                         {"ip_input4"})
+
+    def test_it_is_forgotten_as_soon_as_it_locks(self):
+        srv._remember_unlocked(DECODER_IP, "multiviewLive",
+                               [{"subframe": "right", "ip_input": "ip_input4"}])
+        srv._remember_unlocked(DECODER_IP, "multiviewLive", [])
+        self.assertEqual(srv._previously_unlocked(DECODER_IP, "multiviewLive"),
+                         set())
+
+    def test_it_is_remembered_per_decoder_and_per_multiview(self):
+        srv._remember_unlocked(DECODER_IP, "multiviewA",
+                               [{"subframe": "x", "ip_input": "ip_input4"}])
+        self.assertEqual(srv._previously_unlocked(DECODER_IP, "multiviewB"), set())
+        self.assertEqual(srv._previously_unlocked(DECODER2_IP, "multiviewA"), set())
+
+    def _plan(self, *bindings):
+        """A plan carrying just the windows the recovery reads."""
+        return {"decoder": {"ip": DECODER_IP},
+                "windows": [{"ip_input": {"ip_input": name, "address": address,
+                                          "port": 1000}}
+                            for name, address in bindings]}
+
+    def test_a_remembered_window_is_taken_down_and_brought_back(self):
+        forced = srv._force_relock(self._plan(("ip_input4", S2_VIDEO)), [],
+                                   {"ip_input4"})
+        self.assertEqual(len(forced), 2, forced)
+        self.assertFalse(forced[0]["config"]["enabled"],
+                         "the input is not taken down first")
+        self.assertTrue(forced[1]["config"]["enabled"],
+                        "the input is not brought back")
+        self.assertEqual(forced[1]["config"]["multicast"]["address"], S2_VIDEO)
+        self.assertIn("did not lock", forced[0]["description"])
+
+    def test_it_works_when_the_plan_would_have_written_nothing(self):
+        """The whole point: an empty transaction is where this is needed."""
+        forced = srv._force_relock(self._plan(("ip_input4", S2_VIDEO)), [],
+                                   {"ip_input4"})
+        self.assertEqual(len(forced), 2,
+                         "nothing was produced for an already-correct plan")
+
+    def test_only_the_window_that_was_black_is_touched(self):
+        plan = self._plan(("ip_input2", S1_VIDEO), ("ip_input4", S2_VIDEO))
+        forced = srv._force_relock(plan, [], {"ip_input4"})
+        self.assertEqual({m["target"] for m in forced}, {"ip_input4"},
+                         "a window that was fine was re-established too")
+
+    def test_nothing_is_forced_when_every_window_locked(self):
+        plan = self._plan(("ip_input2", S1_VIDEO))
+        self.assertEqual(srv._force_relock(plan, [], set()), [])
+
+    def test_a_window_with_no_stream_is_not_re_established(self):
+        """Nothing to point it at is nothing to do."""
+        plan = {"decoder": {"ip": DECODER_IP},
+                "windows": [{"ip_input": {"ip_input": "ip_input4"}}]}
+        self.assertEqual(srv._force_relock(plan, [], {"ip_input4"}), [])
+
+    # ---- the wiring, not just the helpers ---------------------------------
+    def _short_settle(self):
+        """Wait a moment for a window, not ten seconds.
+
+        The real timeout is a default argument, fixed when the function was
+        defined, so patching the constant would change nothing.
+        """
+        real = srv._await_window_lock
+        return mock.patch.object(
+            srv, "_await_window_lock",
+            lambda ip, name, timeout=0.01, interval=0.01:
+                real(ip, name, timeout, interval))
+
+    def _commissioned_with_a_black_window(self):
+        """A shown Multiview where one window never reports itself locked."""
+        decoder = self.decoder()
+        for ip in (ENCODER_IP, ENCODER2_IP):
+            self.encoder(ip)
+        body = self.client.post("/api/multiview/apply", json={
+            "decoder": DECODER_IP, "layout": "side-by-side",
+            "canvas": mv.ACTIVE_CANVAS, "name": "Pair",
+            "assignments": {"left": ENCODER_IP, "right": ENCODER2_IP},
+        }).get_json()
+        self.assertTrue(body.get("ok"), body)
+        name = body["plan"]["object_name"]
+        self.offer(name)
+        # Whichever input the second window ends up on is the one that sticks.
+        first = self.client.post("/api/multiview/show",
+                                 json={"decoder": DECODER_IP,
+                                       "name": name}).get_json()
+        target = next(o for o in decoder.nodes["multiview"]
+                      if o.get("name") == name)
+        stuck = str((target["subframes"][-1]).get("input") or "")
+        decoder.never_locks = {stuck}
+        return decoder, name, stuck
+
+    def test_a_show_that_leaves_a_window_black_says_so(self):
+        decoder, name, stuck = self._commissioned_with_a_black_window()
+        with self._short_settle():
+            body = self.client.post("/api/multiview/show",
+                                    json={"decoder": DECODER_IP,
+                                          "name": name}).get_json()
+        self.assertIn("NOT LOCKED", str(body.get("status")),
+                      "a black window was reported as plain success: %s"
+                      % body.get("status"))
+        self.assertEqual(srv._previously_unlocked(DECODER_IP, name), {stuck},
+                         "the black window was not remembered")
+
+    def test_the_next_show_re_establishes_it_instead_of_doing_nothing(self):
+        """The whole point: the operator's remedy must not be a no-op."""
+        decoder, name, stuck = self._commissioned_with_a_black_window()
+        with self._short_settle():
+            self.client.post("/api/multiview/show",
+                             json={"decoder": DECODER_IP, "name": name})
+            decoder.writes = []
+            body = self.client.post("/api/multiview/show",
+                                    json={"decoder": DECODER_IP,
+                                          "name": name}).get_json()
+        writes = [w for w in decoder.writes if w[0] == "config_set"]
+        self.assertTrue(writes,
+                        "showing it again wrote nothing at all, so the black "
+                        "window could not possibly recover")
+        disables = [w for w in writes if w[1] == "ip_input"
+                    and any((e or {}).get("name") == stuck
+                            and (e or {}).get("enabled") is False
+                            for e in (w[2] if isinstance(w[2], list) else [w[2]]))]
+        self.assertTrue(disables,
+                        "%s was not taken down before being brought back: %s"
+                        % (stuck, writes))
+
+    def test_a_multiview_with_no_black_window_still_writes_nothing(self):
+        """Write-minimality is only suspended for a window that was black."""
+        decoder, name, _stuck = self._commissioned_with_a_black_window()
+        decoder.never_locks = set()
+        srv._remember_unlocked(DECODER_IP, name, [])
+        decoder.writes = []
+        body = self.client.post("/api/multiview/show",
+                                json={"decoder": DECODER_IP,
+                                      "name": name}).get_json()
+        self.assertTrue(body.get("ok"), body)
+        self.assertEqual((body.get("writes") or {}).get("writes_performed"), 0,
+                         "a healthy Multiview was rewritten")
+
+    def test_no_encoder_is_touched_by_the_recovery(self):
+        plan = self._plan(("ip_input4", S2_VIDEO))
+        forced = srv._force_relock(plan, [], {"ip_input4"})
+        self.assertTrue(all(m["node"] == "ip_input" for m in forced), forced)
+        self.assertTrue(all(m["device"] == DECODER_IP for m in forced), forced)
+
+
+# ==========================================================================
+# What a refusal tells the operator
+# ==========================================================================
+
+class RefusalClassificationTests(MultiviewTestBase):
+    """A device that did not answer is not an invalid request.
+
+    Both used to be 400 with a sentence, so the page could only say BAD REQUEST
+    and the operator could not tell a layout they cannot have from an encoder
+    that is switched off.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.decoder()
+        self.encoder(ENCODER_IP)
+
+    def _save_with_unreachable_source(self):
+        # A second source that is not registered, so it cannot be read.
+        return self.client.post("/api/multiview/apply", json={
+            "decoder": DECODER_IP, "layout": "side-by-side",
+            "canvas": mv.ACTIVE_CANVAS, "name": "Pair",
+            "assignments": {"left": ENCODER_IP, "right": ENCODER2_IP}})
+
+    def test_an_unreachable_source_is_not_reported_as_an_invalid_request(self):
+        response = self._save_with_unreachable_source()
+        self.assertEqual(response.status_code, 503,
+                         "a device that did not answer was reported as a bad "
+                         "request")
+        body = response.get_json()
+        self.assertEqual(body["classification"], "device_unreachable")
+        self.assertEqual(body["status"], "DEVICE UNREACHABLE")
+
+    def test_it_names_the_device_and_the_window(self):
+        body = self._save_with_unreachable_source().get_json()
+        entry = body["unreachable"][0]
+        self.assertEqual(entry["ip"], ENCODER2_IP)
+        self.assertEqual(entry["window"], "right")
+        self.assertEqual(entry["attempts"], srv.MULTIVIEW_READ_ATTEMPTS)
+
+    def test_it_says_that_nothing_was_changed(self):
+        body = self._save_with_unreachable_source().get_json()
+        self.assertEqual(body["writes"], 0)
+        self.assertIn("No device was changed", body["error"])
+        self.assertEqual(self.devices[DECODER_IP].nodes["multiview"], [],
+                         "a refusal still created something")
+
+    def test_a_genuinely_invalid_request_is_still_a_bad_request(self):
+        response = self.client.post("/api/multiview/apply", json={
+            "decoder": DECODER_IP, "layout": "no-such-layout",
+            "canvas": mv.ACTIVE_CANVAS, "name": "Nope",
+            "assignments": {"left": ENCODER_IP}})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["classification"], "invalid")
+
+    def test_a_live_conflict_is_still_a_conflict(self):
+        """Something else has to change first, which is not the same thing."""
+        self.decoder(hdmi=_hdmi_output(wall=True))
+        self.encoder(ENCODER_IP)
+        response = self.client.post("/api/multiview/apply", json={
+            "decoder": DECODER_IP, "layout": "side-by-side",
+            "canvas": mv.ACTIVE_CANVAS, "name": "Pair",
+            "assignments": {"left": ENCODER_IP}})
+        self.assertIn(response.status_code, (409, 400))
+        body = response.get_json()
+        if response.status_code == 409:
+            self.assertEqual(body["classification"], "conflict")
+
+    def test_no_credential_appears_in_a_refusal(self):
+        raw = self._save_with_unreachable_source().get_data(as_text=True).lower()
+        for pattern in ('"password"', 'used_password', '"secret"', '"token"',
+                        'password=', 'password:'):
+            self.assertNotIn(pattern, raw)
+
+    def test_a_refusal_carries_no_stack_trace(self):
+        raw = self._save_with_unreachable_source().get_data(as_text=True)
+        for marker in ("Traceback", "File \"", "line 1", "__main__"):
+            self.assertNotIn(marker, raw)
 
 
 # ==========================================================================

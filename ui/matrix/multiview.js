@@ -1884,10 +1884,7 @@
       // A refused group operation carries the reason it was refused: which
       // source conflicts, and which decoders disagree about it. "FAILED —
       // refused" is not something an operator can act on.
-      const detail = err.body || {};
-      const reasons = (detail.conflicts || []).map((c) => c.detail)
-        .concat(detail.problems || []);
-      const message = reasons.length ? reasons.join('  ') : err.message;
+      const message = operatorReason(err.body || {error: err.message});
       setStatus('FAILED — ' + message, false);
       notify(message);
     }
@@ -1922,11 +1919,35 @@
     return layout ? layout.label : layoutId;
   }
 
+  // What to put in front of the operator when something is refused. The status
+  // word alone ("invalid", "conflict") describes the category, not the problem.
+  function operatorReason(body) {
+    // Most specific first. A group refusal carries a one-word `error` and the
+    // conflicts that explain it; preferring the short one throws away the
+    // sentence the operator actually needs.
+    const conflicts = (body.conflicts || []).map((c) => c.detail).filter(Boolean);
+    if (conflicts.length) return conflicts.join('  ');
+    if ((body.problems || []).length) return body.problems.join('  ');
+    if (body.error) return body.error;
+    return body.status || 'The operation failed.';
+  }
+
   function showResult(body) {
     const status = body.status || (body.ok ? 'VERIFIED' : 'FAILED');
     state.outcome = body.ok ? 'VERIFIED' : 'ERROR';
-    setStatus(status, !!body.ok);
-    notify(body.ok ? 'Verified on the decoder.' : status, body.ok ? 'ok' : undefined);
+    // A failure has two things worth saying: what happened to the system, and
+    // why. "FAILED — ROLLED BACK" tells the operator their equipment was put
+    // back; the reason tells them what to do about it. Neither replaces the
+    // other, so where the status carries an outcome, both are shown.
+    let reason = status;
+    if (!body.ok) {
+      const why = operatorReason(body);
+      reason = /FAIL|ROLL/i.test(status) && why !== status
+        ? status + ' — ' + why : why;
+    }
+    setStatus(reason, !!body.ok);
+    notify(body.ok ? 'Verified on the decoder.' : reason,
+           body.ok ? 'ok' : undefined);
 
     const detail = node('details', 'mv-detail');
     detail.open = !body.ok;
@@ -1942,6 +1963,16 @@
     (body.rollback || []).forEach((entry) => {
       lines.push('[rollback ' + (entry.verified ? 'verified' : 'NOT VERIFIED') + '] ' +
         entry.step + (entry.error ? '  — ' + entry.error : ''));
+    });
+    // A read that missed and then worked is a diagnostic, not an operator
+    // event: it is recorded here and nowhere else.
+    (body.retried_reads || []).forEach((entry) => {
+      lines.push('[retried] ' + entry.device + ' ' + entry.node
+        + ' answered on attempt ' + entry.attempt);
+    });
+    (body.unreachable || []).forEach((entry) => {
+      lines.push('[unreachable] ' + entry.hostname + ' (' + entry.ip + ') for '
+        + entry.window + ' — ' + entry.attempts + ' attempts');
     });
     (body.steps || []).forEach((entry) => {
       lines.push((entry.verified ? '[verified] ' : '[NOT VERIFIED] ') +

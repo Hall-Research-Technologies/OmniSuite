@@ -4418,6 +4418,38 @@ What changes is said out loud -- a context bar naming the group, and buttons tha
 read "Show on 6 displays" rather than "Show on Display". The Groups panel is now
 only for deciding which decoders are in a group.
 
+## Multiview: Phase 8C — what may be retried, and what a refusal means
+
+The reported failure -- "Encoder hw-omni-e4521-00002 did not answer" -- was
+accurate. That encoder answers none of five TCP probes; it is switched off. What
+was wrong was the shape of the answer: a device that was not there came back as
+400, the same code as a request that cannot be built, so the page could only say
+BAD REQUEST. A device that did not answer is now 503, names the unit and the
+attempt count, and says that nothing was changed. Live conflicts stay 409 and
+genuinely invalid requests stay 400.
+
+Reads get three bounded attempts with short pauses, because a read changes
+nothing and every read opens its own connection -- there is no pooled socket to
+go stale, which is also why the transport needed no rewrite. Writes are the
+opposite: a `config_set` whose reply was lost may have arrived, so the device is
+read before anything is repeated, and only then is one retry allowed. A `method`
+is never repeated at all. Deterministic refusals are never retried; they fail
+fast, before any write.
+
+Measured cost: a Show with nothing going wrong is unchanged at about 4 ms of
+OmniSuite's own work, a read that misses once is caught transparently, and an
+absent device adds at most 0.45s of pause before a clear refusal.
+
+The harder finding is a window that stays black after certain transitions --
+every field correct, packets arriving, and no picture. It is intermittent, about
+four occurrences in thirty attempts, and it does not clear itself in a minute.
+OmniSuite already detected and reported it rather than claiming success. What it
+did next was the problem: showing the same Multiview again performed **zero**
+writes, because everything already matched, so the only obvious remedy could not
+work. A window seen failing to lock is now remembered and its input
+re-established on the next attempt instead of being skipped. Showing a different
+Multiview and returning also clears it, and the guide says so.
+
 ## The test fence belongs to the tests
 
 Phase 8 found the hardware fence living in `run_tests.py`, which meant a plain

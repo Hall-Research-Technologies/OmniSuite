@@ -3146,3 +3146,109 @@ target plans its own. Measured on .153: the copy changed no display on either
 decoder, Show then reconciled the target's own inputs
 (`239.100.132.254` and `239.100.133.108` into its own pool), and deleting the
 copy left the original untouched.
+
+## AE. Phase 8C: what may be retried, and a window that will not lock
+
+### AE.1 The reported failure was true
+
+`Encoder hw-omni-e4521-00002 did not answer, so its Session 2 cannot be prepared
+for window top_left.` That encoder is 192.168.100.141, and it answered **none**
+of five TCP probes on port 80, each timing out at 2 s, while every other device
+on the bench answered in under 0.03 s. It is switched off. The sentence was
+correct and the operation wrote nothing.
+
+What was wrong was the shape of the answer:
+
+| condition | was | now |
+|---|---|---|
+| a device did not answer | 400 | **503**, naming the unit and the attempts |
+| a live conflict | 409 | 409 |
+| a request that cannot be built | 400 | 400 |
+| an unknown Multiview | 404 | 404 |
+
+Measured after the change, the same request returns in the same 1.6 s with
+`classification=device_unreachable`, `writes=0`, and a sentence naming the
+encoder, the window and that nothing was changed.
+
+### AE.2 Every refusal, classified
+
+| operation | result | writes | kind |
+|---|---|---|---|
+| save using the offline encoder | 503 | 0 | device unreachable |
+| show a Multiview that is not there | 404 | 0 | invalid request |
+| show with no name | 400 | 0 | invalid request |
+| copy onto its own decoder | 400 | 0 | invalid request |
+| copy to a decoder with Video Wall on | 409 | 0 | policy refusal |
+| copy where the name is taken | 409 | 0 | resource conflict |
+| switch a window on an inactive Multiview | 409 | 0 | policy refusal |
+
+Not one of them wrote anything, and not one is worth retrying unchanged.
+
+### AE.3 Why the transport needed no rewrite
+
+`_ws_send_recv` opens a connection per call and closes it in a `finally`. There
+is no pool, nothing is reused, and a failed call leaves nothing behind -- so the
+stale-socket, reuse-after-close and shared-socket questions are all answered by
+construction. Sources were already deduplicated by identity and read
+concurrently.
+
+### AE.4 The window that will not lock
+
+After some layout transitions a window stays black. Measured state while it was
+black:
+
+```
+ip_input4   enabled=True   239.100.133.108   packets=53121   (and rising)
+.143        Encoder 2 960x544 @200, Session 2 enabled, destination correct
+subframe    right (960x544)   video.input.active = False     for 60+ seconds
+```
+
+Everything is configured correctly, the packets are arriving, and there is no
+picture. It is intermittent -- about four occurrences in thirty attempts -- and
+it appears on transitions where a source's Encoder 2 changes scaler size while
+its stream keeps flowing to the same decoder input.
+
+What was tried, on the bench:
+
+| remedy | result |
+|---|---|
+| wait | still black after 60 s |
+| disable and re-enable the decoder input | still black |
+| show the same Multiview again | **0 writes, still black** |
+| show a different Multiview, then come back | locked in 0.1 s |
+
+The third row is the one that mattered. Write-minimality correctly concluded
+that every field already held the wanted value, so the operator's obvious remedy
+was guaranteed to do nothing at all. "The configuration matches" is not the same
+as "the picture is on the screen".
+
+A window seen failing to lock is now remembered, and the next attempt at that
+Multiview re-establishes that window's input instead of skipping it. Narrowly:
+that input only, on the decoder only, forgotten as soon as it locks. Whether
+that clears the underlying condition every time is **not** proven -- a bare
+input bounce did not, in the one observation available -- so the guide also
+tells the operator the remedy that did work.
+
+### AE.5 What the guardrail does, and what it does not
+
+Measured on the bench after the change, having provoked the condition:
+
+```
+first Show    VERIFIED — WINDOW NOT LOCKED    right (960x544)
+second Show   2 writes performed, 0 planned
+              [verified] Take ip_input4 down, because its window did not lock last time
+              [verified] Point ip_input4 at 239.100.133.108:1000 again
+              still black
+```
+
+So the no-op is gone: the operator's second attempt now genuinely re-establishes
+the window instead of concluding there is nothing to do. **It did not clear this
+condition**, which is consistent with the earlier observation that a bare input
+bounce does not. Showing a different Multiview and returning still does, in 0.1s.
+
+That is the honest position. The guardrail is kept because it is safe, narrow
+and strictly better than writing nothing -- and because a window that is black
+for a different reason, one where the input really does need re-establishing,
+would be fixed by it. It is not a cure for this fault, the User Guide tells the
+operator the remedy that works, and the underlying behaviour belongs with
+whoever owns the decoder firmware.

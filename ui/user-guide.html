@@ -515,6 +515,10 @@
       <h3>Several Multiviews on one decoder</h3>
       <p>A decoder holds as many saved Multiviews as you want, and exactly one of them is on the display. They are listed under <em>On this decoder</em>, and the one currently showing is marked. Pick any of them from the <strong>Multiview</strong> dropdown to open it.</p>
 
+      <h3>When a source does not answer</h3>
+      <p>If a source cannot be reached, OmniSuite tries a few times before giving up, then tells you which one it was and that <strong>nothing was changed</strong>. That is different from a Multiview that cannot be built &mdash; the message says which it is, so you know whether to fix the layout or go and look at the equipment.</p>
+      <div class="note">Very occasionally a window stays black after a layout change even though everything is configured correctly. OmniSuite notices and says which window rather than reporting success. Showing a different Multiview and then showing this one again clears it.</div>
+
       <h3>Showing one on the display</h3>
       <p><strong>Show on Display</strong> prepares every source the Multiview needs and then switches the display to it. It runs immediately &mdash; choosing a Multiview and pressing the button is the instruction, so there is no extra dialog.</p>
       <p>Each change is read back from the device afterwards. If anything cannot be confirmed, the whole operation is undone and you are told what failed. A Multiview that is already showing and already correct can be shown again safely; nothing is rewritten.</p>

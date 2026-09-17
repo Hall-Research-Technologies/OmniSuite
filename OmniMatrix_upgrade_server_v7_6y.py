@@ -12933,6 +12933,43 @@ def _multiview_credentials(ip):
             app.config['WS_PORT'], app.config['WS_PATH'], app.config['TIMEOUT'])
 
 
+# How many times a READ may be attempted, and how long to wait between them.
+# Short on purpose: this sits inside an operation an operator is waiting for, and
+# a device that has not answered in about a second and a half is not busy, it is
+# away. Three attempts cost at most ~0.45s of waiting on top of the timeouts.
+MULTIVIEW_READ_ATTEMPTS = 3
+MULTIVIEW_RETRY_DELAYS = (0.15, 0.30)
+
+# Records, per operation, which attempt succeeded -- so a diagnostic can say "the
+# first read missed and the second worked" without the operator seeing anything.
+_multiview_attempts_lock = threading.RLock()
+_MULTIVIEW_ATTEMPTS = {}
+
+
+def _note_attempt(ip, node, attempt, outcome, detail=""):
+    with _multiview_attempts_lock:
+        entries = _MULTIVIEW_ATTEMPTS.setdefault(threading.get_ident(), [])
+        entries.append({"device": ip, "node": node, "attempt": attempt,
+                        "outcome": outcome, "detail": detail[:160],
+                        "at": time.time()})
+        del entries[:-200]
+
+
+def _attempt_log(clear=False):
+    """What this thread has tried. Used by diagnostics, never by the operator."""
+    with _multiview_attempts_lock:
+        entries = list(_MULTIVIEW_ATTEMPTS.get(threading.get_ident()) or [])
+        if clear:
+            _MULTIVIEW_ATTEMPTS.pop(threading.get_ident(), None)
+    return entries
+
+
+def _retried_reads(entries=None):
+    """The reads that needed more than one attempt, for the engineering panel."""
+    entries = entries if entries is not None else _attempt_log()
+    return [e for e in entries if e["outcome"] == "ok" and e["attempt"] > 1]
+
+
 def _mv_get(ip, node, user=None, pwd=None, timeout=None):
     """One `config_get`, with the shared fallback-password behaviour.
 
@@ -12942,16 +12979,32 @@ def _mv_get(ip, node, user=None, pwd=None, timeout=None):
     """
     device, default_user, default_pwd, ws_port, ws_path, default_timeout = \
         _multiview_credentials(ip)
-    try:
-        answer = _ws_send_recv_with_fallback(
-            ip, {"id": f"{node}-get", "username": user or default_user,
-                 "config_get": node},
-            timeout or default_timeout, ws_port, ws_path, pwd or default_pwd)
-        return answer if isinstance(answer, dict) else {"__unreachable__": True,
-                                                        "error": "malformed response"}
-    except Exception as e:
-        log.info("[MULTIVIEW] %s %s read failed: %s", ip, node, e)
-        return {"__unreachable__": True, "error": str(e)}
+    last = "no attempt was made"
+    for attempt in range(1, MULTIVIEW_READ_ATTEMPTS + 1):
+        try:
+            answer = _ws_send_recv_with_fallback(
+                ip, {"id": f"{node}-get", "username": user or default_user,
+                     "config_get": node},
+                timeout or default_timeout, ws_port, ws_path, pwd or default_pwd)
+            if isinstance(answer, dict):
+                # A device that ANSWERED is finished with, whatever it said. An
+                # error in the reply is the device's opinion, not a lost packet,
+                # and asking again would only produce the same opinion.
+                _note_attempt(ip, node, attempt, "ok")
+                return answer
+            last = "malformed response"
+        except Exception as exc:
+            last = str(exc)
+        _note_attempt(ip, node, attempt, "failed", last)
+        # Reads change nothing and each one opens its own connection, so the
+        # next attempt starts clean. Nothing is reused, so nothing is stale.
+        if attempt < MULTIVIEW_READ_ATTEMPTS:
+            time.sleep(MULTIVIEW_RETRY_DELAYS[
+                min(attempt - 1, len(MULTIVIEW_RETRY_DELAYS) - 1)])
+    log.info("[MULTIVIEW] %s %s did not answer in %d attempt(s): %s",
+             ip, node, MULTIVIEW_READ_ATTEMPTS, last)
+    return {"__unreachable__": True, "error": last,
+            "__attempts__": MULTIVIEW_READ_ATTEMPTS}
 
 
 def _mv_config(ip, node, **kwargs):
@@ -12961,25 +13014,83 @@ def _mv_config(ip, node, **kwargs):
     return config if isinstance(config, list) else []
 
 
+def _write_landed(ip, node, config):
+    """Does the device already hold what this config_set was asking for?
+
+    The only safe question after a write whose answer was lost. `config_set`
+    merges by object name, so reading the object back and comparing the fields
+    the write named says whether it arrived.
+    """
+    target = str(config.get("name") or "")
+    items = _read_nodes([{"device": ip, "node": node, "target": target,
+                          "config": config}])
+    current = (items or {}).get((ip, node))
+    if current is None:
+        return None                      # could not read: still unknown
+    actual = current.get(target)
+    if actual is None:
+        return False
+    return not _diff_expected(config, actual)
+
+
 def _mv_set(ip, node, config):
-    """One `config_set`. Returns (ok, message). Never treated as verification."""
+    """One `config_set`. Returns (ok, message). Never treated as verification.
+
+    On a transport failure the device is read before anything is repeated: a
+    write whose reply was lost may have arrived. Only when the read proves it
+    did not is one retry allowed, and a config_set is safe to repeat because
+    writing the same value twice is the same value.
+    """
     device, user, pwd, ws_port, ws_path, timeout = _multiview_credentials(ip)
-    try:
-        answer = _ws_send_recv_with_fallback(
-            ip, {"id": f"{node}-set", "username": user,
-                 "config_set": {"name": node, "config": [config]}},
-            timeout, ws_port, ws_path, pwd)
-    except Exception as e:
-        return False, str(e)
-    if not isinstance(answer, dict):
-        return False, "malformed response"
-    if answer.get("error"):
-        return False, str(answer.get("error_message") or answer.get("error"))
-    return True, ""
+
+    def attempt():
+        try:
+            answer = _ws_send_recv_with_fallback(
+                ip, {"id": f"{node}-set", "username": user,
+                     "config_set": {"name": node, "config": [config]}},
+                timeout, ws_port, ws_path, pwd)
+        except Exception as exc:
+            return None, str(exc)        # transport: the outcome is unknown
+        if not isinstance(answer, dict):
+            return None, "malformed response"
+        if answer.get("error"):
+            # The device answered and refused. That is a decision, not a miss.
+            return False, str(answer.get("error_message") or answer.get("error"))
+        return True, ""
+
+    ok, message = attempt()
+    if ok is not None:
+        _note_attempt(ip, node, 1, "ok" if ok else "refused", message)
+        return ok, message
+
+    # Unknown outcome. Find out what the device actually holds.
+    _note_attempt(ip, node, 1, "failed", message)
+    landed = _write_landed(ip, node, config)
+    if landed is True:
+        _note_attempt(ip, node, 1, "ok", "the write had already arrived")
+        return True, ""
+    if landed is None:
+        return False, message            # cannot even read: do not guess
+
+    time.sleep(MULTIVIEW_RETRY_DELAYS[0])
+    ok, retry_message = attempt()
+    _note_attempt(ip, node, 2, "ok" if ok else "failed", retry_message)
+    if ok is True:
+        return True, ""
+    if ok is False:
+        return False, retry_message
+    return False, retry_message or message
 
 
 def _mv_method(ip, method, options):
-    """One `method` call -- the only way to create or delete a named object."""
+    """One `method` call -- the only way to create or delete a named object.
+
+    Never repeated. `add_multiview` twice is two objects and
+    `del_multiview_subframe` twice removes something nobody asked about, so a
+    lost reply is answered by reading the device rather than by trying again.
+    The caller verifies semantically either way; this only avoids turning one
+    instruction into two.
+    """
     device, user, pwd, ws_port, ws_path, timeout = _multiview_credentials(ip)
     try:
         answer = _ws_send_recv_with_fallback(
@@ -12987,6 +13098,7 @@ def _mv_method(ip, method, options):
                  "method": {method: options}},
             timeout, ws_port, ws_path, pwd)
     except Exception as e:
+        _note_attempt(ip, method, 1, "failed", str(e))
         return False, str(e)
     if not isinstance(answer, dict):
         return False, "malformed response"
@@ -13577,6 +13689,56 @@ def _gather_encoder_states(source_ips):
         return dict(pool.map(_encoder_state, addresses))
 
 
+def _unreachable_sources(plan):
+    """The windows whose source could not be read, as the operator sees them."""
+    out = []
+    for window in (plan or {}).get("windows") or ():
+        source = window.get("source") or {}
+        if source.get("ip") and source.get("reachable") is False:
+            out.append({"ip": source["ip"],
+                        "hostname": source.get("hostname") or source["ip"],
+                        "window": window.get("cell"),
+                        "attempts": MULTIVIEW_READ_ATTEMPTS})
+    return out
+
+
+def _plan_refusal(plan, operation):
+    """Turn a refused plan into (body, status) that says which kind it is.
+
+    Three outcomes, three meanings:
+
+      a source did not answer   -> 503, try again when it is back
+      a live conflict           -> 409, something else has to change first
+      anything else             -> 400, this cannot be built as asked
+    """
+    unreachable = _unreachable_sources(plan)
+    reasons = list(plan.get("errors") or [])
+    if unreachable:
+        names = ", ".join(sorted({entry["hostname"] for entry in unreachable}))
+        return {
+            "ok": False,
+            "status": "DEVICE UNREACHABLE",
+            "classification": "device_unreachable",
+            "operation": operation,
+            "unreachable": unreachable,
+            "attempts": MULTIVIEW_READ_ATTEMPTS,
+            "writes": 0,
+            "plan": plan,
+            "error": ("%s did not answer after %d attempts, so %s cannot be "
+                      "prepared. No device was changed."
+                      % (names, MULTIVIEW_READ_ATTEMPTS,
+                         "this Multiview" if len(unreachable) > 1
+                         else "window " + str(unreachable[0]["window"]))),
+        }, 503
+    if plan.get("conflicts"):
+        return {"ok": False, "status": "conflict", "classification": "conflict",
+                "operation": operation, "writes": 0, "plan": plan,
+                "error": "; ".join(plan["conflicts"])}, 409
+    return {"ok": False, "status": "invalid", "classification": "invalid",
+            "operation": operation, "writes": 0, "plan": plan,
+            "error": "; ".join(reasons) or "This Multiview cannot be built as asked."}, 400
+
+
 def _build_plan(payload):
     """Read everything the plan depends on, then hand it to the planner."""
     ip = str(payload.get("decoder") or payload.get("ip") or "").strip()
@@ -13965,6 +14127,36 @@ def _saved_assignments(device, object_name):
              if w.get("cell") and w.get("source_ip")}, record)
 
 
+def _log_failed_transaction(operation, decoder, name, plan, failures,
+                            applied, rollback=None, classification=""):
+    """One traceable line for a transaction that did not finish.
+
+    Deliberately one line: a failure someone is looking at in a screenshot
+    should be findable without reconstructing it from six of them.
+    """
+    last = (failures or [{}])[-1]
+    sources = sorted({(w.get("source") or {}).get("ip")
+                      for w in (plan or {}).get("windows") or ()
+                      if (w.get("source") or {}).get("ip")})
+    attempts = len([entry for entry in _attempt_log()
+                    if entry["device"] == last.get("device", "")]) or None
+    restored = None
+    if rollback:
+        restored = all(entry.get("verified", entry.get("restored"))
+                       for entry in rollback)
+    log.warning(
+        "[MULTIVIEW] %s failed | op=%s decoder=%s multiview=%s layout=%s "
+        "sources=%s stage=%s device=%s attempts=%s written=%d class=%s "
+        "rollback=%s | %s",
+        operation, uuid.uuid4().hex[:8], decoder, name,
+        (plan or {}).get("layout"), ",".join(sources) or "-",
+        last.get("stage") or "-", last.get("device") or decoder,
+        attempts or "-", len(applied or []), classification or "-",
+        "not needed" if not rollback else
+        ("verified" if restored else "INCOMPLETE"),
+        str(last.get("error") or "")[:200])
+
+
 def _apply_saved_plan(plan, decoder_ip):
     """Write a planned Multiview to a decoder, verified, with rollback.
 
@@ -14007,8 +14199,9 @@ def _apply_saved_plan(plan, decoder_ip):
         if failures:
             rollback = _restore_snapshot(snapshot, applied)
             complete = all(entry["verified"] for entry in rollback) if rollback else True
-            log.warning("[MULTIVIEW] save failed on %s at %s: %s",
-                        decoder_ip, failures[-1]["stage"], failures[-1]["error"])
+            _log_failed_transaction("save", decoder_ip, plan.get("object_name"),
+                                    plan, failures, applied, rollback,
+                                    "write_or_readback")
             return {
                 "ok": False,
                 "status": "FAILED — ROLLED BACK" if complete
@@ -14070,12 +14263,9 @@ def api_multiview_apply():
         return jsonify(body), status
     plan, state, encoder_states = built
 
-    if not plan.get("ok"):
-        return jsonify({"ok": False, "status": "invalid", "plan": plan,
-                        "error": "; ".join(plan.get("errors") or [])}), 400
-    if plan.get("conflicts"):
-        return jsonify({"ok": False, "status": "conflict", "plan": plan,
-                        "error": "; ".join(plan["conflicts"])}), 409
+    if not plan.get("ok") or plan.get("conflicts"):
+        body, status = _plan_refusal(plan, "save")
+        return jsonify(body), status
     body, status = _apply_saved_plan(plan, plan["decoder"]["ip"])
     return jsonify(body), status
 
@@ -14238,12 +14428,10 @@ def _show_multiview_on(ip, name):
     if failure:
         message, status = failure
         return {"ok": False, "error": message}, status
-    if not plan.get("ok"):
-        return {"ok": False, "status": "invalid", "plan": plan,
-                        "error": "; ".join(plan.get("errors") or [])}, 400
-    if plan.get("conflicts"):
-        return {"ok": False, "status": "conflict", "plan": plan,
-                        "error": "; ".join(plan["conflicts"])}, 409
+    if not plan.get("ok") or plan.get("conflicts"):
+        # A source that did not answer is not an invalid request, and the
+        # operator needs to be able to tell the two apart.
+        return _plan_refusal(plan, "show")
 
     required = {(w.get("ip_input") or {}).get("ip_input")
                 for w in plan["windows"] if w.get("ip_input")}
@@ -14316,6 +14504,15 @@ def _show_multiview_on(ip, name):
         # device already holds is still a write it acts on. A source that is
         # already prepared correctly must cost zero writes.
         mutations, skipped, write_plan = _transaction_diff(mutations)
+        # One exception to writing only differences: a window that was black
+        # last time. Its fields already match, so the diff would skip it and the
+        # operator's second attempt would do nothing at all. Take that input
+        # down and bring it back instead.
+        stuck = _previously_unlocked(ip, name)
+        if stuck:
+            mutations = _force_relock(plan, mutations, stuck)
+            log.info("[MULTIVIEW] %s: re-establishing %s, which did not lock "
+                     "last time", name, ", ".join(sorted(stuck)))
         already_shown = not mutations
         for mutation in mutations:
             if mutation.get("method") in ("add_multiview", "del_multiview_subframe"):
@@ -14362,6 +14559,9 @@ def _show_multiview_on(ip, name):
     # The composite is live. Each window is a separate question, because one can
     # sit black while the others carry the picture.
     windows, unlocked = _await_window_lock(ip, name)
+    # Remembered so the next attempt re-establishes this window instead of
+    # concluding, correctly but uselessly, that there is nothing to write.
+    _remember_unlocked(ip, name, unlocked)
     after = (_mv_config(ip, "hdmi_output") or [{}])[0]
     output = (after.get("video") or {}).get("output") or {}
     if unlocked:
@@ -14474,6 +14674,72 @@ def _show_audio_plan_from_plan(ip, plan, state):
     result.update({"followed": True, "ip_input": current, "select": True,
                    "write_ip_input": True})
     return result
+
+
+# Windows last seen failing to lock, per decoder and Multiview. Small, in
+# memory, and cleared the moment they come good: this is not state about the
+# configuration, it is a note that the picture did not arrive.
+_multiview_unlocked_lock = threading.RLock()
+_MULTIVIEW_UNLOCKED = {}
+
+
+def _remember_unlocked(ip, name, windows):
+    key = (ip, name)
+    with _multiview_unlocked_lock:
+        if windows:
+            _MULTIVIEW_UNLOCKED[key] = {str(w.get("ip_input") or "")
+                                        for w in windows
+                                        if w.get("ip_input")}
+        else:
+            _MULTIVIEW_UNLOCKED.pop(key, None)
+
+
+def _previously_unlocked(ip, name):
+    """Decoder inputs whose window was black the last time this was shown."""
+    with _multiview_unlocked_lock:
+        return set(_MULTIVIEW_UNLOCKED.get((ip, name)) or ())
+
+
+def _force_relock(plan, needed, inputs):
+    """Re-establish these decoder inputs instead of skipping them.
+
+    The case this exists for is the one where NOTHING would otherwise be
+    written: every field already holds the wanted value, the planner produces no
+    mutation at all, and a window that is black stays black. So the pair is
+    built from the plan's own windows -- which name the input, the stream and the
+    port whether or not anything needed changing -- rather than from a mutation
+    list that may be empty.
+    """
+    if not inputs:
+        return needed
+    out = list(needed)
+    for window in (plan or {}).get("windows") or ():
+        binding = window.get("ip_input") or {}
+        target = binding.get("ip_input")
+        if not target or target not in inputs:
+            continue
+        multicast = window.get("multicast") or {}
+        address = binding.get("address") or multicast.get("address")
+        port = binding.get("port") or multicast.get("port")
+        if not address:
+            continue
+        device = (plan.get("decoder") or {}).get("ip")
+        out = [entry for entry in out
+               if not (entry.get("node") == "ip_input"
+                       and entry.get("target") == target)]
+        out.extend([
+            {"stage": omni_multiview.STAGE_IP_INPUT, "device": device,
+             "node": "ip_input", "target": target,
+             "description": "Take %s down, because its window did not lock "
+                            "last time" % target,
+             "config": {"name": target, "enabled": False}},
+            {"stage": omni_multiview.STAGE_IP_INPUT, "device": device,
+             "node": "ip_input", "target": target,
+             "description": "Point %s at %s:%s again" % (target, address, port),
+             "config": {"name": target, "enabled": True, "port": port,
+                        "multicast": {"address": address}}},
+        ])
+    return out
 
 
 def _await_window_lock(ip, name, timeout=MULTIVIEW_WINDOW_SETTLE, interval=1.0):
@@ -14709,12 +14975,9 @@ def api_multiview_switch():
         claimed_inputs=())
     after["decoder"] = {"ip": ip, "hostname": state.get("hostname") or ip,
                         "model": state.get("model") or ""}
-    if not after.get("ok"):
-        return jsonify({"ok": False, "status": "invalid", "plan": after,
-                        "error": "; ".join(after.get("errors") or [])}), 400
-    if after.get("conflicts"):
-        return jsonify({"ok": False, "status": "conflict", "plan": after,
-                        "error": "; ".join(after["conflicts"])}), 409
+    if not after.get("ok") or after.get("conflicts"):
+        body, status = _plan_refusal(after, "switch")
+        return jsonify(body), status
 
     changed = next((w for w in after["windows"] if w["cell"] == cell), None)
     if changed is None:
@@ -14826,6 +15089,7 @@ def api_multiview_switch():
                     "restored_source": assignments.get(cell) or None}), 200
 
         windows, unlocked = _await_window_lock(ip, name)
+        _remember_unlocked(ip, name, unlocked)
 
     # The window that changed has to have taken; the ones that did not change
     # have to still be showing what they were.
@@ -15737,14 +16001,14 @@ def api_multiview_copy():
     if not plan.get("ok"):
         lenient, notes = _only_unreachable_sources(plan)
         if not lenient:
-            return jsonify({"ok": False, "status": "invalid", "plan": plan,
-                            "warnings": warnings,
-                            "error": "; ".join(plan.get("errors") or [])}), 400
+            body, status = _plan_refusal(plan, "copy")
+            body["warnings"] = warnings
+            return jsonify(body), status
         warnings.extend(notes)
     if plan.get("conflicts"):
-        return jsonify({"ok": False, "status": "conflict", "plan": plan,
-                        "warnings": warnings,
-                        "error": "; ".join(plan["conflicts"])}), 409
+        body, status = _plan_refusal(plan, "copy")
+        body["warnings"] = warnings
+        return jsonify(body), status
 
     result, status = _apply_saved_plan(plan, target_ip)
     result["warnings"] = warnings

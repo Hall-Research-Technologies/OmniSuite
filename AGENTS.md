@@ -477,6 +477,22 @@
 
 - `var(--x)` with no definition and no fallback resolves to nothing, silently. A dialog whose surface did that had no background at all and the canvas read through its text. Tokens used are checked against tokens defined, and a dialog surface is one of the opaque theme surfaces.
 
+### Reads may be retried. Writes may not, until the device is asked.
+
+- A read changed nothing and opens its own connection, so a transient failure is safe to repeat: **three attempts, short pauses, then a clear "did not answer" naming the unit**. Never a loop, never a background poll.
+- A **`config_set` whose reply was lost may have arrived**. Read the device first. If it already holds the wanted value the step is done; only when the read proves otherwise is one retry allowed, and only because writing the same value twice is the same value.
+- A **`method` is never repeated.** `add_multiview` twice is two objects. A lost reply is answered by reading the device.
+- **A device that answered is finished with, whatever it said.** An error in a reply is a decision, not a miss, and deterministic refusals -- Video Wall, Fast Switching, an ineligible source, a scaler conflict, a bandwidth refusal -- fail fast before any write. Retrying them only delays the sentence the operator needs.
+
+### "Did not answer" is not "invalid request"
+
+- A device that was not there is **503** with the unit named and the attempt count; a live conflict is **409**; a request that cannot be built is **400**. The page shows the structured reason, never the status word.
+
+### A configuration that matches is not a picture on the screen
+
+- Measured on the bench: after some transitions a window stays black although every field reads correct and its packets are arriving. Write-minimality then made the operator's natural remedy -- show it again -- a guaranteed no-op, because there was nothing to write.
+- So a window seen failing to lock is **remembered, and re-established on the next attempt** rather than skipped. Narrowly: only that window's decoder input, only on the decoder, and forgotten as soon as it locks.
+
 ### The hardware fence belongs to the tests
 
 - **The fence lives in `tests/_fence.py` and is installed by the test package**, so it is present through `run_tests.py`, `python -m unittest`, discovery, an IDE and any mutation harness. It must never again depend on one runner remembering to install it.
