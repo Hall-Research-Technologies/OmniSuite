@@ -202,9 +202,15 @@
   <div class="mv-output-row" id="mv_output_row" hidden>
     <div class="mv-panel mv-output-panel">
       <h2>Display output</h2>
-      <div id="mv_output" class="mv-output" aria-live="polite">
-        <div class="mv-output-body" id="mv_output_body"></div>
+      <!-- The screen itself is the drop target, because that is the thing an
+           operator is aiming at. It is deliberately small: it says what is on
+           the display at a glance, and it is not a second canvas. -->
+      <div class="mv-output-stage">
+        <div id="mv_output" class="mv-output" aria-live="polite" tabindex="0">
+          <div class="mv-screen" id="mv_output_screen"></div>
+        </div>
       </div>
+      <div class="mv-output-body" id="mv_output_body"></div>
       <p class="mv-output-hint" id="mv_output_hint" hidden></p>
     </div>
   </div>

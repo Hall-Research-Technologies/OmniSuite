@@ -3609,3 +3609,41 @@ created a duplicate of a layout the decoder already had. Found because bench
 cleanup removed 8 of 9 installed layouts and left one behind. The identity now
 survives being saved over, and `test_showing_a_standard_layout_does_not_make_it_a_duplicate`
 holds it.
+
+## AI. The four Phase 8F hardware findings, stated once
+
+These are **measured** on decoder 192.168.100.32, not inferred. They are
+restated here because each one costs real time to rediscover.
+
+### AI.1 An empty subframe is `input: ""`
+
+A Multiview subframe with an empty input is accepted, and the empty input is
+**preserved on readback**. An object may hold every window empty; it composites,
+and the decoder's output stays active at 1920x1080 with every window reporting
+"not subscribed". This is the representation OmniSuite uses, because it is the
+one the hardware has.
+
+### AI.2 A name-only object defaults to 3840x2160
+
+`add_multiview` with only a name produces an object at **3840x2160**, not at the
+canvas this release runs. OmniSuite therefore always writes width and height
+explicitly when it creates a Multiview object, and never relies on a default.
+
+### AI.3 The decoder does not validate the input a subframe points at
+
+A subframe pointing at `ip_input99` — an input that does not exist — is
+**accepted and stored as written**. A successful `config_set` is therefore not
+semantic validation of anything. OmniSuite validates the reference itself, and
+reads every write back, because nothing downstream will.
+
+### AI.4 "Invalid username/password" is not necessarily about credentials
+
+The decoder answers a rejected `method` call with
+`Invalid username/password` **whatever the real reason**. An object name that
+does not begin with `multiview` produces it. So does a malformed
+`add_multiview`. In the same session and with the same credentials, reads
+succeeded and a normal Show verified.
+
+**Never classify that message on its own as an authentication failure.** Check
+the request first: the name, the shape of the options, and whether the device
+accepted a read a moment earlier.

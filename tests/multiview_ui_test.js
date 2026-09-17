@@ -3332,6 +3332,330 @@ async function selectDecoder(ip) {
       'an offline encoder was offered as a draggable source');
   });
 
+  // ---- Phase 8G: the display output looks like a display ------------------
+
+  const screenOf = () => REGISTRY.get('mv_output_screen');
+  // Local copies: the notice section further down declares its own with `const`,
+  // which is not hoisted, so these cannot reuse them.
+  const noticeBody = () => REGISTRY.get('mv_notice_body').deepText;
+  const raiseNotice = () => { REGISTRY.get('mv_notice').hidden = false; };
+  // A source whose preview the page has already been told is turned off. The
+  // preview cache is per source and keyed once, so a test cannot change the
+  // answer for one it has already asked about.
+  const OUTPUT_SOURCE_NO_PREVIEW = Object.assign({}, OUTPUT_SOURCE, {
+    video: Object.assign({}, OUTPUT_SOURCE.video, {
+      multicast: '233.252.0.41',
+      source: {ip: '192.0.2.24', hostname: 'new-wp-01',
+               model: 'HW-OMNI-E4111-WP', session: 'session1',
+               encoder_index: 1, resolved_from: 'subscription'}})});
+
+  await check('the drop target is a 16:9 screen, not a status card', () => {
+    const page = fs.readFileSync(PAGE, 'utf8');
+    assert(/id="mv_output_screen"/.test(page), 'there is no screen element');
+    const css = fs.readFileSync(STYLE, 'utf8');
+    const block = css.slice(css.indexOf('.mv-output {'));
+    assert(/aspect-ratio:\s*16\s*\/\s*9/.test(block),
+      'the display output is not 16:9');
+    assert(/width:\s*clamp\(/.test(block),
+      'the display output is not sized responsively');
+    // Small: it says what is on screen, it is not a second canvas.
+    const width = block.match(/width:\s*clamp\(([^)]*)\)/)[1];
+    assert(/320px|3\d\dpx/.test(width), 'it is allowed to grow too large: '
+                                        + width);
+  });
+
+  await check('a conventional source shows its thumbnail in the screen',
+    async () => {
+      await openWith(OUTPUT_SOURCE, [EXISTING_VIEW]);
+      await flush();
+      const shot = screenOf().findAll(n => n.tagName === 'IMG')[0];
+      assert(shot, 'no picture was shown for a routed source: '
+                   + screenOf().deepText);
+      assertEqual(shot.dataset.ip, '192.0.2.20', 'the wrong source was shown');
+      assert(/thumbnail/.test(shot.src), 'the image is not the thumbnail: ' + shot.src);
+    });
+
+  await check('the picture is fitted, never distorted', () => {
+    const css = fs.readFileSync(STYLE, 'utf8');
+    const block = css.slice(css.indexOf('.mv-screen-shot {'),
+                            css.indexOf('.mv-screen-label'));
+    assert(/object-fit:\s*contain/.test(block),
+      'the preview is stretched rather than fitted: ' + block);
+  });
+
+  await check('a thumbnail that never loads changes no state', async () => {
+    // The picture is informational. What the decoder is doing comes from the
+    // decoder, and a missing image must not make the page say something else.
+    await openWith(OUTPUT_SOURCE_NO_PREVIEW, [EXISTING_VIEW]);
+    await flush();
+    assert(!screenOf().findAll(n => n.tagName === 'IMG')[0],
+      'an unavailable preview still drew an image');
+    assert(/live/i.test(outputText()),
+      'the authoritative LIVE state was lost with the picture: ' + outputText());
+    assert(outputText().includes('new-wp-01'),
+      'the source is no longer named: ' + outputText());
+    assert(outputBox()._classes.has('is-live'));
+  });
+
+  await check('an active Multiview is drawn as a composition, not one source',
+    async () => {
+      await openWith(OUTPUT_MULTIVIEW, [LIVE_VIEW]);
+      await flush();
+      const screen = screenOf();
+      assert(!screen.findAll(n => n.tagName === 'IMG')[0],
+        'a single source picture was shown as the whole display output');
+      assert(/multiview/i.test(screen.deepText),
+        'the screen does not say Multiview: ' + screen.deepText);
+      const grid = screen.findAll(
+        n => n._classes && n._classes.has('mv-screen-grid'))[0];
+      assert(grid, 'the composition is not represented at all');
+      assert(grid.children.length >= 2,
+        'the layout is not drawn: ' + grid.children.length + ' window(s)');
+    });
+
+  await check('and the window geometry comes from the shown Multiview', () => {
+    // Not from whatever layout is open in the editor: those are routinely
+    // different presets, and drawing one while naming the other is a lie.
+    const source = fs.readFileSync(SOURCE, 'utf8');
+    const start = source.indexOf('function renderScreen');
+    const body = source.slice(start, source.indexOf('\n  function ', start + 10));
+    assert(!/currentGeometry\(\)/.test(body),
+      'the little screen draws the editor layout rather than the shown one');
+  });
+
+  await check('no active video shows an empty screen and no stale picture',
+    async () => {
+      await openWith(OUTPUT_SOURCE, [EXISTING_VIEW]);
+      await flush();
+      assert(screenOf().findAll(n => n.tagName === 'IMG')[0],
+        'the picture did not appear, so its removal proves nothing');
+      await openWith(OUTPUT_NONE, [EXISTING_VIEW]);
+      await flush();
+      assert(!screenOf().findAll(n => n.tagName === 'IMG')[0],
+        'a stale thumbnail survived into the no-video state');
+      assert(/no active video/i.test(screenOf().deepText),
+        'the screen does not say there is no video: ' + screenOf().deepText);
+    });
+
+  await check('the screen itself is the drop target', async () => {
+    await openWith(OUTPUT_SOURCE, [EXISTING_VIEW]);
+    const before = requests.length;
+    dragTile('enc-test-01');
+    const result = dropOnOutput('192.0.2.20');
+    await flush();
+    assert(result.offered, 'the screen did not accept a routable source');
+    const routes = requests.slice(before)
+      .filter(r => r.url.startsWith('/api/route'));
+    assertEqual(routes.length, 1, 'the drop did not route');
+    assertEqual(routes[0].payload.mode, 'av', 'Session 1 audio and video');
+  });
+
+  await check('the display output adds no timer of its own', () => {
+    // Section 33: the picture is asked for once per source, on demand. The
+    // canvas refresh timer is driven by `windowPreview.visible`, and the
+    // display output deliberately never joins it.
+    const source = fs.readFileSync(SOURCE, 'utf8');
+    const start = source.indexOf('function renderScreen');
+    const body = source.slice(start, source.indexOf('\n  function ', start + 10));
+    ['setInterval', 'setTimeout', 'windowPreview.visible.push']
+      .forEach((forbidden) => assert(!body.includes(forbidden),
+        'the display output started polling: ' + forbidden));
+  });
+
+  await check('the screen names no colour of its own', () => {
+    const css = fs.readFileSync(STYLE, 'utf8');
+    const block = css.slice(css.indexOf('.mv-output-stage {'),
+                            css.indexOf('.mv-output-badge'));
+    const literals = block.match(/#[0-9a-fA-F]{3,8}(?![\w-])|rgba?\([^)]*\)/g) || [];
+    assertEqual(literals, [],
+      'the screen hard-codes a colour, so one appearance will be wrong: '
+      + literals.join(' '));
+  });
+
+  await check('every colour the screen asks for is defined, in both themes', () => {
+    const css = fs.readFileSync(STYLE, 'utf8');
+    const templates = fs.readFileSync(
+      path.join(ROOT, 'ui', 'templates.css'), 'utf8');
+    // The screen block only. The rest of the stylesheet uses base tokens that
+    // the theme presets define elsewhere, and re-checking those here would be
+    // testing the wrong file.
+    const screenCss = css.slice(css.indexOf('.mv-output-stage {'),
+                                css.indexOf('.mv-output-badge'));
+    const used = new Set();
+    (screenCss.match(/var\(--[A-Za-z0-9_-]+/g) || []).forEach(
+      (token) => used.add(token.slice(4)));
+    const missing = [...used].filter((token) => {
+      const defined = new RegExp('\\' + token + '\\s*:', 'g');
+      return !defined.test(templates) && !defined.test(css);
+    });
+    assertEqual(missing, [],
+      'the stylesheet asks for colours nobody defines: ' + missing.join(' '));
+    // And the two new ones are themed, not defined once for dark only.
+    ['--screen-off', '--screen-window'].forEach((token) => {
+      const count = (templates.match(
+        new RegExp('\\' + token + '\\s*:', 'g')) || []).length;
+      assert(count >= 2,
+        token + ' is defined ' + count + ' time(s); a light theme needs its own');
+    });
+  });
+
+  // ---- Phase 8G: the notice is a configuration disclosure -----------------
+
+  await check('the notice explains when any of it happens at all', () => {
+    const text = noticeBody();
+    assert(/not on the display|inactive/i.test(text)
+           && /changes nothing|nothing on any encoder/i.test(text),
+      'the notice does not say that designing a preset changes nothing: '
+      + text.slice(0, 600));
+    assert(/only when you Show|when you Show a Multiview/i.test(text),
+      'the notice does not say when the changes happen');
+  });
+
+  await check('it states the encoder architecture accurately', () => {
+    const text = noticeBody();
+    [['Encoder 2', /Encoder 2/],
+     ['Session 2 video', /Session 2/],
+     ['Session 1 as the normal route', /Session 1/],
+     ['the scaler', /scaler/i],
+     ['the bit rate', /bit rate/i],
+     ['SAP off', /SAP/],
+    ].forEach(([what, pattern]) => assert(pattern.test(text),
+      'the notice does not state ' + what));
+  });
+
+  await check('it does not tell the operator to invent a multicast address',
+    () => {
+      const text = noticeBody();
+      assert(/encoders generate their own/i.test(text),
+        'the notice does not say where the Session 2 address comes from');
+      assert(/never invents one/i.test(text),
+        'the notice does not say OmniSuite never invents an address');
+      // Either word order. "you must define a multicast address" and
+      // "a multicast address you must define" are the same instruction, and
+      // the implementation does not require either of them.
+      const sentences = text.split(/(?<=[.!?])\s+/);
+      const demands = sentences.filter(
+        (s) => /multicast/i.test(s)
+               && /you (must|need to|have to) (define|configure|enter|set)/i.test(s));
+      assertEqual(demands, [],
+        'the notice tells the operator to define a multicast address, which '
+        + 'the implementation does not require: ' + demands.join(' '));
+    });
+
+  await check('it is explicit that Encoder 1 is never reduced', () => {
+    // Read from the rendered entry, not from the flattened blob. Proximity
+    // matching across one long string breaks when unrelated copy nearby
+    // changes, which is brittleness rather than coverage.
+    raiseNotice();
+    const body = REGISTRY.get('mv_notice_body');
+    const terms = body.findAll(n => n.tagName === 'DT');
+    const index = terms.findIndex(n => /Encoder 1/.test(n.textContent));
+    assert(index >= 0,
+      'the notice has no entry about Encoder 1: '
+      + terms.map(n => n.textContent).join(' | '));
+    const detail = body.findAll(n => n.tagName === 'DD')[index] || {};
+    const said = detail.textContent || '';
+    assert(/never (lowers|reduces|reconfigures)/i.test(said),
+      'the Encoder 1 entry does not promise it is never lowered: ' + said);
+    assert(/read/i.test(said),
+      'the Encoder 1 entry does not say it is only read: ' + said);
+  });
+
+  await check('it states the bandwidth rule with both numbers', () => {
+    const text = noticeBody();
+    assert(/900\s*Mb\/s/.test(text), 'the 900 Mb/s budget is not stated');
+    assert(/20\s*Mb\/s/.test(text), 'the 20 Mb/s minimum is not stated');
+    assert(/Configuration required/i.test(text),
+      'the notice does not say what happens when there is not enough');
+  });
+
+  await check('it explains that the scaler is shared between displays', () => {
+    const text = noticeBody();
+    assert(/scaler belongs to the source|belongs to the source encoder/i.test(text),
+      'the notice does not say whose the scaler is');
+    assert(/share/i.test(text) && /same size/i.test(text),
+      'the notice does not say compatible displays may share it');
+    assert(/refuses/i.test(text),
+      'the notice does not say an incompatible request is refused');
+  });
+
+  await check('it describes the decoder side without overclaiming', () => {
+    const text = noticeBody();
+    assert(/ip_input2/.test(text) && /ip_input8/.test(text),
+      'the reserved decoder inputs are not named');
+    assert(/only the ones actually needed|Only the ones actually needed/i.test(text),
+      'the notice implies every input is always used');
+    assert(/1920x1080/.test(text), 'the Multiview output resolution is not stated');
+    assert(/Empty windows use no stream/i.test(text),
+      'the notice does not say empty windows cost nothing');
+  });
+
+  await check('it states where the sound comes from', () => {
+    const text = noticeBody();
+    assert(/main window/i.test(text) && /Session 1 audio/i.test(text),
+      'the notice does not say audio follows the main window over Session 1');
+    assert(/does not create separate audio|not create separate audio/i.test(text),
+      'the notice implies every window has its own audio');
+  });
+
+  await check('it says presets reserve nothing', () => {
+    // Structural, for the same reason as the Encoder 1 entry: "not a booking"
+    // appears elsewhere in the notice, so matching the whole blob passes even
+    // when this entry has been replaced by something untrue.
+    raiseNotice();
+    const body = REGISTRY.get('mv_notice_body');
+    const terms = body.findAll(n => n.tagName === 'DT');
+    const index = terms.findIndex(n => /preset/i.test(n.textContent));
+    assert(index >= 0, 'the notice has no entry about presets: '
+                       + terms.map(n => n.textContent).join(' | '));
+    const said = (body.findAll(n => n.tagName === 'DD')[index] || {}).textContent
+                 || '';
+    assert(/saved empty|may be saved/i.test(said),
+      'the presets entry does not say what may be saved: ' + said);
+    assert(/offline/i.test(said),
+      'the presets entry does not mention an offline source: ' + said);
+    assert(/checked when you press Show|when you press Show/i.test(said),
+      'the presets entry does not say when it is actually checked: ' + said);
+    assert(!/prepared when saved|reserve/i.test(said.replace(/reserve anything/i, '')),
+      'the presets entry claims a preset prepares something: ' + said);
+  });
+
+  await check('it names the decoder restrictions without promising to remove them',
+    () => {
+      const text = noticeBody();
+      assert(/Video Wall/.test(text) && /Fast Switching/.test(text),
+        'the interlocks are not named');
+      assert(/will not turn either of them off|never/i.test(text),
+        'the notice does not say OmniSuite leaves them alone');
+    });
+
+  await check('the notice is sectioned rather than one long list', () => {
+    raiseNotice();
+    const body = REGISTRY.get('mv_notice_body');
+    const headings = body.findAll(n => n.tagName === 'H3');
+    assert(headings.length >= 4,
+      'the notice has ' + headings.length + ' sections; it reads as a wall');
+    const labels = body.findAll(
+      n => n._classes && n._classes.has('mv-notice-group-label'))
+      .map(n => n.textContent);
+    ['Encoder', 'Decoder', 'Audio'].forEach((label) => assert(
+      labels.indexOf(label) >= 0,
+      'the notice has no "' + label + '" group: ' + labels.join(', ')));
+  });
+
+  await check('its suppression behaviour is untouched', () => {
+    // Section 8: no new preference. The keys are the ones already in use.
+    const source = fs.readFileSync(SOURCE, 'utf8');
+    assert(/multiview_notice_acknowledged_version/.test(source),
+      'the version-scoped notice key changed');
+    assert(/multiview_notice_acknowledged_session/.test(source),
+      'the session notice key changed');
+    const keys = (source.match(/notice[a-z_]*acknowledged[a-z_]*/gi) || []);
+    const unique = [...new Set(keys.map(k => k.toLowerCase()))];
+    assert(unique.length <= 4,
+      'a new notice preference appeared: ' + unique.join(', '));
+  });
+
   // =======================================================================
   // The operator notice: two suppression levels
   // =======================================================================

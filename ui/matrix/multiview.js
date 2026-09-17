@@ -507,40 +507,100 @@
   const NOTICE_SESSION_KEY = 'multiview_notice_acknowledged_session';
   const NOTICE_TITLE = 'Before you use Multiview';
 
+  // What Multiview does to the equipment, in the order an operator needs it:
+  // when anything happens at all, what gets used, and what is never touched.
+  // Every claim here is measured behaviour -- if the code changes, this changes
+  // with it, and `NoticeContentTests` fails until it does.
   const NOTICE = {
     intro:
-      'Multiview builds a single picture out of several sources. To do that it '
-      + 'configures equipment that other people may be using, so it is worth '
-      + 'knowing what it can change before you start.',
-    mayHeading: 'While you build, show or switch a Multiview, OmniSuite may:',
-    may: [
-      'set a source encoder\u2019s Encoder 2 to take the same video input as '
-      + 'its Encoder 1',
-      'change Encoder 2\u2019s scaler to the size the window needs',
-      'use the source\u2019s Session 2 to carry Multiview video',
-      'turn off the SAP announcement on that Session 2, so no decoder picks it '
-      + 'up by accident',
-      'change which streams this decoder is subscribed to',
-      'use the reserved decoder video inputs ip_input2, ip_input4, ip_input6 '
-      + 'and ip_input8',
-      'take the display\u2019s sound from the main window\u2019s source, over '
-      + 'its ordinary Session 1 audio, using the audio input the display '
-      + 'already uses',
-      'set the Multiview stream\u2019s bit rate, within whatever the source '
-      + 'has spare after its primary stream',
-      'change a window immediately, while it is on screen, when you drop a new '
-      + 'source onto an active Multiview',
-      'reconcile all of the above when you recall a different Multiview',
+      'Multiview builds one picture out of several sources. Doing that '
+      + 'configures equipment other people may be using, so it is worth knowing '
+      + 'what it uses and what it leaves alone.',
+
+    // Section 9. The distinction Phase 8F introduced, and the first thing to
+    // say: most of what follows does not happen when you are just designing.
+    whenHeading: 'When any of this happens',
+    when: [
+      'Creating, installing, editing, copying or saving a Multiview that is '
+      + 'not on the display changes nothing on any encoder and nothing on the '
+      + 'screen. A saved Multiview is a description, not a booking.',
+      'The changes below happen only when you Show a Multiview or recall a '
+      + 'different one.',
+      'They also happen when you add, change or clear a source on a Multiview '
+      + 'that is already on the display — and that takes effect '
+      + 'immediately, while it is on screen.',
     ],
-    wontHeading: 'OmniSuite will never do these on its own:',
+
+    usesHeading: 'What Multiview uses',
+    uses: [
+      {label: 'Encoder', items: [
+        'Multiview video comes from each source’s Encoder 2 over its '
+        + 'Session 2. Your normal Session 1 stream is what the A/V Matrix '
+        + 'routes, and it is a different thing.',
+        'OmniSuite may point Encoder 2 at the same video input Encoder 1 uses, '
+        + 'set its scaler to the size the window needs, and set its bit rate.',
+        'It enables Session 2 video and assigns it to Encoder 2. It uses the '
+        + 'multicast address the encoder already has — encoders generate '
+        + 'their own — and never invents one.',
+        'It turns the Session 2 SAP announcement off, so no decoder picks the '
+        + 'stream up by accident.',
+      ]},
+      {label: 'Decoder', items: [
+        'The Multiview layout is stored on the decoder and its output runs at '
+        + '1920x1080.',
+        'Windows are fed through the reserved decoder inputs ip_input2, '
+        + 'ip_input4, ip_input6 and ip_input8. Only the ones actually needed '
+        + 'are used, and a subscription already carrying the right stream is '
+        + 'reused rather than replaced.',
+        'Empty windows use no stream, no input and no bandwidth.',
+      ]},
+      {label: 'Audio', items: [
+        'The display’s sound comes from the main window’s source over '
+        + 'that source’s ordinary Session 1 audio.',
+        'Multiview does not create separate audio for each window. In a layout '
+        + 'with one larger window that window is the main one; where every '
+        + 'window is the same size, the first is.',
+      ]},
+    ],
+
+    importantHeading: 'Important',
+    important: [
+      {label: 'Encoder 1 is never reduced',
+       text: 'OmniSuite reads Encoder 1 to work out what bandwidth is spare. '
+             + 'It never lowers or reconfigures it to make room for Multiview.'},
+      {label: 'Bandwidth',
+       text: 'Encoder 1 and Encoder 2 share one 900 Mb/s video budget. '
+             + 'Multiview needs at least 20 Mb/s of that left over, and takes '
+             + 'whatever is spare up to what the window needs. If Encoder 1 is '
+             + 'using too much, the source is marked Configuration required '
+             + 'and OmniSuite refuses rather than turning Encoder 1 down.'},
+      {label: 'One scaler per source',
+       text: 'Encoder 2’s scaler belongs to the source encoder, not to a '
+             + 'decoder or a preset. Several displays can share one source when '
+             + 'they need the same size. If another display is already using it '
+             + 'at a different size, OmniSuite refuses the new Multiview rather '
+             + 'than resizing a stream somebody is watching.'},
+      {label: 'Presets do not reserve anything',
+       text: 'A Multiview may be saved empty, partly filled, or with a source '
+             + 'that is offline or still needs configuring. Whether it can '
+             + 'actually run is checked when you press Show.'},
+      {label: 'Not every decoder can',
+       text: 'A decoder with Video Wall enabled cannot run Multiview, and Fast '
+             + 'Switching blocks it on the affected 1xx family. OmniSuite will '
+             + 'not turn either of them off for you.'},
+    ],
+
+    wontHeading: 'OmniSuite will never do these on its own',
     wont: [
-      'reduce the source\u2019s primary stream to make room for a Multiview '
-      + 'window \u2014 a window gets a smaller share instead',
+      'reduce a source’s primary stream to make room for a Multiview '
+      + 'window — a window gets a smaller share instead',
       'turn off Video Wall',
       'turn off Fast Switching where it conflicts',
       'change an encoder just because you opened this page',
+      'change a stream another display is using, to suit a new Multiview',
       'turn on preview or thumbnail generation on a source',
     ],
+
     closing:
       'Nothing is written until you save, show or switch. Every change is read '
       + 'back from the device afterwards, and a change that cannot be verified '
@@ -555,9 +615,18 @@
       '',
       NOTICE.intro,
       '',
-      NOTICE.mayHeading,
+      NOTICE.whenHeading,
     ];
-    NOTICE.may.forEach((item) => lines.push('  - ' + item));
+    NOTICE.when.forEach((item) => lines.push('  - ' + item));
+    lines.push('', NOTICE.usesHeading);
+    NOTICE.uses.forEach((group) => {
+      lines.push('  ' + group.label);
+      group.items.forEach((item) => lines.push('    - ' + item));
+    });
+    lines.push('', NOTICE.importantHeading);
+    NOTICE.important.forEach((entry) => {
+      lines.push('  ' + entry.label + ': ' + entry.text);
+    });
     lines.push('', NOTICE.wontHeading);
     NOTICE.wont.forEach((item) => lines.push('  - ' + item));
     lines.push('', NOTICE.closing, '');
@@ -569,10 +638,30 @@
     body.replaceChildren();
     body.appendChild(node('p', 'mv-notice-intro', NOTICE.intro));
 
-    body.appendChild(node('h3', null, NOTICE.mayHeading));
-    const may = node('ul', 'mv-notice-list');
-    NOTICE.may.forEach((item) => may.appendChild(node('li', null, item)));
-    body.appendChild(may);
+    // When it happens at all, first: after Phase 8F most of this does not
+    // happen while an operator is simply designing a layout.
+    body.appendChild(node('h3', null, NOTICE.whenHeading));
+    const when = node('ul', 'mv-notice-list mv-notice-when');
+    NOTICE.when.forEach((item) => when.appendChild(node('li', null, item)));
+    body.appendChild(when);
+
+    body.appendChild(node('h3', null, NOTICE.usesHeading));
+    NOTICE.uses.forEach((group) => {
+      const block = node('div', 'mv-notice-group');
+      block.appendChild(node('h4', 'mv-notice-group-label', group.label));
+      const list = node('ul', 'mv-notice-list');
+      group.items.forEach((item) => list.appendChild(node('li', null, item)));
+      block.appendChild(list);
+      body.appendChild(block);
+    });
+
+    body.appendChild(node('h3', null, NOTICE.importantHeading));
+    const important = node('dl', 'mv-notice-important');
+    NOTICE.important.forEach((entry) => {
+      important.appendChild(node('dt', null, entry.label));
+      important.appendChild(node('dd', null, entry.text));
+    });
+    body.appendChild(important);
 
     body.appendChild(node('h3', null, NOTICE.wontHeading));
     const wont = node('ul', 'mv-notice-list mv-notice-wont');
@@ -714,6 +803,10 @@
           windowPreview.asking.delete(ip);
           // Only redraw if this source is still on the canvas.
           if (windowPreview.visible.indexOf(ip) >= 0) renderCanvas();
+          // ...or if it is the source the display output is showing. The
+          // display output is deliberately NOT added to `visible`, so it never
+          // joins the refresh timer: one request per source, on demand.
+          if (displayOutputSourceIp() === ip) renderDisplayOutput();
         });
     }
     return null;                        // not known yet; the window draws plain
@@ -1065,7 +1158,7 @@
     if (!summary) {
       return {badge: 'UNKNOWN', badgeClass: '', title: group.name,
               meta: 'Group display state has not been read yet.',
-              klass: 'is-unknown'};
+              klass: 'is-unknown', kind: 'none', screenLabel: 'Group'};
     }
     const rows = summary.members || [];
     const synced = rows.filter((row) => row.state === 'SYNCHRONIZED').length;
@@ -1074,7 +1167,10 @@
               title: intended || group.name,
               meta: synced + ' display' + (synced === 1 ? '' : 's')
                     + ' synchronized',
-              klass: 'is-multiview'};
+              klass: 'is-multiview', kind: 'multiview',
+              // No geometry is drawn for a group: the members' compositions are
+              // not read here, and inventing one would claim more than is known.
+              screenSub: synced + ' synchronized', windows: []};
     }
     // Anything that is not "all of them, on the same Multiview" is reported as
     // what it is. A single tile naming one source would imply every member is
@@ -1085,20 +1181,35 @@
     return {badge: summary.state || 'DRIFTED', badgeClass: '',
             title: group.name,
             meta: detail || (synced + ' of ' + rows.length + ' synchronized'),
-            klass: summary.state === 'DRIFTED' ? 'is-error' : 'is-unknown'};
+            klass: summary.state === 'DRIFTED' ? 'is-error' : 'is-unknown',
+            kind: 'none', screenLabel: summary.state || 'Drifted'};
   }
 
   function decoderOutputView() {
     const output = displayOutput();
     if (!output) {
       return {badge: 'UNKNOWN', badgeClass: '', title: 'Display state unknown',
-              meta: 'The decoder has not been read yet.', klass: 'is-unknown'};
+              meta: 'The decoder has not been read yet.', klass: 'is-unknown',
+              kind: 'none', screenLabel: 'Unknown'};
     }
     if (output.state === 'multiview') {
+      const shown = ((state.decoderState || {}).multiviews || [])
+        .find((entry) => entry.name === output.multiview) || null;
+      // The decoder reports each subframe's real position and size, so the
+      // little screen can draw the composition that is actually on it.
+      const windows = ((shown || {}).subframes || [])
+        .filter((s) => s.width && s.height)
+        .map((s) => ({x: s.x || 0, y: s.y || 0,
+                      width: s.width, height: s.height}));
       return {badge: 'MULTIVIEW · ACTIVE', badgeClass: 'multiview',
               title: output.multiview,
               meta: 'This decoder is compositing a Multiview.',
-              klass: 'is-multiview'};
+              klass: 'is-multiview',
+              kind: 'multiview',
+              screenSub: shown && shown.layout_label ? shown.layout_label : '',
+              canvas: shown && shown.width
+                ? {width: shown.width, height: shown.height} : null,
+              windows: windows};
     }
     if (output.state === 'source') {
       const source = (output.video || {}).source;
@@ -1112,7 +1223,10 @@
       parts.push('video ' + ((output.video || {}).multicast || '—'));
       parts.push('audio ' + (audioLeg.multicast || 'not routed'));
       return {badge: 'LIVE', badgeClass: 'live', title: title,
-              meta: parts.join(' · '), klass: 'is-live'};
+              meta: parts.join(' · '), klass: 'is-live',
+              kind: 'source', sourceIp: source ? source.ip : null,
+              screenSub: source ? source.hostname
+                                : ((output.video || {}).multicast || '')};
     }
     // Selected, but carrying nothing. Saying LIVE here would be a claim the
     // readback does not support.
@@ -1120,7 +1234,88 @@
             meta: output.video_input
               ? (output.video_input + ' is selected but carrying no stream.')
               : 'The decoder has no video input selected.',
-            klass: 'is-unknown'};
+            klass: 'is-unknown',
+            kind: 'none', screenLabel: 'No active video'};
+  }
+
+  // The source the display output is currently showing, or null. Used to
+  // decide whether a late preview answer is worth a redraw.
+  function displayOutputSourceIp() {
+    const output = displayOutput();
+    if (!output || output.state !== 'source' || activeGroup()) return null;
+    return ((output.video || {}).source || {}).ip || null;
+  }
+
+  // What goes inside the bezel. Three pictures for three states, and none of
+  // them is allowed to imply something the decoder did not say.
+  function renderScreen(view) {
+    const screen = el('mv_output_screen');
+    if (!screen) return;
+    screen.replaceChildren();
+
+    if (view.kind === 'multiview') {
+      // The decoder offers no composited thumbnail, so a Multiview is drawn as
+      // its own window geometry. Showing one window's picture here would say
+      // the display is that source, which it is not.
+      // From the SHOWN Multiview's own subframes, never from the layout that
+      // happens to be open in the editor: those are routinely different
+      // presets, and drawing one while naming the other would be a lie about
+      // what is on the screen.
+      const windows = view.windows || [];
+      if (windows.length) {
+        const grid = node('div', 'mv-screen-grid');
+        const canvas = view.canvas || {width: 1920, height: 1088};
+        grid.style.gridTemplateColumns = '1fr';
+        grid.style.position = 'absolute';
+        windows.forEach((window_) => {
+          const cell = node('i');
+          // Positioned from the real geometry, as a proportion of the canvas,
+          // so the little picture is the layout rather than a generic grid.
+          cell.style.position = 'absolute';
+          cell.style.left = (100 * (window_.x || 0) / canvas.width) + '%';
+          cell.style.top = (100 * (window_.y || 0) / canvas.height) + '%';
+          cell.style.width = (100 * (window_.width || 0) / canvas.width) + '%';
+          cell.style.height = (100 * (window_.height || 0) / canvas.height) + '%';
+          grid.appendChild(cell);
+        });
+        screen.appendChild(grid);
+      }
+      screen.appendChild(node('div', 'mv-screen-label', 'Multiview'));
+      if (view.screenSub) {
+        screen.appendChild(node('div', 'mv-screen-sub', view.screenSub));
+      }
+      return;
+    }
+
+    if (view.kind === 'source') {
+      // The encoder's existing thumbnail, asked for once and never polled. It
+      // is informational: the state above comes from decoder readback, and a
+      // thumbnail that never loads changes none of it.
+      const ip = view.sourceIp;
+      const preview = ip ? previewFor(ip) : null;
+      const url = ip ? windowPreviewUrl(ip) : null;
+      if (url) {
+        const shot = node('img', 'mv-screen-shot');
+        shot.dataset.ip = ip;
+        shot.alt = '';                       // decorative; the text says it all
+        shot.src = url;
+        screen.appendChild(shot);
+      } else {
+        screen.appendChild(node('div', 'mv-screen-label', 'Live'));
+        screen.appendChild(node('div', 'mv-screen-sub',
+          preview && preview.status === 'disabled' ? 'Preview disabled'
+            : preview && preview.status === 'unavailable' ? 'Preview unavailable'
+            : view.screenSub || ''));
+      }
+      return;
+    }
+
+    // Nothing on the screen, drawn as a screen with nothing on it.
+    screen.appendChild(node('div', 'mv-screen-label', view.screenLabel
+                                                      || 'No active video'));
+    if (view.screenSub) {
+      screen.appendChild(node('div', 'mv-screen-sub', view.screenSub));
+    }
   }
 
   function renderDisplayOutput() {
@@ -1138,6 +1333,9 @@
     const group = activeGroup();
     const view = group ? groupOutputView() : decoderOutputView();
     box.className = 'mv-output ' + view.klass;
+    box.setAttribute('aria-label', 'Display output: ' + view.badge + ', '
+                                   + view.title);
+    renderScreen(view);
     body.replaceChildren();
     const badge = node('div', 'mv-output-badge' +
       (view.badgeClass ? ' ' + view.badgeClass : ''), view.badge);

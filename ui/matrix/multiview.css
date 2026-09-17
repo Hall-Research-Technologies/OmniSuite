@@ -477,16 +477,92 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
 .mv-output-panel { max-width: 720px; }
 .mv-output-panel h2 { margin-bottom: 8px; }
 
-.mv-output {
+/* A small screen, centred, so the panel reads as "this is the display" rather
+   than as another status card. Responsive between two sensible sizes; never the
+   width of the page, and never big enough to compete with the canvas. */
+.mv-output-stage {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 62px;
-  padding: 10px 14px;
+  justify-content: center;
+  padding: 4px 0 12px;
+}
+
+.mv-output {
+  position: relative;
+  width: clamp(220px, 46%, 320px);
+  aspect-ratio: 16 / 9;
+  padding: 6px;
   border: 1px solid var(--edge);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--surface-elevated);
-  transition: border-color .12s ease, background-color .12s ease;
+  transition: border-color .12s ease, background-color .12s ease,
+              box-shadow .12s ease;
+}
+
+/* The picture area inside the bezel. */
+.mv-screen {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 6px;
+  /* Off by default: a display showing nothing should look like one. */
+  background: var(--screen-off);
+  text-align: center;
+}
+
+.mv-screen-shot {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* The decoder's own aspect ratio is not ours to assume, so the picture is
+     fitted whole rather than cropped. */
+  object-fit: contain;
+  background: var(--screen-off);
+}
+
+.mv-screen-label {
+  position: relative;
+  z-index: 1;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.mv-screen-sub {
+  position: relative;
+  z-index: 1;
+  padding: 0 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+/* A Multiview is drawn as its own window grid rather than as one picture, so
+   it can never be mistaken for a single source filling the screen. */
+.mv-screen-grid {
+  position: absolute;
+  inset: 8px;
+  display: grid;
+  gap: 3px;
+  opacity: .85;
+}
+.mv-screen-grid > i {
+  display: block;
+  border-radius: 2px;
+  background: var(--screen-window);
+  border: 1px solid var(--action-primary);
 }
 
 /* A drop here changes what is on the display, so the state that says so is the
@@ -495,6 +571,8 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
 .mv-output.is-multiview { border-color: var(--action-primary); }
 .mv-output.is-unknown { border-style: dashed; }
 .mv-output.is-error { border-color: var(--state-error); }
+.mv-output.is-live .mv-screen-label { color: var(--state-success); }
+.mv-output.is-multiview .mv-screen-label { color: var(--action-primary); }
 
 /* Armed only while a source that can actually be routed is being dragged, so
    the panel never invites a drop it would refuse. */
@@ -528,7 +606,14 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
   border-color: var(--action-primary);
 }
 
-.mv-output-main { flex: 1 1 auto; min-width: 0; }
+.mv-output-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-align: center;
+}
+.mv-output-main { min-width: 0; max-width: 100%; }
 .mv-output-title {
   font-weight: 600;
   overflow: hidden;
@@ -543,9 +628,11 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
   white-space: nowrap;
 }
 .mv-output-hint {
-  margin: 6px 2px 0;
+  margin: 8px auto 0;
+  max-width: 44ch;
   color: var(--text-muted);
   font-size: 12px;
+  text-align: center;
 }
 
 /* The canvas says whether this composition is the one on the display. Stated
@@ -592,3 +679,26 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
    and nowhere else. */
 .mv-source.route-only { opacity: .88; }
 .mv-source.route-only .mv-source-name { color: var(--text-muted); }
+
+/* ---------------------------------------------------------------- the notice
+   Sectioned, because an operator has to find the consequence that matters to
+   them in under a minute. A wall of bullets is not a disclosure. */
+.mv-notice-group { margin: 6px 0 10px; }
+.mv-notice-group-label {
+  margin: 0 0 3px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.mv-notice-when li { font-weight: 500; }
+.mv-notice-important { margin: 4px 0 10px; }
+.mv-notice-important dt {
+  margin-top: 8px;
+  font-weight: 700;
+}
+.mv-notice-important dd {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+}

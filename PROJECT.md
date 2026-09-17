@@ -4538,6 +4538,67 @@ scan path or to idle.
 **Encoder 1 is read. It is never written.** That was true before and is asserted
 now.
 
+## Phase 8G — Polish, disclosure, and a licensing review
+
+### The display output looks like a display
+
+The panel was a status card. It is now a small 16:9 screen, centred in the same
+card, with the status text beneath it. The screen itself is the drop target,
+because that is the thing an operator aims at.
+
+Three pictures for three states, and each is limited to what the decoder
+actually said:
+
+| state | picture |
+|---|---|
+| conventional source | that encoder's existing thumbnail, fitted not cropped |
+| Multiview | the window geometry of the **shown** Multiview, drawn as a layout |
+| no active video | an off screen saying so |
+
+The Multiview picture is built from the shown Multiview's own subframes rather
+than from the layout open in the editor, which is routinely a different preset.
+Showing one window's thumbnail as though it were the whole output would claim
+something false, and the decoder offers no composited thumbnail to use instead.
+
+**No polling was added.** The canvas refresh timer is driven by
+`windowPreview.visible`; the display output asks for a thumbnail once per source
+and never joins that set. Measured: zero device requests over an idle interval.
+
+### The notice became a configuration disclosure
+
+It listed what Multiview might change. It now explains, in sections an operator
+can scan:
+
+- **when any of it happens** — and that designing, installing, copying and
+  saving a preset changes nothing, which is the Phase 8F distinction;
+- **what it uses**, split into Encoder, Decoder and Audio;
+- **what matters**, as named entries: Encoder 1 is never reduced, the 900 Mb/s
+  budget and its 20 Mb/s minimum, one scaler per source shared between displays,
+  presets reserve nothing, and the decoders that cannot run Multiview at all.
+
+Its suppression is unchanged and no new preference was created.
+
+One correction of substance: the notice no longer implies the operator must
+define a Session 2 multicast address. OmniSuite uses the address the encoder
+already has and never invents one — that is what the code does.
+
+### Encoder 1, made a permanent invariant
+
+`_build_mutations` still carries the branch that would write Encoder 1, guarded
+by `encoder1_target`, which the allocator and the planner both set to None.
+`EncoderOneIsNeverWrittenTests` now holds that guard shut from the outside:
+across five layouts and eight Encoder 1 bitrates, no plan may produce a mutation
+aimed at Encoder 1, and a source with no headroom is refused rather than turned
+down.
+
+### Two test gaps found by mutation
+
+Both were assertions that matched the right words in the wrong place. The
+Encoder 1 promise and the presets disclosure were checked against the whole
+flattened notice, where similar wording appears elsewhere, so removing the
+specific promise still passed. Both now read the rendered entry. A third, about
+the multicast address, only caught one word order.
+
 ## Phase 8F — Separating presets from execution
 
 A Multiview could not be saved unless every window had a source that was online,

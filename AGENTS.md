@@ -500,6 +500,21 @@
 - `tests/test_fence.py` proves it, including by running the suite in a fresh interpreter through `python -m unittest` with no help from `run_tests.py`.
 - A test must not write a bench address into a test file, as a target or otherwise; use a documentation range, or RFC 2544's 198.18.0.0/15 when a routable-looking address is needed.
 
+### The display output is a display
+
+- **The drop target is drawn as a small 16:9 screen**, not a status card, because it answers "what is on the display" and an operator should read that at a glance. It is deliberately small: it is not a second canvas.
+- **Each state gets its own picture, and none of them may claim more than the decoder said.** A conventional source shows that encoder's existing thumbnail. A Multiview is drawn as its own window geometry, taken from the *shown* Multiview's subframes — never from the layout that happens to be open in the editor, which is routinely a different preset. Nothing on the display is drawn as an off screen.
+- **The picture is informational; the state is not.** `display_output` comes from decoder readback, and a thumbnail that is disabled, unavailable or slow changes none of it. A stale picture must never survive into a state that no longer has one.
+- **The thumbnail is asked for once per source, on demand.** The canvas refresh timer is driven by `windowPreview.visible`, and the display output deliberately never joins it. An idle page makes no periodic device request, and that is measured, not assumed.
+
+### The Multiview notice is a configuration disclosure
+
+- **It is a factual description of what the code does, not a warning.** Every claim in it is measured behaviour. If the behaviour changes, the notice changes with it, and `multiview_ui_test.js` fails until it does.
+- **It leads with when anything happens at all**, because after Phase 8F most of it does not: designing, installing, copying and saving a preset configure nothing.
+- **It must state, and the tests hold:** Encoder 2 / Session 2 carries Multiview video; Encoder 1 is read and never lowered; one 900 Mb/s budget with a 20 Mb/s minimum for Encoder 2; audio follows the main window over Session 1; the reserved decoder inputs, with only the needed ones used; a 1920x1080 output; the Encoder 2 scaler belongs to the source and is shared; and a preset reserves nothing.
+- **It must not tell the operator to invent a multicast address.** OmniSuite uses the address the encoder already has and never generates one; encoders generate their own. An encoder with none is *Configuration required*.
+- **Assertions about it are structural where the wording is load-bearing.** Matching a phrase anywhere in the flattened notice passes even when the specific promise has been removed, because similar wording appears elsewhere. Read the entry, not the blob — and keep the tests indifferent to punctuation and ordinary copy edits.
+
 ### A layout is not a preset is not an execution
 
 Four things, and collapsing any two of them is how a saved layout comes to change somebody's picture:

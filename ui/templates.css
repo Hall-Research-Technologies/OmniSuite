@@ -44,6 +44,15 @@
      so a light theme can use a lighter one. */
   --backdrop-veil: rgba(0, 0, 0, .45);
 
+  /* A display that is showing nothing. Darker than any surface, because that is
+     what an off screen looks like, and it has to read as "off" rather than as
+     an empty panel. */
+  --screen-off: #0b0f14;
+  /* A window inside a composited Multiview, drawn as geometry rather than as a
+     picture: the decoder gives us no composited thumbnail, and inventing one
+     would be a claim we cannot support. */
+  --screen-window: rgba(30, 144, 255, .20);
+
   /* Derived control tokens.
      Every one of these is computed from a role above, so a preset changes the
      whole control system by changing nine colours. Nothing below this line
@@ -121,6 +130,9 @@ body.light {
   --state-selection: rgba(30, 144, 255, .12);
   --state-pending: rgba(100, 116, 139, .18);
   --backdrop-veil: rgba(15, 23, 42, .35);
+  /* Still dark in the light themes: an off display is off, not white. */
+  --screen-off: #1b2430;
+  --screen-window: rgba(3, 105, 161, .28);
   --minority-topology-bg: rgba(99, 102, 241, .12);
   --minority-topology-fg: #3730a3;
   /* Light mode paints on a light ground, so the destructive ring and the press

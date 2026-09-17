@@ -2099,6 +2099,96 @@ class MatrixOverlayFreshnessTests(MultiviewTestBase):
 
 
 # ==========================================================================
+# Encoder 1 belongs to whoever is already watching it
+# ==========================================================================
+
+class EncoderOneIsNeverWrittenTests(MultiviewTestBase):
+    """Multiview reads Encoder 1. It never writes it.
+
+    Encoder 1 is somebody's picture on somebody's screen. Lowering it to make a
+    Multiview window fit would degrade a stream nobody asked about, so OmniSuite
+    refuses instead and says why.
+
+    `_build_mutations` still contains the branch that would write it, guarded by
+    `encoder1_target`, which the allocator and the planner both set to None. This
+    holds that guard shut from the outside: whatever the budget, whatever the
+    layout, no plan may produce a mutation aimed at Encoder 1.
+    """
+
+    LAYOUTS = ("2x2", "side-by-side", "pip-bottom-right",
+               "1+3-horizontal-bottom", "4-split")
+    BITRATES = (0, 200, 500, 700, 800, 880, 890, 900)
+
+    def _plan(self, layout, assignments):
+        return self.client.post("/api/multiview/plan", json={
+            "decoder": DECODER_IP, "layout": layout,
+            "canvas": mv.ACTIVE_CANVAS, "name": "E1",
+            "assignments": assignments}).get_json().get("plan") or {}
+
+    def test_no_plan_ever_targets_encoder_one(self):
+        """Every layout, across the whole range of Encoder 1 bitrates."""
+        first = mv.encoder_object_name(1)
+        for layout in self.LAYOUTS:
+            for bitrate in self.BITRATES:
+                self.decoder()
+                encoder = self.encoder(ENCODER_IP,
+                                       vc2=_vc2(encoder1_bitrate=bitrate))
+                geometry = mv.compute_windows(layout, 1920, 1080)
+                cells = [w["cell"] for w in geometry["windows"]]
+                plan = self._plan(layout, {cells[0]: ENCODER_IP})
+                aimed = [m for m in (plan.get("mutations") or [])
+                         + (plan.get("activation") or [])
+                         if m.get("target") == first
+                         or (m.get("config") or {}).get("name") == first]
+                self.assertEqual(
+                    aimed, [],
+                    "%s at Encoder 1 %s Mb/s produced a write to Encoder 1: %s"
+                    % (layout, bitrate, [m.get("description") for m in aimed]))
+                self.assertIsNotNone(encoder)
+
+    def test_the_allocator_never_proposes_an_encoder_one_target(self):
+        for bitrate in self.BITRATES:
+            for target in (mv.EQUAL_WINDOW_TARGET, mv.MAIN_WINDOW_TARGET,
+                           mv.SMALL_WINDOW_TARGET):
+                allocation = mv.allocate_bitrates([
+                    {"source_ip": ENCODER_IP, "target": target,
+                     "encoder1_bitrate": bitrate}])[0]
+                self.assertIsNone(
+                    allocation["encoder1_target"],
+                    "the allocator proposed reducing Encoder 1 from %s for a "
+                    "%s Mb/s window" % (bitrate, target))
+
+    def test_showing_a_full_encoder_refuses_instead_of_lowering_it(self):
+        """The case the guard exists for, end to end."""
+        self.decoder()
+        encoder = self.encoder(ENCODER_IP, vc2=_vc2(encoder1_bitrate=900))
+        saved = self.client.post("/api/multiview/apply", json={
+            "decoder": DECODER_IP, "layout": "2x2", "canvas": mv.ACTIVE_CANVAS,
+            "name": "Full", "assignments": {"top_left": ENCODER_IP}}).get_json()
+        self.assertTrue(saved["ok"], "the preset itself should still be savable")
+        encoder.writes = []
+        shown = self.client.post("/api/multiview/show", json={
+            "decoder": DECODER_IP, "name": saved["plan"]["object_name"]})
+        self.assertNotEqual(shown.status_code, 200, shown.get_json())
+        entry = next(e for e in encoder.nodes["vc2"]
+                     if e["name"] == mv.encoder_object_name(1))
+        self.assertEqual(entry["bitrate"], 900,
+                         "Encoder 1 was lowered to make room for a window")
+        self.assertEqual([w for w in encoder.writes if w[0] != "config_get"], [])
+
+    def test_the_source_list_says_so_rather_than_offering_to_fix_it(self):
+        encoder = self.encoder(ENCODER_IP)
+        entry = next(e for e in encoder.nodes["vc2"]
+                     if e["name"] == mv.encoder_object_name(1))
+        entry["bitrate"] = 900
+        body = self.client.get("/api/multiview/sources").get_json()
+        listed = ([s for s in body["sources"] if s["ip"] == ENCODER_IP]
+                  + [s for s in body["excluded"] if s["ip"] == ENCODER_IP])[0]
+        self.assertEqual(listed["status"], mv.SOURCE_CONFIGURATION_REQUIRED)
+        self.assertIn("will not change it", listed["detail"])
+
+
+# ==========================================================================
 # A preset is not an execution
 # ==========================================================================
 
