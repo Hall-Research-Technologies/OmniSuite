@@ -50,6 +50,9 @@
     unreachable: [],         // sources the last plan could not prepare
     pickedSource: null,
     nameTouched: false,
+    // The preset as it is saved on the device, for comparing against what the
+    // operator has since edited. null while creating: nothing is saved yet.
+    savedBaseline: null,
   };
 
   let stateSeq = 0;
@@ -80,7 +83,15 @@
     let body = null;
     try { body = await response.json(); } catch (err) { body = null; }
     if (!body) throw new Error('The server returned an unreadable response.');
-    if (!response.ok && body.error) throw new Error(body.error);
+    if (!response.ok && body.error) {
+      // Carry the body with the error. A refused group operation says which
+      // source conflicts and which decoders disagree, and a caller that only
+      // gets a sentence cannot show any of it.
+      const failure = new Error(body.error);
+      failure.body = body;
+      failure.status = response.status;
+      throw failure;
+    }
     return body;
   }
 
@@ -139,9 +150,19 @@
       state.availability = body.canvases || [];
       state.canCreate = !!body.can_create;
       populateTargets();
-      if (keepEditing && (body.multiviews || [])
+      if (keepEditing && !activeView(body) && (body.multiviews || [])
           .some((view) => view.name === keepEditing)) {
         loadIntoEditor(keepEditing);
+        return;
+      }
+      // What the decoder is actually showing outranks anything remembered.
+      // A preset the operator last looked at is a bookmark; the composition on
+      // the display is what they are looking at now.
+      const active = activeView(body);
+      if (active) {
+        el('mv_target').value = active.name;
+        loadIntoEditor(active.name);
+        rememberTarget(active.name);
         return;
       }
       state.editing = null;
@@ -172,6 +193,14 @@
           && (state.previousMode === MODE.CREATE || state.previousMode === MODE.EDIT));
   }
 
+  // The Multiview this decoder is compositing right now, if any. The server
+  // derives `selected_on_output` from the decoder's current display selection,
+  // so this is live device state and not metadata.
+  function activeView(body) {
+    return ((body || state.decoderState || {}).multiviews || [])
+      .find((view) => view.selected_on_output) || null;
+  }
+
   function currentView() {
     if (!state.editing || !state.decoderState) return null;
     return (state.decoderState.multiviews || [])
@@ -193,13 +222,19 @@
     const capable = mode !== MODE.UNSUPPORTED && mode !== MODE.UNREACHABLE
       && mode !== MODE.NO_DECODER && mode !== MODE.LOADING;
 
-    show('mv_field_target', capable);
-    show('mv_field_new', capable);
-    show('mv_field_reload', haveDecoder && mode !== MODE.LOADING);
+    const creating = mode === MODE.CREATE
+      || (mode === MODE.SAVING && state.previousMode === MODE.CREATE);
+
+    show('mv_field_target', capable && !creating);
+    show('mv_field_manage', capable && !creating);
+    show('mv_field_reload', haveDecoder && mode !== MODE.LOADING && !creating);
+    show('mv_editbar', working);
     show('mv_field_layout', working);
     show('mv_field_name', working);
+    show('mv_field_cancel_create', creating);
     show('mv_workspace', working);
     show('mv_actions', working);
+    renderEditHeading(creating);
 
     const view = currentView();
     show('mv_show', state.mode === MODE.EDIT && view && !view.selected_on_output);
@@ -212,6 +247,10 @@
     // only thing that withdraws New is an operation already in flight.
     el('mv_new').disabled = busy;
     el('mv_new').title = '';
+    el('mv_copy').disabled = busy || !currentView();
+    el('mv_copy').title = currentView() ? ''
+      : 'Choose a Multiview to copy.';
+    el('mv_groups').disabled = busy;
     el('mv_target').disabled = busy;
     el('mv_decoder').disabled = busy;
     el('mv_layout').disabled = busy;
@@ -222,6 +261,33 @@
 
     renderBanner();
     renderShownState(view);
+  }
+
+  // Which of the two operations is happening, and whether anything is unsaved.
+  // "Creating" and "editing" being indistinguishable is what made the old New
+  // button look as though it renamed the Multiview already on screen.
+  function renderEditHeading(creating) {
+    const heading = el('mv_edit_heading');
+    const stateLabel = el('mv_edit_state');
+    if (!heading || !stateLabel) return;
+    if (creating) {
+      heading.textContent = 'Create New Multiview';
+      stateLabel.textContent = 'Not saved yet';
+      stateLabel.className = 'mv-edit-state unsaved';
+      return;
+    }
+    const view = currentView();
+    heading.textContent = view
+      ? 'Editing ' + ((view.friendly_name) || view.name)
+      : 'Multiview';
+    if (!view) {
+      stateLabel.textContent = '';
+      stateLabel.className = 'mv-edit-state';
+      return;
+    }
+    const dirty = isDirty();
+    stateLabel.textContent = dirty ? 'Unsaved changes' : 'Saved';
+    stateLabel.className = 'mv-edit-state' + (dirty ? ' unsaved' : ' saved');
   }
 
   function renderBanner() {
@@ -340,6 +406,9 @@
     el('mv_decoder').value = saved.decoder;
     await loadDecoderState(saved.decoder,
                            saved.target || undefined);
+    // loadDecoderState selects whatever is live on the decoder. If it found
+    // one, that outranks the bookmark and there is nothing further to restore.
+    if (activeView()) return;
     if (!saved.target) return;
     const found = ((state.decoderState || {}).multiviews || [])
       .some((view) => view.name === saved.target);
@@ -1071,7 +1140,29 @@
   // removed is any of the safety: the whole Multiview is still replanned, every
   // rule still applies, every write is still read back, and a switch that
   // cannot be verified is still rolled back.
+  // In group context a source change is a group operation: it is planned across
+  // every member, refused if one encoder would be asked for two window sizes,
+  // applied to all of them and rolled back together. Doing it one decoder at a
+  // time is exactly what the group exists to prevent.
+  async function switchLiveOnGroup(cell, ip) {
+    const view = currentView();
+    const group = groups.context;
+    if (!view || !group) return;
+    await runTransaction(
+      'Changing ' + prettyCell(cell) + ' on ' + group.name + '…',
+      '/api/multiview/groups/show',
+      {group: group.id, source_decoder: el('mv_decoder').value,
+       name: view.name, cell: cell, source: ip || ''},
+      async (body) => {
+        if (body.ok) await checkGroup();
+      });
+  }
+
   async function switchLive(cell, ip) {
+    if (inGroupContext()) {
+      await switchLiveOnGroup(cell, ip);
+      return;
+    }
     const view = currentView();
     if (!view) return;
     const previous = state.assignments[cell] || null;
@@ -1149,6 +1240,55 @@
   }
 
   // ---------------------------------------------------------------- plan
+
+  // ---- what counts as a change worth saving ------------------------------
+  //
+  // Only state the operator can persist into the preset. Live readings -- packet
+  // counters, health, a source going offline, a preview refreshing -- move on
+  // their own and must never light up Save.
+  function editableState() {
+    const cells = Object.keys(state.assignments || {})
+      .filter((cell) => state.assignments[cell])
+      .sort();
+    return JSON.stringify({
+      name: (el('mv_name').value || '').trim(),
+      layout: el('mv_layout').value || '',
+      windows: cells.map((cell) => [cell, state.assignments[cell]]),
+    });
+  }
+
+  // The saved preset, in the same shape, so the two can be compared directly.
+  function savedState(view) {
+    if (!view) return null;
+    const windows = (view.subframes || [])
+      .filter((subframe) => subframe.source && subframe.source.ip)
+      .map((subframe) => [subframe.cell, subframe.source.ip])
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    return JSON.stringify({
+      name: view.name || '',
+      layout: view.layout || '',
+      windows,
+    });
+  }
+
+  function isDirty() {
+    if (state.mode === MODE.CREATE
+        || state.previousMode === MODE.CREATE) return true;   // nothing saved yet
+    const view = currentView();
+    if (!view) return false;
+    const saved = state.savedBaseline !== null && state.savedBaseline !== undefined
+      ? state.savedBaseline : savedState(view);
+    return editableState() !== saved;
+  }
+
+  // Called after a successful Save, and whenever a preset is loaded, so the
+  // comparison is against what is now on the device rather than what was there
+  // when the page loaded.
+  function markSaved() {
+    const view = currentView();
+    state.savedBaseline = view ? savedState(view) : null;
+    renderActions();
+  }
 
   function desiredState() {
     return {
@@ -1415,6 +1555,9 @@
     if (state.mode === MODE.SAVING) return 'Working…';
     const assigned = Object.keys(state.assignments).length;
     if (!assigned) return 'Assign a source to at least one window.';
+    // Nothing to save is not a problem to report; it is the ordinary state of
+    // a preset the operator is simply looking at.
+    if (!isDirty()) return 'No changes to save.';
     if (state.planPending || !state.plan) {
       return 'Checking the sources…';
     }
@@ -1435,8 +1578,33 @@
     save.textContent = isLive() ? 'Save layout and name' : 'Save Multiview';
     const reason = el('mv_save_reason');
     reason.textContent = blocker;
-    reason.className = 'mv-reason' + (blocker && blocker !== 'Checking the sources…'
-      && blocker !== 'Working…' ? ' blocking' : '');
+    const quiet = !blocker || blocker === 'Checking the sources…'
+      || blocker === 'Working…' || blocker === 'No changes to save.';
+    reason.className = 'mv-reason' + (quiet ? '' : ' blocking');
+  }
+
+  // ---- the Save confirmation, and turning it off -------------------------
+  //
+  // Scoped to the application version. A Save reconfigures shared encoders, and
+  // what that does can change between releases; an operator who dismissed the
+  // warning for one version has not agreed to whatever the next one does. The
+  // stored preference names the version, so a new release asks once more on its
+  // own -- nobody has to remember, and nobody has to clear browser storage.
+  const SAVE_CONFIRM_KEY = 'multiview_save_confirm_suppressed_version';
+
+  function suppressionStore() {
+    return window.omniSuppression || null;
+  }
+
+  function saveConfirmSuppressed() {
+    const store = suppressionStore();
+    if (!store || !state.version) return false;
+    return store.suppressed(SAVE_CONFIRM_KEY, state.version);
+  }
+
+  function rememberSaveConfirmSuppressed() {
+    const store = suppressionStore();
+    if (store && state.version) store.remember(SAVE_CONFIRM_KEY, state.version);
   }
 
   // ---------------------------------------------------------------- actions
@@ -1447,8 +1615,9 @@
     const mutations = plan.mutations || [];
 
     // No confirmation when nothing would change: a dialog that asks about zero
-    // mutations trains the operator to dismiss it.
-    if (mutations.length) {
+    // mutations trains the operator to dismiss it. Nor when the operator has
+    // turned it off for this version of the application.
+    if (mutations.length && !saveConfirmSuppressed()) {
       const summary = [
         {label: 'Decoder', value: plan.decoder.hostname},
         {label: 'Layout', value: labelFor(plan.layout)},
@@ -1479,8 +1648,11 @@
           + 'are prepared when you show it.',
         summary: summary,
         confirmText: 'Save',
+        suppressLabel: 'Do not ask again for this version',
       });
-      if (!confirmed) return;
+      const agreed = confirmed === true || (confirmed && confirmed.ok);
+      if (!agreed) return;
+      if (confirmed && confirmed.suppress) rememberSaveConfirmSuppressed();
     }
 
     await runTransaction('Saving…', '/api/multiview/apply', desiredState(),
@@ -1536,7 +1708,30 @@
     });
   }
 
+  // What the operator has in the editor right now, so a failed transaction can
+  // give it back. Only the fields they can edit: everything else is re-read.
+  function captureEdits() {
+    return {
+      name: el('mv_name').value,
+      layout: el('mv_layout').value,
+      assignments: Object.assign({}, state.assignments),
+      nameTouched: state.nameTouched,
+      editing: state.editing,
+    };
+  }
+
+  function restoreEdits(snapshot) {
+    if (!snapshot) return;
+    el('mv_name').value = snapshot.name;
+    el('mv_layout').value = snapshot.layout;
+    state.assignments = Object.assign({}, snapshot.assignments);
+    state.nameTouched = snapshot.nameTouched;
+    state.planSignature = '';
+    render();
+  }
+
   async function runTransaction(busyText, url, payload, onSuccess) {
+    const edits = captureEdits();
     state.previousMode = state.mode;
     setMode(MODE.SAVING);
     setStatus(busyText, null);
@@ -1555,9 +1750,13 @@
       notify(err.message);
     }
     state.planSignature = '';
-    const keep = (body && body.ok) ? state.editing : state.editing;
+    const keep = state.editing;
     if (keep) rememberTarget(keep);
     await loadDecoderState(el('mv_decoder').value, keep);
+    // A failed transaction changed nothing on the device, so the editor must
+    // still show what the operator was trying to save -- and Save must still
+    // be offered. Re-reading the decoder would otherwise quietly revert them.
+    if (!(body && body.ok) && isEditingOrCreating()) restoreEdits(edits);
     schedulePlan();
   }
 
@@ -1616,6 +1815,7 @@
     state.nameTouched = false;
     state.plan = null;
     state.planSignature = '';
+    state.savedBaseline = null;             // nothing saved yet, so always dirty
     el('mv_target').value = '';
     el('mv_result').replaceChildren();
     setStatus('');
@@ -1639,6 +1839,7 @@
       }
     });
     setMode(MODE.EDIT);
+    state.savedBaseline = savedState(view);
     if (!view.layout) {
       notify('This Multiview does not match a known layout. Choosing one will '
              + 'replace its geometry.');
@@ -1654,6 +1855,7 @@
     state.planPending = false;
     state.unreachable = [];
     state.nameTouched = false;
+    state.savedBaseline = null;
     el('mv_target').value = '';
     el('mv_result').replaceChildren();
     setStatus('');
@@ -1667,6 +1869,320 @@
     if (state.nameTouched) return;
     const layout = currentLayout();
     if (layout) el('mv_name').value = layout.label;
+  }
+
+  // ---- copy this Multiview to another decoder ----------------------------
+
+  function openCopyDialog() {
+    const view = currentView();
+    if (!view) return;
+    const select = el('mv_copy_target');
+    const options = state.decoders
+      .filter((decoder) => decoder.ip !== el('mv_decoder').value)
+      .filter((decoder) => decoder.multiview_supported !== false);
+    select.replaceChildren();
+    options.forEach((decoder) => {
+      const option = node('option', '', decoder.hostname
+        ? decoder.hostname + ' (' + decoder.ip + ')' : decoder.ip);
+      option.value = decoder.ip;
+      select.appendChild(option);
+    });
+    el('mv_copy_summary').textContent = 'Copying ' + (view.friendly_name || view.name)
+      + ' — ' + (view.layout_label || 'this layout') + ', '
+      + (view.subframes || []).filter((s) => s.source).length + ' window(s).';
+    el('mv_copy_status').textContent = options.length ? ''
+      : 'No other decoder can take a Multiview.';
+    el('mv_copy_go').disabled = !options.length;
+    el('mv_copy_dialog').hidden = false;
+    select.focus();
+  }
+
+  function closeCopyDialog() {
+    el('mv_copy_dialog').hidden = true;
+  }
+
+  async function runCopy(onConflict) {
+    const view = currentView();
+    const target = el('mv_copy_target').value;
+    if (!view || !target) return;
+    el('mv_copy_go').disabled = true;
+    el('mv_copy_status').textContent = 'Copying…';
+    try {
+      const body = await getJSON('/api/multiview/copy', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          source_decoder: el('mv_decoder').value,
+          target_decoder: target,
+          name: view.name,
+          on_conflict: onConflict || '',
+        }),
+      });
+      (body.warnings || []).forEach((warning) => notify(warning));
+      el('mv_copy_status').textContent = 'Copied. The display on that decoder '
+        + 'is unchanged.';
+      setStatus('Copied ' + view.name + ' to ' + target, true);
+      setTimeout(closeCopyDialog, 1200);
+    } catch (err) {
+      // A name already in use is a decision for the operator, not a failure.
+      const detail = err.body || {};
+      if (detail.status === 'NAME IN USE') {
+        const answer = await window.omniConfirm({
+          title: 'That decoder already has a Multiview with this name',
+          message: detail.error + ' Replace the one that is there, or keep both '
+            + 'by saving this one as ' + detail.suggested_name + '?',
+          summary: [{label: 'Existing', value: view.name},
+                    {label: 'Keep both as', value: detail.suggested_name}],
+          confirmText: 'Keep both',
+        });
+        if (answer === true || (answer && answer.ok)) {
+          await runCopy('rename');
+          return;
+        }
+        el('mv_copy_status').textContent = 'Nothing was copied.';
+      } else {
+        el('mv_copy_status').textContent = err.message;
+      }
+    }
+    el('mv_copy_go').disabled = false;
+  }
+
+  // ---- decoder groups -----------------------------------------------------
+
+  const groups = {
+    list: [],
+    selected: '',        // the group being edited in the dialog
+    context: null,       // the group live changes apply to, or null
+    state: null,         // the last group state read, for the context banner
+  };
+
+  async function loadGroups() {
+    try {
+      const body = await getJSON('/api/multiview/groups');
+      groups.list = body.groups || [];
+    } catch (err) {
+      groups.list = [];
+    }
+    renderGroupList();
+  }
+
+  function renderGroupList() {
+    const select = el('mv_group_select');
+    if (!select) return;
+    select.replaceChildren();
+    groups.list.forEach((group) => {
+      const option = node('option', '', group.name + ' (' + group.members.length
+        + ' decoder' + (group.members.length === 1 ? '' : 's') + ')');
+      option.value = group.id;
+      select.appendChild(option);
+    });
+    if (groups.selected) select.value = groups.selected;
+    renderGroupDetail();
+  }
+
+  function selectedGroup() {
+    return groups.list.find((group) => group.id === groups.selected) || null;
+  }
+
+  function renderGroupDetail() {
+    const group = selectedGroup();
+    el('mv_group_name').value = group ? group.name : '';
+    const members = el('mv_group_members');
+    members.replaceChildren();
+    const chosen = new Set((group ? group.members : []).map((m) => m.ip));
+    state.decoders
+      .filter((decoder) => decoder.multiview_supported !== false)
+      .forEach((decoder) => {
+        const row = node('label', 'mv-group-member');
+        const box = node('input');
+        box.type = 'checkbox';
+        box.value = decoder.ip;
+        box.checked = chosen.has(decoder.ip);
+        row.appendChild(box);
+        row.appendChild(node('span', '', decoder.hostname
+          ? decoder.hostname + ' (' + decoder.ip + ')' : decoder.ip));
+        members.appendChild(row);
+      });
+    el('mv_group_delete').disabled = !group;
+    el('mv_group_copy').disabled = !group || !currentView();
+    el('mv_group_show').disabled = !group || !currentView();
+    el('mv_group_check').disabled = !group;
+    renderGroupState();
+  }
+
+  function renderGroupState() {
+    const box = el('mv_group_state');
+    if (!box) return;
+    const report = groups.state;
+    box.replaceChildren();
+    if (!report || report.group.id !== groups.selected) return;
+    box.appendChild(node('div', 'mv-group-state-head', report.state));
+    (report.members || []).forEach((member) => {
+      box.appendChild(node('div', 'mv-source-meta',
+        '• ' + member.hostname + ' — ' + member.state
+        + (member.showing ? ' (showing ' + member.showing + ')' : '')));
+    });
+  }
+
+  function chosenMembers() {
+    return Array.from(el('mv_group_members').children)
+      .map((row) => row.children[0])
+      .filter((box) => box && box.checked)
+      .map((box) => box.value);
+  }
+
+  function openGroupsDialog() {
+    el('mv_groups_status').textContent = '';
+    el('mv_groups_dialog').hidden = false;
+    loadGroups();
+  }
+
+  function closeGroupsDialog() {
+    el('mv_groups_dialog').hidden = true;
+  }
+
+  async function groupRequest(url, payload, busyText) {
+    el('mv_groups_status').textContent = busyText;
+    try {
+      const body = await getJSON(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+      return body;
+    } catch (err) {
+      const detail = err.body || {};
+      // A refused group operation is the interesting case: it names the source
+      // and the decoders that disagree about it, and nothing was written.
+      const reasons = (detail.conflicts || []).map((c) => c.detail)
+        .concat(detail.problems || []);
+      el('mv_groups_status').textContent = reasons.length
+        ? reasons.join('  ') : err.message;
+      return null;
+    }
+  }
+
+  async function saveGroup() {
+    const body = await groupRequest('/api/multiview/groups/save', {
+      id: groups.selected || '',
+      name: (el('mv_group_name').value || '').trim(),
+      members: chosenMembers(),
+    }, 'Saving…');
+    if (!body) return;
+    groups.selected = body.group.id;
+    el('mv_groups_status').textContent = 'Saved. No decoder was changed.';
+    await loadGroups();
+  }
+
+  async function deleteGroup() {
+    const group = selectedGroup();
+    if (!group) return;
+    const answer = await window.omniConfirm({
+      title: 'Delete this group?',
+      message: 'The group is forgotten. Its decoders and the Multiviews saved '
+        + 'on them are left exactly as they are.',
+      summary: [{label: 'Group', value: group.name},
+                {label: 'Decoders', value: group.members.length}],
+      confirmText: 'Delete group',
+      danger: true,
+    });
+    if (!(answer === true || (answer && answer.ok))) return;
+    const body = await groupRequest('/api/multiview/groups/delete',
+                                    {id: group.id}, 'Deleting…');
+    if (!body) return;
+    if (groups.context && groups.context.id === group.id) leaveGroupContext();
+    groups.selected = '';
+    el('mv_groups_status').textContent = body.message;
+    await loadGroups();
+  }
+
+  async function copyToGroup() {
+    const group = selectedGroup();
+    const view = currentView();
+    if (!group || !view) return;
+    const body = await groupRequest('/api/multiview/groups/copy', {
+      group: group.id,
+      source_decoder: el('mv_decoder').value,
+      name: view.name,
+    }, 'Saving to every decoder in the group…');
+    if (!body) return;
+    (body.warnings || []).forEach((warning) => notify(warning));
+    el('mv_groups_status').textContent = body.message;
+  }
+
+  async function showOnGroup() {
+    const group = selectedGroup();
+    const view = currentView();
+    if (!group || !view) return;
+    const answer = await window.omniConfirm({
+      title: 'Show this on every decoder in the group?',
+      message: 'Each decoder in ' + group.name + ' will be reconfigured and '
+        + 'switched to ' + (view.friendly_name || view.name) + '. Their current '
+        + 'pictures change.',
+      summary: [{label: 'Group', value: group.name},
+                {label: 'Decoders', value: group.members.length},
+                {label: 'Multiview', value: view.friendly_name || view.name}],
+      confirmText: 'Show on group',
+    });
+    if (!(answer === true || (answer && answer.ok))) return;
+    const body = await groupRequest('/api/multiview/groups/show', {
+      group: group.id,
+      source_decoder: el('mv_decoder').value,
+      name: view.name,
+    }, 'Showing on the group…');
+    if (!body) return;
+    el('mv_groups_status').textContent = body.message;
+    if (body.ok) {
+      enterGroupContext(group);
+      await checkGroup();
+    }
+  }
+
+  async function checkGroup() {
+    const group = selectedGroup() || groups.context;
+    if (!group) return;
+    try {
+      groups.state = await getJSON('/api/multiview/groups/state?group='
+                                   + encodeURIComponent(group.id));
+    } catch (err) {
+      groups.state = null;
+    }
+    renderGroupState();
+    renderGroupContext();
+  }
+
+  // ---- group context (§16) ------------------------------------------------
+  //
+  // A drag that moves six displays must not look like a drag that moves one, so
+  // group-wide live changes happen only while this context is visible.
+  function enterGroupContext(group) {
+    groups.context = group;
+    renderGroupContext();
+  }
+
+  function leaveGroupContext() {
+    groups.context = null;
+    groups.state = null;
+    renderGroupContext();
+  }
+
+  function inGroupContext() {
+    return !!groups.context;
+  }
+
+  function renderGroupContext() {
+    const bar = el('mv_group_context');
+    if (!bar) return;
+    const group = groups.context;
+    bar.hidden = !group;
+    if (!group) return;
+    el('mv_group_context_name').textContent = group.name;
+    el('mv_group_context_detail').textContent =
+      ' — changes here apply to all ' + group.members.length + ' decoders in '
+      + 'this group.';
+    const report = groups.state;
+    el('mv_group_context_state').textContent =
+      report && report.group.id === group.id ? report.state : '';
   }
 
   // ---------------------------------------------------------------- wiring
@@ -1723,6 +2239,37 @@
 
     el('mv_new').addEventListener('click', startCreate);
     el('mv_cancel').addEventListener('click', cancelEditing);
+    el('mv_cancel_create').addEventListener('click', cancelEditing);
+
+    el('mv_copy').addEventListener('click', openCopyDialog);
+    el('mv_copy_cancel').addEventListener('click', closeCopyDialog);
+    el('mv_copy_go').addEventListener('click', () => runCopy(''));
+
+    el('mv_groups').addEventListener('click', openGroupsDialog);
+    el('mv_groups_close').addEventListener('click', closeGroupsDialog);
+    el('mv_group_select').addEventListener('change', (event) => {
+      groups.selected = event.target.value;
+      renderGroupDetail();
+    });
+    el('mv_group_new').addEventListener('click', () => {
+      groups.selected = '';
+      el('mv_groups_status').textContent = '';
+      renderGroupDetail();
+      el('mv_group_name').focus();
+    });
+    el('mv_group_save').addEventListener('click', saveGroup);
+    el('mv_group_delete').addEventListener('click', deleteGroup);
+    el('mv_group_copy').addEventListener('click', copyToGroup);
+    el('mv_group_show').addEventListener('click', showOnGroup);
+    el('mv_group_check').addEventListener('click', checkGroup);
+    el('mv_group_leave').addEventListener('click', leaveGroupContext);
+
+    // Escape closes whichever panel is open, like every other dialog here.
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      if (!el('mv_copy_dialog').hidden) closeCopyDialog();
+      else if (!el('mv_groups_dialog').hidden) closeGroupsDialog();
+    });
 
     el('mv_layout').addEventListener('change', () => {
       // Window names differ between layouts, so an assignment cannot carry over.
@@ -1732,6 +2279,11 @@
     });
     el('mv_name').addEventListener('input', () => {
       state.nameTouched = true;
+      // The plan does not change when only the name does, so re-planning would
+      // not re-render: Save has to be told directly that there is now something
+      // to save.
+      renderActions();
+      renderEditHeading(state.mode === MODE.CREATE);
       schedulePlan();
     });
     el('mv_reload').addEventListener('click', async () => {
@@ -1751,6 +2303,8 @@
   }
 
   async function start() {
+    // Groups are read once here and after a group operation; nothing polls.
+    loadGroups();
     wire();
     try {
       await loadLayouts();

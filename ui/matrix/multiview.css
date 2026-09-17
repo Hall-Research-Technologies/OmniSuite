@@ -374,3 +374,78 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
  * could not meet it -- so the number that is lower than the policy explains
  * itself without the engineering panel. */
 .mv-bitrate-target{font-size:11px; color:var(--muted); margin-top:2px;}
+
+/* ---- Phase 8B: choosing a Multiview, versus editing the one chosen -------
+ *
+ * The editing fields sit in their own headed strip. The heading says which of
+ * the two operations is happening and whether anything is unsaved, because a
+ * New button among a preset's own fields reads as a rename of that preset.
+ */
+.mv-editbar{
+  display:flex; flex-direction:column; gap:8px;
+  padding:10px 12px; margin:0 0 10px;
+  border:1px solid var(--border); border-radius:8px;
+  background:var(--panel);
+}
+.mv-editbar[hidden]{display:none;}
+.mv-editbar-head{
+  display:flex; align-items:center; gap:10px;
+  font-weight:600; font-size:13px;
+}
+.mv-editbar-fields{display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;}
+.mv-edit-state{font-weight:500; font-size:12px; color:var(--muted);}
+.mv-edit-state.unsaved{color:var(--state-warning);}
+.mv-edit-state.saved{color:var(--muted);}
+.mv-action-row{display:flex; gap:8px; flex-wrap:wrap;}
+
+/* ---- group context ------------------------------------------------------
+ *
+ * Visible for as long as a change here would move several displays. That is
+ * the whole protection: a drag must never move six screens quietly.
+ */
+.mv-group-context{
+  display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  padding:8px 12px; margin:0 0 10px;
+  border:1px solid var(--accent); border-radius:8px;
+  background:var(--selected-tint);
+}
+.mv-group-context[hidden]{display:none;}
+.mv-group-context-main{flex:1 1 auto; min-width:200px;}
+.mv-group-context-state{font-size:12px; font-weight:600;}
+
+/* ---- the copy and groups panels ---------------------------------------- */
+.mv-dialog-backdrop{
+  position:fixed; inset:0; z-index:60;
+  display:flex; align-items:center; justify-content:center;
+  padding:16px; overflow:auto;
+  background:var(--backdrop-veil);
+}
+.mv-dialog-backdrop[hidden]{display:none;}
+.mv-dialog{
+  width:min(420px, 100%); margin:auto;
+  display:flex; flex-direction:column; gap:12px;
+  padding:16px; border-radius:10px;
+  border:1px solid var(--border); background:var(--panel);
+}
+.mv-dialog-wide{width:min(720px, 100%);}
+.mv-dialog h3{margin:0; font-size:15px;}
+.mv-dialog-note{margin:0; font-size:12px; color:var(--muted); line-height:1.5;}
+.mv-dialog-status{font-size:12px; min-height:16px;}
+.mv-dialog-actions{display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap;}
+.mv-groups-body{display:flex; gap:16px; flex-wrap:wrap;}
+.mv-groups-list{display:flex; flex-direction:column; gap:6px; min-width:200px; flex:1 1 200px;}
+.mv-groups-detail{display:flex; flex-direction:column; gap:10px; flex:2 1 300px;}
+.mv-group-members{
+  display:flex; flex-direction:column; gap:4px;
+  max-height:160px; overflow:auto;
+  padding:6px; border:1px solid var(--border); border-radius:6px;
+}
+.mv-group-member{display:flex; align-items:center; gap:8px; font-size:12px;}
+.mv-group-state{font-size:12px;}
+.mv-group-state-head{font-weight:600; margin-bottom:4px;}
+.mv-group-actions{justify-content:flex-start;}
+
+@media (max-width: 640px){
+  .mv-groups-body{flex-direction:column;}
+  .mv-dialog{width:100%;}
+}

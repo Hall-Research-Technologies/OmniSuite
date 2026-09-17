@@ -478,6 +478,10 @@
       </ul>
       <div class="note">Preview is informational only. It never routes anything, never changes a source, and a source you cannot preview is still perfectly usable. OmniSuite never switches preview generation on by itself.</div>
 
+      <h3>Choosing a decoder</h3>
+      <p>When you pick a decoder that is <strong>already showing a Multiview</strong>, OmniSuite opens that Multiview for you: the canvas fills with the windows that are on screen and the sources actually feeding them, and the page shows it as live.</p>
+      <p>If the decoder is not showing one, the page waits for you to choose a saved Multiview or create one. What the decoder is doing always takes precedence over what you were last looking at.</p>
+
       <h3>Creating a Multiview</h3>
       <ol>
         <li>Choose the decoder.</li>
@@ -489,6 +493,19 @@
       </ol>
       <p>The Configuration panel below the canvas shows exactly what Save will do before you press it, and the confirmation lists every change.</p>
       <div class="note"><strong>Saving does not change the picture.</strong> It stores the layout on the decoder and leaves the display alone. Nothing appears on screen until you press <strong>Show on Display</strong>.</div>
+
+      <h3>Creating something new, versus editing what is there</h3>
+      <p><strong>+ New Multiview</strong> starts a separate creation: the panel is headed <em>Create New Multiview</em> and the Multiview you were looking at is left exactly as it is. <strong>Cancel</strong> returns you to it unchanged.</p>
+      <p>When you are editing a saved Multiview the panel is headed <em>Editing &lt;name&gt;</em> and says whether it is <strong>Saved</strong> or has <strong>Unsaved changes</strong>.</p>
+
+      <h3>When Save is available</h3>
+      <p><strong>Save Multiview</strong> is greyed out until something you can save has actually changed &mdash; the name, the layout, or which source is in which window. It says <em>No changes to save</em> so you are not left wondering.</p>
+      <p>Things that change on their own never enable it: a source going quiet, a window's health, a preview refreshing, or the engineering figures updating. Those are readings, not edits.</p>
+      <p>After a successful save it greys out again. If a save fails, what you typed is still there and Save is still available, so you can correct it and try again.</p>
+
+      <h3>The Save confirmation</h3>
+      <p>Saving lists what it will do and asks you to confirm, because it reconfigures encoders that other displays may be using. If you would rather not be asked, tick <strong>Do not ask again for this version</strong>.</p>
+      <div class="note">That preference is remembered <strong>for this version of OmniSuite</strong>. When you upgrade, the confirmation appears once more, because a new release may do something different. You never have to clear it by hand, and turning it off here does not affect any other warning.</div>
 
       <h3>Several Multiviews on one decoder</h3>
       <p>A decoder holds as many saved Multiviews as you want, and exactly one of them is on the display. They are listed under <em>On this decoder</em>, and the one currently showing is marked. Pick any of them from the <strong>Multiview</strong> dropdown to open it.</p>
@@ -538,12 +555,52 @@
       <p>The same source in two windows of <em>different</em> sizes is refused. An encoder produces one picture at one size, so it cannot feed a large window and a small one at the same time. OmniSuite tells you which two windows are in conflict; use a different source for one of them.</p>
       <p>One source can fill at most two windows.</p>
 
+      <h3>Copying a Multiview to another decoder</h3>
+      <p>Several screens often need the same arrangement. Open the Multiview you want, press <strong>Copy to Decoder&hellip;</strong> and choose where it should go.</p>
+      <p>This copies the layout and the source in each window, and <strong>saves</strong> it on that decoder. It changes no picture: neither the decoder you copied from nor the one you copied to. Show it there when you are ready.</p>
+      <ul>
+        <li>If that decoder already has a Multiview with the same name, OmniSuite <strong>asks</strong> rather than overwriting it, and offers to keep both.</li>
+        <li>If the target cannot run the Multiview &mdash; Video Wall is on, Fast Switching is on, or it is not a Multiview decoder &mdash; it says so and copies nothing.</li>
+        <li>If one of the sources is switched off at the moment, the copy still happens and keeps that window. You are told which source was not answering; it is set up when the Multiview is shown.</li>
+      </ul>
+
+      <h3>Decoder groups</h3>
+      <p>A <strong>group</strong> is a set of decoders meant to show the same thing &mdash; the screens over a bar, a row of monitors, an overflow area. Press <strong>Groups&hellip;</strong> to create one, name it, and tick the decoders that belong to it. Groups are remembered by OmniSuite; they are still there tomorrow.</p>
+      <p>If you never need groups, you never have to make one. The page works exactly as it always has for a single decoder.</p>
+      <p>With a group selected you can:</p>
+      <table>
+        <tr><th>Action</th><th>What it does</th></tr>
+        <tr><td><strong>Save Multiview to group</strong></td><td>Saves this Multiview on every decoder in the group. <strong>No picture changes.</strong></td></tr>
+        <tr><td><strong>Show on group</strong></td><td>Puts it on every screen in the group. This does change what people are watching, so it asks first.</td></tr>
+        <tr><td><strong>Check group</strong></td><td>Reads the decoders and reports whether they are still in step.</td></tr>
+      </table>
+
+      <h3>When a group cannot show something</h3>
+      <p>The encoders behind the windows are shared. <strong>An encoder sends one picture size at a time</strong>, so if one decoder in the group wants a source as a large window and another wants the same source as a small one, that cannot be done &mdash; by any product, not just this one.</p>
+      <p>OmniSuite works this out <strong>before it changes anything</strong> and refuses the whole operation, naming the source and the decoders that disagree about it. Give that source the same window size on every decoder in the group and it will go through. Nothing is written to any device by a refused group operation.</p>
+
+      <h3>Changing a source across a whole group</h3>
+      <p>After you show a Multiview on a group, a bar appears saying which group you are working in and how many decoders it covers. While that bar is showing, <strong>dragging a new source onto a window changes it on every decoder in the group</strong>, checked and applied together.</p>
+      <p>Press <strong>Leave group context</strong> and you are back to working on the one decoder. A single-decoder change never moves the rest of the group.</p>
+
+      <h3>When a group falls out of step</h3>
+      <p><strong>Check group</strong> reports each decoder as:</p>
+      <table>
+        <tr><th>State</th><th>Meaning</th></tr>
+        <tr><td><strong>Synchronized</strong></td><td>Showing the Multiview the group was given.</td></tr>
+        <tr><td><strong>Drifted</strong></td><td>Showing something else &mdash; someone routed it from the A/V Matrix, it was changed elsewhere, or it restarted.</td></tr>
+        <tr><td><strong>Offline</strong></td><td>The decoder did not answer.</td></tr>
+      </table>
+      <p>OmniSuite does not quietly put a drifted decoder back, because it cannot know that you did not mean it. Use <strong>Show on group</strong> again when you want them back in step.</p>
+      <div class="note">Showing on a group configures the decoders one after another and confirms each one. If one fails, the ones already changed are put back and you are told whether that succeeded. These are separate devices on a network, so this is a careful best effort rather than a guarantee that all of them change at the same instant.</div>
+
       <h3>Multiview and the A/V Matrix</h3>
       <p>A decoder that is currently showing a Multiview is marked <strong>MULTIVIEW</strong> on its row in the A/V Matrix, and no video crosspoint is shown for it &mdash; because the picture is a composition of several sources, not a route from one encoder. Hovering the row explains this.</p>
       <p><strong>Audio may still show a source on that row, and that is correct.</strong> Multiview sound comes from the main window's source over its ordinary audio path, so the matrix is telling you exactly where the sound is coming from.</p>
       <p>You can still route a normal source to that decoder from the matrix. Doing so <strong>exits Multiview</strong> and shows the route you asked for. OmniSuite warns you first:</p>
       <div class="note">Multiview is active on this decoder. Completing this route will exit Multiview and replace the Multiview display with the selected A/V route.</div>
       <p><strong>The saved Multiview is not deleted.</strong> It stays in the Multiview dropdown and you can show it again whenever you like; it will be rebuilt against whatever the sources are doing at that time.</p>
+      <p>If that decoder belongs to a group, only that one decoder leaves Multiview &mdash; the rest of the group carries on. It is then reported as <strong>Drifted</strong> until you choose to show the group Multiview again.</p>
       <p>The warning appears <strong>once per session</strong> &mdash; after you have acknowledged it, further routes that exit Multiview during the same session go straight through. Refreshing the page or moving between pages does not bring it back. Ticking <strong>Do not show this again</strong> stops it appearing in future sessions as well.</p>
       <p>If the route cannot be completed, OmniSuite puts the Multiview back rather than leaving the display blank, and tells you so.</p>
 

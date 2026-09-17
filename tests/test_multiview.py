@@ -12,6 +12,18 @@ That last one is the whole reason the transaction reads everything back, so the
 simulator can be told to swallow a write silently and the tests prove the
 read-back notices.
 """
+# The hardware fence, installed before the application is imported. This module
+# can be loaded as part of the `tests` package, or by path with no package at
+# all (run_tests.py does that), so it is reached both ways.
+try:
+    from . import _fence
+except ImportError:  # loaded without its package
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    import _fence
+_fence.install()
+
 import collections
 import contextlib
 import copy
@@ -32,6 +44,7 @@ import OmniMatrix_upgrade_server_v7_6y as srv
 # as a reachable target: these tests drive a simulator, and if the patch ever
 # failed the address it fell through to could not reach a device.
 DECODER_IP = "192.0.2.10"
+DECODER2_IP = "192.0.2.11"      # a second decoder, for copy and for groups
 ENCODER_IP = "192.0.2.20"
 ENCODER2_IP = "192.0.2.21"
 OLD_WALLPLATE_IP = "192.0.2.22"      # AT-OMNI-111-WP, excluded
@@ -47,6 +60,8 @@ def _devices():
     return [
         {"ip": DECODER_IP, "mac": "00:00:5E:00:53:10", "role": "decoder",
          "type": "Decoder", "model": "hw-omni-d4511", "hostname": "dec-test-01"},
+        {"ip": DECODER2_IP, "mac": "00:00:5E:00:53:11", "role": "decoder",
+         "type": "Decoder", "model": "hw-omni-d4511", "hostname": "dec-test-02"},
         {"ip": ENCODER_IP, "mac": "00:00:5E:00:53:20", "role": "encoder",
          "type": "Encoder", "model": "hw-omni-e4111", "hostname": "enc-test-01",
          "codec": "VCx",
@@ -370,13 +385,14 @@ class MultiviewTestBase(unittest.TestCase):
             raise OSError("no such device in this test")
         return device.handle(payload)
 
-    def decoder(self, multiviews=None, ip_inputs=None, hdmi=None):
+    def decoder(self, multiviews=None, ip_inputs=None, hdmi=None,
+                ip=DECODER_IP):
         device = FakeDevice({
             "multiview": multiviews if multiviews is not None else [],
             "ip_input": ip_inputs if ip_inputs is not None else _ip_inputs(),
             "hdmi_output": hdmi if hdmi is not None else _hdmi_output(),
         })
-        self.devices[DECODER_IP] = device
+        self.devices[ip] = device
         return device
 
     def encoder(self, ip=ENCODER_IP, vc2=None, sessions=None):
@@ -985,84 +1001,561 @@ class MultiviewCredentialSweepTests(MultiviewTestBase):
 
 
 # ==========================================================================
-# The hardware-isolation gate itself
+# Copying a Multiview to another decoder
 # ==========================================================================
 
-class IsolationGateTests(unittest.TestCase):
-    """The gate that decides whether a test run touched real hardware.
+class CopyMultiviewTests(MultiviewTestBase):
+    """A venue with six identical screens should not be six manual rebuilds.
 
-    Attempts are recorded in whatever shape the caller used -- a bare host, a
-    URL, a host with the command appended -- so the gate has to find the address
-    inside the string. Reading the raw string instead once made every
-    documentation-range WebSocket look like a routable host and failed a clean
-    run; the mistake in the other direction would be far worse, so an
-    unrecognisable target counts as routable.
+    Copying moves the DEFINITION -- layout, and which source is in which window.
+    It deliberately carries no resources: ip_input numbers, scaler sizes and
+    bitrates belong to one decoder at one moment, and the planner works them out
+    again at Show. That is also why a copy does not need anything to be free
+    right now, and why it changes no display.
     """
 
     def setUp(self):
-        import run_tests
-        self.gate = run_tests
+        super().setUp()
+        self.source = self.decoder()
+        self.target = self.decoder(ip=DECODER2_IP)
+        for ip in (ENCODER_IP, ENCODER2_IP):
+            self.encoder(ip)
 
-    def _reachable(self, target):
-        captured = {}
-        original = self.gate.attempts
-        self.gate.attempts = collections.Counter({("tcp", target): 1})
-        try:
-            with mock.patch("builtins.print", lambda *a, **k: None):
-                captured["ok"] = self.gate.report_isolation()
-        finally:
-            self.gate.attempts = original
-        return not captured["ok"]          # a routable host fails the gate
+    def _saved(self, **overrides):
+        body = self.save(**overrides).get_json()
+        self.assertTrue(body.get("ok"), body)
+        return body["plan"]["object_name"]
 
-    def test_documentation_ranges_are_not_reachable(self):
-        for target in ("192.0.2.10", "198.51.100.7", "203.0.113.4"):
-            self.assertFalse(self._reachable(target), target)
+    def _copy(self, name, **extra):
+        payload = {"source_decoder": DECODER_IP, "target_decoder": DECODER2_IP,
+                   "name": name}
+        payload.update(extra)
+        return self.client.post("/api/multiview/copy", json=payload)
 
-    def test_a_documentation_range_websocket_url_is_not_reachable(self):
-        self.assertFalse(self._reachable("ws://192.0.2.10/wsapp/"))
+    def _names(self, device):
+        return [str(o.get("name") or "") for o in device.nodes["multiview"]]
 
-    def test_a_documentation_range_udp_target_is_not_reachable(self):
-        self.assertFalse(self._reachable("192.0.2.1 cmd=0x08"))
+    def test_the_definition_arrives_on_the_target(self):
+        name = self._saved(layout="side-by-side",
+                           assignments={"left": ENCODER_IP, "right": ENCODER2_IP})
+        body = self._copy(name).get_json()
+        self.assertTrue(body.get("ok"), body)
+        self.assertIn(name, self._names(self.target))
 
-    def test_an_ordinary_address_is_reachable_and_fails_the_gate(self):
-        """The bench prefix is deliberately not written here.
+    def test_the_source_decoder_is_not_touched(self):
+        name = self._saved()
+        before = copy.deepcopy(self.source.nodes)
+        self.source.writes = []
+        self._copy(name)
+        self.assertEqual(self.source.nodes, before,
+                         "copying changed the decoder it copied FROM")
+        self.assertEqual([w for w in self.source.writes if w[0] != "config_get"],
+                         [], self.source.writes)
 
-        A separate guard forbids any bench address appearing in this file at
-        all, even as something being rejected, so these stand in for one: an
-        address outside the documentation ranges, in each of the three shapes an
-        attempt is recorded in.
+    def test_neither_display_changes(self):
+        name = self._saved()
+        before_source = self.source.nodes["hdmi_output"][0]["video"].get("input")
+        before_target = self.target.nodes["hdmi_output"][0]["video"].get("input")
+        body = self._copy(name).get_json()
+        self.assertTrue(body.get("ok"), body)
+        self.assertFalse(body["shown"], "a copy reported itself as shown")
+        self.assertEqual(self.source.nodes["hdmi_output"][0]["video"].get("input"),
+                         before_source)
+        self.assertEqual(self.target.nodes["hdmi_output"][0]["video"].get("input"),
+                         before_target)
+
+    def test_the_copy_reserves_nothing_on_the_target(self):
+        """Saving claims no resources, which is what makes copying safe."""
+        name = self._saved()
+        self._copy(name)
+        for entry in self.target.nodes["ip_input"]:
+            if entry["name"] in mv.WINDOW_IP_INPUTS:
+                self.assertFalse(entry.get("enabled"),
+                                 "%s was configured by a copy" % entry["name"])
+
+    def test_both_presets_remain_independently_manageable(self):
+        name = self._saved()
+        self._copy(name)
+        # Deleting it from the target leaves the original alone.
+        self.client.post("/api/multiview/delete",
+                         json={"decoder": DECODER2_IP, "name": name})
+        self.assertIn(name, self._names(self.source))
+
+    def test_an_existing_name_is_never_silently_overwritten(self):
+        name = self._saved()
+        self._copy(name)
+        before = copy.deepcopy(self.target.nodes["multiview"])
+        response = self._copy(name)
+        self.assertEqual(response.status_code, 409)
+        body = response.get_json()
+        self.assertEqual(body["status"], "NAME IN USE")
+        self.assertTrue(body["suggested_name"])
+        self.assertEqual(self.target.nodes["multiview"], before,
+                         "a refused copy still changed the target")
+
+    def test_the_operator_can_ask_for_a_replacement(self):
+        name = self._saved()
+        self._copy(name)
+        body = self._copy(name, on_conflict="replace").get_json()
+        self.assertTrue(body.get("ok"), body)
+        self.assertEqual(self._names(self.target).count(name), 1)
+
+    def test_the_operator_can_ask_for_a_new_name(self):
+        name = self._saved()
+        self._copy(name)
+        body = self._copy(name, on_conflict="rename").get_json()
+        self.assertTrue(body.get("ok"), body)
+        names = self._names(self.target)
+        self.assertIn(name, names)
+        self.assertEqual(len(names), 2, names)
+
+    def test_copying_onto_itself_is_refused(self):
+        name = self._saved()
+        response = self._copy(name, target_decoder=DECODER_IP)
+        self.assertEqual(response.status_code, 400)
+
+    def test_an_interlocked_target_is_refused_with_the_reason(self):
+        """§7: the preflight speaks about the target, not about the planner."""
+        name = self._saved()
+        self.decoder(ip=DECODER2_IP, hdmi=_hdmi_output(wall=True))
+        response = self._copy(name)
+        self.assertEqual(response.status_code, 409)
+        body = response.get_json()
+        self.assertEqual(body["status"], "INCOMPATIBLE")
+        self.assertTrue(any("Video Wall" in p for p in body["problems"]),
+                        body["problems"])
+
+    def test_an_offline_source_is_a_warning_and_the_window_is_kept(self):
+        """§7: a source that is offline today is still the right source."""
+        name = self._saved(layout="side-by-side",
+                           assignments={"left": ENCODER_IP, "right": ENCODER2_IP})
+        del self.devices[ENCODER2_IP]              # stops answering
+        body = self._copy(name).get_json()
+        self.assertTrue(body.get("ok"), body)
+        self.assertTrue(body["warnings"], "the offline source was not mentioned")
+        target = next(o for o in self.target.nodes["multiview"]
+                      if o.get("name") == name)
+        self.assertEqual(len(target.get("subframes") or []), 2,
+                         "the offline source's window was dropped")
+
+    def test_no_credential_is_returned(self):
+        name = self._saved()
+        raw = self._copy(name).get_data(as_text=True).lower()
+        for pattern in ('"password"', 'used_password', '"secret"', '"token"',
+                        'password=', 'password:'):
+            self.assertNotIn(pattern, raw)
+
+
+# ==========================================================================
+# Synchronized decoder groups
+# ==========================================================================
+
+class DecoderGroupTests(MultiviewTestBase):
+    """Several decoders that are meant to show the same thing.
+
+    The reason this is a first-class idea rather than a convenience: the
+    encoders are shared. Window geometry decides what a source's Encoder 2 must
+    scale to, and one Encoder 2 produces one size -- so a group has to be judged
+    as a whole before anything is written, not configured decoder by decoder
+    until the conflict turns up with half the room already changed.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.first = self.decoder()
+        self.second = self.decoder(ip=DECODER2_IP)
+        for ip in (ENCODER_IP, ENCODER2_IP):
+            self.encoder(ip)
+        srv._MULTIVIEW_GROUPS.clear()
+        self.addCleanup(srv._MULTIVIEW_GROUPS.clear)
+        saver = mock.patch.object(srv, "_save_multiview_groups", lambda: None)
+        saver.start()
+        self.addCleanup(saver.stop)
+
+    # ---- membership --------------------------------------------------------
+    def _group(self, name="Sports Bar", members=None):
+        response = self.client.post("/api/multiview/groups/save", json={
+            "name": name,
+            "members": members if members is not None else [DECODER_IP, DECODER2_IP]})
+        body = response.get_json()
+        self.assertTrue(body.get("ok"), body)
+        return body["group"]["id"]
+
+    def test_a_group_is_created_with_its_members(self):
+        group_id = self._group()
+        body = self.client.get("/api/multiview/groups").get_json()
+        group = next(g for g in body["groups"] if g["id"] == group_id)
+        self.assertEqual(group["name"], "Sports Bar")
+        self.assertEqual({m["ip"] for m in group["members"]},
+                         {DECODER_IP, DECODER2_IP})
+
+    def test_creating_a_group_writes_to_no_device(self):
+        self.first.writes, self.second.writes = [], []
+        self._group()
+        self.assertEqual([w for w in self.first.writes if w[0] != "config_get"], [])
+        self.assertEqual([w for w in self.second.writes if w[0] != "config_get"], [])
+
+    def test_a_group_survives_a_restart(self):
+        """§8: membership is not a browser selection."""
+        group_id = self._group()
+        saved = json.loads(json.dumps(
+            {"groups": {k: v for k, v in srv._MULTIVIEW_GROUPS.items()}}))
+        srv._MULTIVIEW_GROUPS.clear()
+        srv._MULTIVIEW_GROUPS.update(saved["groups"])
+        body = self.client.get("/api/multiview/groups").get_json()
+        self.assertIn(group_id, [g["id"] for g in body["groups"]])
+
+    def test_a_group_stores_no_credential(self):
+        self._group()
+        raw = json.dumps(srv._MULTIVIEW_GROUPS).lower()
+        for word in ("password", "passwd", "secret", "token", "credential"):
+            self.assertNotIn(word, raw)
+
+    def test_members_are_remembered_by_mac_not_only_address(self):
+        """An address can be reassigned; a group must not follow it blindly."""
+        self._group()
+        stored = next(iter(srv._MULTIVIEW_GROUPS.values()))
+        self.assertTrue(all(m.get("mac") for m in stored["members"]),
+                        stored["members"])
+
+    def test_two_groups_cannot_share_a_name(self):
+        self._group()
+        response = self.client.post("/api/multiview/groups/save",
+                                    json={"name": "Sports Bar",
+                                          "members": [DECODER_IP]})
+        self.assertEqual(response.status_code, 409)
+
+    def test_renaming_and_removing_members(self):
+        group_id = self._group()
+        body = self.client.post("/api/multiview/groups/save", json={
+            "id": group_id, "name": "Main Bar", "members": [DECODER_IP],
+        }).get_json()
+        self.assertTrue(body["ok"], body)
+        self.assertEqual(body["group"]["name"], "Main Bar")
+        self.assertEqual([m["ip"] for m in body["group"]["members"]], [DECODER_IP])
+
+    def test_deleting_a_group_leaves_every_decoder_alone(self):
+        group_id = self._group()
+        before = copy.deepcopy(self.first.nodes)
+        body = self.client.post("/api/multiview/groups/delete",
+                                json={"id": group_id}).get_json()
+        self.assertTrue(body["ok"], body)
+        self.assertEqual(self.first.nodes, before)
+        self.assertEqual(self.client.get("/api/multiview/groups")
+                         .get_json()["groups"], [])
+
+    # ---- copy to the group -------------------------------------------------
+    def _saved_on_first(self, **overrides):
+        body = self.save(**overrides).get_json()
+        self.assertTrue(body.get("ok"), body)
+        return body["plan"]["object_name"]
+
+    def test_copying_to_a_group_saves_on_every_member_and_shows_nothing(self):
+        """§10: COPY/SAVE TO GROUP is not SHOW ON GROUP."""
+        group_id = self._group()
+        name = self._saved_on_first()
+        before = self.second.nodes["hdmi_output"][0]["video"].get("input")
+        body = self.client.post("/api/multiview/groups/copy", json={
+            "group": group_id, "source_decoder": DECODER_IP, "name": name,
+        }).get_json()
+        self.assertTrue(body.get("ok"), body)
+        self.assertFalse(body["shown"])
+        self.assertIn(name, [str(o.get("name") or "")
+                             for o in self.second.nodes["multiview"]])
+        self.assertEqual(self.second.nodes["hdmi_output"][0]["video"].get("input"),
+                         before, "a copy to the group changed a display")
+
+    # ---- the conflict this whole idea exists for ---------------------------
+    def test_one_encoder_cannot_be_asked_for_two_window_sizes(self):
+        """§12/§23: refuse the group before anything is written.
+
+        The same source in a big window on one decoder and a small window on
+        another is not a layout that can exist: there is one Encoder 2 behind
+        that source and it produces one picture size.
         """
-        for target in ("198.18.0.7", "ws://198.18.0.7/wsapp/",
-                       "198.18.0.7 cmd=0x08"):
-            self.assertTrue(self._reachable(target),
-                            "%s did not fail the isolation gate" % target)
+        group_id = self._group()
+        # A 2x2 on the first decoder: every window 960x544.
+        equal = self._saved_on_first(layout="2x2", name="Equal",
+                                     assignments={"top_left": ENCODER_IP,
+                                                  "top_right": ENCODER2_IP})
+        # The second decoder already holds a layout where ENCODER_IP is the big
+        # window, so the group is being asked for two sizes of the same source.
+        srv._MULTIVIEW_GROUPS[group_id]["multiview"] = None
+        plans = self._group_plan(group_id, equal)
+        self.assertTrue(plans["ok"], plans)     # identical layouts agree
 
-    def test_no_private_range_is_ever_excused(self):
-        """This is what actually keeps the bench behind the gate.
+        conflicting = self._conflicting_plans()
+        self.assertTrue(conflicting, "no conflict was produced to test")
+        self.assertIn("one picture size", conflicting[0]["detail"])
 
-        The bench is on a private network, so the gate protects it only for as
-        long as no private prefix is on the excused list.
+    def _group_plan(self, group_id, name):
+        return self.client.post("/api/multiview/groups/plan", json={
+            "group": group_id, "source_decoder": DECODER_IP, "name": name,
+        }).get_json()
+
+    def _conflicting_plans(self):
+        """Two plans that want one source at two sizes, judged by the server."""
+        member_a = {"ip": DECODER_IP, "hostname": "dec-test-01"}
+        member_b = {"ip": DECODER2_IP, "hostname": "dec-test-02"}
+        plan_a = {"windows": [{"cell": "main", "label": "main (1280x720)",
+                               "scaler_format": "1280x720",
+                               "source": {"ip": ENCODER_IP, "hostname": "enc-1"}}]}
+        plan_b = {"windows": [{"cell": "top_left", "label": "top_left (640x360)",
+                               "scaler_format": "640x360",
+                               "source": {"ip": ENCODER_IP, "hostname": "enc-1"}}]}
+        return srv._scaler_conflicts([(member_a, plan_a), (member_b, plan_b)])
+
+    def test_the_conflict_names_the_source_and_both_decoders(self):
+        conflicts = self._conflicting_plans()
+        self.assertEqual(len(conflicts), 1, conflicts)
+        detail = conflicts[0]["detail"]
+        self.assertIn("enc-1", detail)
+        self.assertIn("dec-test-01", detail)
+        self.assertIn("dec-test-02", detail)
+        self.assertIn("1280x720", detail)
+        self.assertIn("640x360", detail)
+
+    def test_the_same_size_everywhere_is_not_a_conflict(self):
+        member_a = {"ip": DECODER_IP, "hostname": "dec-test-01"}
+        member_b = {"ip": DECODER2_IP, "hostname": "dec-test-02"}
+        window = {"cell": "top_left", "label": "top_left (960x544)",
+                  "scaler_format": "960x544",
+                  "source": {"ip": ENCODER_IP, "hostname": "enc-1"}}
+        self.assertEqual(
+            srv._scaler_conflicts([(member_a, {"windows": [window]}),
+                                   (member_b, {"windows": [copy.deepcopy(window)]})]),
+            [])
+
+    def test_a_refused_group_writes_nothing(self):
+        """§12: refuse BEFORE the first mutation."""
+        group_id = self._group()
+        name = self._saved_on_first()
+        self.first.writes, self.second.writes = [], []
+        with mock.patch.object(srv, "_scaler_conflicts",
+                               lambda plans: [{"source": "enc-1",
+                                               "detail": "conflict"}]):
+            response = self.client.post("/api/multiview/groups/show", json={
+                "group": group_id, "source_decoder": DECODER_IP, "name": name})
+        self.assertEqual(response.status_code, 409)
+        body = response.get_json()
+        self.assertEqual(body["status"], "REFUSED")
+        self.assertEqual(body["writes"], 0)
+        for device in (self.first, self.second):
+            self.assertEqual([w for w in device.writes if w[0] != "config_get"],
+                             [], "a refused group operation wrote to a device")
+
+    def test_an_offline_member_refuses_the_group_before_any_write(self):
+        group_id = self._group()
+        name = self._saved_on_first()
+        del self.devices[DECODER2_IP]
+        self.first.writes = []
+        response = self.client.post("/api/multiview/groups/show", json={
+            "group": group_id, "source_decoder": DECODER_IP, "name": name})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual([w for w in self.first.writes if w[0] != "config_get"], [])
+
+    # ---- drift -------------------------------------------------------------
+    def test_a_group_reports_itself_synchronized_or_drifted(self):
+        """§17: read on demand, never on a timer."""
+        group_id = self._group()
+        srv._MULTIVIEW_GROUPS[group_id]["multiview"] = {"name": "multiviewLive"}
+        for device in (self.first, self.second):
+            device.nodes["hdmi_output"][0]["video"]["input"] = "multiviewLive"
+        body = self.client.get("/api/multiview/groups/state?group=%s"
+                               % group_id).get_json()
+        self.assertEqual(body["state"], "SYNCHRONIZED")
+
+        # One member routed away from the A/V Matrix (§18).
+        self.second.nodes["hdmi_output"][0]["video"]["input"] = "ip_input1"
+        body = self.client.get("/api/multiview/groups/state?group=%s"
+                               % group_id).get_json()
+        self.assertEqual(body["state"], "DRIFTED")
+        drifted = [m for m in body["members"] if m["state"] == "DRIFTED"]
+        self.assertEqual([m["ip"] for m in drifted], [DECODER2_IP])
+
+    def test_an_offline_member_is_offline_not_drifted(self):
+        group_id = self._group()
+        srv._MULTIVIEW_GROUPS[group_id]["multiview"] = {"name": "multiviewLive"}
+        self.first.nodes["hdmi_output"][0]["video"]["input"] = "multiviewLive"
+        del self.devices[DECODER2_IP]
+        body = self.client.get("/api/multiview/groups/state?group=%s"
+                               % group_id).get_json()
+        states = {m["ip"]: m["state"] for m in body["members"]}
+        self.assertEqual(states[DECODER2_IP], "OFFLINE")
+
+    def test_drift_is_reported_not_corrected(self):
+        """§17: OmniSuite does not know the operator did not mean it.
+
+        The drifted decoder really does hold the Multiview and really could be
+        put back -- otherwise an attempt to correct it would fail for its own
+        reasons and this would pass without proving anything.
         """
-        for prefix in self.gate.UNROUTABLE_PREFIXES:
-            self.assertFalse(
-                prefix.startswith(("10.", "172.16.", "172.17.", "192.168.")),
-                "%s excuses a private address from the isolation gate" % prefix)
+        group_id = self._group()
+        srv._MULTIVIEW_GROUPS[group_id]["multiview"] = {"name": "multiviewLive"}
+        self.second.nodes["multiview"] = [
+            _multiview_object("multiviewLive", 1920, 1088,
+                              [{"name": "left (960x544)", "input": "ip_input2"}])]
+        self.second.nodes["hdmi_output"][0]["video"]["available_inputs"] = [
+            "ip_input1", "multiviewLive"]
+        self.second.nodes["hdmi_output"][0]["video"]["input"] = "ip_input1"
+        srv._record_multiview_meta(
+            {"ip": DECODER2_IP, "mac": "00:00:5E:00:53:11",
+             "hostname": "dec-test-02"},
+            "multiviewLive",
+            {"layout": "side-by-side",
+             "windows": [{"source_ip": ENCODER_IP, "encoder_index": 2,
+                          "cell": "left", "input": "ip_input2"}]})
+        self.second.writes = []
+        self.client.get("/api/multiview/groups/state?group=%s" % group_id)
+        self.assertEqual([w for w in self.second.writes if w[0] != "config_get"],
+                         [], "reading group state changed a decoder")
+        self.assertEqual(
+            self.second.nodes["hdmi_output"][0]["video"]["input"], "ip_input1")
 
-    def test_an_address_that_merely_looks_like_one_is_not_excused(self):
-        """1192.0.2.5 is not in the documentation range."""
-        self.assertTrue(self._reachable("1192.0.2.5"))
 
-    def test_an_unrecognisable_target_is_assumed_routable(self):
-        self.assertTrue(self._reachable("some-device.local"))
+# ==========================================================================
+# Show on Group
+# ==========================================================================
 
-    def test_a_clean_run_passes(self):
-        original = self.gate.attempts
-        self.gate.attempts = collections.Counter()
-        try:
-            with mock.patch("builtins.print", lambda *a, **k: None):
-                self.assertTrue(self.gate.report_isolation())
-        finally:
-            self.gate.attempts = original
+class ShowOnGroupTests(MultiviewTestBase):
+    """Six screens are six devices on a network, not one atomic thing.
+
+    So the group is planned in full and refused in full, applied member by
+    member with each one verified, and on a failure part way through every
+    member already changed is put back. That is best effort and is reported as
+    what it is -- never as success with half the room on the old layout.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.first = self.decoder()
+        self.second = self.decoder(ip=DECODER2_IP)
+        for ip in (ENCODER_IP, ENCODER2_IP):
+            self.encoder(ip)
+        srv._MULTIVIEW_GROUPS.clear()
+        self.addCleanup(srv._MULTIVIEW_GROUPS.clear)
+        saver = mock.patch.object(srv, "_save_multiview_groups", lambda: None)
+        saver.start()
+        self.addCleanup(saver.stop)
+        body = self.client.post("/api/multiview/groups/save", json={
+            "name": "Sports Bar", "members": [DECODER_IP, DECODER2_IP]}).get_json()
+        self.group = body["group"]["id"]
+        saved = self.save().get_json()
+        self.name = saved["plan"]["object_name"]
+        # Both decoders must offer the object as a video input, as a real one
+        # does once it exists.
+        for ip in (DECODER_IP, DECODER2_IP):
+            self.client.post("/api/multiview/groups/copy", json={
+                "group": self.group, "source_decoder": DECODER_IP,
+                "name": self.name})
+            device = self.devices[ip]
+            available = device.nodes["hdmi_output"][0]["video"]["available_inputs"]
+            if self.name not in available:
+                available.append(self.name)
+
+    def _show(self):
+        return self.client.post("/api/multiview/groups/show", json={
+            "group": self.group, "source_decoder": DECODER_IP, "name": self.name})
+
+    def _display(self, ip):
+        return self.devices[ip].nodes["hdmi_output"][0]["video"].get("input")
+
+    def test_every_member_ends_up_showing_it(self):
+        body = self._show().get_json()
+        self.assertTrue(body.get("ok"), body)
+        self.assertEqual(body["status"], "VERIFIED")
+        for ip in (DECODER_IP, DECODER2_IP):
+            self.assertEqual(self._display(ip), self.name,
+                             "%s is not showing the group Multiview" % ip)
+
+    def test_the_group_remembers_what_it_is_showing(self):
+        self._show()
+        record = srv._MULTIVIEW_GROUPS[self.group]
+        self.assertEqual((record.get("multiview") or {}).get("name"), self.name)
+
+    def test_a_shared_source_is_charged_once(self):
+        """§13: the decoders subscribe to one Encoder 2 stream, not one each."""
+        body = self._show().get_json()
+        shared = {entry["source_ip"]: entry for entry in body["shared_sources"]}
+        self.assertIn(ENCODER_IP, shared)
+        # One stream, one charge -- not doubled because two decoders watch it.
+        self.assertLessEqual(shared[ENCODER_IP]["bitrate"], 900)
+
+    def test_each_decoder_maps_the_stream_into_its_own_pool(self):
+        """§13: the same multicast, each decoder's own ip_input."""
+        self._show()
+        addresses = []
+        for ip in (DECODER_IP, DECODER2_IP):
+            entries = [e for e in self.devices[ip].nodes["ip_input"]
+                       if e["name"] in mv.WINDOW_IP_INPUTS and e.get("enabled")]
+            self.assertTrue(entries, "%s mapped no stream" % ip)
+            addresses.append({(e.get("multicast") or {}).get("address")
+                              for e in entries})
+        self.assertEqual(addresses[0], addresses[1],
+                         "the group members subscribed to different streams")
+
+    def test_each_decoder_sets_its_own_audio_input(self):
+        """§14: audio is per decoder, and not assumed to be the same number."""
+        self._show()
+        for ip in (DECODER_IP, DECODER2_IP):
+            audio = self.devices[ip].nodes["hdmi_output"][0].get("audio") or {}
+            self.assertTrue(audio.get("input"),
+                            "%s was left with no audio input" % ip)
+
+    # ---- the failure path --------------------------------------------------
+    def _break_second_decoder_show(self):
+        """Let the first member succeed and the second fail at Show."""
+        real = srv._show_multiview_on
+        calls = {"n": 0}
+
+        def flaky(ip, name):
+            calls["n"] += 1
+            if ip == DECODER2_IP:
+                return {"ok": False, "status": "FAILED",
+                        "error": "the decoder stopped answering"}, 200
+            return real(ip, name)
+        return mock.patch.object(srv, "_show_multiview_on", flaky), calls
+
+    def test_a_failure_part_way_through_puts_the_group_back(self):
+        before = {ip: self._display(ip) for ip in (DECODER_IP, DECODER2_IP)}
+        patcher, _calls = self._break_second_decoder_show()
+        with patcher:
+            body = self._show().get_json()
+        self.assertFalse(body["ok"], body)
+        self.assertIn("GROUP", body["status"])
+        self.assertEqual(self._display(DECODER_IP), before[DECODER_IP],
+                         "the first decoder was left on the new layout")
+
+    def test_the_failure_says_which_decoder_and_which_stage(self):
+        patcher, _calls = self._break_second_decoder_show()
+        with patcher:
+            body = self._show().get_json()
+        failure = body["failures"][-1]
+        self.assertEqual(failure["decoder"], DECODER2_IP)
+        self.assertEqual(failure["stage"], "show")
+        self.assertIn("stopped answering", failure["error"])
+
+    def test_an_incomplete_rollback_is_never_reported_as_rolled_back(self):
+        patcher, _calls = self._break_second_decoder_show()
+        with patcher, mock.patch.object(srv, "_restore_member_display",
+                                        lambda snapshot: (False, "no answer")):
+            body = self._show().get_json()
+        self.assertEqual(body["status"], "FAILED — GROUP ROLLBACK INCOMPLETE")
+        self.assertTrue(any(not entry["restored"] for entry in body["rollback"]))
+
+    def test_a_failed_group_show_does_not_record_itself_as_the_group_view(self):
+        patcher, _calls = self._break_second_decoder_show()
+        with patcher:
+            self._show()
+        record = srv._MULTIVIEW_GROUPS[self.group]
+        self.assertIsNone((record.get("multiview") or {}).get("name"),
+                          "a failed group show was remembered as the group state")
+
+    def test_no_credential_is_returned_by_a_group_show(self):
+        raw = self._show().get_data(as_text=True).lower()
+        for pattern in ('"password"', 'used_password', '"secret"', '"token"',
+                        'password=', 'password:'):
+            self.assertNotIn(pattern, raw)
 
 
 # ==========================================================================
@@ -6438,9 +6931,11 @@ class SourceEligibilityTests(MultiviewTestBase):
              "type": "Decoder", "model": "hw-omni-d4511", "hostname": "dec-gone"}]
         with mock.patch.object(srv, "_load_cache", lambda: devices):
             self.decoder()
+            self.decoder(ip=DECODER2_IP)     # answers, so it is not the hidden one
             body = self.client.get("/api/multiview/decoders?probe=1").get_json()
         offered = {d["ip"] for d in body["decoders"]}
         self.assertIn(DECODER_IP, offered)
+        self.assertIn(DECODER2_IP, offered)
         # Registered nowhere, so it does not answer the preflight.
         self.assertNotIn("192.0.2.19", offered)
         self.assertEqual(body["hidden"], 1)

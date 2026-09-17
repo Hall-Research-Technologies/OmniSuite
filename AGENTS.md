@@ -418,6 +418,51 @@
 - **Exiting a Multiview never deletes it.** The saved object stays and can be shown again.
 - The matrix redraws from the route response, and showing a Multiview records the decoder's new display state. **Do not add polling** to keep the matrix honest, and never show the intended state in place of the verified one.
 
+### Multiview: what the decoder is showing outranks what we remembered
+
+- Choosing a decoder opens the Multiview **currently on its display**, populated from live subscriptions. A remembered selection is a bookmark and is used only when nothing is active. Metadata and saved objects never outrank the display.
+- A composition that cannot be matched to a saved layout is still shown as what it is. Never substitute an unrelated preset because the live one did not resolve.
+
+### Multiview: creating is not editing
+
+- **+ New Multiview** enters a separate creation state with its own heading, and leaves the selected Multiview untouched. Cancel returns to it exactly as it was. Creating never changes what is on the display.
+- The editing area says which of the two is happening and whether there are unsaved changes.
+
+### Multiview: Save means there is something to save
+
+- **Save is disabled unless the persistable preset differs from what is stored** -- name, layout, window assignments. Live readings (packets, health, reachability, previews, engineering figures) must never enable it.
+- After a successful save the baseline becomes what is now on the device and Save disables. After a failure the operator's edits are **kept** and Save stays available: a failed transaction changed nothing, so reverting their work would be a second failure.
+
+### Multiview: version-scoped warning suppression
+
+- "Do not ask again" on the Save confirmation records the **application version** it was given against, through the shared `omniSuppression` store. A different version shows the warning again by itself.
+- The reason is consent, not tidiness: a warning describes what an operation does to shared equipment, and a release can change that. Never require the operator to clear browser storage, and never let one warning's preference touch another's.
+
+### Multiview: copying to another decoder
+
+- A copy carries the **definition** -- layout, and which source is in which window. It carries no resources: ip_input numbers, scaler sizes and bitrates belong to one decoder at one moment and are worked out again at Show.
+- Copying **saves**; it does not show. Neither display changes.
+- Never silently overwrite a Multiview of the same name on the target. Ask, or create a distinct name.
+- A source that is offline is a **warning**, not a refusal: the window keeps its source. A saved Multiview names sources, it does not hold them.
+
+### Multiview: decoder groups
+
+- A group is decoders meant to show the same Multiview. Membership **persists** in OmniSuite's runtime state and stores no credentials. Members are recorded by MAC where one is known, so a reassigned address does not silently change which television is in the group.
+- **Copy to group and Show on group are different operations.** Copying changes no picture; showing changes all of them and asks first.
+- **Plan the whole group before writing anything.** Window geometry decides what a source's Encoder 2 must scale to, and one Encoder 2 produces one size -- so the same source at two window sizes across the group is impossible, however reasonable each decoder looks alone. Refuse the whole operation, name the source and the decoders that disagree, and write nothing.
+- Decoders that share a source subscribe to the **same** Encoder 2 stream. Charge that source's bandwidth once; evaluate each decoder's input bandwidth separately. Never allocate a second multicast because a second decoder wants the same picture.
+- Audio is per decoder: each one repoints its own display audio input at the main window's Session 1 audio. Do not assume every decoder uses the same input number.
+- Show on group snapshots, applies in order, verifies each member, and on failure restores every member already changed -- reporting `VERIFIED`, `FAILED — GROUP ROLLED BACK` or `FAILED — GROUP ROLLBACK INCOMPLETE`. Never report success with half the room on the old layout. These are independent network endpoints: say that the atomicity is best effort rather than implying it is not.
+- Group-wide live changes happen **only while a visible group context is shown**. A drag that moves six displays must never look like a drag that moves one.
+- Drift is **reported, never corrected**. A grouped decoder routed away from the A/V Matrix is DRIFTED, and only the decoder the operator routed leaves Multiview. Do not poll to discover this; read on the actions the operator already takes.
+
+### The hardware fence belongs to the tests
+
+- **The fence lives in `tests/_fence.py` and is installed by the test package**, so it is present through `run_tests.py`, `python -m unittest`, discovery, an IDE and any mutation harness. It must never again depend on one runner remembering to install it.
+- It refuses WebSocket, TCP and UDP to anything that is not loopback, and therefore everything layered on them -- HTTP, thumbnails and the `config_get` / `config_set` / `method` transports. Loopback stays open because a test talking to 127.0.0.1 is talking to itself.
+- `tests/test_fence.py` proves it, including by running the suite in a fresh interpreter through `python -m unittest` with no help from `run_tests.py`.
+- A test must not write a bench address into a test file, as a target or otherwise; use a documentation range, or RFC 2544's 198.18.0.0/15 when a routable-looking address is needed.
+
 ### The User Guide is part of the build
 
 - **The Settings-page User Guide (`ui/user-guide.html`) is a release artefact, not documentation that trails behind the code.** It ships inside the application, it is what an operator reads, and a build whose guide describes behaviour the build does not have is a defect in that build.

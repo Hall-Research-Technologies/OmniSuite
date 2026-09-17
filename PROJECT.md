@@ -4336,6 +4336,74 @@ canvas already carries the LIVE banner and the button already carries the
 intent; the transaction behind each is unchanged. Save and Delete still confirm.
 
 
+## Multiview: Phase 8B — workflow, copying, and synchronized groups
+
+Choosing a decoder now opens whatever it is **actually showing**, populated from
+its live subscriptions. A remembered selection is a bookmark, used only when
+nothing is on the display.
+
+Creating and editing are visibly different operations. **+ New Multiview**
+enters its own creation state and leaves the selected preset alone; the editing
+area is headed with which Multiview is open and whether it has unsaved changes.
+**Save** is offered only when something persistable has changed -- name, layout
+or window assignments -- and never because a packet counter moved or a source
+went quiet. A failed save keeps what the operator typed, because the transaction
+changed nothing.
+
+The Save confirmation can be turned off, **for this version**. The stored
+preference names the version it was given against, so an upgrade asks once more
+without anyone clearing browser storage. That is about consent rather than
+tidiness: a warning describes what an operation does to shared equipment, and a
+release can change it.
+
+**Copy to Decoder** carries a Multiview's definition -- the layout and the source
+in each window -- to another decoder and saves it there. It carries no
+resources, because those belong to one decoder at one moment and are worked out
+again at Show, and it changes no display. A name already in use is never
+overwritten silently, and a source that happens to be switched off is a warning
+rather than a reason to throw the window away.
+
+**Decoder groups** are the larger idea. A group is several decoders meant to
+show the same thing, and it persists in OmniSuite's runtime state. Copying a
+Multiview to a group saves it on every member and changes no picture; showing it
+on the group changes all of them and asks first.
+
+The reason a group is a first-class idea rather than a convenience is that the
+encoders are shared. Window geometry decides what a source's Encoder 2 must
+scale to, and one Encoder 2 produces one size, so the same source as a large
+window on one decoder and a small window on another is not a configuration that
+can exist. OmniSuite plans the entire group before writing anything, refuses the
+whole operation when that conflict is present, and names the source and the
+decoders that disagree. Configuring members one at a time would discover it with
+half the room already changed.
+
+Decoders that share a source subscribe to the same stream; that source's
+bandwidth is charged once and each decoder's own input budget is evaluated
+separately. Audio stays per decoder. Showing on a group verifies each member and
+restores the ones already changed if a later one fails, reporting whether that
+restoration succeeded -- best effort across independent network endpoints, and
+described as such.
+
+While a group is in context the page says so, and a source change applies to the
+whole group. Leaving that context returns to single-decoder work. A grouped
+decoder routed normally from the A/V Matrix leaves Multiview by itself and is
+then reported as DRIFTED; OmniSuite never silently puts it back, because it
+cannot know the operator did not mean it.
+
+## The test fence belongs to the tests
+
+Phase 8 found the hardware fence living in `run_tests.py`, which meant a plain
+`python -m unittest`, an IDE runner or a mutation harness ran the same suite
+with nothing between it and the bench. Nothing had gone wrong -- measured, the
+suite only ever addressed documentation-range addresses -- but the protection
+was a convention rather than a fence.
+
+It now lives in `tests/_fence.py`, installed by the test package and by every
+test module, so it is present however the suite is entered. It refuses
+WebSocket, TCP and UDP to anything that is not loopback, which covers HTTP,
+thumbnails and the device transports. `tests/test_fence.py` proves it, including
+from a fresh interpreter started the way a mutation harness starts one.
+
 ## Multiview: Phase 8 — the A/V Matrix knows
 
 A decoder showing a Multiview is marked **MULTIVIEW** in the A/V Matrix and has

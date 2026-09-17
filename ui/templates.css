@@ -40,6 +40,10 @@
   --state-selection: rgba(30, 144, 255, .16);
   --state-pending: rgba(148, 163, 184, .22);
 
+  /* The veil behind a modal. A token rather than a literal in each stylesheet,
+     so a light theme can use a lighter one. */
+  --backdrop-veil: rgba(0, 0, 0, .45);
+
   /* Derived control tokens.
      Every one of these is computed from a role above, so a preset changes the
      whole control system by changing nine colours. Nothing below this line
@@ -116,6 +120,7 @@ body.light {
   --state-info: #0369a1;
   --state-selection: rgba(30, 144, 255, .12);
   --state-pending: rgba(100, 116, 139, .18);
+  --backdrop-veil: rgba(15, 23, 42, .35);
   --minority-topology-bg: rgba(99, 102, 241, .12);
   --minority-topology-fg: #3730a3;
   /* Light mode paints on a light ground, so the destructive ring and the press

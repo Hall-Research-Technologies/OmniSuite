@@ -1,9 +1,28 @@
 """Device Info unified discovery/clear, USB-parent correlation, and dispatch.
 
+The addresses here were the bench's. They are now RFC 5737 documentation
+addresses with the same last octet, so every relationship the tests are built on
+-- adjacency, numeric ordering, on-net versus off-net -- is unchanged, and no
+automated test names a real device. This module's own WebSocket fence used to
+hide the fact that some of these were being dialled; the shared fence reports
+them, which is how they were found.
+
 These tests drive the Flask app through its test client. They never touch the
 network: the standalone extender service is stubbed, and the OmniStream identify
 helper is patched, so nothing here depends on hardware.
 """
+# The hardware fence, installed before the application is imported. This module
+# can be loaded as part of the `tests` package, or by path with no package at
+# all (run_tests.py does that), so it is reached both ways.
+try:
+    from . import _fence
+except ImportError:  # loaded without its package
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    import _fence
+_fence.install()
+
 import copy
 import io
 import json
@@ -37,16 +56,16 @@ def _github_is_fenced(*args, **kwargs):
 srv._fetch_latest_release = _github_is_fenced
 
 # Values observed on real hardware during physical testing.
-E4521_IP, E4521_HOST, E4521_USB_MAC, E4521_USB_IP = "192.168.100.141", "hw-omni-e4521-00002", "B8:98:B0:07:85:ED", "192.168.100.246"
-D4511_IP, D4511_HOST, D4511_USB_MAC, D4511_USB_IP = "192.168.100.32", "hw-omni-d4511-085c6", "B8:98:B0:07:85:C7", "192.168.100.108"
+E4521_IP, E4521_HOST, E4521_USB_MAC, E4521_USB_IP = "192.0.2.141", "hw-omni-e4521-00002", "B8:98:B0:07:85:ED", "192.0.2.246"
+D4511_IP, D4511_HOST, D4511_USB_MAC, D4511_USB_IP = "192.0.2.32", "hw-omni-d4511-085c6", "B8:98:B0:07:85:C7", "192.0.2.108"
 # Observed hardware: the AT-OMNI-311 (LEX/host) is .128, the AT-OMNI-324 (REX/device) is .127.
-OMNI311_MAC, OMNI311_IP = "00:1B:13:04:E9:6E", "192.168.100.128"
-OMNI324_MAC, OMNI324_IP = "00:1B:13:04:6A:EA", "192.168.100.127"
+OMNI311_MAC, OMNI311_IP = "00:1B:13:04:E9:6E", "192.0.2.128"
+OMNI324_MAC, OMNI324_IP = "00:1B:13:04:6A:EA", "192.0.2.127"
 # Every command that changes device state. A test may read from a stubbed
 # transport; it may never write to one that could be a real device.
 USB_MUTATING_COMMANDS = {usb.PAIR, usb.UNPAIR, usb.UNPAIR_ALL, usb.IP_DHCP,
                          usb.IP_STATIC, usb.REBOOT, usb.BLINK_ON, usb.BLINK_OFF}
-IFACE_IP, IFACE_MASK = "192.168.100.50", "255.255.255.0"
+IFACE_IP, IFACE_MASK = "192.0.2.50", "255.255.255.0"
 
 # The WebSocket transport is fenced for the lifetime of this process, not per
 # test. Every config_set write -- usb_icron pairing, parent network, codec,
@@ -92,31 +111,32 @@ def _fenced_ws_send_recv(url, payload, timeout=None, *args, **kwargs):
 srv._ws_send_recv = _fenced_ws_send_recv
 
 
-def _fenced_create_connection(url, *args, **kwargs):
-    """No test opens a real WebSocket, whatever route it took to get here.
-
-    _ws_send_recv is not the only way out: config import, firmware upload,
-    identify/blink and reboot each call websocket.create_connection directly, so
-    fencing the shared transport alone still left four mutating paths able to
-    reach a live device. This is the socket itself, so a future bypass is caught
-    by construction rather than by remembering to stub it.
-    """
-    raise OSError(f"a test tried to open a WebSocket to {url}")
-
-
-srv.websocket.create_connection = _fenced_create_connection
+# No test opens a real WebSocket, whatever route it took to get here.
+#
+# _ws_send_recv is not the only way out: config import, firmware upload,
+# identify/blink and reboot each call websocket.create_connection directly, so
+# fencing the shared transport alone still left four mutating paths able to
+# reach a live device.
+#
+# This module used to install its own spy on that call, which replaced the test
+# package's. Two fences that overwrite each other are worse than one: whichever
+# imported last decided what every other module got, and the shared fence's own
+# tests then saw a different error than the one they had installed. The package
+# fence does the same job at the socket, so this simply makes sure it is there.
+_fence.install()
+assert _fence.installed(), "the hardware fence is not installed"
 
 # The full observed bench system.
-E4521B_IP, E4521B_HOST, E4521B_USB_MAC, E4521B_USB_IP = "192.168.100.143", "hw-omni-e4521-0856c", "B8:98:B0:07:85:6D", "192.168.100.194"
-D4511B_IP, D4511B_HOST, D4511B_USB_MAC, D4511B_USB_IP = "192.168.100.151", "hw-omni-d4511-08586", "B8:98:B0:07:85:87", "192.168.100.250"
-D4511C_IP, D4511C_HOST, D4511C_USB_MAC, D4511C_USB_IP = "192.168.100.152", "hw-omni-d4511-085c0", "B8:98:B0:07:85:C1", "192.168.100.248"
+E4521B_IP, E4521B_HOST, E4521B_USB_MAC, E4521B_USB_IP = "192.0.2.143", "hw-omni-e4521-0856c", "B8:98:B0:07:85:6D", "192.0.2.194"
+D4511B_IP, D4511B_HOST, D4511B_USB_MAC, D4511B_USB_IP = "192.0.2.151", "hw-omni-d4511-08586", "B8:98:B0:07:85:87", "192.0.2.250"
+D4511C_IP, D4511C_HOST, D4511C_USB_MAC, D4511C_USB_IP = "192.0.2.152", "hw-omni-d4511-085c0", "B8:98:B0:07:85:C1", "192.0.2.248"
 
 CACHE_UNITS = [
     {"ip": E4521_IP, "hostname": E4521_HOST, "model": "hw-omni-e4521", "role": "encoder",
      "usb_type": "LEX", "usb_mac": E4521_USB_MAC},
     {"ip": D4511_IP, "hostname": D4511_HOST, "model": "hw-omni-d4511", "role": "decoder",
      "usb_type": "REX", "usb_mac": D4511_USB_MAC},
-    {"ip": "192.168.100.60", "hostname": "hw-omni-e4111-x", "model": "hw-omni-e4111", "role": "encoder"},
+    {"ip": "192.0.2.60", "hostname": "hw-omni-e4111-x", "model": "hw-omni-e4111", "role": "encoder"},
 ]
 
 # Every USB-capable unit observed on the bench, all associated.
@@ -223,7 +243,7 @@ class ServerTestBase(unittest.TestCase):
                                 (E4521B_USB_MAC, E4521B_USB_IP), (D4511B_USB_MAC, D4511B_USB_IP),
                                 (D4511C_USB_MAC, D4511C_USB_IP)):
             srv._usb_net_config[srv._norm_usb_mac(usb_mac)] = {
-                "ipaddress": usb_ip, "subnetmask": "255.255.255.0", "gateway": "192.168.100.1",
+                "ipaddress": usb_ip, "subnetmask": "255.255.255.0", "gateway": "192.0.2.1",
                 "mode_raw": "DHCP", "mode_known": True, "network_config_last_read": time.time(),
                 "network_config_stale": False}
         previous_live = dict(srv._USB_PARENT_LIVE)
@@ -476,7 +496,7 @@ class ParentCorrelationTests(ServerTestBase):
     def test_correlation_is_exact_mac_not_heuristic(self):
         """Neighbouring addresses and near-miss MACs must not correlate."""
         near_mac = "B8:98:B0:07:85:EE"          # one nibble from the E4521's USB MAC
-        self.seed((near_mac, "192.168.100.142", 0))   # and adjacent to the E4521's IP
+        self.seed((near_mac, "192.0.2.142", 0))   # and adjacent to the E4521's IP
         self.assertFalse(self.by_mac(near_mac)["integrated"])
         self.assertEqual(self.by_mac(near_mac)["parent_ip"], "")
 
@@ -486,9 +506,9 @@ class ParentCorrelationTests(ServerTestBase):
 
     def test_correlation_survives_a_usb_ip_change(self):
         self.seed((E4521_USB_MAC, E4521_USB_IP, 0))
-        self.service._upsert(query(E4521_USB_MAC, "192.168.100.200"), IFACE_IP, IFACE_MASK, "DIRECT_IP")
+        self.service._upsert(query(E4521_USB_MAC, "192.0.2.200"), IFACE_IP, IFACE_MASK, "DIRECT_IP")
         device = self.by_mac(E4521_USB_MAC)
-        self.assertEqual(device["ip"], "192.168.100.200")
+        self.assertEqual(device["ip"], "192.0.2.200")
         self.assertEqual(device["parent_ip"], E4521_IP)
 
 
@@ -513,7 +533,7 @@ class UsbCountTests(ServerTestBase):
         self.assertEqual(body["online_count"], 2, "no UDP discovery was needed")
 
     def test_repeated_discovery_of_one_mac_counts_once(self):
-        for ip in (E4521_USB_IP, E4521_USB_IP, "192.168.100.247"):
+        for ip in (E4521_USB_IP, E4521_USB_IP, "192.0.2.247"):
             self.service._upsert(query(E4521_USB_MAC, ip), IFACE_IP, IFACE_MASK, "RANGE")
         body = self.client.get("/api/usb_extenders").get_json()
         discovered = [d for d in body["devices"] if d.get("discovery_source") != "parent_derived"]
@@ -581,12 +601,12 @@ class ClearAndRediscoverTests(ServerTestBase):
 
     def test_clear_sends_nothing_and_keeps_configured_ranges(self):
         self.seed((OMNI311_MAC, OMNI311_IP, 0))
-        self.service.set_ranges(["192.168.100.1-192.168.100.20"])
+        self.service.set_ranges(["192.0.2.1-192.0.2.20"])
         sent = []
         self.service._exchange = lambda *a, **k: sent.append(a) or (_ for _ in ()).throw(AssertionError("no packet may be sent"))
         self.client.post("/api/clear_units")
         self.assertEqual(sent, [], "clear must not touch any device")
-        self.assertEqual(self.service.state()["ranges"], ["192.168.100.1-192.168.100.20"])
+        self.assertEqual(self.service.state()["ranges"], ["192.0.2.1-192.0.2.20"])
 
     def test_devices_return_after_rediscovery(self):
         self.seed((OMNI311_MAC, OMNI311_IP, 0))
@@ -625,12 +645,12 @@ class DiscoveryDispatchTests(ServerTestBase):
         self.service._range_scan = lambda targets, *a: seen.append(list(targets)) or []
         response = self.client.post("/api/usb_extenders/discover",
                                     json={"interface_ip": IFACE_IP, "subnet_mask": IFACE_MASK,
-                                          "targets": "192.168.100.1-192.168.100.4"})
+                                          "targets": "192.0.2.1-192.0.2.4"})
         self.assertEqual(response.get_json()["target_count"], 4)
         for _ in range(40):
             if seen: break
             time.sleep(0.02)
-        self.assertEqual(seen, [["192.168.100.1", "192.168.100.2", "192.168.100.3", "192.168.100.4"]])
+        self.assertEqual(seen, [["192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4"]])
 
     def test_oversized_targets_are_reported_without_blocking_local_discovery(self):
         self.service.discover_local = lambda *a: {"status": "completed", "found": []}
@@ -648,10 +668,10 @@ class DiscoveryDispatchTests(ServerTestBase):
         release = threading.Event()
         self.service._range_scan = lambda *a: release.wait(3) or []
         first = self.client.post("/api/usb_extenders/discover",
-                                 json={"interface_ip": IFACE_IP, "subnet_mask": IFACE_MASK, "targets": "192.168.100.1-192.168.100.4"})
+                                 json={"interface_ip": IFACE_IP, "subnet_mask": IFACE_MASK, "targets": "192.0.2.1-192.0.2.4"})
         self.assertIn("targets", first.get_json()["started"])
         second = self.client.post("/api/usb_extenders/discover",
-                                  json={"interface_ip": IFACE_IP, "subnet_mask": IFACE_MASK, "targets": "192.168.100.1-192.168.100.4"})
+                                  json={"interface_ip": IFACE_IP, "subnet_mask": IFACE_MASK, "targets": "192.0.2.1-192.0.2.4"})
         self.assertEqual([i["scope"] for i in second.get_json()["issues"]], ["targets"])
         release.set()
 
@@ -705,7 +725,7 @@ class ScanIsolationTests(ServerTestBase):
         self.service._range_scan = lambda *a: release.wait(3) or []
         for _ in range(2):
             self.client.post("/api/usb_extenders/discover",
-                             json={"interface_ip": IFACE_IP, "subnet_mask": IFACE_MASK, "targets": "192.168.100.1-192.168.100.4"})
+                             json={"interface_ip": IFACE_IP, "subnet_mask": IFACE_MASK, "targets": "192.0.2.1-192.0.2.4"})
         self.assertEqual(self._timed_scan()[0].status_code, 200)
         release.set()
 
@@ -995,7 +1015,7 @@ class IntegratedControlOwnershipTests(ServerTestBase):
         real_get, real_set = srv._omnistream_icron_network_get, srv._omnistream_icron_network_set
         srv._omnistream_icron_network_get = lambda ip, timeout=None: {
             "name": "icron", "mode": "dhcp", "ipaddress": D4511_USB_IP, "subnetmask": "255.255.255.0",
-            "gateway": "192.168.100.1", "macaddress": D4511_USB_MAC,
+            "gateway": "192.0.2.1", "macaddress": D4511_USB_MAC,
             "modes": list(srv.ICRON_NETWORK_MODES), "source": "parent_net_config"}
         srv._omnistream_icron_network_set = lambda ip, mode, *a, **k: (
             calls.append((ip, mode)), {"accepted": True, "response": {}, "sent_mode": mode, "sent": {}})[1]
@@ -1297,11 +1317,11 @@ class GenericCorrelationTests(ServerTestBase):
     # The complete observed system, including the 192.168.200.x subnet.
     LIVE = [
         # (parent_ip, hostname, model, usb_type, usb_mac, usb_ip, expected_model, expected_role)
-        ("192.168.100.141", "hw-omni-e4521-00002", "hw-omni-e4521", "LEX", "B8:98:B0:07:85:ED", "192.168.100.246", "HW-OMNI-E4521", "LEX"),
-        ("192.168.100.143", "hw-omni-e4521-0856c", "hw-omni-e4521", "LEX", "B8:98:B0:07:85:6D", "192.168.100.194", "HW-OMNI-E4521", "LEX"),
-        ("192.168.100.32", "hw-omni-d4511-085c6", "hw-omni-d4511", "REX", "B8:98:B0:07:85:C7", "192.168.100.108", "HW-OMNI-D4511", "REX"),
-        ("192.168.100.151", "hw-omni-d4511-08586", "hw-omni-d4511", "REX", "B8:98:B0:07:85:87", "192.168.100.250", "HW-OMNI-D4511", "REX"),
-        ("192.168.100.152", "hw-omni-d4511-085c0", "hw-omni-d4511", "REX", "B8:98:B0:07:85:C1", "192.168.100.248", "HW-OMNI-D4511", "REX"),
+        ("192.0.2.141", "hw-omni-e4521-00002", "hw-omni-e4521", "LEX", "B8:98:B0:07:85:ED", "192.0.2.246", "HW-OMNI-E4521", "LEX"),
+        ("192.0.2.143", "hw-omni-e4521-0856c", "hw-omni-e4521", "LEX", "B8:98:B0:07:85:6D", "192.0.2.194", "HW-OMNI-E4521", "LEX"),
+        ("192.0.2.32", "hw-omni-d4511-085c6", "hw-omni-d4511", "REX", "B8:98:B0:07:85:C7", "192.0.2.108", "HW-OMNI-D4511", "REX"),
+        ("192.0.2.151", "hw-omni-d4511-08586", "hw-omni-d4511", "REX", "B8:98:B0:07:85:87", "192.0.2.250", "HW-OMNI-D4511", "REX"),
+        ("192.0.2.152", "hw-omni-d4511-085c0", "hw-omni-d4511", "REX", "B8:98:B0:07:85:C1", "192.0.2.248", "HW-OMNI-D4511", "REX"),
         ("192.168.200.154", "hw-omni-d4511-08578", "hw-omni-d4511", "REX", "B8:98:B0:07:85:79", "192.168.200.66", "HW-OMNI-D4511", "REX"),
     ]
 
@@ -1433,10 +1453,10 @@ class NoHardcodedDeviceConstantsTests(unittest.TestCase):
                   "ui/matrix/usb-extenders.js", "ui/matrix/usb.js", "ui/index.html"]
 
     LIVE_VALUES = [
-        "192.168.100.141", "192.168.100.143", "192.168.100.32", "192.168.100.151",
-        "192.168.100.152", "192.168.200.154", "192.168.100.246", "192.168.100.194",
-        "192.168.100.108", "192.168.100.250", "192.168.100.248", "192.168.200.66",
-        "192.168.100.127", "192.168.100.128",
+        "192.0.2.141", "192.0.2.143", "192.0.2.32", "192.0.2.151",
+        "192.0.2.152", "192.168.200.154", "192.0.2.246", "192.0.2.194",
+        "192.0.2.108", "192.0.2.250", "192.0.2.248", "192.168.200.66",
+        "192.0.2.127", "192.0.2.128",
         "B8:98:B0:07:85:ED", "B8:98:B0:07:85:6D", "B8:98:B0:07:85:C7", "B8:98:B0:07:85:87",
         "B8:98:B0:07:85:C1", "B8:98:B0:07:85:79", "00:1B:13:04:E9:6E", "00:1B:13:04:6A:EA",
         "hw-omni-e4521-00002", "hw-omni-e4521-0856c", "hw-omni-d4511-085c6",
@@ -2110,7 +2130,7 @@ class FakeUdp:
             for index, peer in enumerate(endpoint["peers"][:7]):
                 body[14 + index * 6:20 + index * 6] = usb.mac_bytes(peer)
             for offset, value in ((58, endpoint.get("ip", destination)), (62, "255.255.255.0"),
-                                  (66, "192.168.100.1"), (70, "192.168.100.1")):
+                                  (66, "192.0.2.1"), (70, "192.0.2.1")):
                 body[offset:offset + 4] = bytes(map(int, value.split(".")))
             body[82:114] = b"Atlona USB 2.0 Extender".ljust(32, bytes([0]))
             body[114:138] = b"USB Over Network".ljust(24, bytes([0]))
@@ -2380,7 +2400,7 @@ class NetworkCancelTests(ServerTestBase):
         r = self.client.post("/api/usb_extenders/network",
                              json={"interface_ip": IFACE_IP, "subnet_mask": IFACE_MASK, "mac": OMNI311_MAC,
                                    "mode": "static", "address": "999.1.1.1", "netmask": "255.255.255.0",
-                                   "gateway": "192.168.100.1"})
+                                   "gateway": "192.0.2.1"})
         self.assertEqual(r.status_code, 400)
         self.assertEqual(sent, [])
 
@@ -3462,7 +3482,7 @@ class MatrixNetworkReadinessTests(ServerTestBase):
                                 (D4511_USB_MAC, D4511_USB_IP), (D4511B_USB_MAC, D4511B_USB_IP),
                                 (D4511C_USB_MAC, D4511C_USB_IP)):
             srv._usb_net_config[srv._norm_usb_mac(usb_mac)] = {
-                "ipaddress": usb_ip, "subnetmask": "255.255.255.0", "gateway": "192.168.100.1",
+                "ipaddress": usb_ip, "subnetmask": "255.255.255.0", "gateway": "192.0.2.1",
                 "mode_raw": "DHCP", "mode_known": True, "network_config_last_read": time.time(),
                 "network_config_stale": False}
         self.scheduled.clear()
@@ -5191,7 +5211,7 @@ class RepositoryHygieneTests(ServerTestBase):
     def test_config_example_is_a_template_and_holds_no_real_credential(self):
         example = json.loads((self.root / "config.example.json").read_text(encoding="utf-8"))
         blob = json.dumps(example).lower()
-        for leak in ("hunter", "@", "192.168.100."):
+        for leak in ("hunter", "@", "192.0.2."):
             self.assertNotIn(leak, blob, "the example must carry no real value")
         for key, value in example.items():
             if "pass" in key.lower() and value:
@@ -6699,8 +6719,8 @@ class RouteIdentityContractTests(ServerTestBase):
 
     # ---- the defect ----
     def test_an_ipv4_address_never_normalises_into_a_mac(self):
-        """192.168.100.152 has twelve hex digits and used to become a MAC."""
-        for address in ("192.168.100.152", "192.168.100.141", "10.0.0.1", "255.255.255.255"):
+        """192.0.2.152 has twelve hex digits and used to become a MAC."""
+        for address in ("192.0.2.152", "192.0.2.141", "10.0.0.1", "255.255.255.255"):
             with self.assertRaises(usb.ProtocolError, msg=address):
                 usb.normalize_mac(address)
 
@@ -6710,7 +6730,7 @@ class RouteIdentityContractTests(ServerTestBase):
 
     def test_a_route_request_carrying_an_address_is_refused_as_invalid(self):
         r = self.client.post("/api/usb_route/pair",
-                             json={"lex_mac": OMNI311_MAC, "rex_mac": "192.168.100.152"})
+                             json={"lex_mac": OMNI311_MAC, "rex_mac": "192.0.2.152"})
         self.assertEqual(r.status_code, 400, "an address is malformed input, not an unknown device")
         self.assertIn("not a valid MAC", r.get_json()["error"])
         self.assertEqual(self.transmitted, [])
@@ -6778,8 +6798,8 @@ class RouteIdentityContractTests(ServerTestBase):
         self.assertEqual(cap["label"], "USB endpoint identity unavailable")
 
     def test_an_address_in_the_usb_mac_field_is_not_accepted_as_identity(self):
-        entry = {"kind": "standalone", "usb_key": "192.168.100.152", "ip": "192.168.100.152",
-                 "usb_mac": "192.168.100.152", "classification": "STANDALONE",
+        entry = {"kind": "standalone", "usb_key": "192.0.2.152", "ip": "192.0.2.152",
+                 "usb_mac": "192.0.2.152", "classification": "STANDALONE",
                  "online": True, "pairing_eligible": True}
         self.assertEqual(srv._canonical_usb_mac(entry), "", "an address is not an identity")
 
@@ -7033,11 +7053,11 @@ class InventoryDeduplicationTests(ServerTestBase):
         self.assertEqual(row["classification"], "INTEGRATED")
 
     def test_the_same_mac_at_a_new_address_is_still_one_device(self):
-        self.service._upsert(query(OMNI311_MAC, "192.168.100.199"), IFACE_IP, IFACE_MASK, "LOCAL_BROADCAST", None)
+        self.service._upsert(query(OMNI311_MAC, "192.0.2.199"), IFACE_IP, IFACE_MASK, "LOCAL_BROADCAST", None)
         lex, _rex, _state = self.inventory()
         rows = [r for r in lex if r["usb_mac"] == usb.normalize_mac(OMNI311_MAC)]
         self.assertEqual(len(rows), 1, "an address change is not a second device")
-        self.assertEqual(rows[0]["device_ip"], "192.168.100.199", "and the live address wins")
+        self.assertEqual(rows[0]["device_ip"], "192.0.2.199", "and the live address wins")
 
     def test_a_different_mac_at_the_same_address_is_not_merged(self):
         self.service._upsert(query("00:1B:13:04:AA:BB", OMNI311_IP), IFACE_IP, IFACE_MASK, "LOCAL_BROADCAST",
@@ -7151,8 +7171,8 @@ class LiveDataAuthorityTests(ServerTestBase):
     def test_identity_still_survives_an_address_change(self):
         self.discover()
         first = self.record()
-        self.net.endpoints["192.168.100.190"] = dict(self.net.endpoints[OMNI311_IP], ip="192.168.100.190")
-        self.service.discover_ip("192.168.100.190", IFACE_IP, IFACE_MASK)
+        self.net.endpoints["192.0.2.190"] = dict(self.net.endpoints[OMNI311_IP], ip="192.0.2.190")
+        self.service.discover_ip("192.0.2.190", IFACE_IP, IFACE_MASK)
         self.assertEqual(len([d for d in self.service.state()["devices"]
                               if srv._norm_usb_mac(d["mac"]) == srv._norm_usb_mac(OMNI311_MAC)]), 1)
         self.assertEqual(first["mac"], self.record()["mac"])
@@ -8272,10 +8292,10 @@ class RouteSubnetEligibilityTests(unittest.TestCase):
         integrated = {"kind": "integrated", "usb_mac": "AA:BB:CC:00:00:99",
                       "classification": "INTEGRATED", "online": True, "pairing_eligible": True,
                       # The parent is managed here; the USB endpoint is not.
-                      "ip": "192.168.100.141", "usb_ip": "192.168.100.141"}
+                      "ip": "192.0.2.141", "usb_ip": "192.0.2.141"}
         address, mask = srv._usb_endpoint_network(integrated)
         self.assertEqual((address, mask), ("192.168.200.62", "255.255.255.0"))
-        self.assertEqual(self.check(integrated, self.entry("standalone", "192.168.100.135",
+        self.assertEqual(self.check(integrated, self.entry("standalone", "192.0.2.135",
                                                            "255.255.255.0")),
                          "NETWORK_MISMATCH")
 
@@ -9784,7 +9804,7 @@ class RouteReassignmentTests(ServerTestBase):
     both hosts survives.
     """
 
-    OTHER_HOST_MAC, OTHER_HOST_IP = "00:1B:13:09:00:01", "192.168.100.190"
+    OTHER_HOST_MAC, OTHER_HOST_IP = "00:1B:13:09:00:01", "192.0.2.190"
 
     def setUp(self):
         super().setUp()

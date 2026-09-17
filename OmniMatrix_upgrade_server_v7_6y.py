@@ -2,7 +2,7 @@
 # ...existing code...
 
 # All imports below here
-import os, sys, threading, urllib.request, webbrowser, logging, time, json, re, subprocess, socket, ssl, csv, tempfile, traceback, platform, io, zipfile
+import os, sys, threading, urllib.request, webbrowser, logging, time, json, re, subprocess, socket, ssl, csv, tempfile, traceback, platform, io, zipfile, uuid
 import copy
 import urllib.parse
 from pathlib import Path
@@ -12684,6 +12684,103 @@ MULTIVIEW_META = DATA_DIR / "multiview_meta.json"
 _multiview_meta_lock = threading.RLock()
 _MULTIVIEW_META = {}
 
+MULTIVIEW_GROUPS = DATA_DIR / "multiview_groups.json"
+
+_multiview_groups_lock = threading.RLock()
+_MULTIVIEW_GROUPS = {}
+
+# One group operation at a time. A group Show writes several decoders and the
+# encoders they share; two of them interleaving would each plan against the
+# other's half-applied state.
+_multiview_group_lock = threading.RLock()
+
+
+def _load_multiview_groups():
+    """Read the saved groups. A missing or unreadable file means no groups."""
+    global _MULTIVIEW_GROUPS
+    try:
+        with open(MULTIVIEW_GROUPS, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError:
+        payload = {}
+    except Exception as exc:
+        log.info("[MULTIVIEW] Could not read saved groups: %s", exc)
+        payload = {}
+    groups = payload.get("groups") if isinstance(payload, dict) else None
+    with _multiview_groups_lock:
+        _MULTIVIEW_GROUPS = {str(k): dict(v) for k, v in (groups or {}).items()
+                             if isinstance(v, dict)}
+    if _MULTIVIEW_GROUPS:
+        log.info("[MULTIVIEW] Restored %d decoder group(s)", len(_MULTIVIEW_GROUPS))
+    return _MULTIVIEW_GROUPS
+
+
+def _save_multiview_groups():
+    tmp = _atomic_tmp_path(MULTIVIEW_GROUPS)
+    try:
+        with _multiview_groups_lock:
+            payload = {"groups": {k: dict(v) for k, v in _MULTIVIEW_GROUPS.items()}}
+            MULTIVIEW_GROUPS.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, MULTIVIEW_GROUPS)
+    except Exception as exc:
+        log.info("[MULTIVIEW] Could not persist groups: %s", exc)
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+# A member is recorded by MAC where one is known, because an address can be
+# reassigned and a group that follows the address would silently come to mean a
+# different television. The address is kept too, as the way to reach it.
+def _group_member_record(unit):
+    return {"ip": unit.get("ip"),
+            "mac": (unit.get("mac") or "").lower(),
+            "hostname": unit.get("hostname") or unit.get("host") or ""}
+
+
+def _resolve_group_member(member, devices=None):
+    """The device a stored member refers to now, or None if it is not here."""
+    units = devices if devices is not None else _load_cache()
+    mac = (member.get("mac") or "").lower()
+    if mac:
+        for unit in units:
+            if (unit.get("mac") or "").lower() == mac:
+                return unit
+    ip = member.get("ip")
+    for unit in units:
+        if unit.get("ip") == ip:
+            return unit
+    return None
+
+
+def _group_view(group, devices=None):
+    """A group as the page shows it: who is in it, and whether they are here."""
+    units = devices if devices is not None else _load_cache()
+    members = []
+    for member in group.get("members") or ():
+        unit = _resolve_group_member(member, units)
+        members.append({
+            "ip": (unit or {}).get("ip") or member.get("ip"),
+            "mac": member.get("mac") or "",
+            "hostname": (unit or {}).get("hostname") or member.get("hostname") or "",
+            "discovered": unit is not None,
+        })
+    return {"id": group.get("id"), "name": group.get("name"),
+            "members": members, "updated": group.get("updated"),
+            "multiview": group.get("multiview") or None}
+
+
+def _find_group(group_id):
+    with _multiview_groups_lock:
+        group = _MULTIVIEW_GROUPS.get(str(group_id))
+        return dict(group) if group else None
+
+
 # A capability answer is stable for the life of a device's firmware, so it is
 # cached and never polled. Only a definite answer is cached; an unreachable
 # device stays unknown so it is asked again rather than being written off.
@@ -13857,35 +13954,14 @@ def _saved_assignments(device, object_name):
              if w.get("cell") and w.get("source_ip")}, record)
 
 
-@app.route("/api/multiview/apply", methods=["POST"])
-def api_multiview_apply():
-    """Save a Multiview: store its configuration, and change nothing else.
+def _apply_saved_plan(plan, decoder_ip):
+    """Write a planned Multiview to a decoder, verified, with rollback.
 
-    A decoder holds many saved Multiviews and only one of them is on the output,
-    so saving cannot claim live resources -- two saved layouts will routinely
-    want the same Encoder 2 at different sizes, and making them coexist is not
-    possible even in principle. Saving therefore writes the Multiview object and
-    its metadata; every encoder, session and decoder input is prepared at Show,
-    against the state that exists then.
-
-    The plan is still built from freshly read device state, so what is stored is
-    checked against real sources rather than trusted from the page.
+    Returns (body, http_status). Shared by Apply, by Copy and by a copy to a
+    group, so all three have the same transaction rather than three versions of
+    one that drift apart.
     """
-    payload = request.get_json(silent=True) or {}
-    built, failure = _build_plan(payload)
-    if failure:
-        body, status = failure
-        return jsonify(body), status
-    plan, state, encoder_states = built
-
-    if not plan.get("ok"):
-        return jsonify({"ok": False, "status": "invalid", "plan": plan,
-                        "error": "; ".join(plan.get("errors") or [])}), 400
-    if plan.get("conflicts"):
-        return jsonify({"ok": False, "status": "conflict", "plan": plan,
-                        "error": "; ".join(plan["conflicts"])}), 409
     mutations = plan.get("mutations") or []
-    decoder_ip = plan["decoder"]["ip"]
     device = {d.get("ip"): d for d in _load_cache()}.get(decoder_ip, {})
 
     with _multiview_apply_lock:
@@ -13922,13 +13998,13 @@ def api_multiview_apply():
             complete = all(entry["verified"] for entry in rollback) if rollback else True
             log.warning("[MULTIVIEW] save failed on %s at %s: %s",
                         decoder_ip, failures[-1]["stage"], failures[-1]["error"])
-            return jsonify({
+            return {
                 "ok": False,
                 "status": "FAILED — ROLLED BACK" if complete
                           else "FAILED — ROLLBACK INCOMPLETE",
                 "plan": plan, "applied": [m["description"] for m in applied],
                 "verified": verified, "failures": failures, "rollback": rollback,
-            }), 200
+            }, 200
 
         _record_multiview_meta(device, plan["object_name"], {
             "layout": plan["layout"],
@@ -13955,11 +14031,42 @@ def api_multiview_apply():
         })
         log.info("[MULTIVIEW] %s saved on %s (%d verified change(s))",
                  plan["object_name"], decoder_ip, len(verified))
-        return jsonify({"ok": True, "status": "VERIFIED", "plan": plan,
-                        "applied": [m["description"] for m in applied],
-                        "verified": verified,
-                        "message": "Saved. The display is unchanged; use Show on "
-                                   "Display to put it on screen."})
+        return {"ok": True, "status": "VERIFIED", "plan": plan,
+                "applied": [m["description"] for m in applied],
+                "verified": verified,
+                "message": "Saved. The display is unchanged; use Show on "
+                           "Display to put it on screen."}, 200
+
+
+@app.route("/api/multiview/apply", methods=["POST"])
+def api_multiview_apply():
+    """Save a Multiview: store its configuration, and change nothing else.
+
+    A decoder holds many saved Multiviews and only one of them is on the output,
+    so saving cannot claim live resources -- two saved layouts will routinely
+    want the same Encoder 2 at different sizes, and making them coexist is not
+    possible even in principle. Saving therefore writes the Multiview object and
+    its metadata; every encoder, session and decoder input is prepared at Show,
+    against the state that exists then.
+
+    The plan is still built from freshly read device state, so what is stored is
+    checked against real sources rather than trusted from the page.
+    """
+    payload = request.get_json(silent=True) or {}
+    built, failure = _build_plan(payload)
+    if failure:
+        body, status = failure
+        return jsonify(body), status
+    plan, state, encoder_states = built
+
+    if not plan.get("ok"):
+        return jsonify({"ok": False, "status": "invalid", "plan": plan,
+                        "error": "; ".join(plan.get("errors") or [])}), 400
+    if plan.get("conflicts"):
+        return jsonify({"ok": False, "status": "conflict", "plan": plan,
+                        "error": "; ".join(plan["conflicts"])}), 409
+    body, status = _apply_saved_plan(plan, plan["decoder"]["ip"])
+    return jsonify(body), status
 
 
 
@@ -14064,8 +14171,7 @@ def _releasable_pool_inputs(ip, device, state, required, owned=None):
     return release, kept
 
 
-@app.route("/api/multiview/show", methods=["POST"])
-def api_multiview_show():
+def _show_multiview_on(ip, name):
     """Recall a saved Multiview: prepare everything it needs, then display it.
 
     This is where a Multiview becomes real. Saving stored a description; recall
@@ -14084,51 +14190,49 @@ def api_multiview_show():
 
     and then the one check that is not a read-back of our own write: the
     decoder's Input status. Every step is snapshotted and rolled back together.
+
+    Returns (body, http_status) so a group operation can walk several
+    decoders and look at each answer. The single-decoder endpoint below is
+    a wrapper around this.
     """
-    payload = request.get_json(silent=True) or {}
-    ip = str(payload.get("decoder") or payload.get("ip") or "").strip()
-    name = str(payload.get("name") or "").strip()
-    if not ip or not name:
-        return jsonify({"ok": False,
-                        "error": "decoder ip and multiview name required"}), 400
 
     # The cheap refusals come first, and none of them needs OmniSuite's own
     # records: whether the decoder will take a Multiview at all, and whether
     # this object is one this release knows how to drive.
     state, error = _decoder_state(ip)
     if state is None:
-        return jsonify({"ok": False, "error": error}), 502
+        return {"ok": False, "error": error}, 502
     target = next((o for o in state["multiview"]
                    if str(o.get("name") or "") == name), None)
     if target is None:
-        return jsonify({"ok": False, "error": f"{name} is not on this decoder"}), 404
+        return {"ok": False, "error": f"{name} is not on this decoder"}, 404
 
     hdmi = state["hdmi_output"] or {}
     device = {d.get("ip"): d for d in _load_cache()}.get(ip, {})
 
     blocked = omni_multiview.interlocks(device.get("model"), hdmi)
     if blocked:
-        return jsonify({"ok": False, "status": "REFUSED", "interlocks": blocked,
-                        "error": " ".join(e["reason"] for e in blocked)}), 409
+        return {"ok": False, "status": "REFUSED", "interlocks": blocked,
+                        "error": " ".join(e["reason"] for e in blocked)}, 409
 
     if omni_multiview.output_resolution_for_canvas(
             target.get("width"), target.get("height")) != MULTIVIEW_OUTPUT_RESOLUTION:
-        return jsonify({"ok": False, "status": "REFUSED",
+        return {"ok": False, "status": "REFUSED",
                         "error": f"{name} is a {target.get('width')}x"
                                  f"{target.get('height')} Multiview. This release "
                                  f"shows {MULTIVIEW_OUTPUT_RESOLUTION} Multiviews "
-                                 f"only."}), 409
+                                 f"only."}, 409
 
     plan, state, encoder_states, record, failure = _recall_plan(ip, name, state)
     if failure:
         message, status = failure
-        return jsonify({"ok": False, "error": message}), status
+        return {"ok": False, "error": message}, status
     if not plan.get("ok"):
-        return jsonify({"ok": False, "status": "invalid", "plan": plan,
-                        "error": "; ".join(plan.get("errors") or [])}), 400
+        return {"ok": False, "status": "invalid", "plan": plan,
+                        "error": "; ".join(plan.get("errors") or [])}, 400
     if plan.get("conflicts"):
-        return jsonify({"ok": False, "status": "conflict", "plan": plan,
-                        "error": "; ".join(plan["conflicts"])}), 409
+        return {"ok": False, "status": "conflict", "plan": plan,
+                        "error": "; ".join(plan["conflicts"])}, 409
 
     required = {(w.get("ip_input") or {}).get("ip_input")
                 for w in plan["windows"] if w.get("ip_input")}
@@ -14219,12 +14323,12 @@ def api_multiview_show():
                 rollback = _restore_snapshot(snapshot, applied)
                 complete = all(e["verified"] for e in rollback) if rollback else True
                 log.warning("[MULTIVIEW] recall of %s failed on %s: %s", name, ip, detail)
-                return jsonify({
+                return {
                     "ok": False,
                     "status": "FAILED — ROLLED BACK" if complete
                               else "FAILED — ROLLBACK INCOMPLETE",
                     "plan": plan, "audio": audio, "steps": steps,
-                    "released": release, "kept": kept, "rollback": rollback}), 200
+                    "released": release, "kept": kept, "rollback": rollback}, 200
 
         # Every write held. That is still not proof that a picture exists.
         status, settled = _await_input_status(ip)
@@ -14234,7 +14338,7 @@ def api_multiview_show():
             complete = all(e["verified"] for e in rollback) if rollback else True
             log.warning("[MULTIVIEW] %s on %s reports no active video after a "
                         "fully verified recall", name, ip)
-            return jsonify({
+            return {
                 "ok": False,
                 "status": "NO ACTIVE VIDEO — ROLLED BACK" if complete
                           else "NO ACTIVE VIDEO — ROLLBACK INCOMPLETE",
@@ -14242,7 +14346,7 @@ def api_multiview_show():
                          "reports no active video on this Multiview. The picture "
                          "is not reaching it.",
                 "input_status": status, "diagnostics": diagnostics, "plan": plan,
-                "audio": audio, "steps": steps, "rollback": rollback}), 200
+                "audio": audio, "steps": steps, "rollback": rollback}, 200
 
     # The composite is live. Each window is a separate question, because one can
     # sit black while the others carry the picture.
@@ -14262,7 +14366,7 @@ def api_multiview_show():
     # The A/V Matrix renders from the cache, so it has to be told that this
     # decoder's picture is now a composition rather than a routed source.
     _remember_decoder_display(ip, name, (after.get("audio") or {}).get("input"))
-    return jsonify({"ok": True,
+    return {"ok": True,
                     "status": "VERIFIED" if not unlocked
                               else "VERIFIED — WINDOW NOT LOCKED",
                     "windows": windows,
@@ -14282,7 +14386,21 @@ def api_multiview_show():
                     "input_status": status,
                     "audio": audio,
                     "sap_enabled": (after.get("sap_input") or {}).get("enabled"),
-                    "audio_input": (after.get("audio") or {}).get("input")})
+                    "audio_input": (after.get("audio") or {}).get("input")}, 200
+
+
+@app.route("/api/multiview/show", methods=["POST"])
+def api_multiview_show():
+    """Recall a saved Multiview onto this decoder's display."""
+    payload = request.get_json(silent=True) or {}
+    ip = str(payload.get("decoder") or payload.get("ip") or "").strip()
+    name = str(payload.get("name") or "").strip()
+    if not ip or not name:
+        return jsonify({"ok": False,
+                        "error": "decoder ip and multiview name required"}), 400
+    body, status = _show_multiview_on(ip, name)
+    return jsonify(body), status
+
 
 
 def _show_audio_plan_from_plan(ip, plan, state):
@@ -14869,6 +14987,764 @@ def _exit_active_multiview(ip, name, state, fallback=""):
     return True, steps, released, ""
 
 
+def _saved_definition(ip, name):
+    """A saved Multiview as something that can be recreated elsewhere.
+
+    Layout and the source in each window, and nothing about resources: no
+    ip_input, no scaler size, no bitrate. Those belong to one decoder at one
+    moment, and carrying them to another decoder would be carrying a guess.
+    """
+    state, error = _decoder_state(ip)
+    if state is None:
+        return None, error
+    target = next((o for o in (state.get("multiview") or ())
+                   if str(o.get("name") or "") == name), None)
+    if target is None:
+        return None, "%s has no Multiview called %s" % (ip, name)
+
+    device = {d.get("ip"): d for d in _load_cache()}.get(ip, {})
+    # _saved_assignments returns (assignments, record); the record is what the
+    # subframe view and the layout reconciliation both read.
+    _assignments, stored = _saved_assignments(device, name)
+    subframes = target.get("subframes") or []
+    reconciled = omni_multiview.reconcile_layout(
+        stored, int(target.get("width") or 0), int(target.get("height") or 0),
+        subframes)
+
+    devices = _load_cache()
+    assignments, windows = {}, []
+    for subframe in subframes:
+        view = _subframe_view(subframe, state, stored, devices)
+        cell = view.get("cell")
+        if not cell:
+            continue
+        source = view.get("source") or {}
+        windows.append({"cell": cell,
+                        "source_ip": source.get("ip") or "",
+                        "source_hostname": source.get("hostname") or "",
+                        "origin": view.get("origin")})
+        if source.get("ip"):
+            assignments[cell] = source["ip"]
+
+    return {
+        "name": name,
+        "friendly_name": (stored or {}).get("friendly_name") or name,
+        "width": target.get("width"),
+        "height": target.get("height"),
+        "layout": reconciled.get("layout"),
+        "layout_label": (omni_multiview.LAYOUTS[reconciled["layout"]]["label"]
+                         if reconciled.get("layout") else "Custom / Unknown"),
+        "canvas": "%sx%s" % (target.get("width"), target.get("height")),
+        "assignments": assignments,
+        "windows": windows,
+    }, ""
+
+
+def _only_unreachable_sources(plan):
+    """True when a plan's only complaint is that a source did not answer. (§7)
+
+    A saved Multiview names sources; it does not hold them. Copying one to
+    another decoder is paperwork, and refusing it because an encoder is off this
+    afternoon would throw away an assignment the operator made deliberately.
+    Returns (lenient, notes) -- `notes` is what to tell them instead.
+    """
+    errors = list(plan.get("errors") or ())
+    if not errors:
+        return True, []
+    unreachable = {}
+    for window in (plan.get("windows") or ()):
+        source = window.get("source") or {}
+        if source.get("ip") and source.get("reachable") is False:
+            unreachable[source.get("hostname") or source["ip"]] = window.get("cell")
+    if not unreachable:
+        return False, []
+    notes = []
+    for error in errors:
+        owner = next((name for name in unreachable if name and name in error), None)
+        if owner is None:
+            return False, []             # something else is wrong; refuse
+        notes.append("%s did not answer, so its window is saved but not "
+                     "prepared. It is set up when the Multiview is shown."
+                     % owner)
+    return True, notes
+
+
+def _copy_preflight(target_ip, definition):
+    """Can this decoder hold this Multiview at all? (§7)
+
+    Returns (problems, warnings). A problem refuses the copy; a warning is
+    something the operator should know but which does not make the saved
+    definition wrong.
+    """
+    problems, warnings = [], []
+    devices = {d.get("ip"): d for d in _load_cache()}
+    if target_ip not in devices:
+        return ["%s is not a discovered device." % target_ip], []
+
+    state, error = _decoder_state(target_ip)
+    if state is None:
+        return ["%s did not answer: %s" % (target_ip, error)], []
+
+    hostname = state.get("hostname") or target_ip
+    if state.get("multiview") is None:
+        return ["%s does not support Multiview." % hostname], []
+
+    supported, reason, _cached = _multiview_capability(target_ip)
+    if supported is False:
+        problems.append("%s cannot run Multiview: %s"
+                        % (hostname, reason or "unsupported"))
+
+    # Video Wall and Fast Switching, in the operator's words, from the one
+    # place that decides it.
+    for blocked in omni_multiview.interlocks(state.get("model") or "",
+                                             state.get("hdmi_output") or {}):
+        problems.append("%s: %s" % (hostname, blocked["reason"]))
+
+    layout = (definition or {}).get("layout")
+    if not layout:
+        problems.append("%s does not match a known layout, so it cannot be "
+                        "recreated on another decoder."
+                        % (definition or {}).get("name"))
+    elif layout not in omni_multiview.LAYOUTS:
+        problems.append("Layout %s is not available in this release." % layout)
+
+    # The composited canvas is not the display resolution: a 2x2 composites at
+    # 1920x1088 and is shown on a 1920x1080 output. The question is whether this
+    # release can drive it, which is the same question Show already answers.
+    verdict = _showable({"width": (definition or {}).get("width"),
+                         "height": (definition or {}).get("height")})
+    if not verdict["showable"]:
+        problems.append(verdict["not_showable_reason"])
+
+    # A source that is offline today is still the right source to have saved,
+    # so this is a warning and the window assignment is kept.
+    for window in (definition or {}).get("windows") or ():
+        source_ip = window.get("source_ip")
+        if not source_ip:
+            continue
+        if source_ip not in devices:
+            warnings.append("%s is not currently discovered. The window is kept, "
+                            "and prepared when the Multiview is shown." % source_ip)
+        elif not _tcp_probe(source_ip, (80,), timeout=0.4):
+            warnings.append("%s is not answering. The window is kept, and "
+                            "prepared when the Multiview is shown."
+                            % (devices[source_ip].get("hostname") or source_ip))
+    return problems, warnings
+
+
+@app.route("/api/multiview/groups/plan", methods=["POST"])
+def api_multiview_groups_plan():
+    """What a group operation would do, with no mutation whatsoever. (§12)
+
+    This is the conflict check on its own, so the page can show the operator
+    why a group cannot be synchronised before they ask for it to be.
+    """
+    payload = request.get_json(silent=True) or {}
+    group = _find_group(payload.get("group"))
+    if group is None:
+        return jsonify({"ok": False, "error": "No such group."}), 404
+    definition, error = _saved_definition(
+        str(payload.get("source_decoder") or "").strip(),
+        str(payload.get("name") or "").strip())
+    if definition is None:
+        return jsonify({"ok": False, "error": error}), 404
+
+    members, _problems = _group_members_state(group)
+    _plans, report = _plan_group(group, definition, members)
+    report["group"] = {"id": group.get("id"), "name": group.get("name")}
+    report["multiview"] = definition["name"]
+    status = 200 if report["ok"] else 409
+    return jsonify(report), status
+
+
+@app.route("/api/multiview/groups/copy", methods=["POST"])
+def api_multiview_groups_copy():
+    """Save one Multiview definition onto every member. (§10)
+
+    No display changes. This is the operation an operator runs while the room
+    is in use.
+    """
+    payload = request.get_json(silent=True) or {}
+    group = _find_group(payload.get("group"))
+    if group is None:
+        return jsonify({"ok": False, "error": "No such group."}), 404
+    source_ip = str(payload.get("source_decoder") or "").strip()
+    name = str(payload.get("name") or "").strip()
+    definition, error = _saved_definition(source_ip, name)
+    if definition is None:
+        return jsonify({"ok": False, "error": error}), 404
+
+    with _multiview_group_lock:
+        members, _problems = _group_members_state(group)
+        plans, report = _plan_group(group, definition, members)
+        if not report["ok"]:
+            report["group"] = {"id": group.get("id"), "name": group.get("name")}
+            report["status"] = "REFUSED"
+            return jsonify(report), 409
+
+        saved, failures = [], []
+        for member, plan in plans:
+            body, _status = _apply_saved_plan(plan, member["ip"])
+            if body.get("ok"):
+                saved.append({"decoder": member["ip"],
+                              "hostname": member["hostname"],
+                              "name": plan.get("object_name")})
+            else:
+                failures.append({"decoder": member["ip"],
+                                 "hostname": member["hostname"],
+                                 "error": body.get("error")
+                                          or (body.get("failures") or [{}])[-1]
+                                          .get("error") or body.get("status")})
+
+    # Deliberately NOT recorded as the group's intended Multiview. That field is
+    # what SYNCHRONIZED and DRIFTED are measured against, and a copy changes no
+    # display -- treating it as intent would report every member as drifted for
+    # not showing something nobody asked to be shown.
+    ok = not failures
+    log.info("[MULTIVIEW] group %s: %s saved to %d of %d member(s)",
+             group.get("name"), definition["name"], len(saved), len(plans))
+    return jsonify({
+        "ok": ok,
+        "status": "VERIFIED" if ok else "PARTIAL",
+        "group": {"id": group.get("id"), "name": group.get("name")},
+        "saved": saved, "failures": failures,
+        "warnings": report.get("warnings") or [],
+        "shown": False,
+        "message": ("Saved on every decoder in the group. No display changed — "
+                    "use Show on Group to put it on screen."
+                    if ok else
+                    "Saved on some of the group. Nothing was shown."),
+    }), (200 if ok else 502)
+
+
+def _member_display_snapshot(ip, state):
+    """What this decoder is showing now, so a group failure can put it back."""
+    hdmi = (state or {}).get("hdmi_output") or {}
+    return {"ip": ip,
+            "video_input": ((hdmi.get("video") or {}).get("input")) or "",
+            "audio_input": ((hdmi.get("audio") or {}).get("input")) or ""}
+
+
+def _restore_member_display(snapshot):
+    """Put one member back on what it was showing. Verified."""
+    wanted = snapshot.get("video_input")
+    if not wanted:
+        return False, "nothing was recorded for this decoder"
+    config = {"name": "hdmi_output1", "video": {"input": wanted}}
+    if snapshot.get("audio_input"):
+        config["audio"] = {"input": snapshot["audio_input"]}
+    ok, message = _mv_set(snapshot["ip"], "hdmi_output", config)
+    if not ok:
+        return False, message
+    return _verify_mutation({"device": snapshot["ip"], "node": "hdmi_output",
+                             "target": "hdmi_output1", "config": config})
+
+
+@app.route("/api/multiview/groups/show", methods=["POST"])
+def api_multiview_groups_show():
+    """Put one Multiview on every screen in the group. (§10/§15)
+
+    Plan the whole group, refuse the whole group, or apply it member by member
+    and verify each one. A failure stops and puts back what was already changed.
+    """
+    payload = request.get_json(silent=True) or {}
+    group = _find_group(payload.get("group"))
+    if group is None:
+        return jsonify({"ok": False, "error": "No such group."}), 404
+    name = str(payload.get("name") or "").strip()
+    source_ip = str(payload.get("source_decoder") or "").strip()
+    definition, error = _saved_definition(source_ip, name) if source_ip else (
+        None, "source_decoder is required")
+    if definition is None:
+        return jsonify({"ok": False, "error": error}), 404
+
+    # A live change made in group context (§16): one window is replaced, and the
+    # whole group is re-planned around it before anything is written. It is the
+    # same operation as showing the group, because that is what it has to be --
+    # the shared encoder has to be judged across every member either way.
+    cell = str(payload.get("cell") or "").strip()
+    replacement = str(payload.get("source") or "").strip()
+    if cell:
+        assignments = dict(definition["assignments"])
+        if replacement:
+            assignments[cell] = replacement
+        else:
+            assignments.pop(cell, None)
+        if not assignments:
+            return jsonify({"ok": False,
+                            "error": "That would leave the Multiview with no "
+                                     "sources."}), 400
+        definition = dict(definition, assignments=assignments)
+
+    with _multiview_group_lock:
+        members, _problems = _group_members_state(group)
+        plans, report = _plan_group(group, definition, members)
+        if not report["ok"]:
+            report["group"] = {"id": group.get("id"), "name": group.get("name")}
+            report["status"] = "REFUSED"
+            # Nothing has been written. That is the point of planning first.
+            report["writes"] = 0
+            return jsonify(report), 409
+
+        # Everything each member was showing, before the first write.
+        before = [_member_display_snapshot(m["ip"], m["state"]) for m, _p in plans]
+
+        shown, failures, changed = [], [], []
+        for member, plan in plans:
+            body, _status = _apply_saved_plan(plan, member["ip"])
+            if not body.get("ok"):
+                failures.append({"decoder": member["ip"],
+                                 "hostname": member["hostname"],
+                                 "stage": "save",
+                                 "error": body.get("status") or "save failed"})
+                break
+            result, _status = _show_multiview_on(member["ip"],
+                                                 plan.get("object_name") or name)
+            changed.append(member["ip"])
+            if result.get("ok"):
+                shown.append({"decoder": member["ip"],
+                              "hostname": member["hostname"],
+                              "name": plan.get("object_name") or name,
+                              "status": result.get("status")})
+            else:
+                failures.append({"decoder": member["ip"],
+                                 "hostname": member["hostname"],
+                                 "stage": "show",
+                                 "error": result.get("error")
+                                          or result.get("status")})
+                break
+
+        rollback = []
+        if failures:
+            for snapshot in before:
+                if snapshot["ip"] not in changed:
+                    continue
+                restored, detail = _restore_member_display(snapshot)
+                rollback.append({"decoder": snapshot["ip"],
+                                 "restored": bool(restored), "detail": detail})
+
+    if failures:
+        complete = all(entry["restored"] for entry in rollback) if rollback else True
+        status = ("FAILED — GROUP ROLLED BACK" if complete
+                  else "FAILED — GROUP ROLLBACK INCOMPLETE")
+        log.warning("[MULTIVIEW] group %s show failed on %s: %s",
+                    group.get("name"), failures[-1]["hostname"],
+                    failures[-1]["error"])
+        return jsonify({
+            "ok": False, "status": status,
+            "group": {"id": group.get("id"), "name": group.get("name")},
+            "shown": shown, "failures": failures, "rollback": rollback,
+            "message": ("The group was put back the way it was."
+                        if complete else
+                        "Some decoders could not be put back. Check them before "
+                        "using the group again."),
+        }), 200
+
+    with _multiview_groups_lock:
+        record = _MULTIVIEW_GROUPS.get(group["id"])
+        if record is not None:
+            record["multiview"] = {"name": definition["name"],
+                                   "layout": definition["layout"],
+                                   "assignments": definition["assignments"],
+                                   "updated": time.time()}
+    _save_multiview_groups()
+
+    log.info("[MULTIVIEW] group %s is showing %s on %d decoder(s)",
+             group.get("name"), definition["name"], len(shown))
+    return jsonify({
+        "ok": True, "status": "VERIFIED",
+        "group": {"id": group.get("id"), "name": group.get("name")},
+        "shown": shown,
+        "warnings": report.get("warnings") or [],
+        "shared_sources": report.get("shared_sources") or [],
+        "message": "Every decoder in the group is showing %s." % definition["name"],
+    })
+
+
+@app.route("/api/multiview/groups/state", methods=["GET"])
+def api_multiview_groups_state():
+    """Is this group still synchronised? (§17)
+
+    Read from the decoders when the operator asks, and never on a timer. A
+    member that was routed away from the A/V Matrix, rebooted, or changed by
+    somebody else is DRIFTED -- reported, not corrected, because OmniSuite does
+    not know that the operator did not mean it.
+    """
+    group = _find_group(request.args.get("group"))
+    if group is None:
+        return jsonify({"ok": False, "error": "No such group."}), 404
+    intended = (group.get("multiview") or {}).get("name")
+
+    members, _problems = _group_members_state(group)
+    rows, states = [], []
+    for member in members:
+        if not member.get("online"):
+            state = "OFFLINE"
+            showing = None
+        else:
+            hdmi = (member["state"] or {}).get("hdmi_output") or {}
+            showing = omni_multiview.active_multiview_name(
+                (hdmi.get("video") or {}).get("input"))
+            if not intended:
+                state = "UNKNOWN"
+            elif showing == intended:
+                state = "SYNCHRONIZED"
+            else:
+                state = "DRIFTED"
+        states.append(state)
+        rows.append({"ip": member["ip"], "hostname": member["hostname"],
+                     "state": state, "showing": showing,
+                     "expected": intended})
+
+    if not rows:
+        overall = "EMPTY"
+    elif all(s == "SYNCHRONIZED" for s in states):
+        overall = "SYNCHRONIZED"
+    elif any(s == "DRIFTED" for s in states):
+        overall = "DRIFTED"
+    elif any(s == "OFFLINE" for s in states):
+        overall = "OFFLINE"
+    else:
+        overall = "UNKNOWN"
+
+    return jsonify({"ok": True, "group": {"id": group.get("id"),
+                                          "name": group.get("name")},
+                    "state": overall, "expected": intended, "members": rows})
+
+
+# ---------------------------------------------------------------------------
+# Decoder groups
+# ---------------------------------------------------------------------------
+
+@app.route("/api/multiview/groups", methods=["GET"])
+def api_multiview_groups():
+    """Every saved group. Reads nothing from any device."""
+    devices = _load_cache()
+    with _multiview_groups_lock:
+        groups = [dict(g) for g in _MULTIVIEW_GROUPS.values()]
+    groups.sort(key=lambda g: (g.get("name") or "").lower())
+    return jsonify({"ok": True,
+                    "groups": [_group_view(g, devices) for g in groups]})
+
+
+@app.route("/api/multiview/groups/save", methods=["POST"])
+def api_multiview_groups_save():
+    """Create or update one group. Membership only -- no device is touched."""
+    payload = request.get_json(silent=True) or {}
+    name = str(payload.get("name") or "").strip()
+    group_id = str(payload.get("id") or "").strip()
+    member_ips = [str(ip).strip() for ip in (payload.get("members") or []) if ip]
+
+    if not name:
+        return jsonify({"ok": False, "error": "A group needs a name."}), 400
+    if len(name) > 64:
+        return jsonify({"ok": False, "error": "That name is too long."}), 400
+
+    devices = {d.get("ip"): d for d in _load_cache()}
+    unknown = [ip for ip in member_ips if ip not in devices]
+    if unknown:
+        return jsonify({"ok": False,
+                        "error": "Not discovered: %s" % ", ".join(unknown)}), 400
+
+    # A name collision between groups is confusing rather than dangerous, but
+    # two groups called "Sports Bar" help nobody.
+    with _multiview_groups_lock:
+        for existing_id, existing in _MULTIVIEW_GROUPS.items():
+            if existing_id == group_id:
+                continue
+            if (existing.get("name") or "").strip().lower() == name.lower():
+                return jsonify({"ok": False,
+                                "error": "There is already a group called %s."
+                                         % name}), 409
+
+        if not group_id:
+            group_id = uuid.uuid4().hex[:12]
+        record = dict(_MULTIVIEW_GROUPS.get(group_id) or {})
+        record.update({
+            "id": group_id,
+            "name": name,
+            "members": [_group_member_record(devices[ip]) for ip in member_ips],
+            "updated": time.time(),
+        })
+        _MULTIVIEW_GROUPS[group_id] = record
+    _save_multiview_groups()
+    log.info("[MULTIVIEW] group %s saved with %d member(s)", name, len(member_ips))
+    return jsonify({"ok": True, "group": _group_view(record)})
+
+
+@app.route("/api/multiview/groups/delete", methods=["POST"])
+def api_multiview_groups_delete():
+    """Forget a group. The decoders and their Multiviews are left alone."""
+    payload = request.get_json(silent=True) or {}
+    group_id = str(payload.get("id") or "").strip()
+    with _multiview_groups_lock:
+        removed = _MULTIVIEW_GROUPS.pop(group_id, None)
+    if removed is None:
+        return jsonify({"ok": False, "error": "No such group."}), 404
+    _save_multiview_groups()
+    log.info("[MULTIVIEW] group %s deleted; no decoder was changed",
+             removed.get("name"))
+    return jsonify({"ok": True, "deleted": removed.get("name"),
+                    "message": "The group is gone. Its decoders and their saved "
+                               "Multiviews are unchanged."})
+
+
+def _group_members_state(group):
+    """Read every member once. Returns (members, problems).
+
+    `members` carries the decoder state each later stage needs, so the group is
+    read once rather than once per check.
+    """
+    devices = _load_cache()
+    members, problems = [], []
+    for stored in group.get("members") or ():
+        unit = _resolve_group_member(stored, devices)
+        if unit is None:
+            problems.append("%s is not currently discovered."
+                            % (stored.get("hostname") or stored.get("ip")))
+            members.append({"ip": stored.get("ip"),
+                            "hostname": stored.get("hostname") or stored.get("ip"),
+                            "state": None, "online": False})
+            continue
+        ip = unit.get("ip")
+        state, error = _decoder_state(ip)
+        hostname = (state or {}).get("hostname") or unit.get("hostname") or ip
+        if state is None:
+            problems.append("%s did not answer: %s" % (hostname, error))
+        members.append({"ip": ip, "hostname": hostname, "state": state,
+                        "online": state is not None, "unit": unit})
+    return members, problems
+
+
+def _scaler_conflicts(plans):
+    """§12: one Encoder 2 cannot produce two sizes at once.
+
+    `plans` is [(member, plan)]. Returns a list of operator-facing conflicts,
+    each naming the source and every decoder and window that disagrees about it.
+    """
+    wanted = {}
+    for member, plan in plans:
+        for window in (plan.get("windows") or ()):
+            source = window.get("source") or {}
+            source_ip = source.get("ip")
+            if not source_ip or not window.get("scaler_format"):
+                continue
+            wanted.setdefault(source_ip, {}).setdefault(
+                window["scaler_format"], []).append({
+                    "decoder": member["ip"],
+                    "hostname": member["hostname"],
+                    "cell": window.get("cell"),
+                    "window": window.get("label") or window.get("cell"),
+                })
+
+    conflicts = []
+    for source_ip, sizes in sorted(wanted.items()):
+        if len(sizes) < 2:
+            continue
+        source_name = next(
+            (w["source"].get("hostname") for _m, p in plans
+             for w in (p.get("windows") or ())
+             if (w.get("source") or {}).get("ip") == source_ip
+             and (w.get("source") or {}).get("hostname")), source_ip)
+        parts = []
+        for size, users in sorted(sizes.items()):
+            who = ", ".join("%s %s" % (u["hostname"], _pretty_cell(u["cell"]))
+                            for u in users)
+            parts.append("%s for %s" % (size, who))
+        conflicts.append({
+            "source_ip": source_ip,
+            "source": source_name,
+            "sizes": sorted(sizes),
+            "detail": ("%s can only send one picture size at a time, and this "
+                       "group asks it for %s. Give it the same window size on "
+                       "every decoder in the group."
+                       % (source_name, " and ".join(parts))),
+            "windows": [u for users in sizes.values() for u in users],
+        })
+    return conflicts
+
+
+def _pretty_cell(cell):
+    return str(cell or "").replace("_", " ")
+
+
+def _plan_group(group, definition, members=None):
+    """Build one plan for every member, and judge the set. (§12)
+
+    Returns (plans, report). `report["ok"]` is the answer to "may this group
+    operation proceed", and nothing has been written either way.
+    """
+    members = members or []
+    problems, warnings = [], []
+    plans = []
+
+    for member in members:
+        if not member.get("online"):
+            problems.append("%s is not available." % member["hostname"])
+            continue
+        member_problems, member_warnings = _copy_preflight(member["ip"], definition)
+        problems.extend(member_problems)
+        warnings.extend(member_warnings)
+        if member_problems:
+            continue
+        built, failure = _build_plan({
+            "decoder": member["ip"],
+            "layout": definition["layout"],
+            "canvas": omni_multiview.ACTIVE_CANVAS,
+            "assignments": definition["assignments"],
+            "name": definition.get("friendly_name") or definition["name"],
+            "object_name": definition["name"],
+            "update_existing": True,
+        })
+        if failure:
+            body, _status = failure
+            problems.append("%s: %s" % (member["hostname"],
+                                        body.get("error") or "could not be planned"))
+            continue
+        plan, _state, _encoders = built
+        if not plan.get("ok"):
+            lenient, notes = _only_unreachable_sources(plan)
+            if not lenient:
+                problems.extend(
+                    "%s: %s" % (member["hostname"], reason)
+                    for reason in (plan.get("errors") or ["cannot be applied"]))
+                continue
+            warnings.extend("%s: %s" % (member["hostname"], note)
+                            for note in notes)
+        if plan.get("conflicts"):
+            problems.extend("%s: %s" % (member["hostname"], reason)
+                            for reason in plan["conflicts"])
+            continue
+        plans.append((member, plan))
+
+    # The group-wide judgement: everything above was per decoder.
+    conflicts = _scaler_conflicts(plans) if plans else []
+
+    # Source bandwidth is charged once for a shared Encoder 2 stream (§13): the
+    # decoders subscribe to the same multicast, so counting it per decoder would
+    # refuse layouts that are perfectly affordable.
+    source_load = {}
+    for _member, plan in plans:
+        for window in (plan.get("windows") or ()):
+            source = window.get("source") or {}
+            if source.get("ip") and window.get("bitrate") is not None:
+                source_load[source["ip"]] = max(
+                    source_load.get(source["ip"], 0), window["bitrate"])
+
+    report = {
+        "ok": not problems and not conflicts and bool(plans),
+        "problems": problems,
+        "warnings": warnings,
+        "conflicts": conflicts,
+        "members": [{"ip": m["ip"], "hostname": m["hostname"],
+                     "online": m.get("online", False)} for m in members],
+        "planned": [m["ip"] for m, _p in plans],
+        "shared_sources": [
+            {"source_ip": ip, "bitrate": load,
+             "note": "one Encoder 2 stream, subscribed to by every decoder that "
+                     "shows it"}
+            for ip, load in sorted(source_load.items())],
+    }
+    if not plans and not problems:
+        report["problems"] = ["This group has no decoders to configure."]
+        report["ok"] = False
+    return plans, report
+
+
+@app.route("/api/multiview/copy", methods=["POST"])
+def api_multiview_copy():
+    """Copy a saved Multiview definition to another decoder. (§6)
+
+    This saves; it does not show. The target display is untouched and so is the
+    source decoder -- the operator gets a preset on the target that they can
+    show whenever they choose.
+    """
+    payload = request.get_json(silent=True) or {}
+    source_ip = str(payload.get("source_decoder") or "").strip()
+    target_ip = str(payload.get("target_decoder") or "").strip()
+    name = str(payload.get("name") or "").strip()
+    on_conflict = str(payload.get("on_conflict") or "").strip().lower()
+
+    if not source_ip or not target_ip or not name:
+        return jsonify({"ok": False,
+                        "error": "source_decoder, target_decoder and name are "
+                                 "required"}), 400
+    if source_ip == target_ip:
+        return jsonify({"ok": False,
+                        "error": "That is the decoder it is already on."}), 400
+
+    definition, error = _saved_definition(source_ip, name)
+    if definition is None:
+        return jsonify({"ok": False, "error": error}), 404
+
+    problems, warnings = _copy_preflight(target_ip, definition)
+    if problems:
+        return jsonify({"ok": False, "status": "INCOMPATIBLE",
+                        "problems": problems, "warnings": warnings,
+                        "error": problems[0]}), 409
+
+    target_state, read_error = _decoder_state(target_ip)
+    if target_state is None:
+        return jsonify({"ok": False, "error": read_error}), 502
+    existing = {str(o.get("name") or "")
+                for o in (target_state.get("multiview") or ())}
+    target_host = target_state.get("hostname") or target_ip
+
+    # An existing Multiview of the same name is never silently replaced.
+    object_name = name
+    friendly = definition.get("friendly_name") or name
+    update_existing = False
+    if name in existing:
+        if on_conflict == "replace":
+            update_existing = True
+        elif on_conflict == "rename":
+            object_name = omni_multiview.device_object_name(friendly, existing)
+            friendly = object_name
+        else:
+            return jsonify({
+                "ok": False, "status": "NAME IN USE",
+                "existing": sorted(existing),
+                "suggested_name": omni_multiview.device_object_name(
+                    friendly, existing),
+                "error": "%s already has a Multiview called %s."
+                         % (target_host, name),
+            }), 409
+
+    built, failure = _build_plan({
+        "decoder": target_ip,
+        "layout": definition["layout"],
+        "canvas": omni_multiview.ACTIVE_CANVAS,
+        "assignments": definition["assignments"],
+        "name": friendly,
+        "object_name": object_name,
+        "update_existing": update_existing,
+    })
+    if failure:
+        body, status = failure
+        return jsonify(body), status
+    plan, state, _encoders = built
+    if not plan.get("ok"):
+        lenient, notes = _only_unreachable_sources(plan)
+        if not lenient:
+            return jsonify({"ok": False, "status": "invalid", "plan": plan,
+                            "warnings": warnings,
+                            "error": "; ".join(plan.get("errors") or [])}), 400
+        warnings.extend(notes)
+    if plan.get("conflicts"):
+        return jsonify({"ok": False, "status": "conflict", "plan": plan,
+                        "warnings": warnings,
+                        "error": "; ".join(plan["conflicts"])}), 409
+
+    result, status = _apply_saved_plan(plan, target_ip)
+    result["warnings"] = warnings
+    result["copied_from"] = {"decoder": source_ip, "name": name}
+    result["target"] = {"decoder": target_ip, "hostname": target_host,
+                        "name": plan.get("object_name") or object_name}
+    # Nothing was shown. Say so plainly: "copied" must not read as "applied".
+    result["shown"] = False
+    return jsonify(result), status
+
+
 @app.route("/api/multiview/delete", methods=["POST"])
 def api_multiview_delete():
     """Delete one saved Multiview, leaving every other one alone.
@@ -14986,6 +15862,7 @@ def api_multiview_delete():
 # stores geometry only, so the layout an operator chose lives here and nowhere
 # else; without this a restart would show every Multiview as Custom.
 _load_multiview_meta()
+_load_multiview_groups()
 
 
 if __name__ == "__main__":

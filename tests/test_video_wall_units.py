@@ -1,3 +1,15 @@
+# The hardware fence, installed before the application is imported. This module
+# can be loaded as part of the `tests` package, or by path with no package at
+# all (run_tests.py does that), so it is reached both ways.
+try:
+    from . import _fence
+except ImportError:  # loaded without its package
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    import _fence
+_fence.install()
+
 import copy
 import unittest
 from unittest.mock import patch

@@ -23,6 +23,7 @@ const vm = require('vm');
 
 const ROOT = path.join(__dirname, '..');
 const SOURCE = path.join(ROOT, 'ui', 'matrix', 'multiview.js');
+const CONFIRM_SOURCE = path.join(ROOT, 'ui', 'confirm.js');
 const PAGE = path.join(ROOT, 'ui', 'matrix', 'multiview.html');
 const STYLE = path.join(ROOT, 'ui', 'matrix', 'multiview.css');
 
@@ -213,7 +214,10 @@ const DECODERS = {ok: true, probed: 1, decoders: [
   {ip: '192.0.2.10', hostname: 'dec-test-01', model: 'hw-omni-d4511',
    multiview_supported: true},
   {ip: '192.0.2.11', hostname: 'dec-old-01', model: 'legacy',
-   multiview_supported: false, reason: 'Config node not found'}]};
+   multiview_supported: false, reason: 'Config node not found'},
+  // Somewhere for a copy to go, and a second member for a group.
+  {ip: '192.0.2.12', hostname: 'dec-test-03', model: 'hw-omni-d4511',
+   multiview_supported: true}]};
 const SOURCES = {ok: true, ready: 2, excluded: [
   {ip: '192.0.2.22', hostname: 'old-wp-01', model: 'AT-OMNI-111-WP',
    status: 'ineligible',
@@ -327,6 +331,27 @@ let previewResponses = {
                  url: 'http://192.0.2.25/thumbnail/thumbnail1.jpg'},
 };
 
+// ---- Phase 8B fixtures -----------------------------------------------------
+const GROUP = {id: 'g1', name: 'Sports Bar',
+               members: [{ip: '192.0.2.10', hostname: 'dec-test-01',
+                          discovered: true},
+                         {ip: '192.0.2.12', hostname: 'dec-test-03',
+                          discovered: true}]};
+let groupsResponse = {ok: true, groups: [GROUP]};
+let groupSaveResponse = {ok: true, group: GROUP};
+let groupCopyResponse = {ok: true, status: 'VERIFIED', shown: false,
+                         saved: [], failures: [], warnings: [],
+                         message: 'Saved on every decoder in the group.'};
+let groupShowResponse = {ok: true, status: 'VERIFIED', shown: [],
+                         shared_sources: [],
+                         group: {id: 'g1', name: 'Sports Bar'},
+                         message: 'Every decoder in the group is showing it.'};
+let groupStateResponse = {ok: true, group: {id: 'g1', name: 'Sports Bar'},
+                          state: 'SYNCHRONIZED', expected: 'multiview2x2',
+                          members: []};
+let copyResponse = {ok: true, status: 'VERIFIED', shown: false, warnings: [],
+                    target: {decoder: '192.0.2.12', name: 'multiview2x2'}};
+
 let switchResponse = {ok: true, status: 'VERIFIED', cell: 'top_left',
                       source: '192.0.2.24', saved: true,
                       steps: [{step: 'Point ip_input2 at 233.252.0.42',
@@ -369,6 +394,20 @@ function stubFetch(url, options) {
   try { payload = options && options.body ? JSON.parse(options.body) : null; }
   catch (err) { payload = null; }
   requests.push({url, method, payload});
+  if (url.startsWith('/api/multiview/groups/state')) return json(groupStateResponse);
+  if (url.startsWith('/api/multiview/groups/save')) return json(groupSaveResponse);
+  if (url.startsWith('/api/multiview/groups/delete')) return json({ok: true,
+    deleted: 'Sports Bar', message: 'The group is gone.'});
+  if (url.startsWith('/api/multiview/groups/copy')) return json(groupCopyResponse);
+  if (url.startsWith('/api/multiview/groups/show')) return groupShowResponse.ok
+    ? json(groupShowResponse)
+    : Promise.resolve({ok: false, status: 409,
+                       json: () => Promise.resolve(groupShowResponse)});
+  if (url.startsWith('/api/multiview/groups')) return json(groupsResponse);
+  if (url.startsWith('/api/multiview/copy')) return copyResponse.ok
+    ? json(copyResponse)
+    : Promise.resolve({ok: false, status: 409,
+                       json: () => Promise.resolve(copyResponse)});
   if (url.startsWith('/api/multiview/layouts')) return json(LAYOUT_CATALOG);
   if (url.startsWith('/api/multiview/decoders')) return json(DECODERS);
   if (url.startsWith('/api/multiview/sources')) return json(SOURCES);
@@ -501,11 +540,18 @@ sandbox.AbortController = function AbortController() {
   this.abort = () => { this.signal.aborted = true; };
 };
 sandbox.window.toast = (message, ok) => toasts.push({message: String(message), ok: !!ok});
+vm.createContext(sandbox);
+// The real shared dialog first: it owns `omniSuppression`, which is where the
+// version-scoped "do not ask again" preference lives. Loading a stub here
+// instead would test the stub.
+vm.runInContext(fs.readFileSync(CONFIRM_SOURCE, 'utf8'), sandbox,
+                {filename: CONFIRM_SOURCE});
+// Then the spy, so what the page asks for is observable. omniSuppression is
+// left as the real one.
 sandbox.window.omniConfirm = (options) => {
   confirmCalls += 1; lastConfirmOptions = options;
   return Promise.resolve(confirmAnswer);
 };
-vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(SOURCE, 'utf8'), sandbox, {filename: SOURCE});
 
 async function flush(rounds) {
@@ -556,7 +602,7 @@ async function selectDecoder(ip) {
 
   await check('only the decoder picker is shown before a decoder is chosen', () => {
     assert(!hidden('mv_field_decoder'), 'the decoder picker is hidden');
-    ['mv_field_target', 'mv_field_new', 'mv_field_layout',
+    ['mv_field_target', 'mv_field_manage', 'mv_field_layout',
      'mv_field_name', 'mv_workspace', 'mv_actions'].forEach(id => {
       assert(hidden(id), id + ' is visible before a decoder is chosen');
     });
@@ -575,7 +621,8 @@ async function selectDecoder(ip) {
 
   await check('choosing a decoder reveals the Multiview step only', () => {
     assert(!hidden('mv_field_target'), 'the Multiview selector stayed hidden');
-    assert(!hidden('mv_field_new'), 'the New Multiview action stayed hidden');
+    assert(!hidden('mv_field_manage'),
+           'the Multiview management actions stayed hidden');
     ['mv_field_layout', 'mv_field_name',
      'mv_workspace', 'mv_actions'].forEach(id => {
       assert(hidden(id), id + ' appeared before creation was started');
@@ -841,7 +888,8 @@ async function selectDecoder(ip) {
     assert(/unable to read/i.test(banner()), banner());
     assert(!/no multiviews are configured/i.test(banner()),
       'an unreachable decoder read as empty');
-    assert(hidden('mv_field_new'), 'creation is offered on an unreachable decoder');
+    assert(hidden('mv_field_manage'),
+           'creation is offered on an unreachable decoder');
     assert(hidden('mv_workspace'), 'the workspace is shown for an unreachable decoder');
     stateError = null;
   });
@@ -851,7 +899,8 @@ async function selectDecoder(ip) {
       stateError = 'This decoder does not expose Multiview.';
       await selectDecoder('192.0.2.11');
       assert(/not supported by this decoder/i.test(banner()), banner());
-      assert(hidden('mv_field_new'), 'creation is offered on an incapable decoder');
+      assert(hidden('mv_field_manage'),
+             'creation is offered on an incapable decoder');
       stateError = null;
     });
 
@@ -2201,6 +2250,384 @@ async function selectDecoder(ip) {
       'Delete is not separated from the other actions');
     assert(/\.mv-actions\{[^}]*position:sticky/.test(style),
       'the action bar is not pinned, so a long plan can push it out of sight');
+  });
+
+  // =======================================================================
+  // Phase 8B: the workflow
+  // =======================================================================
+
+  // ---- §1 what the decoder is showing outranks what we remembered --------
+  await check('choosing a decoder selects the Multiview it is showing', async () => {
+    stateResponse = stateBody([Object.assign({}, EXISTING_VIEW,
+                                             {selected_on_output: true})]);
+    await selectDecoder('192.0.2.10');
+    assert(REGISTRY.get('mv_target').value === 'multiview2x2',
+           'the active Multiview was not selected: '
+           + REGISTRY.get('mv_target').value);
+    assert(!hidden('mv_workspace'), 'the canvas was not populated');
+  });
+
+  await check('a remembered preset does not outrank the live one', async () => {
+    sandbox.localStorage.setItem('multiview_selected_target', 'multiviewOther');
+    stateResponse = stateBody([
+      Object.assign({}, EXISTING_VIEW, {selected_on_output: true}),
+      Object.assign({}, EXISTING_VIEW, {name: 'multiviewOther',
+                                        selected_on_output: false}),
+    ]);
+    await selectDecoder('192.0.2.10');
+    assert(REGISTRY.get('mv_target').value === 'multiview2x2',
+           'the bookmark won over the live composition');
+  });
+
+  await check('with nothing active, the page waits for the operator', async () => {
+    // Priority 3: no live composition to show and no bookmark being restored,
+    // so nothing is chosen on the operator's behalf.
+    stateResponse = stateBody([EXISTING_VIEW]);
+    await selectDecoder('192.0.2.10');
+    assert(REGISTRY.get('mv_target').value === '',
+           'a preset was selected when none was active: '
+           + REGISTRY.get('mv_target').value);
+    assert(hidden('mv_workspace'),
+           'the editor opened without the operator choosing anything');
+  });
+
+  // ---- §4 Save follows the dirty state ----------------------------------
+  await check('Save is disabled while nothing has been changed', async () => {
+    stateResponse = stateBody([EXISTING_VIEW]);
+    await selectDecoder('192.0.2.10');
+    REGISTRY.get('mv_target').value = 'multiview2x2';
+    REGISTRY.get('mv_target').dispatch('change');
+    await flush();
+    assert(REGISTRY.get('mv_save').disabled,
+           'Save is offered on a preset nobody has edited');
+    assert(/no changes/i.test(REGISTRY.get('mv_save_reason').textContent),
+           'the reason is not stated: '
+           + REGISTRY.get('mv_save_reason').textContent);
+  });
+
+  await check('the heading says the preset is saved', () => {
+    assert(/Editing/.test(REGISTRY.get('mv_edit_heading').textContent),
+           REGISTRY.get('mv_edit_heading').textContent);
+    assert(REGISTRY.get('mv_edit_state').textContent === 'Saved',
+           REGISTRY.get('mv_edit_state').textContent);
+  });
+
+  await check('changing the name enables Save', async () => {
+    REGISTRY.get('mv_name').value = 'Renamed';
+    REGISTRY.get('mv_name').dispatch('input');
+    await flush();
+    assert(!REGISTRY.get('mv_save').disabled, 'Save stayed disabled after a rename');
+    assert(/Unsaved/.test(REGISTRY.get('mv_edit_state').textContent),
+           REGISTRY.get('mv_edit_state').textContent);
+  });
+
+  await check('a live reading does not enable Save', async () => {
+    stateResponse = stateBody([EXISTING_VIEW]);
+    await selectDecoder('192.0.2.10');
+    REGISTRY.get('mv_target').value = 'multiview2x2';
+    REGISTRY.get('mv_target').dispatch('change');
+    await flush();
+    assert(REGISTRY.get('mv_save').disabled, 'Save was enabled before the reread');
+    // The same preset, read again with different packet counts and health.
+    const moved = JSON.parse(JSON.stringify(EXISTING_VIEW));
+    moved.subframes[0].packets = 99999;
+    moved.subframes[0].health = 'stalled';
+    moved.subframes[0].input_active = false;
+    stateResponse = stateBody([moved]);
+    await selectDecoder('192.0.2.10');
+    REGISTRY.get('mv_target').value = 'multiview2x2';
+    REGISTRY.get('mv_target').dispatch('change');
+    await flush();
+    assert(REGISTRY.get('mv_save').disabled,
+           'a packet counter and a health change lit up Save');
+  });
+
+  await check('a failed save keeps the edit and leaves Save enabled', async () => {
+    stateResponse = stateBody([EXISTING_VIEW]);
+    await selectDecoder('192.0.2.10');
+    REGISTRY.get('mv_target').value = 'multiview2x2';
+    REGISTRY.get('mv_target').dispatch('change');
+    await flush();
+    REGISTRY.get('mv_name').value = 'Attempted';
+    REGISTRY.get('mv_name').dispatch('input');
+    await flush();
+    const before = applyResponse;
+    applyResponse = {ok: false, status: 'FAILED — ROLLED BACK',
+                     error: 'the device refused'};
+    REGISTRY.get('mv_save').dispatch('click');
+    await flush();
+    applyResponse = before;
+    assert(REGISTRY.get('mv_name').value === 'Attempted',
+           'a failed save discarded what the operator typed: '
+           + REGISTRY.get('mv_name').value);
+    assert(!REGISTRY.get('mv_save').disabled,
+           'a failed save left Save disabled, as though there were nothing to save');
+  });
+
+  // ---- §2/§3 creating is not editing ------------------------------------
+  await check('creating says so, and hides the preset picker', async () => {
+    REGISTRY.get('mv_new').dispatch('click');
+    await flush();
+    assert(REGISTRY.get('mv_edit_heading').textContent === 'Create New Multiview',
+           REGISTRY.get('mv_edit_heading').textContent);
+    assert(hidden('mv_field_target'),
+           'the preset picker is still shown while creating something new');
+    assert(!hidden('mv_field_cancel_create'), 'no way to back out of creation');
+    assert(/Not saved/.test(REGISTRY.get('mv_edit_state').textContent),
+           REGISTRY.get('mv_edit_state').textContent);
+  });
+
+  await check('cancelling creation returns to the picker', async () => {
+    REGISTRY.get('mv_cancel_create').dispatch('click');
+    await flush();
+    assert(!hidden('mv_field_target'), 'the preset picker did not come back');
+  });
+
+  // ---- §5/§24 the Save confirmation, scoped to the version ---------------
+  const SUPPRESS_KEY = 'multiview_save_confirm_suppressed_version';
+
+  async function saveWithConfirm(answer) {
+    confirmAnswer = answer;
+    confirmCalls = 0;
+    stateResponse = stateBody([EXISTING_VIEW]);
+    await selectDecoder('192.0.2.10');
+    REGISTRY.get('mv_target').value = 'multiview2x2';
+    REGISTRY.get('mv_target').dispatch('change');
+    await flush();
+    REGISTRY.get('mv_name').value = 'Changed' + Math.random().toString(16).slice(2, 6);
+    REGISTRY.get('mv_name').dispatch('input');
+    await flush();
+    REGISTRY.get('mv_save').dispatch('click');
+    await flush();
+    return confirmCalls;
+  }
+
+  await check('the first Save asks, and offers to stop asking', async () => {
+    sandbox.localStorage.removeItem(SUPPRESS_KEY);
+    const asked = await saveWithConfirm({ok: true, suppress: false});
+    assert(asked === 1, 'the Save confirmation did not appear');
+    assert(lastConfirmOptions.suppressLabel,
+           'no "do not ask again" was offered');
+    assert(/version/i.test(lastConfirmOptions.suppressLabel),
+           'the opt-out does not say it is for this version: '
+           + lastConfirmOptions.suppressLabel);
+  });
+
+  await check('an ordinary acknowledgement does not suppress anything',
+              async () => {
+    assert(sandbox.localStorage.getItem(SUPPRESS_KEY) === null,
+           'pressing Save once stopped the warning for ever');
+    const asked = await saveWithConfirm({ok: true, suppress: false});
+    assert(asked === 1, 'the second Save was not confirmed');
+  });
+
+  await check('ticking the box stops it, and records the version', async () => {
+    await saveWithConfirm({ok: true, suppress: true});
+    assert(sandbox.localStorage.getItem(SUPPRESS_KEY) === 'V1.0.7',
+           'the suppression did not record the version: '
+           + sandbox.localStorage.getItem(SUPPRESS_KEY));
+    const asked = await saveWithConfirm({ok: true, suppress: false});
+    assert(asked === 0, 'the suppressed confirmation came back');
+  });
+
+  await check('a new application version asks once more', async () => {
+    // Nothing is cleared by hand: the stored version simply stops matching.
+    sandbox.localStorage.setItem(SUPPRESS_KEY, 'V1.0.6');
+    const asked = await saveWithConfirm({ok: true, suppress: false});
+    assert(asked === 1,
+           'a version the operator never agreed to skipped the warning');
+  });
+
+  await check('suppressing again stores the new version', async () => {
+    sandbox.localStorage.setItem(SUPPRESS_KEY, 'V1.0.6');
+    await saveWithConfirm({ok: true, suppress: true});
+    assert(sandbox.localStorage.getItem(SUPPRESS_KEY) === 'V1.0.7',
+           sandbox.localStorage.getItem(SUPPRESS_KEY));
+  });
+
+  await check('unrelated warning preferences are left alone', async () => {
+    sandbox.localStorage.setItem('matrix_multiview_exit_suppressed', 'true');
+    sandbox.localStorage.setItem('multiview_notice_acknowledged_version', 'V1.0.7');
+    sandbox.localStorage.setItem(SUPPRESS_KEY, 'V1.0.6');
+    await saveWithConfirm({ok: true, suppress: true});
+    assert(sandbox.localStorage.getItem('matrix_multiview_exit_suppressed') === 'true',
+           'the A/V Matrix preference was reset');
+    assert(sandbox.localStorage.getItem('multiview_notice_acknowledged_version') === 'V1.0.7',
+           'the operator notice preference was reset');
+  });
+
+  // ---- §6 copy to another decoder ---------------------------------------
+  await check('copy offers the other decoders and says it shows nothing',
+              async () => {
+    sandbox.localStorage.setItem(SUPPRESS_KEY, 'V1.0.7');
+    stateResponse = stateBody([EXISTING_VIEW]);
+    await selectDecoder('192.0.2.10');
+    REGISTRY.get('mv_target').value = 'multiview2x2';
+    REGISTRY.get('mv_target').dispatch('change');
+    await flush();
+    REGISTRY.get('mv_copy').dispatch('click');
+    await flush();
+    assert(!hidden('mv_copy_dialog'), 'the copy panel did not open');
+    const options = REGISTRY.get('mv_copy_target').children.map(o => o.value);
+    assert(!options.includes('192.0.2.10'),
+           'the decoder it is already on was offered as a target');
+    assert(options.length > 0, 'no target decoder was offered');
+    const note = PAGE_HTML.slice(PAGE_HTML.indexOf('id="mv_copy_dialog"'));
+    assert(/changes no display/.test(note),
+           'the panel does not say that copying shows nothing');
+  });
+
+  await check('copying posts the definition and reports it as not shown',
+              async () => {
+    requests.length = 0;
+    REGISTRY.get('mv_copy_go').dispatch('click');
+    await flush();
+    const call = requests.find(r => r.url === '/api/multiview/copy');
+    assert(call, 'no copy request was made');
+    assert(call.payload.source_decoder === '192.0.2.10', call.payload);
+    assert(call.payload.name === 'multiview2x2', call.payload);
+    assert(/unchanged/i.test(REGISTRY.get('mv_copy_status').textContent),
+           REGISTRY.get('mv_copy_status').textContent);
+  });
+
+  await check('a name already in use asks instead of overwriting', async () => {
+    copyResponse = {ok: false, status: 'NAME IN USE',
+                    error: 'dec-test-03 already has a Multiview called that.',
+                    suggested_name: 'multiview2x22', existing: []};
+    confirmAnswer = {ok: false};
+    confirmCalls = 0;
+    requests.length = 0;
+    REGISTRY.get('mv_copy_go').dispatch('click');
+    await flush();
+    assert(confirmCalls === 1, 'the operator was not asked');
+    assert(/already has/.test(lastConfirmOptions.message), lastConfirmOptions.message);
+    const copies = requests.filter(r => r.url === '/api/multiview/copy');
+    assert(copies.length === 1,
+           'declining still sent a second copy: ' + copies.length);
+    copyResponse = {ok: true, status: 'VERIFIED', shown: false, warnings: [],
+                    target: {decoder: '192.0.2.12', name: 'multiview2x2'}};
+    REGISTRY.get('mv_copy_cancel').dispatch('click');
+  });
+
+  // ---- §9/§10 groups -----------------------------------------------------
+  await check('the groups panel lists the saved groups', async () => {
+    REGISTRY.get('mv_groups').dispatch('click');
+    await flush();
+    assert(!hidden('mv_groups_dialog'), 'the groups panel did not open');
+    const options = REGISTRY.get('mv_group_select').children.map(o => o.value);
+    assert(options.includes('g1'), 'the saved group was not listed');
+  });
+
+  await check('saving a group posts its members and touches no device',
+              async () => {
+    REGISTRY.get('mv_group_select').value = 'g1';
+    REGISTRY.get('mv_group_select').dispatch('change');
+    await flush();
+    requests.length = 0;
+    REGISTRY.get('mv_group_name').value = 'Main Bar';
+    REGISTRY.get('mv_group_save').dispatch('click');
+    await flush();
+    const call = requests.find(r => r.url === '/api/multiview/groups/save');
+    assert(call, 'no group save was sent');
+    assert(call.payload.name === 'Main Bar', call.payload);
+    assert(Array.isArray(call.payload.members), call.payload);
+    assert(!requests.some(r => /apply|show|switch/.test(r.url)),
+           'saving a group reached a device');
+  });
+
+  await check('Save to group is not Show on group', async () => {
+    requests.length = 0;
+    REGISTRY.get('mv_group_copy').dispatch('click');
+    await flush();
+    assert(requests.some(r => r.url === '/api/multiview/groups/copy'),
+           'no group copy was sent');
+    assert(!requests.some(r => r.url === '/api/multiview/groups/show'),
+           'saving to the group also showed it');
+  });
+
+  await check('Show on group asks first, and names what changes', async () => {
+    confirmAnswer = {ok: false};
+    confirmCalls = 0;
+    requests.length = 0;
+    REGISTRY.get('mv_group_show').dispatch('click');
+    await flush();
+    assert(confirmCalls === 1, 'Show on group did not ask');
+    assert(/pictures change/.test(lastConfirmOptions.message),
+           lastConfirmOptions.message);
+    assert(!requests.some(r => r.url === '/api/multiview/groups/show'),
+           'cancelling still showed it on the group');
+  });
+
+  await check('a refused group operation shows the conflict it was refused for',
+              async () => {
+    groupShowResponse = {
+      ok: false, status: 'REFUSED', writes: 0,
+      error: 'refused',
+      conflicts: [{source: 'enc-test-01',
+                   detail: 'enc-test-01 can only send one picture size at a '
+                     + 'time, and this group asks it for 1280x720 for '
+                     + 'dec-test-01 main and 640x360 for dec-test-03 top left.'}],
+      problems: [],
+    };
+    confirmAnswer = {ok: true};
+    REGISTRY.get('mv_group_show').dispatch('click');
+    await flush();
+    const status = REGISTRY.get('mv_groups_status').textContent;
+    assert(/one picture size/.test(status), status);
+    assert(/enc-test-01/.test(status), status);
+    assert(/dec-test-03/.test(status), status);
+    groupShowResponse = {ok: true, status: 'VERIFIED', shown: [],
+                         shared_sources: [],
+                         group: {id: 'g1', name: 'Sports Bar'},
+                         message: 'Every decoder in the group is showing it.'};
+  });
+
+  // ---- §16 group context -------------------------------------------------
+  await check('showing on a group enters a visible group context', async () => {
+    confirmAnswer = {ok: true};
+    REGISTRY.get('mv_group_show').dispatch('click');
+    await flush();
+    assert(!hidden('mv_group_context'),
+           'nothing says that changes now move several displays');
+    assert(/decoders in/.test(REGISTRY.get('mv_group_context_detail').textContent),
+           REGISTRY.get('mv_group_context_detail').textContent);
+  });
+
+  await check('in group context a source change goes to the whole group',
+              async () => {
+    REGISTRY.get('mv_groups_close').dispatch('click');
+    // A live change is only live on the Multiview that is on the display.
+    stateResponse = stateBody([LIVE_VIEW]);
+    await selectDecoder('192.0.2.10');
+    await flush();
+    requests.length = 0;
+    windowBoxes()[0].dispatch('drop',
+      {dataTransfer: {getData: () => '192.0.2.24'}});
+    await flush();
+    const call = requests.find(r => r.url === '/api/multiview/groups/show');
+    assert(call, 'the change was not applied to the group: '
+           + requests.map(r => r.url).join(', '));
+    assert(call.payload.cell === 'top_left', call.payload);
+    assert(call.payload.source === '192.0.2.24', call.payload);
+    assert(!requests.some(r => r.url === '/api/multiview/switch'),
+           'the change was also applied to this decoder alone');
+  });
+
+  await check('leaving group context makes changes single-decoder again',
+              async () => {
+    REGISTRY.get('mv_group_leave').dispatch('click');
+    await flush();
+    assert(REGISTRY.get('mv_target').value === 'multiview2x2',
+           'the live Multiview is no longer selected, so this proves nothing');
+    assert(hidden('mv_group_context'), 'the group context banner stayed');
+    requests.length = 0;
+    windowBoxes()[0].dispatch('drop',
+      {dataTransfer: {getData: () => '192.0.2.24'}});
+    await flush();
+    assert(requests.some(r => r.url === '/api/multiview/switch'),
+           'the single-decoder path was not used after leaving group context');
+    assert(!requests.some(r => r.url === '/api/multiview/groups/show'),
+           'a single-decoder change still went to the group');
   });
 
   console.log(failures.length

@@ -67,22 +67,19 @@
       <select id="mv_target" class="mv-control"></select>
     </div>
 
-    <div class="mv-field mv-field-action" id="mv_field_new" hidden>
-      <label aria-hidden="true">&nbsp;</label>
-      <button id="mv_new" class="mv-control secondary" type="button">+ New Multiview</button>
-    </div>
-
-    <div class="mv-field" id="mv_field_layout" hidden>
-      <label for="mv_layout">Layout</label>
-      <select id="mv_layout" class="mv-control"></select>
-    </div>
-
-    <div class="mv-field" id="mv_field_name" hidden>
-      <label for="mv_name">Name</label>
-      <input type="text" id="mv_name" class="mv-control" autocomplete="off" spellcheck="false"/>
-    </div>
-
     <div class="mv-toolbar-spacer"></div>
+
+    <!-- Actions about WHICH Multiview you are working on. Deliberately apart
+         from the fields that edit the one you have chosen: the button that
+         starts a new object used to sit between that object's own controls. -->
+    <div class="mv-field mv-field-action" id="mv_field_manage" hidden>
+      <label aria-hidden="true">&nbsp;</label>
+      <div class="mv-action-row">
+        <button id="mv_new" class="mv-control secondary" type="button">+ New Multiview</button>
+        <button id="mv_copy" class="mv-control secondary" type="button">Copy to Decoder…</button>
+        <button id="mv_groups" class="mv-control secondary" type="button">Groups…</button>
+      </div>
+    </div>
 
     <div class="mv-field mv-field-action" id="mv_field_reload" hidden>
       <label aria-hidden="true">&nbsp;</label>
@@ -90,10 +87,115 @@
     </div>
   </div>
 
+  <!-- The selected preset's own fields. Headed, so that creating something new
+       is visibly a different thing from editing what is on screen. -->
+  <div class="mv-editbar" id="mv_editbar" hidden>
+    <div class="mv-editbar-head">
+      <span id="mv_edit_heading">Multiview</span>
+      <span id="mv_edit_state" class="mv-edit-state"></span>
+    </div>
+    <div class="mv-editbar-fields">
+      <div class="mv-field" id="mv_field_layout" hidden>
+        <label for="mv_layout">Layout</label>
+        <select id="mv_layout" class="mv-control"></select>
+      </div>
+
+      <div class="mv-field" id="mv_field_name" hidden>
+        <label for="mv_name">Name</label>
+        <input type="text" id="mv_name" class="mv-control" autocomplete="off" spellcheck="false"/>
+      </div>
+
+      <div class="mv-toolbar-spacer"></div>
+
+      <div class="mv-field mv-field-action" id="mv_field_cancel_create" hidden>
+        <label aria-hidden="true">&nbsp;</label>
+        <button id="mv_cancel_create" class="mv-control secondary" type="button">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <!-- One line that says what the page is doing or why it cannot continue.
        Loading, unreachable and unsupported are three different conditions and
        are never collapsed into "no Multiviews configured". -->
   <div id="mv_banner" class="mv-banner" hidden></div>
+
+  <!-- Group context. When this is showing, live changes are group-wide, and it
+       says so: a drag that moves six displays must never look like a drag that
+       moves one. -->
+  <div id="mv_group_context" class="mv-group-context" hidden>
+    <div class="mv-group-context-main">
+      <strong id="mv_group_context_name">Group</strong>
+      <span id="mv_group_context_detail"></span>
+    </div>
+    <div class="mv-group-context-state" id="mv_group_context_state"></div>
+    <button id="mv_group_leave" class="mv-control secondary" type="button">Leave group context</button>
+  </div>
+
+  <!-- Copy this Multiview to another decoder. -->
+  <div id="mv_copy_dialog" class="mv-dialog-backdrop" hidden>
+    <div class="mv-dialog" role="dialog" aria-modal="true" aria-labelledby="mv_copy_title">
+      <h3 id="mv_copy_title">Copy to another decoder</h3>
+      <p class="mv-dialog-note" id="mv_copy_summary"></p>
+      <div class="mv-field">
+        <label for="mv_copy_target">Copy to</label>
+        <select id="mv_copy_target" class="mv-control"></select>
+      </div>
+      <p class="mv-dialog-note">
+        This copies the layout and the source in each window. It saves the
+        Multiview on that decoder and changes no display — show it there when
+        you are ready.
+      </p>
+      <div id="mv_copy_status" class="mv-dialog-status"></div>
+      <div class="mv-dialog-actions">
+        <button id="mv_copy_cancel" class="mv-control secondary" type="button">Cancel</button>
+        <button id="mv_copy_go" class="mv-control primary" type="button">Copy</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Decoder groups. -->
+  <div id="mv_groups_dialog" class="mv-dialog-backdrop" hidden>
+    <div class="mv-dialog mv-dialog-wide" role="dialog" aria-modal="true" aria-labelledby="mv_groups_title">
+      <h3 id="mv_groups_title">Decoder groups</h3>
+      <p class="mv-dialog-note">
+        A group is a set of decoders meant to show the same Multiview — the
+        screens over a bar, or a row of monitors. Grouping them lets OmniSuite
+        check the whole set together before it changes anything, because the
+        encoders behind the windows are shared.
+      </p>
+      <div class="mv-groups-body">
+        <div class="mv-groups-list">
+          <label for="mv_group_select">Group</label>
+          <select id="mv_group_select" class="mv-control" size="6"></select>
+          <button id="mv_group_new" class="mv-control secondary" type="button">New group</button>
+        </div>
+        <div class="mv-groups-detail">
+          <div class="mv-field">
+            <label for="mv_group_name">Name</label>
+            <input type="text" id="mv_group_name" class="mv-control" autocomplete="off"/>
+          </div>
+          <div class="mv-field">
+            <label>Decoders</label>
+            <div id="mv_group_members" class="mv-group-members"></div>
+          </div>
+          <div id="mv_group_state" class="mv-group-state"></div>
+          <div id="mv_groups_status" class="mv-dialog-status"></div>
+          <div class="mv-dialog-actions mv-group-actions">
+            <button id="mv_group_save" class="mv-control primary" type="button">Save group</button>
+            <button id="mv_group_delete" class="mv-control danger" type="button">Delete group</button>
+          </div>
+          <div class="mv-dialog-actions mv-group-actions">
+            <button id="mv_group_copy" class="mv-control secondary" type="button">Save Multiview to group</button>
+            <button id="mv_group_show" class="mv-control primary" type="button">Show on group</button>
+            <button id="mv_group_check" class="mv-control secondary" type="button">Check group</button>
+          </div>
+        </div>
+      </div>
+      <div class="mv-dialog-actions">
+        <button id="mv_groups_close" class="mv-control secondary" type="button">Close</button>
+      </div>
+    </div>
+  </div>
 
   <div class="mv-body" id="mv_workspace" hidden>
     <div>

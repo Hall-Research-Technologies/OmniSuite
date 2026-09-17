@@ -3087,3 +3087,62 @@ Verified in a real browser against the bench: warned once, not warned again
 after a refresh or a trip to the Multiview page and back, warned again in a new
 session, and never again once suppressed.
 
+
+## AD. Phase 8B: copying, groups, and a decoder family that says yes and shows nothing
+
+### AD.1 The measurement that shaped the live testing
+
+| decoder | model | interlock | Multiview shows? |
+|---|---|---|---|
+| .32 | hw-omni-d4511 | none | yes (in use by another operator) |
+| .153 | hw-omni-d4511 | none | **yes**, VERIFIED, picture on screen |
+| .151, .152, .154 | hw-omni-d4511 | Video Wall ON | refused, correctly |
+| .155, .161, .38 | hw-omni-d4111 | none | **no** |
+
+The 4111s are the finding. OmniSuite's capability probe reports them as
+Multiview-capable because the `multiview` configuration node is present, and
+every stage of a recall against them is accepted and reads back correctly --
+encoder scalers, Session 2, the decoder inputs, the object, the display
+selection. Then the decoder's own Input status says there is no active video on
+the composition, and the transaction rolls back.
+
+So the picture never arrives on this family, and nothing before the final status
+check can tell. That final check is the only stage that is not a read-back of
+our own write, and it is the only reason this is caught at all.
+
+**Not changed in this phase.** Capability is currently decided by the
+configuration node, and rewriting that rule on the strength of one family
+observed on one bench would be guesswork of exactly the kind this project avoids.
+The behaviour is safe as it stands -- the operation refuses, explains itself and
+restores -- and the measurement is recorded here for whoever decides the rule.
+
+### AD.2 What this made possible, and what it did not
+
+A fully synchronised two-screen group could not be demonstrated: exactly one
+decoder on the bench is both free of interlocks and able to display a Multiview,
+and the other d4511s have Video Wall enabled, which is never turned off to make
+a test pass.
+
+What was demonstrated live, on real hardware, is the group transaction's failure
+path -- which is the part that matters most:
+
+```
+group [ .153 (works), .155 (accepts everything, shows nothing) ]
+  -> save to group          both members hold the definition, no display changes
+  -> show on group          .153 configured and shown, .155 fails its status check
+  -> FAILED — GROUP ROLLED BACK
+     .153 restored  verified
+     .155 restored  verified
+```
+
+Half the room was not left on the new layout, and the result did not claim
+success. The synchronised path, group drift and group live switching are covered
+by the simulator suite.
+
+### AD.3 Copying
+
+Copy carries layout and window assignments and nothing about resources, so the
+target plans its own. Measured on .153: the copy changed no display on either
+decoder, Show then reconciled the target's own inputs
+(`239.100.132.254` and `239.100.133.108` into its own pool), and deleting the
+copy left the original untouched.

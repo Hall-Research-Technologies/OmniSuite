@@ -25,6 +25,9 @@
       '<h3 class="confirm-title"></h3>' +
       '<div class="confirm-message"></div>' +
       '<div class="confirm-summary" style="display:none;"></div>' +
+      '<label class="confirm-suppress" style="display:none;">' +
+      '<input type="checkbox" class="confirm-suppress-box">' +
+      '<span class="confirm-suppress-label"></span></label>' +
       '<div class="confirm-actions">' +
       '<button type="button" class="confirm-cancel">Cancel</button>' +
       '<button type="button" class="confirm-ok">Continue</button>' +
@@ -32,6 +35,40 @@
     document.body.appendChild(backdrop);
     return backdrop;
   }
+
+  // Version-scoped suppression, shared by every page that offers "do not show
+  // again". A stored preference names the application version it was given
+  // against; when the version changes the warning returns by itself, because
+  // agreeing to what an operation did in one release is not agreement to what
+  // it does in the next.
+  //
+  // Each caller owns its own key, so suppressing one warning never touches
+  // another. Storage that refuses to answer means show the warning: a browser
+  // with storage disabled must not silently lose its warnings.
+  window.omniSuppression = window.omniSuppression || {
+    suppressed: function (key, version) {
+      if (!key || !version) return false;
+      try {
+        return localStorage.getItem(key) === String(version);
+      } catch (err) {
+        return false;
+      }
+    },
+    remember: function (key, version) {
+      if (!key || !version) return false;
+      try {
+        localStorage.setItem(key, String(version));
+        return true;
+      } catch (err) {
+        return false;                    // not fatal: the warning simply returns
+      }
+    },
+    forget: function (key) {
+      try {
+        localStorage.removeItem(key);
+      } catch (err) { /* nothing to undo */ }
+    },
+  };
 
   window.omniConfirm = function omniConfirm(options) {
     options = options || {};
@@ -63,6 +100,20 @@
 
     okBtn.textContent = options.confirmText || 'Continue';
     okBtn.classList.toggle('confirm-danger', !!options.danger);
+
+    // A caller that offers "do not show again" gets the checkbox back with the
+    // answer, so the preference is the caller's to store rather than something
+    // this dialog decides on its behalf.
+    const suppressWrap = backdrop.querySelector('.confirm-suppress');
+    const suppressBox = backdrop.querySelector('.confirm-suppress-box');
+    const suppressLabel = backdrop.querySelector('.confirm-suppress-label');
+    if (options.suppressLabel) {
+      suppressLabel.textContent = options.suppressLabel;
+      suppressBox.checked = false;
+      suppressWrap.style.display = '';
+    } else {
+      suppressWrap.style.display = 'none';
+    }
     backdrop.classList.remove('hidden');
 
     // Focus returns to whatever opened the dialog; without it, dismissing drops
@@ -81,11 +132,17 @@
         }
         resolve(result);
       }
-      function onOk() { cleanup(true); }
-      function onCancel() { cleanup(false); }
-      function onBackdrop(event) { if (event.target === backdrop) cleanup(false); }
+      function answer(ok) {
+        return options.suppressLabel
+          ? {ok: ok, suppress: ok && !!suppressBox.checked} : ok;
+      }
+      function onOk() { cleanup(answer(true)); }
+      function onCancel() { cleanup(answer(false)); }
+      function onBackdrop(event) {
+        if (event.target === backdrop) cleanup(answer(false));
+      }
       function onKeydown(event) {
-        if (event.key === 'Escape') { event.stopPropagation(); cleanup(false); }
+        if (event.key === 'Escape') { event.stopPropagation(); cleanup(answer(false)); }
       }
       okBtn.addEventListener('click', onOk);
       cancelBtn.addEventListener('click', onCancel);

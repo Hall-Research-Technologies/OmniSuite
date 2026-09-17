@@ -12,21 +12,23 @@ connections a run went to the devices on the bench. Three tests passed only
 because that hardware answered, so the suite was green on one workstation and
 broken everywhere else.
 
-Both transports are replaced here, before the tests are imported, with spies
-that record the attempt and raise. A test that needs a device to answer has to
-say so through its own fixture; it can no longer borrow the real one.
+Every transport is replaced, before the tests are imported, with a spy that
+records the attempt and raises. A test that needs a device to answer has to say
+so through its own fixture; it can no longer borrow the real one.
+
+The fence itself lives in `tests/_fence.py` and is installed by the test
+package, so it is present however the suite is entered -- `python -m unittest`,
+an IDE runner and a mutation harness all get it. This script no longer owns a
+second copy of that rule; it installs the same one and reports what it caught.
 """
 from __future__ import annotations
 
 import argparse
-import collections
 import importlib.util
 import os
-import re
 import socket
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -37,44 +39,28 @@ JS_SUITES = ("usb_render_smoke.js", "usb_filter_test.js", "lldp_topology_test.js
              "appearance_theme_test.js", "multiview_ui_test.js",
              "matrix_multiview_test.js")
 
-attempts: collections.Counter = collections.Counter()
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(TESTS))
+from tests import _fence                      # noqa: E402  (after sys.path)
+
+# One fence, owned by the tests. `attempts` is its counter, so anything the
+# suite tries is recorded here whether the run came through this script or not.
+attempts = _fence.attempts
+UNROUTABLE_PREFIXES = _fence.UNROUTABLE_PREFIXES
 
 
 def install_network_spies() -> None:
-    """Replace both hardware transports with recording spies that refuse."""
-    import websocket
+    """Install the test package's hardware fence. Kept for callers that ask."""
+    _fence.install()
 
-    def ws_spy(url, *args, **kwargs):
-        attempts[("websocket", str(url))] += 1
-        raise OSError(f"run_tests.py blocked a WebSocket connection to {url}")
 
-    websocket.create_connection = ws_spy
-
-    real_socket = socket.socket
-
-    class SpySocket(real_socket):
-        def sendto(self, data, address, *args, **kwargs):  # type: ignore[override]
-            command = int.from_bytes(data[8:10], "big") if len(data) >= 10 else -1
-            attempts[("udp", f"{address[0]} cmd={hex(command)}")] += 1
-            raise OSError("run_tests.py blocked a UDP datagram")
-
-        def connect(self, address, *args, **kwargs):  # type: ignore[override]
-            # Loopback is the test client talking to itself, not a device.
-            host = address[0] if isinstance(address, tuple) else ""
-            if isinstance(host, str) and not host.startswith("127.") and host != "::1":
-                attempts[("tcp", str(host))] += 1
-                raise OSError("run_tests.py blocked a TCP connection")
-            return super().connect(address, *args, **kwargs)
-
-    socket.socket = SpySocket
+def report_isolation() -> bool:
+    return _fence.report()
 
 
 def run_python_suite() -> bool:
-    # A scratch data directory, so a test can never read or write the operator's
-    # real device cache.
-    os.environ.setdefault("OMNI_DATA_DIR", tempfile.mkdtemp(prefix="omnisuite-tests-"))
-    sys.path.insert(0, str(ROOT))
-    sys.path.insert(0, str(TESTS))
+    # The scratch data directory and the fence are both set up by importing the
+    # test package, which happened at the top of this module.
     install_network_spies()
 
     loader = unittest.TestLoader()
@@ -109,37 +95,6 @@ def run_js_suites() -> bool:
 
 def node_binary() -> str:
     return os.environ.get("NODE", "node")
-
-
-# RFC 5737 reserves these for documentation and examples. They are not routed,
-# so a datagram addressed to one cannot reach a device. A test that deliberately
-# probes an unreachable address is legitimate, and every attempt is still
-# blocked at the socket -- it is reported, but it does not fail the gate.
-UNROUTABLE_PREFIXES = ("192.0.2.", "198.51.100.", "203.0.113.")
-
-# An attempt is recorded in whatever shape the caller used: a bare host, a URL,
-# or a host with the command appended. Classifying the raw string would read
-# "ws://192.0.2.10/wsapp/" as a routable host, so pull the address out first.
-_ADDRESS = re.compile(r"(?<![0-9.])[0-9]{1,3}(?:[.][0-9]{1,3}){3}(?![0-9.])")
-
-
-def report_isolation() -> bool:
-    def reachable(target: str) -> bool:
-        found = _ADDRESS.search(target)
-        if found is None:
-            return True              # not an address we recognise: assume the worst
-        return not any(found.group(0).startswith(prefix)
-                       for prefix in UNROUTABLE_PREFIXES)
-
-    blocked = sum(attempts.values())
-    live = sum(count for (_kind, target), count in attempts.items() if reachable(target))
-    print(f"\nHardware isolation: {blocked} connection attempt(s), all blocked at the socket")
-    for (kind, target), count in attempts.most_common(20):
-        note = "" if reachable(target) else "   (RFC 5737 documentation range, unroutable)"
-        print(f"  {count:5d}  {kind}  {target}{note}")
-    if live:
-        print(f"  -> {live} of these addressed a routable host, which is a failure")
-    return live == 0
 
 
 def main() -> int:
