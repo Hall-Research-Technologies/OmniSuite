@@ -259,43 +259,48 @@ See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 Copyright © 2026 **Hall Research Technologies LLC**.
 
-OmniSuite is **source available**. That is deliberately not the same thing as
-*open source*: the source can be read, but redistribution of modified versions
-is not intended to be permitted, so it does not meet the OSI definition and is
-not described as open source here.
+OmniSuite is **source available** and free of charge, under the
+[Hall Research Technologies Source-Available Software License](LICENSE).
 
-**The governing terms are in [LICENSE](LICENSE), and nothing in this README
-changes them.** This section is a summary for convenience; where the two
-differ, LICENSE governs.
+That is deliberately not the same thing as *open source*: OmniSuite does not
+meet the OSI definition, because modified versions may not be redistributed, so
+it is not described as open source here.
 
-### Current licence
+**Free for personal and business use.** You may use OmniSuite commercially,
+including while performing paid work — an AV integrator may use it on a paid
+installation, service or support call.
 
-The repository currently carries the **PolyForm Noncommercial License 1.0.0**,
-which permits noncommercial use only.
-
-### Intended licence — not yet in force
-
-Hall Research Technologies LLC intends to move OmniSuite to terms that also
-permit **business and commercial use**, while continuing to prohibit selling it
-and distributing modified versions:
-
-| Intended to be allowed | Intended not to be allowed |
+| Allowed | Not allowed |
 |---|---|
 | Personal use | Selling OmniSuite |
-| Business and commercial use | Charging a licence fee for OmniSuite |
-| Reading the source | Distributing modified versions |
-| Modifying it for your own use | Selling modified versions |
-| Modifying it for internal business use | Rebranding and redistributing it |
-| Redistributing the original, unmodified OmniSuite free of charge | Sublicensing it as another product |
+| Business and commercial use | Charging a licence fee for it |
+| Using it while doing paid work | Distributing or publishing modified versions |
+| Reading the source | Rebranding and redistributing it |
+| Modifying it for your own use | Sublicensing it as another product |
+| Modifying it for internal business use | Charging for access to a copy |
+| Redistributing the original, unmodified OmniSuite free of charge | |
 
-> **This table describes intent, not the licence currently in force.** Until an
-> approved replacement licence text is installed in [LICENSE](LICENSE), the
-> PolyForm Noncommercial terms above are what apply. The two disagree about
-> commercial use, and LICENSE is what governs.
+In short: **use it freely, including to make money. Do not sell it, and do not
+hand out changed copies.**
+
+Modifications are yours to make and yours to keep — inside your own
+organization. What may not leave your organization is a modified version.
+
+Redistributing the original, unmodified OmniSuite is fine provided you charge
+nothing for it and keep the copyright notice, the LICENSE and the third-party
+notices with it.
+
+Charging for your own professional services — design, installation,
+configuration, commissioning, support, consulting — is fine. The charge must be
+for the service, not for OmniSuite or a licence to it.
+
+**See [LICENSE](LICENSE) for the complete terms.** This summary is for
+convenience and does not override it; where the two differ, LICENSE governs.
 
 ### Third-party software
 
 OmniSuite bundles third-party libraries, each under its own licence and
 copyright, listed in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Hall Research Technologies
-LLC claims no ownership of those components.
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The Hall licence covers
+Hall-owned OmniSuite code only; those components stay under their own licences,
+and Hall Research Technologies LLC claims no ownership of them.

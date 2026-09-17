@@ -43,15 +43,27 @@ not declaring one rather than being assigned a guess.
 
 ## Notes on specific components
 
-- **pystray** is LGPL-3.0. It is redistributed unmodified inside the
-  packaged builds. Its licence requires that this notice and its licence
-  text accompany the distribution, and that a recipient be able to replace
-  the component. OmniSuite does not modify pystray, and the packaged
-  builds are produced from the unmodified published release.
-- **PyInstaller**'s bootloader is linked into the distributed executable.
-  PyInstaller's licence carries an exception permitting this for
-  applications that are not themselves under its licence.
+- **pystray** is LGPL-3.0, and the packaged executable is therefore a
+  combined work under that licence. LGPL-3.0 requires that this notice and
+  pystray's licence text accompany the distribution, and that a recipient be
+  able to modify pystray and rebuild the application against their modified
+  copy. OmniSuite does not modify pystray: the packaged builds are produced
+  from the unmodified published release, OmniSuite's own source is published,
+  and the build is reproducible with `tools/build_release.py`, so a recipient
+  who installs a modified pystray and rebuilds obtains the application running
+  against their version.
+- **PyInstaller** is GPLv2, but its licence carries an explicit bootloader
+  exception permitting the bootloader to be linked into, and distributed
+  with, applications that are not themselves under GPLv2. OmniSuite relies on
+  that exception. PyInstaller is a build tool; no part of it other than the
+  bootloader is incorporated into the distributed executable.
 
 Nothing in this file grants any right to OmniSuite itself. OmniSuite's own
 terms are in [LICENSE](LICENSE).
+
+The Hall Research Technologies Source-Available Software License applies only
+to Hall-owned OmniSuite code and content. It does not, and cannot, alter the
+licence of any component listed above. Where the Hall licence and a
+component's own licence differ as to that component, the component's licence
+governs it.
 

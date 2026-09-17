@@ -30,6 +30,13 @@ user-facing summary.
   rather than disturbing the display already using it.
 - Added a source filter and an independently scrolling source list, so the
   canvas stays visible while a long inventory is searched.
+- Replaced the licence. OmniSuite is now published under the Hall Research
+  Technologies Source-Available Software License, which permits personal,
+  business and commercial use free of charge, including while doing paid work,
+  and permits modification for personal or internal business use. Selling
+  OmniSuite and distributing modified versions remain prohibited. This
+  supersedes the PolyForm Noncommercial License 1.0.0 used up to V1.0.7, which
+  did not permit the business use Hall intends to allow.
 - Added an About area in Settings naming the publisher and linking to the
   licence, which the application now serves from the build it was made from.
 - Added `THIRD_PARTY_NOTICES.md`, listing the bundled third-party components

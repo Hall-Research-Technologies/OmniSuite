@@ -110,5 +110,7 @@ border-radius:6px;background:var(--panel-2);color:var(--fg);cursor:pointer;font-
   line-height: 1.5;
 }
 .cfg-about-terms { margin-top: 2px; }
+/* Two links on one line, spaced rather than run together. */
+.cfg-about-links { margin-top: 4px; display: flex; gap: 14px; }
 .cfg-about-text a { color: inherit; text-decoration: underline; }
 .cfg-about-text a:hover { color: var(--text, var(--fg)); }

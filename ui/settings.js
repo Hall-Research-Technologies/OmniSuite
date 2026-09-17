@@ -107,15 +107,15 @@ const SETTINGS_MODAL_HTML = `
       <label>About</label>
       <div class="cfg-about-text">
         <div>Copyright &copy; 2026 Hall Research Technologies LLC</div>
-        <!-- Deliberately does not summarise what use is permitted. The
-             intended policy allows business use; the licence currently in the
-             repository does not, and the application must not tell an operator
-             something its own LICENSE contradicts. When the approved licence is
-             installed this can state the permission directly. -->
-        <div class="cfg-about-terms">Source-available software, provided free of
-          charge. See the
+        <!-- The Hall licence permits business use outright, so this says so
+             plainly. The link below serves the licence the running build was
+             actually made from, so the two can never disagree. -->
+        <div class="cfg-about-terms">Source-available software.
+          Free for personal and business use.</div>
+        <div class="cfg-about-links">
           <a href="/license" target="_blank" rel="noopener noreferrer">License</a>
-          for the terms that govern its use.</div>
+          <a href="/help" target="_blank" rel="noopener noreferrer">User Guide</a>
+        </div>
       </div>
     </div>
     <div id="cfg_error" class="modal-error"></div>

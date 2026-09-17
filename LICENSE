@@ -1,139 +1,254 @@
-Required Notice: Copyright Hall Research Technologies (https://www.hallresearch.com)
+Hall Research Technologies Source-Available Software License
+Version 1.0
 
-OmniSuite is source-available software published by Hall Research
-Technologies. It is not OSI Open Source. The terms below govern all use,
-modification and redistribution; commercial use is not licensed.
+Copyright © 2026 Hall Research Technologies LLC
 
----
+OmniSuite is source-available software. Its source code is published so that it
+can be read, inspected and adapted. It is not OSI Open Source, and it is not
+offered under the MIT, Apache, BSD, GPL, Creative Commons or PolyForm licenses.
+These are Hall Research Technologies LLC's own terms, and they are the only
+terms that govern OmniSuite.
 
-# PolyForm Noncommercial License 1.0.0
+Please read this license before using OmniSuite. By using, copying, modifying
+or redistributing the software, you accept it.
 
-<https://polyformproject.org/licenses/noncommercial/1.0.0>
 
-## Acceptance
+1. DEFINITIONS
 
-In order to get any license under these terms, you must agree
-to them as both strict obligations and conditions to all
-your licenses.
+"OmniSuite" and "the Software" mean the OmniSuite software published by Hall
+Research Technologies LLC, including its source code, documentation and
+released builds.
 
-## Copyright License
+"Hall" means Hall Research Technologies LLC.
 
-The licensor grants you a copyright license for the
-software to do everything you might do with the software
-that would otherwise infringe the licensor's copyright
-in it for any permitted purpose.  However, you may
-only distribute the software according to [Distribution
-License](#distribution-license) and make changes or new works
-based on the software according to [Changes and New Works
-License](#changes-and-new-works-license).
+"You" means the person or organization exercising the permissions in this
+license. If you accept it on behalf of an organization, "you" includes that
+organization.
 
-## Distribution License
+"Modified Version" means the Software with any addition, deletion or change to
+it, including a derivative work, a fork, a port, or the Software combined with
+other code so that the result is distributed as one product.
 
-The licensor grants you an additional copyright license
-to distribute copies of the software.  Your license
-to distribute covers distributing the software with
-changes and new works permitted by [Changes and New Works
-License](#changes-and-new-works-license).
+"Distribute" means to give, publish, transfer, share or otherwise make the
+Software available to anyone outside your organization, by any means, including
+publishing it in a publicly accessible source repository or download.
 
-## Notices
+"Your organization" means you, and if you are acting for a company or other
+legal entity, that entity and the entities it controls, that control it, or
+that are under common control with it.
 
-You must ensure that anyone who gets a copy of any part of
-the software from you also gets a copy of these terms or the
-URL for them above, as well as copies of any plain-text lines
-beginning with `Required Notice:` that the licensor provided
-with the software.  For example:
+"Third-Party Components" means software that Hall did not write and includes
+with, or links into, OmniSuite.
 
-> Required Notice: Copyright Yoyodyne, Inc. (http://example.com)
 
-## Changes and New Works License
+2. OWNERSHIP
 
-The licensor grants you an additional copyright license to
-make changes and new works based on the software for any
-permitted purpose.
+Hall retains all copyright, ownership and other intellectual property rights in
+OmniSuite. This license grants permission to use the Software on the terms
+below. It does not transfer ownership of it, and it does not grant any right
+that is not stated in it.
 
-## Patent License
 
-The licensor grants you a patent license for the software that
-covers patent claims the licensor can license, or becomes able
-to license, that you would infringe by using the software.
+3. PERMISSION TO USE — FREE, INCLUDING IN BUSINESS
 
-## Noncommercial Purposes
+Hall grants you permission, free of charge and without any license fee, to
+install and use OmniSuite for any purpose, including:
 
-Any noncommercial purpose is a permitted purpose.
+  (a) personal use;
+  (b) internal use within your business or organization;
+  (c) commercial and business operations, including use of the Software as a
+      tool while you are earning money.
 
-## Personal Uses
+This permission expressly includes use by audiovisual integrators, installers,
+consultants, contractors and service providers while performing paid work for
+their own customers.
 
-Personal use for research, experiment, and testing for
-the benefit of public knowledge, personal study, private
-entertainment, hobby projects, amateur pursuits, or religious
-observance, without any anticipated commercial application,
-is use for a permitted purpose.
+There is no restriction on using OmniSuite commercially. The restrictions in
+this license are on selling the Software and on distributing Modified Versions
+of it, not on using it.
 
-## Noncommercial Organizations
 
-Use by any charitable organization, educational institution,
-public research organization, public safety or health
-organization, environmental protection organization,
-or government institution is use for a permitted purpose
-regardless of the source of funding or obligations resulting
-from the funding.
+4. SOURCE CODE ACCESS
 
-## Fair Use
+You may view, read, inspect, study and analyze the source code of OmniSuite.
 
-You may have "fair use" rights for the software under the
-law. These terms do not limit them.
 
-## No Other Rights
+5. MODIFICATION FOR PERSONAL AND INTERNAL USE
 
-These terms do not allow you to sublicense or transfer any of
-your licenses to anyone else, or prevent the licensor from
-granting licenses to anyone else.  These terms do not imply
-any other licenses.
+You may modify OmniSuite, and use your Modified Version, for:
 
-## Patent Defense
+  (a) your own personal use; and
+  (b) internal use within your own organization.
 
-If you make any written claim that the software infringes or
-contributes to infringement of any patent, your patent license
-for the software granted under these terms ends immediately. If
-your company makes such a claim, your patent license ends
-immediately for work on behalf of your company.
+You may share your Modified Version within your organization, and with
+contractors working on your behalf on your own systems, provided they are bound
+by this license. That is internal use, not distribution.
 
-## Violations
+You may not Distribute a Modified Version. See section 7.
 
-The first time you are notified in writing that you have
-violated any of these terms, or done anything with the software
-not covered by your licenses, your licenses can nonetheless
-continue if you come into full compliance with these terms,
-and take practical steps to correct past violations, within
-32 days of receiving notice.  Otherwise, all your licenses
-end immediately.
 
-## No Liability
+6. REDISTRIBUTION OF THE ORIGINAL, UNMODIFIED SOFTWARE
 
-***As far as the law allows, the software comes as is, without
-any warranty or condition, and the licensor will not be liable
-to you for any damages arising out of these terms or the use
-or nature of the software, under any kind of legal claim.***
+You may Distribute the original, unmodified OmniSuite, provided that all of the
+following are true:
 
-## Definitions
+  (a) you distribute it free of charge, and charge no fee of any kind for the
+      software, for a license to it, or for access to the copy;
+  (b) it is unmodified;
+  (c) you include this LICENSE file;
+  (d) you preserve Hall's copyright notice;
+  (e) you include the third-party notices distributed with the Software,
+      including THIRD_PARTY_NOTICES.md; and
+  (f) you preserve any other attribution included with the original
+      distribution.
 
-The **licensor** is the individual or entity offering these
-terms, and the **software** is the software the licensor makes
-available under these terms.
+Simply pointing people to Hall's own published release is always permitted and
+is the preferred way to share OmniSuite.
 
-**You** refers to the individual or entity agreeing to these
-terms.
 
-**Your company** is any legal entity, sole proprietorship,
-or other kind of organization that you work for, plus all
-organizations that have control over, are under the control of,
-or are under common control with that organization.  **Control**
-means ownership of substantially all the assets of an entity,
-or the power to direct its management and policies by vote,
-contract, or otherwise.  Control can be direct or indirect.
+7. DISTRIBUTION OF MODIFIED VERSIONS IS PROHIBITED
 
-**Your licenses** are all the licenses granted to you for the
-software under these terms.
+You may not, without Hall's prior written permission:
 
-**Use** means anything you do with the software requiring one
-of your licenses.
+  (a) Distribute a Modified Version;
+  (b) publish a Modified Version, including hosting it publicly as a fork
+      intended for others to obtain;
+  (c) sublicense a Modified Version;
+  (d) sell a Modified Version;
+  (e) transfer a Modified Version to any third party as a software product; or
+  (f) offer a Modified Version to third parties as a hosted or network service
+      in place of distributing it.
+
+Modifications you keep inside your own organization are permitted under section
+5. This section restricts sending them outward.
+
+
+8. SALE IS PROHIBITED
+
+You may not sell OmniSuite, and you may not charge any fee for:
+
+  (a) the Software itself;
+  (b) a license or right to use the Software;
+  (c) access to a copy of the Software you have redistributed; or
+  (d) OmniSuite offered commercially as a software product, whether on its own,
+      bundled with other software, or preloaded on hardware sold to a customer.
+
+OmniSuite is provided free of charge, and it must stay free of charge for
+everyone who receives it.
+
+
+9. PROFESSIONAL SERVICES MAY BE CHARGED FOR
+
+Nothing in section 8 prevents you from charging for your own professional
+services, even when you use OmniSuite to perform them. Charging for services
+such as audiovisual system design, installation, configuration, commissioning,
+programming, integration, training, maintenance, support or consulting is
+permitted.
+
+The distinction is what the customer is paying for. Payment for your work,
+time, expertise or equipment is permitted. Payment for OmniSuite itself, or for
+a license or right to use it, is not.
+
+You may install OmniSuite on a customer's systems as part of a paid engagement,
+provided you do so under section 6 and charge nothing for the software.
+
+
+10. NO REBRANDING
+
+You may not rename, rebrand or restyle OmniSuite and distribute it as your own
+or another software product, and you may not present it as originating from
+anyone other than Hall. You may not use the OmniSuite or Hall Research
+Technologies names, logos or trademarks to promote a Modified Version or to
+suggest that Hall endorses your product. This section does not prevent accurate,
+factual statements that you use OmniSuite.
+
+
+11. THIRD-PARTY COMPONENTS
+
+OmniSuite includes Third-Party Components. This license applies only to the
+OmniSuite code and content owned by Hall. It does not apply to, alter or
+supersede the license of any Third-Party Component.
+
+Each Third-Party Component remains governed by its own license and copyright,
+and your rights and obligations for that component come from that license, not
+from this one. Some of those licenses impose obligations that this license
+cannot waive on their authors' behalf. Hall claims no ownership of any
+Third-Party Component.
+
+The Third-Party Components distributed with OmniSuite, and their licenses, are
+listed in THIRD_PARTY_NOTICES.md. Where a Third-Party Component's license
+conflicts with this one, that component's license governs that component.
+
+
+12. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NONINFRINGEMENT.
+
+HALL DOES NOT WARRANT THAT THE SOFTWARE WILL BE UNINTERRUPTED, ERROR-FREE OR
+FREE OF HARMFUL COMPONENTS, OR THAT IT WILL WORK CORRECTLY WITH ANY PARTICULAR
+DEVICE, NETWORK OR CONFIGURATION.
+
+OmniSuite reconfigures audiovisual and network hardware. You are responsible
+for deciding whether it is appropriate for your equipment, for the consequences
+of the changes you make with it, and for maintaining your own backups and
+recovery procedures.
+
+
+13. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, HALL SHALL NOT BE LIABLE FOR
+ANY INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, PUNITIVE OR CONSEQUENTIAL
+DAMAGES, OR FOR ANY LOSS OF PROFITS, REVENUE, DATA, BUSINESS, GOODWILL, USE OR
+EQUIPMENT DOWNTIME, ARISING OUT OF OR RELATING TO THE SOFTWARE OR THIS LICENSE,
+UNDER ANY THEORY OF LIABILITY, EVEN IF HALL HAS BEEN ADVISED OF THE POSSIBILITY
+OF SUCH DAMAGES.
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, HALL'S TOTAL AGGREGATE
+LIABILITY ARISING OUT OF OR RELATING TO THE SOFTWARE OR THIS LICENSE SHALL NOT
+EXCEED ONE HUNDRED US DOLLARS (US$100).
+
+The software is provided free of charge, and these limits reflect that. Some
+jurisdictions do not allow certain exclusions or limitations of liability; in
+those jurisdictions, Hall's liability is limited to the smallest extent
+permitted by law.
+
+
+14. TERMINATION
+
+Your rights under this license end automatically if you materially violate it.
+
+If the violation can be corrected, your rights are reinstated as of the date
+you correct it, provided you correct it within 30 days of becoming aware of the
+violation and Hall has not already notified you of it. If Hall notifies you of
+a material violation, your rights are reinstated only if you correct it within
+30 days of that notice.
+
+On termination you must stop using the Software and stop distributing it, and
+you must stop distributing any copy you made available to others. Sections 2,
+11, 12, 13 and 15 survive termination.
+
+
+15. GENERAL
+
+This license is the entire agreement between you and Hall concerning OmniSuite,
+and it replaces any earlier license under which you may have received it.
+
+If any provision of this license is held unenforceable, it shall be modified to
+the minimum extent necessary to make it enforceable, and the remaining
+provisions shall remain in full force.
+
+Hall's failure to enforce any provision is not a waiver of it.
+
+Hall may publish OmniSuite under different or additional terms, and may grant
+written permission for uses this license does not allow. Only a written grant
+signed by Hall does so; nothing else in Hall's documentation, marketing or
+correspondence modifies this license.
+
+For permissions beyond this license, contact Hall Research Technologies LLC at
+https://www.hallresearch.com.
+
+
+Copyright © 2026 Hall Research Technologies LLC. All rights reserved except as
+expressly granted above.

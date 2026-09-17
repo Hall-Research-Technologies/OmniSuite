@@ -411,10 +411,25 @@ def run(binary: Path, expected_version: str, scope: Path | None = None) -> int:
         except Exception as exc:
             text = ""
             failures.append(f"/license raised {type(exc).__name__}")
-        if "Copyright" not in text:
-            failures.append("/license does not carry a copyright line")
-        else:
-            log(f"  licence served, {len(text)} bytes")
+        # It must be the Hall licence, not merely *a* licence. A package built
+        # before the licence changed would still pass a "has a copyright line"
+        # check while shipping the superseded noncommercial terms, which for an
+        # operator is the difference between being allowed to use OmniSuite at
+        # work and not.
+        for required in ("Hall Research Technologies Source-Available Software License",
+                         "Copyright © 2026 Hall Research Technologies LLC"):
+            if required not in text:
+                failures.append(f"/license is missing {required!r}")
+        # Match the superseded licence itself, not the word. The Hall licence
+        # names PolyForm in the sentence saying it is *not* PolyForm, which a
+        # bare substring check reads as a stale reference.
+        for superseded in ("PolyForm Noncommercial License 1.0.0",
+                           "## Noncommercial Purposes"):
+            if superseded in text:
+                failures.append(
+                    f"/license still carries the superseded terms: {superseded!r}")
+        if not failures:
+            log(f"  Hall licence served, {len(text)} bytes, no superseded terms")
     finally:
         log("stopping")
         # --onefile runs a bootloader that spawns the application as a CHILD, so
