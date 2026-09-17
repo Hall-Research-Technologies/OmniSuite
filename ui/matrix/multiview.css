@@ -461,3 +461,110 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
   .mv-groups-body{flex-direction:column;}
   .mv-dialog{width:100%;}
 }
+
+/* ---------------------------------------------------------------- display output
+   What the decoder is actually showing. Smaller than the canvas and shaped
+   nothing like a Multiview window, because it is one display output rather than
+   a composition -- an operator who has to work out which rectangle is which has
+   been given two canvases, not a canvas and a status.
+
+   Every colour here is a semantic token. A stylesheet that names a hue is a
+   stylesheet that is wrong in one of the eight appearance combinations. */
+/* Its own row above the working area, and capped so a wide window does not
+   stretch one status line across the whole page. */
+.mv-output-row { padding: 16px 16px 0; }
+.mv-output-row[hidden] { display: none; }
+.mv-output-panel { max-width: 720px; }
+.mv-output-panel h2 { margin-bottom: 8px; }
+
+.mv-output {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 62px;
+  padding: 10px 14px;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--surface-elevated);
+  transition: border-color .12s ease, background-color .12s ease;
+}
+
+/* A drop here changes what is on the display, so the state that says so is the
+   loudest thing in the panel. */
+.mv-output.is-live { border-color: var(--state-success); }
+.mv-output.is-multiview { border-color: var(--action-primary); }
+.mv-output.is-unknown { border-style: dashed; }
+.mv-output.is-error { border-color: var(--state-error); }
+
+/* Armed only while a source that can actually be routed is being dragged, so
+   the panel never invites a drop it would refuse. */
+.mv-output.can-drop {
+  border-color: var(--action-primary);
+  border-style: dashed;
+}
+.mv-output.drop-target {
+  border-color: var(--action-primary);
+  border-style: solid;
+  background: var(--selected-fill);
+}
+
+.mv-output-badge {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--edge);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.mv-output-badge.live {
+  color: var(--state-success);
+  border-color: var(--state-success);
+}
+.mv-output-badge.multiview {
+  color: var(--action-primary);
+  border-color: var(--action-primary);
+}
+
+.mv-output-main { flex: 1 1 auto; min-width: 0; }
+.mv-output-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mv-output-meta {
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mv-output-hint {
+  margin: 6px 2px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* The canvas says whether this composition is the one on the display. Stated
+   on the canvas rather than left to be inferred from the Display Output panel
+   above it: the two answer different questions and must not be read as one. */
+.mv-canvas-state {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--edge);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  vertical-align: middle;
+}
+.mv-canvas-state.live {
+  color: var(--state-success);
+  border-color: var(--state-success);
+}

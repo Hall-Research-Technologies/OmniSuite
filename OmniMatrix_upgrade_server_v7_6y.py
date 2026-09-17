@@ -358,13 +358,27 @@ def start_background_startup_tasks():
         except Exception as exc:
             log.debug("Startup update check skipped: %s", type(exc).__name__)
 
-    threading.Thread(target=_startup_update_check, daemon=True).start()
-    threading.Thread(target=_trigger_startup_verification, daemon=True).start()
-    threading.Thread(target=_startup_usb_refresh, daemon=True).start()
+    # Recorded as they are started. Nothing here waits for them -- that is the
+    # point of a daemon thread -- but they call `_refresh_icron_network_config`
+    # and `_usb_live_refresh` through the module globals when they fire, so a
+    # caller that is about to rebind those names needs a way to let the work
+    # finish first rather than have it arrive afterwards.
+    for work in (_startup_update_check, _trigger_startup_verification,
+                 _startup_usb_refresh):
+        thread = threading.Thread(target=work, daemon=True)
+        _startup_threads.append(thread)
+        thread.start()
 
 
 _startup_tasks_started = False
+_startup_threads = []
 log.info("[STARTUP] Cache verification will run in background")
+
+
+# How long the USB refresh lets normal discovery settle before it asks. Named
+# rather than inline so that a caller with nothing to settle -- a test -- can
+# wait for the work instead of waiting for the delay.
+STARTUP_USB_SETTLE = 2.0
 
 
 def _startup_usb_refresh():
@@ -375,7 +389,7 @@ def _startup_usb_refresh():
     parents. Both are bounded by the same throttles the pages use, and neither
     blocks startup or `/api/scan`.
     """
-    time.sleep(2.0)                      # let discovery settle first
+    time.sleep(STARTUP_USB_SETTLE)       # let discovery settle first
     try:
         _refresh_usb_parent_map()
         _usb_live_refresh(force=True)
@@ -390,6 +404,25 @@ def _startup_usb_refresh():
 # The USB refresh is started with the rest of the startup work, by main() or the
 # launcher -- never as a side effect of importing this module.
 log.info("[STARTUP] Known USB endpoints will be refreshed by directed polling")
+
+
+def await_startup_tasks(timeout=15.0):
+    """Let the startup refreshes finish, and report whether they did.
+
+    Startup itself never calls this -- the threads are daemons precisely so that
+    nothing waits for them -- and neither does any request path. It is here for
+    a caller that must not have the work arrive late, because it is about to
+    rebind the globals those threads resolve when they fire. The test suite is
+    that caller today; an orderly shutdown would be the other one.
+    """
+    deadline = time.monotonic() + float(timeout)
+    for thread in list(_startup_threads):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        thread.join(remaining)
+    return not any(thread.is_alive() for thread in list(_startup_threads))
+
 
 # ---------------- CSV helpers ----------------
 def _excel_safe_text(value: str) -> str:
@@ -7946,7 +7979,18 @@ def api_state_matrix():
                 ):
                     if live.get(k) is not None:
                         dec_mapped[i][k] = live.get(k)
-    
+                # The overlay above replaces `video_input` with what the device
+                # last reported, and the Multiview verdict was derived from the
+                # cached one. Leaving it there made the matrix say a decoder was
+                # not in Multiview while naming a Multiview as its video input --
+                # measured on 192.168.100.32 after a route and a Show. Derived
+                # again here, from the value that actually survived, because a
+                # derived field must never outlive what it was derived from.
+                name = omni_multiview.active_multiview_name(
+                    dec_mapped[i].get("video_input"))
+                dec_mapped[i]["multiview_name"] = name
+                dec_mapped[i]["multiview_active"] = bool(name)
+
     if dec_mapped:
         log.debug(f"[API/STATE] Sample decoder after overlay: {dec_mapped[0]}")
 
@@ -8199,6 +8243,14 @@ def _restore_multiview_after_failed_route(ip, name):
         good, detail = _verify_mutation({
             "device": ip, "node": "hdmi_output", "target": "hdmi_output1",
             "config": {"name": "hdmi_output1", "video": {"input": name}}})
+        # Leaving the Multiview recorded the fallback input the display moved
+        # to. Putting it back has to record that too, or the A/V Matrix goes on
+        # showing the conventional route that was rolled back -- measured on
+        # 192.168.100.32, where the cache still read ip_input1 while the decoder
+        # was demonstrably compositing again. The device is the truth; the cache
+        # has to be told when the device changes back.
+        if good:
+            _remember_decoder_display(ip, name)
         return good, detail
     except Exception as exc:
         return False, str(exc)
@@ -13339,6 +13391,32 @@ def api_multiview_preview():
     return jsonify(body)
 
 
+def _encoder1_bitrates(addresses):
+    """Each encoder's current Encoder 1 bitrate, read concurrently.
+
+    One `config_get` per source, and only where a caller is deciding
+    eligibility. A device that does not answer is simply absent from the
+    result: unknown is not a refusal.
+    """
+    addresses = sorted({ip for ip in addresses if ip})
+    if not addresses:
+        return {}
+
+    def read(ip):
+        entry = next((e for e in _mv_config(ip, "vc2")
+                      if str(e.get("name") or "")
+                      == omni_multiview.encoder_object_name(1)), None)
+        value = (entry or {}).get("bitrate")
+        return ip, value if isinstance(value, (int, float)) else None
+
+    if len(addresses) == 1:
+        ip, value = read(addresses[0])
+        return {ip: value} if value is not None else {}
+    with ThreadPoolExecutor(max_workers=min(8, len(addresses))) as pool:
+        return {ip: value for ip, value in pool.map(read, addresses)
+                if value is not None}
+
+
 @app.route("/api/multiview/sources", methods=["GET"])
 def api_multiview_sources():
     """Encoders that can feed a Multiview window, each with its own state.
@@ -13358,11 +13436,24 @@ def api_multiview_sources():
                 if str(d.get("role") or d.get("type") or "").lower() == "encoder"]
     live = _reachability([d.get("ip") for d in encoders]) if probe else {}
 
+    # A source whose primary stream is using the whole budget has nothing left
+    # to carry a window, and the operator should learn that from the list rather
+    # than from a refusal after they have assigned it. The scan does not record
+    # Encoder 1's bitrate, so it is read here -- at the moment eligibility is
+    # deliberately being evaluated, for the reachable encoders only, and
+    # concurrently. Nothing about this runs on the scan path or while idle.
+    # `probe=0` is the deliberately cheap call: it answers from the cache and
+    # touches nothing, so it reads no bitrates either.
+    headroom = _encoder1_bitrates(
+        [d.get("ip") for d in encoders if live.get(d.get("ip"))]
+        if probe else [])
+
     sources, excluded = [], []
     for device in encoders:
         ip = device.get("ip")
         classification = omni_multiview.classify_source(
-            device, reachable=live.get(ip) if probe else None)
+            device, reachable=live.get(ip) if probe else None,
+            encoder1_bitrate=headroom.get(ip))
         # The scan records an encoder's session multicast under
         # `sessionN_video_mcast`. `ipN_addr` is the decoder-side field -- the
         # address a decoder *listens* to -- and reading it here left every tile
@@ -13380,12 +13471,23 @@ def api_multiview_sources():
             "reason": classification["reason"],
             "detail": classification["detail"],
             "action": classification["action"],
+            "encoder1_bitrate": headroom.get(ip),
+            "headroom": omni_multiview.multiview_headroom(headroom.get(ip))[0],
             "session1": device.get("session1_video_mcast") or "",
             "session1_port": device.get("session1_video_port") or "",
             "session1_audio": device.get("session1_audio_mcast") or "",
             "session2": device.get("session2_video_mcast") or "",
             "session2_port": device.get("session2_video_port") or "",
         }
+        # A conventional A/V Matrix route is a different question from a
+        # Multiview window, and the page must not answer it by reusing the
+        # Multiview verdict: an encoder whose primary stream uses the whole
+        # budget cannot feed a window and is still a perfectly good ordinary
+        # source. Decided here, by the one rule, so the page holds none of it.
+        normal = omni_multiview.normal_route_eligibility(
+            device, reachable=live.get(ip) if probe else None)
+        entry["normal_route"] = normal["status"]
+        entry["normal_route_reason"] = normal["reason"]
         if classification["status"] == omni_multiview.SOURCE_INELIGIBLE:
             excluded.append(entry)
         else:
@@ -13522,6 +13624,10 @@ def api_multiview_state():
         },
         "ip_inputs": omni_multiview.classify_ip_inputs(
             state["ip_input"], hdmi, state["multiview"]),
+        # What is on the display right now, as opposed to what is selected in
+        # the page or saved on the decoder. Derived from the same read; no
+        # extra request, no timer.
+        "display_output": _display_output_view(state, devices),
     })
 
 
@@ -13563,6 +13669,58 @@ def _resolve_subscription(address, port, devices=None):
                         "session": "", "encoder_index": None,
                         "resolved_from": "subscription"}
     return None
+
+
+def _display_output_view(state, devices=None):
+    """What the decoder is ACTUALLY putting on its display.
+
+    Read from the decoder's own current output selection and nothing else. A
+    saved Multiview, a remembered browser selection and the last button pressed
+    all describe intent; only `hdmi_output.video.input` describes the display.
+
+    Three answers, because they call for three different presentations:
+
+      multiview   the output is compositing a Multiview, named
+      source      the output is an ip_input carrying a stream we can name
+      none        nothing is selected, or what is selected carries nothing
+
+    A stream that is arriving but belongs to no discovered encoder is still
+    `source` -- something is plainly on the screen -- with no source named. It
+    is never reported as `none`, and `none` is never dressed up as live.
+
+    Derived entirely from the decoder state the caller has already read. This
+    adds no device read and no polling.
+    """
+    hdmi = (state or {}).get("hdmi_output") or {}
+    video_input = str((hdmi.get("video") or {}).get("input") or "")
+    audio_input = str((hdmi.get("audio") or {}).get("input") or "")
+    multiview = omni_multiview.active_multiview_name(video_input)
+    if multiview:
+        return {"state": "multiview", "multiview": multiview,
+                "video_input": video_input, "audio_input": audio_input,
+                "video": None, "audio": None, "live": True}
+
+    devices = devices if devices is not None else _load_cache()
+    inputs = {str(entry.get("name") or ""): entry
+              for entry in ((state or {}).get("ip_input") or ())}
+
+    def leg(name):
+        entry = inputs.get(name) or {}
+        address = (entry.get("multicast") or {}).get("address") or ""
+        port = entry.get("port")
+        enabled = bool(entry.get("enabled"))
+        carrying = bool(name and address and enabled)
+        return {"ip_input": name, "multicast": address, "port": port,
+                "enabled": enabled, "carrying": carrying,
+                "source": _resolve_subscription(address, port, devices)
+                          if carrying else None}
+
+    video, audio = leg(video_input), leg(audio_input)
+    return {"state": "source" if video["carrying"] else "none",
+            "multiview": "",
+            "video_input": video_input, "audio_input": audio_input,
+            "video": video, "audio": audio,
+            "live": video["carrying"]}
 
 
 def _subframe_view(subframe, state, stored, devices=None):

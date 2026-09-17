@@ -177,4 +177,71 @@
       (options.danger ? cancelBtn : okBtn).focus();
     });
   };
+
+  // ---- taking a decoder out of Multiview -------------------------------
+  //
+  // One warning, one preference, two pages. The A/V Matrix has always asked
+  // before a route replaces a Multiview picture; the Multiview page's Display
+  // Output does exactly the same thing by exactly the same route, so it asks
+  // the same question and reads the same answer. An operator who turned it off
+  // on one page has turned it off, and a second copy of this policy would be a
+  // second thing to keep in step.
+  //
+  // The keys are the ones the A/V Matrix already wrote, so an existing
+  // preference carries over rather than being silently reset.
+  const MV_EXIT_SESSION_KEY = 'matrix_multiview_exit_acknowledged';
+  const MV_EXIT_FOREVER_KEY = 'matrix_multiview_exit_suppressed';
+
+  window.omniMultiviewExit = window.omniMultiviewExit || {
+    SESSION_KEY: MV_EXIT_SESSION_KEY,
+    FOREVER_KEY: MV_EXIT_FOREVER_KEY,
+
+    // Storage that refuses to answer means ask: a browser with storage off
+    // must not quietly lose a warning that precedes a display change.
+    suppressed: function () {
+      try {
+        if (localStorage.getItem(MV_EXIT_FOREVER_KEY) === 'true') return true;
+        return sessionStorage.getItem(MV_EXIT_SESSION_KEY) === 'true';
+      } catch (err) {
+        return false;
+      }
+    },
+
+    remember: function (forever) {
+      try {
+        sessionStorage.setItem(MV_EXIT_SESSION_KEY, 'true');
+        if (forever) localStorage.setItem(MV_EXIT_FOREVER_KEY, 'true');
+      } catch (err) { /* not fatal: the warning simply returns */ }
+    },
+
+    // Resolves true when the operation may proceed. Nothing has been written
+    // to any device before this resolves, on either page.
+    // Named `ask`, not `confirm`: the page-wide guard that forbids the
+    // native dialogs matches a bare `confirm(`, and a helper that trips it
+    // would mean weakening the guard to accommodate a name.
+    ask: async function (options) {
+      options = options || {};
+      if (window.omniMultiviewExit.suppressed()) return true;
+      const who = options.decoder || 'this decoder';
+      const answer = await window.omniConfirm({
+        title: 'Multiview is active on this decoder',
+        message: options.message
+          || ('Completing this route will exit Multiview on ' + who + ' and '
+              + 'replace the Multiview display with the selected A/V route. '
+              + 'The saved Multiview is kept and can be shown again later.'),
+        summary: [
+          {label: 'Decoder', value: who},
+          {label: 'Currently showing', value: options.multiview || 'a Multiview'},
+          {label: 'After this route', value: options.after
+            || 'the source you selected'},
+          {label: 'Saved Multiview', value: 'kept, not deleted'},
+        ],
+        confirmText: 'Continue',
+        suppressLabel: 'Do not show this again',
+      });
+      const ok = answer === true || (answer && answer.ok);
+      if (ok) window.omniMultiviewExit.remember(!!(answer && answer.suppress));
+      return !!ok;
+    },
+  };
 })();

@@ -471,9 +471,14 @@
       <table>
         <tr><th>State</th><th>What it means</th><th>What to do</th></tr>
         <tr><td><strong>Ready</strong></td><td>Usable now.</td><td>Drag it into a window.</td></tr>
-        <tr><td><strong>Configuration required</strong></td><td>The encoder is fine, but something on it still has to be set &mdash; usually its second session has no multicast address.</td><td>Set it on the device. The tile says which field, and cannot be dragged until it is fixed.</td></tr>
+        <tr><td><strong>Configuration required</strong></td><td>The encoder is fine, but something on it still has to be set &mdash; usually its second session has no multicast address, or its main stream is already using the encoder's whole bandwidth budget.</td><td>Set it on the device. The tile says which field, and cannot be dragged until it is fixed.</td></tr>
         <tr><td><strong>Not eligible</strong></td><td>Offline, or a model that cannot feed a Multiview window.</td><td>Nothing. These are collected under <em>encoder(s) not eligible</em> with the reason, so a missing encoder is never a mystery.</td></tr>
       </table>
+
+      <h4>&ldquo;Configuration required&rdquo; because of bandwidth</h4>
+      <p>An encoder has one bandwidth budget of 900&nbsp;Mb/s, shared between its main stream and the second stream a Multiview window uses. If the main stream is already taking all of it &mdash; or all but a sliver &mdash; there is nothing left for a window, and the source is listed as <strong>Configuration required</strong> rather than Ready.</p>
+      <p><strong>OmniSuite will not lower the main stream to make room.</strong> That stream is somebody's picture on somebody's screen, and quietly degrading it to fit a Multiview window is not a decision OmniSuite makes for you. Lower it yourself on the encoder, from the Configure page or the device's own web interface, and the source becomes Ready.</p>
+      <p>The same rule decides the list and the plan, so a source shown as Ready will not then be refused when you assign it &mdash; and one shown as Configuration required tells you the number it is short by.</p>
 
       <h3>Seeing what is on a source before you use it</h3>
       <p><strong>Hover over a source tile</strong> and a preview of that encoder appears beside it, so you can tell two similarly named units apart without routing one to find out.</p>
@@ -519,6 +524,33 @@
       <p>If a source cannot be reached, OmniSuite tries a few times before giving up, then tells you which one it was and that <strong>nothing was changed</strong>. That is different from a Multiview that cannot be built &mdash; the message says which it is, so you know whether to fix the layout or go and look at the equipment.</p>
       <div class="note">Very occasionally a window stays black after a layout change even though everything is configured correctly. OmniSuite notices and says which window rather than reporting success. Showing a different Multiview and then showing this one again clears it.</div>
 
+      <h3>Display output: what is actually on the screen</h3>
+      <p>Above the canvas is a small <strong>Display output</strong> panel. It shows what the decoder is putting on its screen right now, which is not always the Multiview you happen to have open.</p>
+      <table>
+        <tr><th>Display output says</th><th>It means</th></tr>
+        <tr><td><strong>MULTIVIEW &middot; ACTIVE</strong>, with a name</td><td>The decoder is showing that Multiview.</td></tr>
+        <tr><td><strong>LIVE</strong>, with a source name and address</td><td>The decoder is showing one ordinary source, the normal way.</td></tr>
+        <tr><td><strong>NO VIDEO</strong></td><td>Nothing is arriving on the input the display is set to.</td></tr>
+      </table>
+      <p>The canvas below it says <strong>LIVE</strong> when the Multiview you are looking at is the one on the display, and <strong>INACTIVE</strong> when it is saved on the decoder but not currently shown. An inactive canvas is a design you are editing, not a picture anyone is watching.</p>
+      <p>This is read from the decoder itself every time the page loads its state. If somebody routes the decoder from the A/V Matrix, or shows a Multiview from another machine, you see the truth the next time this page reads &mdash; there is nothing to reset by hand.</p>
+
+      <h3>Putting an ordinary source on the display</h3>
+      <p><strong>Drag a source onto the Display output panel</strong> and that source is routed to the decoder normally &mdash; its ordinary picture and sound, exactly as if you had routed it from the A/V Matrix.</p>
+      <p>If a Multiview is on the display at the time, OmniSuite asks first, because the picture is about to change:</p>
+      <div class="note"><strong>The Multiview is not deleted.</strong> It stays saved on the decoder. It simply stops being the thing on screen, and the canvas changes from LIVE to INACTIVE. Press <strong>Show on Display</strong> whenever you want it back.</div>
+      <p>The question is asked once per session. Tick <em>Do not show this again</em> and it stops asking altogether. It is the same question, and the same preference, as the one the A/V Matrix asks &mdash; answering it in one place answers it in both.</p>
+      <p>Choosing <strong>Cancel</strong> changes nothing at all. Nothing is sent to any device until you choose Continue.</p>
+      <p>If the route then fails, OmniSuite puts the Multiview back and tells you. You are never left with a blank display because half an operation succeeded.</p>
+      <p>Two different drops, two different meanings, and the panel you drop on decides which:</p>
+      <table>
+        <tr><th>Drop it on</th><th>What happens</th></tr>
+        <tr><td>A Multiview <strong>window</strong></td><td>That window changes. The rest of the Multiview is untouched.</td></tr>
+        <tr><td><strong>Display output</strong></td><td>The whole display shows that one source, and Multiview is exited.</td></tr>
+      </table>
+      <p>A source listed as <em>Configuration required</em> for Multiview can often still be dropped on Display output. Multiview needs spare bandwidth on the encoder for a second stream; an ordinary route just uses the picture the encoder is already sending, so a shortage of spare bandwidth does not stop it.</p>
+      <p>For a <strong>group</strong>, the panel reports the group&rsquo;s display state and takes no drops. It says <em>MULTIVIEW &mdash; ACTIVE</em> with the number of synchronized displays when they all agree, and <em>DRIFTED</em> when they do not. Routing a whole group to one ordinary source is done from the A/V Matrix, so that a single drag can never change a room full of screens by accident.</p>
+
       <h3>Showing one on the display</h3>
       <p><strong>Show on Display</strong> prepares every source the Multiview needs and then switches the display to it. It runs immediately &mdash; choosing a Multiview and pressing the button is the instruction, so there is no extra dialog.</p>
       <p>Each change is read back from the device afterwards. If anything cannot be confirmed, the whole operation is undone and you are told what failed. A Multiview that is already showing and already correct can be shown again safely; nothing is rewritten.</p>
@@ -527,7 +559,7 @@
       <p>This is the distinction to hold on to, and the canvas states it in words:</p>
       <table>
         <tr><th>The Multiview you have open</th><th>What the canvas says</th><th>What a drop does</th></tr>
-        <tr><td>Not on the display</td><td><em>Not on the display &mdash; changes are saved, and shown when you choose</em></td><td>Edits the saved layout. Nothing on screen changes until you Save and Show.</td></tr>
+        <tr><td>Not on the display</td><td><strong>INACTIVE</strong> &mdash; <em>saved on this decoder, not currently shown</em></td><td>Edits the saved layout. Nothing on screen changes until you Save and Show.</td></tr>
         <tr><td>On the display</td><td><strong>LIVE &mdash; changes made on this canvas are applied immediately</strong>, with the canvas outlined</td><td><strong>Changes the picture straight away.</strong></td></tr>
       </table>
 

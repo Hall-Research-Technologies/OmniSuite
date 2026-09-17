@@ -500,6 +500,31 @@
 - `tests/test_fence.py` proves it, including by running the suite in a fresh interpreter through `python -m unittest` with no help from `run_tests.py`.
 - A test must not write a bench address into a test file, as a target or otherwise; use a documentation range, or RFC 2544's 198.18.0.0/15 when a routable-looking address is needed.
 
+### Display output and the canvas answer different questions
+
+- **The Display Output panel says what the decoder is putting on its screen. The canvas says whether the composition you have open is that thing.** They are not two views of one fact, and a page that merges them will tell an operator that a preset they are editing is on air.
+- **Display Output is derived from the decoder's own `hdmi_output.video.input`, every time state is read, and from nothing else.** Not the remembered selection, not the saved object, not the last button pressed. It is carried on `/api/multiview/state`, computed from the same three reads that endpoint already performs: no extra request and no timer.
+- **LIVE is a claim about the device.** An input that is selected but carrying nothing is `NO VIDEO`, not LIVE. A stream that is arriving but belongs to no discovered encoder is still on the screen and is reported as such, with no source named.
+- **A drop on Display Output is the ordinary A/V Matrix route** — `POST /api/route` with `exit_multiview` — and nothing about the teardown, the route, the verification or the rollback is implemented a second time on the Multiview page.
+- **A conventional route carries Session 1 video and Session 1 audio.** Never the Encoder 2 / Session 2 stream a Multiview window uses, however conveniently it happens to be running already. Encoder 2 is not prepared, scaled, re-rated or enabled for a conventional route.
+- **Multiview eligibility and normal-route eligibility are different questions, and the page holds neither rule.** A window needs Encoder 2, a Session 2 multicast and enough of the 900 Mb/s budget for a second stream; an ordinary route needs the Session 1 stream that is already running. A source can legitimately be CONFIGURATION REQUIRED for Multiview and a perfectly good conventional source, and refusing to route it would be a defect. The server answers both, per source.
+- **A group's Display Output is status only.** One drag must never route a room full of displays. Group-wide conventional routing is the A/V Matrix's job, and this phase did not invent one.
+
+### A derived field must not outlive what it was derived from
+
+- **If a value is computed from another, recompute it wherever that other value can change — do not carry the old answer forward.** `/api/state` derives `multiview_active` from the cached `video_input` and then overlays the live `video_input` on top of it. Measured on the bench: one record said `video_input` was a Multiview and `multiview_active` was false, at the same time. A decoder cannot be both.
+- **Anything that changes what a decoder displays must record it**, so the A/V Matrix does not go on showing a state the device has left. That includes the rollback path: `_restore_multiview_after_failed_route` puts the Multiview back, and has to say so, or the matrix keeps showing a conventional route that was undone.
+- **`omni_matrix_logic._decoders` and `_encoders` are process-global and `/api/state` overlays them onto the cache.** Tests must isolate them, for the same reason background work must not outlive its test: otherwise one test's decoder decides what another test's matrix row says.
+
+### Background work must not outlive the test that started it
+
+- **A test owns everything it sets in motion.** If a test starts, schedules or arms work that runs on another thread, that test waits for it to finish before it ends. Work that lands later lands inside somebody else's test, against somebody else's stubs, and is reported as their failure.
+- This is not a theoretical hazard. `start_background_startup_tasks()` starts three plain daemon threads; `_startup_usb_refresh` waited two seconds and then called `_refresh_icron_network_config` **through the module global**, so it resolved against whichever test was running at that moment. It arrived inside `MatrixNetworkReadinessTests` and recorded an Icron read that test never made. Aiming the fire at the target reproduced the failure in 7 of 30 attempts; in a full suite it was a rare flake whose cause was two seconds and several hundred tests away.
+- **Patching an executor is not enough.** `inline_background()` reaches executor submissions only. A bare `threading.Thread`, a `threading.Timer` or an `atexit` hook is invisible to it. Production code that starts a thread must record it somewhere a caller can wait on — `_startup_threads` / `await_startup_tasks()` is the pattern — so shutdown and tests both have a way to let the work finish.
+- **`ServerTestBase` enforces this rather than documenting it.** The wait is registered last in `setUp`, so it runs first in teardown, with the test's own stubs still installed: the work both belongs to that test and is observable by it. If anything is still running, the test that armed it fails. `StartupTaskIsolationTests` proves the contract, including that a deliberate leak is reported.
+- **Never fix a flake by waiting longer, retrying the assertion, reordering the suite, or excluding the test.** Find what crosses the boundary. A timing fix hides the leak and leaves the same work landing somewhere else.
+- A test-only delay is not a test-only knob for hiding a race. `STARTUP_USB_SETTLE` exists so the suite waits for the *work* instead of for a settle it has nothing to settle; the wait for the work is what makes it deterministic.
+
 ### The User Guide is part of the build
 
 - **The Settings-page User Guide (`ui/user-guide.html`) is a release artefact, not documentation that trails behind the code.** It ships inside the application, it is what an operator reads, and a build whose guide describes behaviour the build does not have is a defect in that build.

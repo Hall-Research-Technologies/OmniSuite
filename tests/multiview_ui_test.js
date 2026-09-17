@@ -232,9 +232,11 @@ const SOURCES = {ok: true, ready: 2, excluded: [
    detail: 'The encoder did not answer.'}], sources: [
   {ip: '192.0.2.20', hostname: 'enc-test-01', model: 'hw-omni-e4111',
    status: 'ready', status_label: 'Ready', reason: '', detail: '', action: '',
+   normal_route: 'ready', normal_route_reason: '',
    session1: '233.252.0.11', session2: '233.252.0.21'},
   {ip: '192.0.2.24', hostname: 'new-wp-01', model: 'HW-OMNI-E4111-WP',
    status: 'ready', status_label: 'Ready', reason: '', detail: '', action: '',
+   normal_route: 'ready', normal_route_reason: '',
    session1: '233.252.0.41', session2: '233.252.0.42'},
   // Not offline and not the wrong model -- just not configured yet. This is
   // the one an operator can fix, and the one the page must not hide.
@@ -243,15 +245,64 @@ const SOURCES = {ok: true, ready: 2, excluded: [
    reason: 'Multicast configuration required',
    detail: 'Session 2 has no multicast address.',
    action: 'configure_multicast',
-   session1: '233.252.0.51', session2: ''}]};
+   normal_route: 'ready', normal_route_reason: '',
+   session1: '233.252.0.51', session2: ''},
+  // The .218 case. Encoder 1 is using the whole 900 Mb/s budget, so there is
+  // nothing left for a Multiview window -- and its Session 1 stream is running
+  // perfectly well, so it is a completely ordinary conventional source. The
+  // page must be able to tell those two facts apart.
+  {ip: '192.0.2.26', hostname: 'enc-full-01', model: 'hw-omni-e4111',
+   status: 'configuration_required', status_label: 'Configuration required',
+   reason: 'Configuration required',
+   detail: 'This encoder\u2019s primary stream is using 900 of its 900 Mb/s budget.',
+   action: 'lower_encoder1', encoder1_bitrate: 900, headroom: 0,
+   normal_route: 'ready', normal_route_reason: '',
+   session1: '233.252.0.61', session2: '233.252.0.62'},
+  // Nothing to route: no Session 1 video at all. Refused by both.
+  {ip: '192.0.2.27', hostname: 'enc-nostream-01', model: 'hw-omni-e4111',
+   status: 'configuration_required', status_label: 'Configuration required',
+   reason: 'Multicast configuration required', detail: '',
+   action: 'configure_multicast',
+   normal_route: 'blocked',
+   normal_route_reason: 'Session 1 on this encoder has no video multicast '
+     + 'destination, so there is no stream to route.',
+   session1: '', session2: ''}]};
 
 const FREE = [{id: '1920x1080', width: 1920, height: 1080, available: true}];
+
+// What the decoder is actually showing, as the server reports it. A test that
+// wants the other state assigns this before the next read; nothing in the page
+// may infer it from anything else.
+const OUTPUT_SOURCE = {
+  state: 'source', multiview: '', live: true,
+  video_input: 'ip_input1', audio_input: 'ip_input3',
+  video: {ip_input: 'ip_input1', multicast: '233.252.0.11', port: 5004,
+          enabled: true, carrying: true,
+          source: {ip: '192.0.2.20', hostname: 'enc-test-01',
+                   model: 'hw-omni-e4111', session: 'session1',
+                   encoder_index: 1, resolved_from: 'subscription'}},
+  audio: {ip_input: 'ip_input3', multicast: '233.252.0.12', port: 5004,
+          enabled: true, carrying: true, source: null}};
+const OUTPUT_MULTIVIEW = {
+  state: 'multiview', multiview: 'multiview2x2', live: true,
+  video_input: 'multiview2x2', audio_input: 'ip_input3',
+  video: null, audio: null};
+const OUTPUT_NONE = {
+  state: 'none', multiview: '', live: false,
+  video_input: 'ip_input1', audio_input: '',
+  video: {ip_input: 'ip_input1', multicast: '', port: null,
+          enabled: false, carrying: false, source: null},
+  audio: {ip_input: '', multicast: '', port: null,
+          enabled: false, carrying: false, source: null}};
+let displayOutput = OUTPUT_SOURCE;
+
 function stateBody(views, canvases) {
   const list = canvases || FREE;
   return {ok: true, decoder: {ip: '192.0.2.10', hostname: 'dec-test-01'},
           multiviews: views || [], ip_inputs: [], canvases: list,
           can_create: list.some(c => c.available), managed: [],
           canvas: '1920x1080', interlocks: [],
+          display_output: displayOutput,
           hdmi_output: {video_input: 'ip_input1', audio_input: 'ip_input3',
                         sap_enabled: true, available_inputs: ['ip_input1'],
                         sap_session: '', output_resolution: '3840x2160',
@@ -308,6 +359,11 @@ const UNKNOWN_SOURCE_VIEW = Object.assign({}, LIVE_VIEW, {
 
 let stateResponse = stateBody([]);
 let stateError = null;
+// The ordinary A/V Matrix route, which is what a drop on Display Output asks
+// for. The page must send this request and must not invent one of its own.
+let routeResponse = {ok: true, status: 'VERIFIED',
+                     decoder: {ip: '192.0.2.10', video_input: 'ip_input1',
+                               multiview_active: false, multiview_name: null}};
 let applyResponse = {ok: true, status: 'VERIFIED', applied: ['Set vc2_encoder2'],
                      verified: [{step: 'Set vc2_encoder2', verified: true}],
                      plan: {object_name: 'multiview2x2'}};
@@ -435,6 +491,7 @@ function stubFetch(url, options) {
     if (previewHold) return previewHold.then(() => json(body));
     return json(body);
   }
+  if (url.startsWith('/api/route')) return json(routeResponse);
   if (url.startsWith('/api/multiview/switch')) return json(switchResponse);
   if (url.startsWith('/api/multiview/show')) return json(showResponse);
   if (url.startsWith('/api/multiview/delete')) return json(deleteResponse);
@@ -802,7 +859,7 @@ async function selectDecoder(ip) {
     assert(!hidden('mv_delete'), 'Delete is not offered for an existing Multiview');
     assert(!hidden('mv_show'), 'Show on Display is not offered');
     assertEqual(REGISTRY.get('mv_name').value, 'multiview2x2', 'name');
-    assert(/not currently shown on display/i.test(REGISTRY.get('mv_shown').deepText),
+    assert(/inactive/i.test(REGISTRY.get('mv_shown').deepText),
       'display status missing: ' + REGISTRY.get('mv_shown').deepText);
   });
 
@@ -839,7 +896,7 @@ async function selectDecoder(ip) {
       REGISTRY.get('mv_target').value = 'multiview2x2';
       REGISTRY.get('mv_target').dispatch('change');
       await flush();
-      assert(/currently shown on display/i.test(REGISTRY.get('mv_shown').deepText),
+      assert(/multiview active/i.test(REGISTRY.get('mv_shown').deepText),
         REGISTRY.get('mv_shown').deepText);
       assert(hidden('mv_show'),
         'Show on Display is still offered for something already shown');
@@ -1196,7 +1253,7 @@ async function selectDecoder(ip) {
                   'the saved object did not become the selected one');
       assert(!hidden('mv_show'), 'Show on Display is not offered after a save');
       assert(!hidden('mv_delete'), 'Delete is not offered after a save');
-      assert(/not currently shown on display/i.test(
+      assert(/inactive/i.test(
         REGISTRY.get('mv_shown').deepText), 'save changed the display');
       forcedPlan = null;
     });
@@ -1230,8 +1287,9 @@ async function selectDecoder(ip) {
       assert(!mode._classes.has('live'), 'an inactive canvas is styled as live');
       assert(!/^LIVE/.test(mode.textContent),
         'an inactive canvas claims to be live: ' + mode.textContent);
-      assert(/saved/i.test(mode.textContent)
-             && /not on the display/i.test(mode.textContent), mode.textContent);
+      assert(/^INACTIVE/.test(mode.textContent)
+             && /saved/i.test(mode.textContent)
+             && /not currently shown/i.test(mode.textContent), mode.textContent);
       assert(!REGISTRY.get('mv_stage')._classes.has('live'),
         'the inactive stage carries the live styling');
     });
@@ -1269,7 +1327,7 @@ async function selectDecoder(ip) {
       const mode = REGISTRY.get('mv_canvas_mode').textContent;
       assert(mode && mode.length > 20, 'the mode is stated too thinly: ' + mode);
       assert(hidden('mv_show'), 'Show is still offered for the active Multiview');
-      assert(/currently shown on display/i.test(REGISTRY.get('mv_shown').deepText),
+      assert(/multiview active/i.test(REGISTRY.get('mv_shown').deepText),
         REGISTRY.get('mv_shown').deepText);
     });
 
@@ -1431,21 +1489,34 @@ async function selectDecoder(ip) {
         'the tile does not say how to fix it: ' + tile.deepText);
       assert(tile._classes.has('needs-work'),
         'a source needing configuration looks identical to a ready one');
-      assertEqual(tile.draggable, false,
-        'a source that cannot work yet can still be dragged onto a window');
       assert(/multicast configuration required/i
         .test(tile.getAttribute('aria-label') || ''),
         'the reason is not announced: ' + tile.getAttribute('aria-label'));
 
-      // draggable=false is the browser's guard; the handler carries its own,
-      // because a page that relies on one line of defence has none.
+      // It IS draggable, because it can still be routed conventionally to the
+      // display output -- the reason it cannot feed a window does not apply
+      // there. What must not happen is a WINDOW accepting it, so that is what
+      // is asserted, at the window rather than at the tile.
+      assertEqual(tile.draggable, true,
+        'a routable source was made undraggable by the Multiview verdict');
       let carried = null;
       tile.dispatch('dragstart', {dataTransfer: {
-        setData: (type, value) => { carried = value; }}});
-      assertEqual(carried, null,
-        'an unconfigured source handed its address to a drag');
-      assert(!tile._classes.has('dragging'),
-        'an unconfigured source started a drag');
+        setData: (type, value) => { carried = value; },
+        effectAllowed: ''}});
+      assertEqual(carried, '192.0.2.25', 'the drag carried nothing');
+
+      // The window refuses it: dragover is not defaultPrevented, so the
+      // browser never offers a drop, and the drop handler refuses again.
+      const box = REGISTRY.get('mv_stage').children[0];
+      let prevented = false;
+      box.dispatch('dragover', {
+        preventDefault: () => { prevented = true; },
+        dataTransfer: {dropEffect: ''}});
+      assertEqual(prevented, false,
+        'a window offered itself for a source it cannot use');
+      assert(!box._classes.has('drop-target'),
+        'a window lit up for a source it cannot use');
+      tile.dispatch('dragend', {});
     });
 
   await check('a source that needs configuring cannot be assigned by click either',
@@ -1708,8 +1779,10 @@ async function selectDecoder(ip) {
       assert(box.findAll(c => c.tagName === 'IMG')[0], 'no image was shown');
       assert(box.deepText.includes('Multicast configuration required'),
         'the tile reason is not repeated on the card: ' + box.deepText);
-      assertEqual(tile.draggable, false,
-        'previewing it made it draggable');
+      // Draggable because the display output can take it; a window still
+       // cannot, which the window itself enforces.
+      assertEqual(tile.draggable, true,
+        'previewing it changed whether it can be routed');
     });
 
   await check('hovering performs no routing call of any kind', async () => {
@@ -2790,6 +2863,338 @@ async function selectDecoder(ip) {
            'the single-decoder path was not used after leaving group context');
     assert(!requests.some(r => r.url === '/api/multiview/groups/show'),
            'a single-decoder change still went to the group');
+  });
+
+  // ---- Display Output -----------------------------------------------------
+  //
+  // The panel above the canvas answers "what is on the display". The canvas
+  // answers "is the composition I am looking at the one on it". Two questions,
+  // two answers, and an operator who cannot tell them apart changes air by
+  // accident.
+
+  const outputBox = () => REGISTRY.get('mv_output');
+  // The stub registers ids flat rather than nested, so the panel's text is read
+  // from the element the page actually fills.
+  const outputText = () => REGISTRY.get('mv_output_body').deepText;
+
+  async function openWith(output, views) {
+    displayOutput = output;
+    stateResponse = stateBody(views || [EXISTING_VIEW]);
+    await selectDecoder('192.0.2.10');
+    REGISTRY.get('mv_target').value = 'multiview2x2';
+    REGISTRY.get('mv_target').dispatch('change');
+    await flush();
+  }
+
+  function dragTile(hostname) {
+    const tile = REGISTRY.get('mv_sources').children
+      .find(t => t.deepText.includes(hostname));
+    assert(tile, 'no tile for ' + hostname);
+    tile.dispatch('dragstart', {dataTransfer: {
+      setData: () => {}, effectAllowed: ''}});
+    return tile;
+  }
+
+  function dropOnOutput(ip) {
+    const box = outputBox();
+    let prevented = false;
+    box.dispatch('dragover', {preventDefault: () => { prevented = true; },
+                              dataTransfer: {dropEffect: ''}});
+    if (!prevented) return {offered: false};
+    box.dispatch('drop', {preventDefault: () => {},
+                          dataTransfer: {getData: () => ip}});
+    return {offered: true};
+  }
+
+  await check('Display Output sits above the Multiview canvas', () => {
+    const page = fs.readFileSync(PAGE, 'utf8');
+    const output = page.indexOf('id="mv_output"');
+    const canvas = page.indexOf('id="mv_stage"');
+    assert(output > 0, 'there is no Display Output panel');
+    assert(canvas > 0, 'there is no canvas');
+    assert(output < canvas,
+      'Display Output is rendered below the canvas, not above it');
+  });
+
+  await check('with a Multiview active it says Multiview, and names it',
+    async () => {
+      await openWith(OUTPUT_MULTIVIEW, [Object.assign({}, LIVE_VIEW)]);
+      assert(!hidden('mv_output_row'), 'the Display Output panel is hidden');
+      assert(/multiview/i.test(outputText()), outputText());
+      assert(outputText().includes('multiview2x2'),
+        'the active Multiview is not named: ' + outputText());
+      assert(outputBox()._classes.has('is-multiview'),
+        'the active state is not marked');
+    });
+
+  await check('and the canvas says LIVE at the same time', async () => {
+    const badge = REGISTRY.get('mv_canvas_state');
+    assert(!badge.hidden, 'the canvas states nothing about being on air');
+    assertEqual(badge.textContent, 'LIVE', 'canvas badge');
+    assert(badge._classes.has('live'), 'the LIVE badge is not styled as live');
+  });
+
+  await check('no conventional source is invented while Multiview is on air',
+    () => {
+      assert(!/enc-test-01/.test(outputText()),
+        'a conventional source was shown for a Multiview: ' + outputText());
+    });
+
+  await check('with a conventional route it names the source', async () => {
+    await openWith(OUTPUT_SOURCE, [EXISTING_VIEW]);
+    assert(outputText().includes('enc-test-01'),
+      'the routed source is not named: ' + outputText());
+    assert(outputText().includes('192.0.2.20'), outputText());
+    assert(/live/i.test(outputText()), 'the routed source is not marked live');
+    assert(outputBox()._classes.has('is-live'));
+  });
+
+  await check('and the saved Multiview then says INACTIVE, not LIVE', () => {
+    const badge = REGISTRY.get('mv_canvas_state');
+    assertEqual(badge.textContent, 'INACTIVE', 'canvas badge');
+    assert(!badge._classes.has('live'), 'an inactive canvas is styled as live');
+    assert(/inactive/i.test(REGISTRY.get('mv_shown').deepText),
+      REGISTRY.get('mv_shown').deepText);
+    assert(!hidden('mv_show'),
+      'Show on Display is not offered for an inactive Multiview');
+  });
+
+  await check('an input carrying nothing is not called live', async () => {
+    await openWith(OUTPUT_NONE, [EXISTING_VIEW]);
+    assert(!/\bLIVE\b/.test(outputText()),
+      'nothing on the display was reported as live: ' + outputText());
+    assert(outputBox()._classes.has('is-unknown'));
+  });
+
+  // ---- dropping a source on it -------------------------------------------
+  await check('a drop asks before anything is written', async () => {
+    await openWith(OUTPUT_MULTIVIEW, [Object.assign({}, LIVE_VIEW)]);
+    sandbox.sessionStorage.removeItem('matrix_multiview_exit_acknowledged');
+    sandbox.localStorage.removeItem('matrix_multiview_exit_suppressed');
+    confirmCalls = 0;
+    confirmAnswer = false;                       // Cancel
+    const before = requests.length;
+    dragTile('enc-test-01');
+    const result = dropOnOutput('192.0.2.20');
+    await flush();
+    assert(result.offered, 'Display Output refused a routable source');
+    assertEqual(confirmCalls, 1, 'the operator was not asked');
+    assertEqual(requests.slice(before).filter(r =>
+      r.url.startsWith('/api/route')).length, 0,
+      'Cancel still sent a route');
+    confirmAnswer = true;
+  });
+
+  await check('Cancel writes nothing at all', () => {
+    const writes = requests.filter(r => r.method === 'POST');
+    assertEqual(writes.filter(r => r.url.startsWith('/api/route')).length, 0,
+      'a cancelled drop reached the device');
+  });
+
+  await check('Continue sends the ordinary A/V Matrix route, with consent',
+    async () => {
+      const before = requests.length;
+      dragTile('enc-test-01');
+      dropOnOutput('192.0.2.20');
+      await flush();
+      const routes = requests.slice(before)
+        .filter(r => r.url.startsWith('/api/route'));
+      assertEqual(routes.length, 1, 'expected exactly one route request');
+      assertEqual(routes[0].method, 'POST', 'route method');
+      assertEqual(routes[0].payload.decoder, '192.0.2.10', 'decoder');
+      assertEqual(routes[0].payload.encoder, '192.0.2.20', 'encoder');
+      assertEqual(routes[0].payload.mode, 'av',
+        'the drop did not ask for audio and video');
+      assertEqual(routes[0].payload.exit_multiview, true,
+        'the route did not carry the consent to leave Multiview');
+    });
+
+  await check('it implements no teardown of its own', () => {
+    // Everything that takes a decoder out of Multiview belongs to /api/route.
+    // A second implementation here is exactly what must not exist.
+    const source = fs.readFileSync(SOURCE, 'utf8');
+    const start = source.indexOf('async function routeToDisplay');
+    assert(start > 0, 'routeToDisplay is gone');
+    const body = source.slice(start, source.indexOf('\n  }', start));
+    ['multiview/show', 'multiview/switch', 'multiview/apply', 'config_set',
+     'hdmi_output', 'ip_input', 'vc2_encoder'].forEach((forbidden) => {
+      assert(!body.includes(forbidden),
+        'the drop speaks device protocol or reimplements Multiview: ' + forbidden);
+    });
+  });
+
+  await check('the warning preference is the A/V Matrix one, not a new one',
+    async () => {
+      // Section 4: do not create another warning preference. Acknowledged on
+      // one page is acknowledged on the other, which means the same key.
+      assertEqual(sandbox.sessionStorage.getItem(
+        'matrix_multiview_exit_acknowledged'), 'true',
+        'Continue did not record the session acknowledgement');
+      const matrix = fs.readFileSync(
+        path.join(ROOT, 'ui', 'matrix', 'matrix.js'), 'utf8');
+      assert(matrix.includes('matrix_multiview_exit_acknowledged')
+             && matrix.includes('matrix_multiview_exit_suppressed'),
+        'the A/V Matrix no longer uses these keys, so the two have drifted');
+    });
+
+  await check('an acknowledged session is not asked again', async () => {
+    confirmCalls = 0;
+    dragTile('enc-test-01');
+    dropOnOutput('192.0.2.20');
+    await flush();
+    assertEqual(confirmCalls, 0,
+      'the warning returned inside an acknowledged session');
+  });
+
+  await check('with no Multiview active there is nothing to warn about',
+    async () => {
+      await openWith(OUTPUT_SOURCE, [EXISTING_VIEW]);
+      sandbox.sessionStorage.removeItem('matrix_multiview_exit_acknowledged');
+      confirmCalls = 0;
+      const before = requests.length;
+      dragTile('enc-test-01');
+      dropOnOutput('192.0.2.20');
+      await flush();
+      assertEqual(confirmCalls, 0,
+        'the page warned about leaving a Multiview that is not on');
+      const routes = requests.slice(before)
+        .filter(r => r.url.startsWith('/api/route'));
+      assertEqual(routes.length, 1, 'the route was not sent');
+      assertEqual(routes[routes.length - 1].payload.exit_multiview, false,
+        'consent to exit was sent when nothing was being exited');
+    });
+
+  // ---- the two eligibilities ---------------------------------------------
+  await check('a source with no Multiview headroom can still be routed here',
+    async () => {
+      // The .218 case. Refused for a window, accepted by the display output.
+      await openWith(OUTPUT_SOURCE, [EXISTING_VIEW]);
+      const before = requests.length;
+      const tile = dragTile('enc-full-01');
+      assertEqual(tile.draggable, true,
+        'a routable source could not be dragged at all');
+      const result = dropOnOutput('192.0.2.26');
+      await flush();
+      assert(result.offered,
+        'Display Output refused a source that is fine for a normal route');
+      const routes = requests.slice(before)
+        .filter(r => r.url.startsWith('/api/route'));
+      assertEqual(routes.length, 1, 'the conventional route was not sent');
+      assertEqual(routes[0].payload.encoder, '192.0.2.26', 'encoder');
+    });
+
+  await check('and that same source is still refused by a Multiview window',
+    async () => {
+      const tile = dragTile('enc-full-01');
+      const box = REGISTRY.get('mv_stage').children[0];
+      let prevented = false;
+      box.dispatch('dragover', {preventDefault: () => { prevented = true; },
+                                dataTransfer: {dropEffect: ''}});
+      assertEqual(prevented, false,
+        'a window accepted a source with no Encoder 2 headroom');
+      tile.dispatch('dragend', {});
+    });
+
+  await check('a source with no Session 1 stream is refused by both',
+    async () => {
+      // It cannot feed a window and there is no stream to route conventionally,
+      // so it never becomes a drag at all.
+      const tile = REGISTRY.get('mv_sources').children
+        .find(t => t.deepText.includes('enc-nostream-01'));
+      assert(tile, 'the source was hidden rather than explained');
+      assertEqual(tile.draggable, false,
+        'a source with nothing to route was made draggable');
+
+      // And if a drop reached the handler anyway, it refuses rather than
+      // routing: one line of defence is none.
+      const before = requests.length;
+      outputBox().dispatch('drop', {preventDefault: () => {},
+                                    dataTransfer: {getData: () => '192.0.2.27'}});
+      await flush();
+      assertEqual(requests.slice(before)
+        .filter(r => r.url.startsWith('/api/route')).length, 0,
+        'a source with no Session 1 stream was routed anyway');
+    });
+
+  await check('dropping on a window still edits that window, not the display',
+    async () => {
+      await openWith(OUTPUT_SOURCE, [EXISTING_VIEW]);
+      const before = requests.length;
+      const tile = dragTile('enc-test-01');
+      const box = REGISTRY.get('mv_stage').children[0];
+      let prevented = false;
+      box.dispatch('dragover', {preventDefault: () => { prevented = true; },
+                                dataTransfer: {dropEffect: ''}});
+      assertEqual(prevented, true, 'a window refused a Multiview-ready source');
+      box.dispatch('drop', {preventDefault: () => {},
+                            dataTransfer: {getData: () => '192.0.2.20'}});
+      await flush();
+      assertEqual(requests.slice(before)
+        .filter(r => r.url.startsWith('/api/route')).length, 0,
+        'dropping on a window routed the display');
+      tile.dispatch('dragend', {});
+    });
+
+  // ---- arming ------------------------------------------------------------
+  await check('the panel is armed only while a routable source is in hand',
+    async () => {
+      await openWith(OUTPUT_SOURCE, [EXISTING_VIEW]);
+      assert(!outputBox()._classes.has('can-drop'),
+        'the panel invites a drop with nothing being dragged');
+      const tile = dragTile('enc-test-01');
+      assert(outputBox()._classes.has('can-drop'),
+        'the panel did not arm for a routable source');
+      tile.dispatch('dragend', {});
+      await flush();
+      assert(!outputBox()._classes.has('can-drop'),
+        'the panel stayed armed after the drag ended');
+    });
+
+  await check('it never arms for a source it would refuse', async () => {
+    const tile = dragTile('enc-nostream-01');
+    assert(!outputBox()._classes.has('can-drop'),
+      'the panel invited a drop it would refuse');
+    tile.dispatch('dragend', {});
+  });
+
+  // ---- groups ------------------------------------------------------------
+  await check('a group panel refuses a conventional drop', async () => {
+    // Whatever the group state, one tile must never route a room full of
+    // displays. Asserted on the handler, so it holds however the page got here.
+    const source = fs.readFileSync(SOURCE, 'utf8');
+    const start = source.indexOf('async function routeToDisplay');
+    const body = source.slice(start, source.indexOf('\n  }', start));
+    assert(/if \(activeGroup\(\)\) return;/.test(body),
+      'a group-wide conventional route is reachable from a drop');
+    const wire = source.indexOf("output.addEventListener('drop'");
+    assert(wire > 0, 'the drop handler is gone');
+    const dropBody = source.slice(wire, wire + 600);
+    assert(/if \(activeGroup\(\)\) return;/.test(dropBody),
+      'the drop target does not refuse a group');
+  });
+
+  await check('no polling was introduced', () => {
+    // Display Output is re-read with the decoder state, which every transaction
+    // already ends with. A timer here would be a second source of truth.
+    const source = fs.readFileSync(SOURCE, 'utf8');
+    const start = source.indexOf('// ------------------------------------------------------- display output');
+    const end = source.indexOf('function pickSource', start);
+    const body = source.slice(start, end);
+    ['setInterval', 'setTimeout'].forEach((forbidden) => {
+      assert(!body.includes(forbidden),
+        'the display output panel started a timer: ' + forbidden);
+    });
+  });
+
+  await check('the panel names no colour of its own', () => {
+    const css = fs.readFileSync(STYLE, 'utf8');
+    const start = css.indexOf('/* ---------------------------------------------------------------- display output');
+    assert(start > 0, 'the display output styles are gone');
+    const body = css.slice(start);
+    const literals = body.match(/#[0-9a-fA-F]{3,8}(?![\w-])|rgba?\([^)]*\)/g) || [];
+    assertEqual(literals, [],
+      'the panel hard-codes a colour, so one appearance will be wrong: '
+      + literals.join(' '));
   });
 
   // =======================================================================

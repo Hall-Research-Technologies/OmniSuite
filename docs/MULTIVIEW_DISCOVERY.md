@@ -3252,3 +3252,239 @@ for a different reason, one where the input really does need re-establishing,
 would be fixed by it. It is not a cure for this fault, the User Guide tells the
 operator the remedy that works, and the underlying behaviour belongs with
 whoever owns the decoder firmware.
+
+## AF. Phase 8D: a flake with a cause, and a source that was never usable
+
+Two cleanup items, both of which had to be answered before a publication gate
+could mean anything.
+
+### AF.1 The flake was not in the test
+
+`MatrixNetworkReadinessTests.test_it_stops_asking_once_every_mask_is_known`
+failed occasionally in a full-suite run and never on its own. The temptation is
+to call it timing-sensitive and give it a longer wait. It is not, and that would
+have hidden the defect while leaving the same work landing somewhere else.
+
+**What the instrumentation found.** Wrapping the startup entry points and
+recording thread name and time:
+
+```
+  T+ 0.00s  _startup_usb_refresh          Thread-3  enter
+  T+ 2.00s  _refresh_usb_parent_map       Thread-3  enter
+  T+ 2.00s  _usb_live_refresh             Thread-3  enter
+  T+ 2.00s  _refresh_icron_network_config Thread-3  enter
+```
+
+`start_background_startup_tasks()` starts three plain `threading.Thread`
+daemons. `_startup_usb_refresh` slept two seconds and then called three module
+globals. Global lookup happens when the call runs, not when the thread starts,
+so each call resolved against whatever the test running at T+2.0s had patched
+in.
+
+`ServerTestBase.inline_background()` could not help. It replaces
+`service._executor.submit`, and these are not executor submissions. An earlier
+trace confirmed it from the other side: **0 submissions** reached the shared USB
+executor during a full suite, because the base class installs a per-test service
+and inlines that one.
+
+**Why this test is the one that notices.** It replaces
+`_refresh_icron_network_config` with a recorder and asserts the recorder is
+empty — that a known mask is not re-read on every Matrix poll. A leaked call
+into that recorder is indistinguishable from the defect the test exists to
+catch. The other two assertions in the test (population changed, mask lost) are
+reachable the same way through `_refresh_usb_parent_map`; the one observed was
+the third.
+
+**Measured, not argued.** A single shot usually misses, because the vulnerable
+window is the last few milliseconds of a 79 ms test. Sweeping the start offset
+so the fire lands somewhere inside the test:
+
+| campaign | result |
+|---|---|
+| aimed sweep, arming from outside a test | **7 of 30** reproduced |
+| real sequence (arming test → T+2s → target), as shipped | **4 of 45** reproduced |
+| real sequence, with the fix | **0 of 45** |
+
+Every failure carried the same assertion:
+`[True] != [] : a known mask must not be re-read on every Matrix poll`.
+
+Runs that did **not** reproduce it, and why they do not contradict the above:
+2 full-suite rounds, 25 rounds of the USB module alone (22,275 tests), and 80
+repeats of the target after priming with the other suites. The first is simply
+the base rate. The second and third both remove the trigger — the module alone
+did not land the fire in the window, and priming excluded the target's own
+module, where the arming tests live.
+
+### AF.2 The fix is ownership, not patience
+
+- `start_background_startup_tasks()` records the threads it starts in
+  `_startup_threads`; `await_startup_tasks(timeout)` waits for them and reports
+  whether they finished. Startup still waits for nothing.
+- The hard-coded two-second settle became `STARTUP_USB_SETTLE`, so a caller with
+  nothing to settle waits for the work rather than the delay.
+- `ServerTestBase` registers the wait **last in `setUp`**, so it runs **first in
+  teardown**, while the test's own stubs are still installed. The work belongs to
+  the test that armed it and is observable by it; anything still running fails
+  that test by name.
+
+`StartupTaskIsolationTests` holds the contract, including a test that leaks on
+purpose and must be reported. Four mutations of the fix were all caught:
+
+| mutation | caught by |
+|---|---|
+| the contract stops waiting | `test_a_leak_fails_the_test_that_caused_it`, `test_no_startup_thread_outlives_the_test_that_started_it` |
+| `await_startup_tasks` always claims success | `test_a_leak_fails_the_test_that_caused_it` |
+| the startup threads go untracked | `test_the_startup_threads_are_waitable` |
+| the settle delay returns inside the suite | `test_the_settle_delay_is_not_waited_out_by_the_suite` |
+
+### AF.3 A source that was advertised Ready and then refused
+
+`192.168.100.218` was listed **Ready** and then refused by the planner. Read
+live:
+
+```
+Encoder 1 : 900 Mb/s, headroom 0
+list      : configuration_required — "...using 900 of its 900 Mb/s budget,
+            which leaves 0 Mb/s -- less than the 20 Mb/s a Multiview stream
+            needs... OmniSuite will not change it."
+planner   : refuses, same rule
+Encoder 1 afterwards: 900 (unchanged: True)
+```
+
+The cause was not a disagreement about policy. The scan cache carries no
+Encoder 1 bitrate, so the list had no way to ask the question the planner asks.
+A source has **one** 900 Mb/s budget shared by both encoders; if Encoder 1 holds
+all of it, nothing is left for a Multiview window.
+
+`multiview_headroom(encoder1_bitrate)` in `omni_multiview.py` is now the single
+rule, used by `classify_source` and by the allocator, so the list and the plan
+cannot disagree. Boundaries, all asserted:
+
+| Encoder 1 | headroom | usable |
+|---|---|---|
+| 0 – 880 Mb/s | 900 – 20 | yes |
+| 890 Mb/s | 10 | no |
+| 900 Mb/s | 0 | no |
+
+The boundary is `ENCODER2_MIN_BITRATE` (20 Mb/s) — the smallest stream the
+hardware will run — not a number invented for this rule. A bitrate that could
+not be read is **unknown, not no**: the source stays Ready and the planner finds
+out before it writes.
+
+**Cost.** One `config_get` per *reachable* encoder, concurrent, only on
+`/api/multiview/sources`, and only when that endpoint is actually probing.
+`probe=0` answers from the cache and reads nothing. Nothing was added to the
+scan path or to idle. The Phase 7A cost guard was rewritten to bound the cost
+(`test_listing_sources_reads_one_node_per_encoder_and_no_more`) rather than to
+forbid the read, and a second guard proves the unprobed path stays free.
+
+**Encoder 1 is read. It is never written.** `encoder1_target` is always `None`,
+and `test_encoder_1_is_never_written_to_make_room` asserts it at the boundary
+where the temptation would be greatest.
+
+## AG. Phase 8E: display output, and two fields that disagreed
+
+### AG.1 The panel
+
+The Multiview page could describe the composition an operator had open in
+detail, and could not say what the decoder was showing. Those are different
+questions, and the only way out of Multiview was the A/V Matrix.
+
+**Display output** sits above the canvas and reports one of three states,
+derived from `hdmi_output.video.input` and nothing else:
+
+| state | shown | derived from |
+|---|---|---|
+| `multiview` | MULTIVIEW · ACTIVE, named | `active_multiview_name(video_input)` |
+| `source` | LIVE, with the encoder named | the ip_input's multicast, resolved by `_resolve_subscription` |
+| `none` | NO VIDEO | the input is selected but disabled or carrying no address |
+
+It rides on `/api/multiview/state` and is computed from the three reads that
+endpoint already performs. Measured: `decoder.reads == ["multiview",
+"hdmi_output", "ip_input"]`, unchanged, and zero writes. No timer was added.
+
+A stream arriving from a device nobody has discovered is reported as `source`
+with no name. Something is plainly on the screen, and `none` would be a lie.
+
+### AG.2 The drop is the A/V Matrix transaction
+
+`POST /api/route {decoder, encoder, mode:"av", exit_multiview:true}` — the same
+request the A/V Matrix sends. The server already owned the exit, the route, the
+verification and the rollback; the page adds none of it. A test asserts the
+handler contains no device protocol and no Multiview endpoint at all.
+
+**Session 1, and only Session 1.** `set_route` routes `v_mcast`/`a_mcast`, which
+`_encoder_session_matrix_fields` derives explicitly from `session1`. Asserted
+three ways: the fields are Session 1 and differ from Session 2; the route body
+contains no reference to `session2`; and routing a source writes nothing at all
+to that encoder, so Encoder 2 is never prepared for a conventional route.
+
+The warning, its session acknowledgement and its permanent preference moved into
+`ui/confirm.js` under the keys the A/V Matrix already wrote
+(`matrix_multiview_exit_acknowledged`, `matrix_multiview_exit_suppressed`), so
+no second preference exists. A test asserts both files still name those keys.
+
+### AG.3 Two eligibilities
+
+The page made a tile draggable only when it was Multiview-ready, so the `.218`
+case — Encoder 1 using the whole 900 Mb/s budget — could not be dragged
+anywhere, including to the display output, where the reason it was refused does
+not apply.
+
+| | Multiview window | conventional route |
+|---|---|---|
+| encoder | Encoder 2 / Session 2 | Encoder 1 / Session 1 |
+| needs a Session 2 multicast | yes | no |
+| needs budget headroom | yes | no |
+| barred by the Multiview model exclusion | yes | no |
+
+`normal_route_eligibility()` answers the second question, the source list carries
+both, and the page holds neither. Live on the bench:
+
+```
+192.168.100.218: multiview=configuration_required  normal_route=ready
+```
+
+Windows refuse what they cannot carry, at the window rather than at the tile.
+
+### AG.4 A derived field that outlived its source
+
+`/api/state` derives `multiview_active` from the cached `video_input`, and the
+live-state overlay then replaces `video_input`. It did not recompute the verdict.
+Measured on the bench:
+
+```
+video_input      = multiview13HorizontalBottom
+multiview_active = False
+multiview_name   = None
+```
+
+A decoder cannot be showing a Multiview and not showing one. The verdict is
+recomputed after the overlay, from the value that survived it.
+
+Fixing it turned three existing tests red, which was the fix working.
+`omni_matrix_logic._decoders` is process-global and the overlay reads it, so one
+test's decoder had already been deciding what a later test's `video_input` said
+— those tests were asserting on the clean `multiview_name` while the
+contradictory `video_input` sat beside it. The Multiview test base now isolates
+those globals, the same rule Phase 8D wrote for background work.
+
+### AG.5 A rollback that did not say what it had done
+
+Leaving Multiview records the input the display moved to. Putting it back after
+a failed route recorded nothing, so the A/V Matrix went on showing a
+conventional route that had been rolled back. `_restore_multiview_after_failed_route`
+now records the restored display.
+
+Both defects were found by looking at the bench rather than at the tests, and
+both are covered by tests that fail without the fix.
+
+### AG.6 Live results, decoder 192.168.100.32
+
+Twenty of twenty checks passed on the first pass (A–T), with the rollback proved
+separately because the encoder chosen for the "unreachable" case turned out to
+be reachable — a bad premise, not a passing test, and reported as such. With the
+route call forced to fail, the real rollback ran against the real decoder and
+all six checks passed. The two surfaces then agreed across
+`Multiview → route → Show → failed route → rollback`, 4 of 4, and the decoder
+was left on the Multiview it was found on.

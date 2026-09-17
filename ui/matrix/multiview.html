@@ -194,6 +194,20 @@
     </div>
   </div>
 
+  <!-- What the decoder is actually putting on its display, as opposed to what
+       is selected in this page or saved on the device. Deliberately small and
+       deliberately not shaped like a Multiview window: it is one display
+       output, not a composition. -->
+  <div class="mv-output-row" id="mv_output_row" hidden>
+    <div class="mv-panel mv-output-panel">
+      <h2>Display output</h2>
+      <div id="mv_output" class="mv-output" aria-live="polite">
+        <div class="mv-output-body" id="mv_output_body"></div>
+      </div>
+      <p class="mv-output-hint" id="mv_output_hint" hidden></p>
+    </div>
+  </div>
+
   <div class="mv-body" id="mv_workspace" hidden>
     <div>
       <div class="mv-panel">
@@ -210,7 +224,11 @@
 
     <div>
       <div class="mv-panel">
-        <h2>Multiview canvas <span class="mv-canvas-note" id="mv_canvas_note"></span></h2>
+        <!-- LIVE or INACTIVE, stated on the canvas itself. The Display Output
+             panel above answers "what is on the display"; this answers "is THIS
+             composition the one on it", and the two must not be read as one. -->
+        <h2>Multiview canvas <span class="mv-canvas-note" id="mv_canvas_note"></span>
+          <span class="mv-canvas-state" id="mv_canvas_state" hidden></span></h2>
         <!-- Whether a drop edits a preset or changes the display is the one
              thing an operator must never have to guess, so it is stated on the
              canvas itself rather than implied by which buttons are enabled. -->

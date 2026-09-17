@@ -185,6 +185,12 @@ def advanced(device_code, peers=()):
 
 
 class ServerTestBase(unittest.TestCase):
+    # How long a test waits for the background work it armed. Generous, because
+    # it is only reached by the handful of tests that arm the startup refreshes,
+    # and a slow machine must not turn the isolation contract into a flake of its
+    # own. A test that leaks on purpose lowers it.
+    STARTUP_JOIN_TIMEOUT = 15.0
+
     def setUp(self):
         # Background enrichment threads may still be flushing a state file when
         # a test finishes; on Windows that makes the directory removal fail. The
@@ -346,6 +352,34 @@ class ServerTestBase(unittest.TestCase):
         self.addCleanup(self._assert_no_mutation_attempted)
         self.client = srv.app.test_client()
         self._patch_cache(CACHE_UNITS)
+        # Background work must not outlive the test that started it, and the
+        # three startup refreshes are plain daemon threads -- nothing an
+        # executor patch can reach. _startup_usb_refresh waits for discovery to
+        # settle and then calls _refresh_icron_network_config through the module
+        # global, so the call resolves against whatever test is running at that
+        # moment.
+        #
+        # Measured, by arming the trigger and sweeping the offset: it landed
+        # inside MatrixNetworkReadinessTests and recorded an Icron read that test
+        # never made, failing "a known mask must not be re-read on every Matrix
+        # poll" in 7 of 30 aimed attempts. In a full suite that is a rare flake
+        # whose cause is two seconds and several hundred tests away.
+        #
+        # Registered last, so it runs first: the test that armed the work waits
+        # for it with its own stubs still installed. The work therefore belongs
+        # to that test and is observable by it, and the assertion below turns any
+        # future leak into a failure of the test that caused it.
+        self.patch_srv("STARTUP_USB_SETTLE", 0.0)
+        startup_armed_before = srv._startup_tasks_started
+
+        def _settle_startup_tasks():
+            finished = srv.await_startup_tasks(timeout=self.STARTUP_JOIN_TIMEOUT)
+            del srv._startup_threads[:]
+            srv._startup_tasks_started = startup_armed_before
+            self.assertTrue(finished, "a startup thread outlived the test that "
+                                      "started it")
+
+        self.addCleanup(_settle_startup_tasks)
 
     def inline_background(self, service):
         """Run this service's background submissions on the calling thread.
@@ -3423,6 +3457,111 @@ class ResilientIoTests(ServerTestBase):
         srv._save_config({"username": "x"})
         self.assertEqual(set(config.parent.glob("config.json.*")), before,
                          "the temp file is renamed into place, never left lying around")
+
+
+class StartupTaskIsolationTests(ServerTestBase):
+    """Startup work belongs to the test that started it.
+
+    `start_background_startup_tasks` starts three plain daemon threads. They are
+    not executor submissions, so `inline_background` cannot reach them, and
+    `_startup_usb_refresh` waits for discovery to settle before calling
+    `_refresh_usb_parent_map`, `_usb_live_refresh` and
+    `_refresh_icron_network_config` -- all through the module globals, so all
+    resolved against whichever test is running when they fire.
+
+    That is a measured defect, not a theory. Arming the trigger and sweeping the
+    start offset across the target test reproduced it in 7 of 30 attempts:
+    `_refresh_icron_network_config` arrived inside
+    `MatrixNetworkReadinessTests.test_it_stops_asking_once_every_mask_is_known`
+    and appended to the recorder that test had installed, so it failed with
+    `[True] != []` on "a known mask must not be re-read on every Matrix poll" --
+    an Icron read it never made, attributed to it.
+
+    Nothing here waits longer or asserts less. The work is simply made waitable,
+    and every test waits for what it armed.
+    """
+
+    def arm(self):
+        srv._startup_tasks_started = False
+        del srv._startup_threads[:]
+        srv.start_background_startup_tasks()
+
+    def test_the_startup_threads_are_waitable(self):
+        """A daemon thread nothing can name is a daemon thread nothing can wait for."""
+        self.arm()
+        self.assertEqual(len(srv._startup_threads), 3,
+                         "the startup threads are not tracked")
+        self.assertTrue(srv.await_startup_tasks(timeout=15.0),
+                        "a startup thread was still running")
+        self.assertEqual([t.name for t in srv._startup_threads if t.is_alive()], [])
+
+    def test_the_refresh_lands_in_the_test_that_armed_it(self):
+        recorded = []
+        self.patch_srv("_refresh_icron_network_config",
+                       lambda *a, **k: recorded.append(threading.current_thread().name))
+        self.arm()
+        self.assertTrue(srv.await_startup_tasks(timeout=15.0))
+        self.assertTrue(recorded,
+                        "the startup refresh never ran, so waiting for it proves nothing")
+
+    def test_no_startup_thread_outlives_the_test_that_started_it(self):
+        """The contaminating sequence, run for real: arm in one test, look after it."""
+
+        class ArmingTest(ServerTestBase):
+            def runTest(inner):                       # noqa: N805 - unittest name
+                srv._startup_tasks_started = False
+                del srv._startup_threads[:]
+                srv.start_background_startup_tasks()
+
+        case = ArmingTest()
+        outcome = unittest.TestResult()
+        case.run(outcome)
+        self.assertEqual(outcome.errors + outcome.failures, [],
+                         "the arming test itself failed")
+        self.assertEqual([t.name for t in srv._startup_threads if t.is_alive()], [],
+                         "a startup thread was still running after its test ended")
+
+    def test_a_leak_fails_the_test_that_caused_it(self):
+        """The contract is enforced, not merely documented.
+
+        Proved by leaving something running that the wait cannot finish: the
+        arming test must fail, rather than some later test failing instead.
+        """
+
+        # Owned out here on purpose. Released from inside the leaking test it
+        # would be released first -- cleanups run last-registered-first, and the
+        # contract is registered in setUp -- so the thread would already have
+        # stopped by the time the contract looked, and this test would pass
+        # while proving nothing.
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+
+        class LeakingTest(ServerTestBase):
+            # Long enough to still be running when the contract looks, short
+            # enough that proving the point costs a fifth of a second.
+            STARTUP_JOIN_TIMEOUT = 0.2
+
+            def runTest(inner):                       # noqa: N805 - unittest name
+                thread = threading.Thread(target=lambda: stop.wait(30), daemon=True)
+                srv._startup_threads.append(thread)
+                thread.start()
+
+        case = LeakingTest()
+        outcome = unittest.TestResult()
+        case.run(outcome)
+        stop.set()
+        problems = outcome.errors + outcome.failures
+        self.assertTrue(problems, "a leaked startup thread was not reported")
+        self.assertIn("outlived the test that started it", problems[0][1])
+
+    def test_the_settle_delay_is_not_waited_out_by_the_suite(self):
+        """Waiting for the work is the fix; waiting for the delay is a cost."""
+        self.assertEqual(srv.STARTUP_USB_SETTLE, 0.0,
+                         "tests should not sit through the production settle")
+        source = Path(srv.__file__).with_name(
+            "OmniMatrix_upgrade_server_v7_6y.py").read_text(encoding="utf-8")
+        self.assertIn("STARTUP_USB_SETTLE = 2.0", source,
+                      "production still waits for discovery to settle")
 
 
 class MatrixNetworkReadinessTests(ServerTestBase):

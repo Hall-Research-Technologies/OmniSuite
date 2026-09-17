@@ -53,6 +53,12 @@
     // The preset as it is saved on the device, for comparing against what the
     // operator has since edited. null while creating: nothing is saved yet.
     savedBaseline: null,
+    // The source being dragged, and what it may be dropped on. A Multiview
+    // window and the display output ask different things of the same encoder,
+    // so a tile can be a legal drop for one and not the other -- and neither
+    // target may light up for a drop it would refuse. dataTransfer cannot be
+    // read during dragover, so the answer is held here for the duration.
+    dragging: null,          // {ip, multiview: bool, normal: bool} | null
   };
 
   let stateSeq = 0;
@@ -386,7 +392,8 @@
     const isShown = !!view.selected_on_output;
     shown.className = 'mv-shown' + (isShown ? '' : ' not-shown');
     shown.textContent = isShown
-      ? 'Currently shown on display' : 'Not currently shown on display';
+      ? 'Multiview active — this composition is on the display now'
+      : 'Inactive — saved on this decoder, not currently shown';
   }
 
   // ---------------------------------------------------------------- pickers
@@ -897,16 +904,25 @@
     }
     state.sources.forEach((source) => {
       const ready = source.status !== 'configuration_required';
+      // A conventional route is a different question, answered by the server's
+      // own rule rather than by reusing the Multiview verdict. An encoder whose
+      // primary stream uses its whole budget cannot feed a window and is still
+      // a perfectly good ordinary source, so it is draggable -- to the display
+      // output, which accepts it, and not to a window, which does not.
+      const routable = source.normal_route === 'ready';
       const tile = node('div', 'mv-source' + (ready ? '' : ' needs-work'));
-      tile.draggable = ready;
+      tile.draggable = ready || routable;
       tile.tabIndex = 0;
       tile.dataset.ip = source.ip;
       tile.dataset.status = source.status || '';
+      tile.dataset.normalRoute = source.normal_route || '';
       tile.setAttribute('role', 'button');
       tile.setAttribute('aria-label',
         'Source ' + source.hostname + ' at ' + source.ip +
         (ready ? '. Select, then choose a window.'
-               : '. ' + (source.reason || 'Not ready.')));
+               : '. ' + (source.reason || 'Not ready.')
+                 + (routable ? ' Can still be routed to the display output.'
+                             : '')));
       tile.appendChild(node('div', 'mv-source-name', source.hostname));
       tile.appendChild(node('div', 'mv-source-meta',
         (source.model || 'Encoder') + ' · ' + source.ip));
@@ -938,14 +954,23 @@
 
       tile.addEventListener('dragstart', (event) => {
         closePreview();
-        if (!ready) { event.preventDefault(); return; }
+        if (!ready && !routable) { event.preventDefault(); return; }
         tile.classList.add('dragging');
+        // Recorded for the targets, which cannot read dataTransfer while the
+        // drag is over them, and so arms only the ones that would accept it.
+        state.dragging = {ip: source.ip, multiview: ready, normal: routable};
+        renderDisplayOutputArming();
         event.dataTransfer.setData('text/plain', source.ip);
         event.dataTransfer.effectAllowed = 'copy';
       });
-      tile.addEventListener('dragend', () => tile.classList.remove('dragging'));
+      tile.addEventListener('dragend', () => {
+        tile.classList.remove('dragging');
+        state.dragging = null;
+        renderDisplayOutputArming();
+      });
       tile.addEventListener('click', () => {
         closePreview();
+        // Click-to-pick chooses a window, which is the Multiview question.
         if (ready) pickSource(source.ip);
       });
       tile.addEventListener('keydown', (event) => {
@@ -969,6 +994,172 @@
       });
       excluded.appendChild(detail);
     }
+  }
+
+  // ------------------------------------------------------- display output
+  //
+  // What the decoder is ACTUALLY showing. Every field here comes from the
+  // server's `display_output`, which is derived from the decoder's own current
+  // output selection -- never from the remembered selection, the saved preset
+  // or the last button pressed. Nothing here polls: it is re-read whenever the
+  // page reads decoder state, which is what every transaction already ends with.
+
+  function displayOutput() {
+    return (state.decoderState || {}).display_output || null;
+  }
+
+  // The group panel answers a different question -- are they all showing the
+  // same thing -- and takes no drops, because dragging one tile must never
+  // quietly route a room full of displays.
+  function groupOutputView() {
+    const group = activeGroup();
+    if (!group) return null;
+    const summary = groups.state && groups.state.group
+      && groups.state.group.id === group.id ? groups.state : null;
+    const intended = (summary && summary.expected)
+      || (group.multiview || {}).name || '';
+    if (!summary) {
+      return {badge: 'UNKNOWN', badgeClass: '', title: group.name,
+              meta: 'Group display state has not been read yet.',
+              klass: 'is-unknown'};
+    }
+    const rows = summary.members || [];
+    const synced = rows.filter((row) => row.state === 'SYNCHRONIZED').length;
+    if (summary.state === 'SYNCHRONIZED') {
+      return {badge: 'MULTIVIEW — ACTIVE', badgeClass: 'multiview',
+              title: intended || group.name,
+              meta: synced + ' display' + (synced === 1 ? '' : 's')
+                    + ' synchronized',
+              klass: 'is-multiview'};
+    }
+    // Anything that is not "all of them, on the same Multiview" is reported as
+    // what it is. A single tile naming one source would imply every member is
+    // showing it, which is exactly the claim that cannot be made.
+    const detail = rows.filter((row) => row.state !== 'SYNCHRONIZED')
+      .map((row) => row.hostname + ': ' + (row.showing || row.state))
+      .join(' · ');
+    return {badge: summary.state || 'DRIFTED', badgeClass: '',
+            title: group.name,
+            meta: detail || (synced + ' of ' + rows.length + ' synchronized'),
+            klass: summary.state === 'DRIFTED' ? 'is-error' : 'is-unknown'};
+  }
+
+  function decoderOutputView() {
+    const output = displayOutput();
+    if (!output) {
+      return {badge: 'UNKNOWN', badgeClass: '', title: 'Display state unknown',
+              meta: 'The decoder has not been read yet.', klass: 'is-unknown'};
+    }
+    if (output.state === 'multiview') {
+      return {badge: 'MULTIVIEW · ACTIVE', badgeClass: 'multiview',
+              title: output.multiview,
+              meta: 'This decoder is compositing a Multiview.',
+              klass: 'is-multiview'};
+    }
+    if (output.state === 'source') {
+      const source = (output.video || {}).source;
+      const audioLeg = output.audio || {};
+      const title = source
+        ? source.hostname
+        : 'Unrecognised stream ' + ((output.video || {}).multicast || '');
+      const parts = [];
+      if (source && source.model) parts.push(source.model);
+      if (source && source.ip) parts.push(source.ip);
+      parts.push('video ' + ((output.video || {}).multicast || '—'));
+      parts.push('audio ' + (audioLeg.multicast || 'not routed'));
+      return {badge: 'LIVE', badgeClass: 'live', title: title,
+              meta: parts.join(' · '), klass: 'is-live'};
+    }
+    // Selected, but carrying nothing. Saying LIVE here would be a claim the
+    // readback does not support.
+    return {badge: 'NO VIDEO', badgeClass: '', title: 'Nothing on the display',
+            meta: output.video_input
+              ? (output.video_input + ' is selected but carrying no stream.')
+              : 'The decoder has no video input selected.',
+            klass: 'is-unknown'};
+  }
+
+  function renderDisplayOutput() {
+    const row = el('mv_output_row');
+    const box = el('mv_output');
+    const body = el('mv_output_body');
+    const hint = el('mv_output_hint');
+    if (!row || !box || !body) return;
+
+    const haveDecoder = !!el('mv_decoder').value;
+    const readable = !!state.decoderState;
+    row.hidden = !(haveDecoder && readable);
+    if (row.hidden) return;
+
+    const group = activeGroup();
+    const view = group ? groupOutputView() : decoderOutputView();
+    box.className = 'mv-output ' + view.klass;
+    body.replaceChildren();
+    const badge = node('div', 'mv-output-badge' +
+      (view.badgeClass ? ' ' + view.badgeClass : ''), view.badge);
+    const main = node('div', 'mv-output-main');
+    main.appendChild(node('div', 'mv-output-title', view.title));
+    main.appendChild(node('div', 'mv-output-meta', view.meta));
+    body.appendChild(badge);
+    body.appendChild(main);
+
+    if (hint) {
+      hint.hidden = false;
+      hint.textContent = group
+        ? 'Group display state. Conventional routing of a whole group is done '
+          + 'from the A/V Matrix, so nothing is dropped here.'
+        : 'Drag a source here to show it normally on this display. If a '
+          + 'Multiview is active it is exited first, and the saved Multiview '
+          + 'is kept.';
+    }
+    renderDisplayOutputArming();
+  }
+
+  // Armed only for a drag it would actually accept, so the panel never invites
+  // a drop it would refuse. A group takes none at all.
+  function renderDisplayOutputArming() {
+    const box = el('mv_output');
+    if (!box) return;
+    const armed = !!state.dragging && state.dragging.normal && !activeGroup();
+    box.classList.toggle('can-drop', armed);
+    if (!state.dragging) box.classList.remove('drop-target');
+  }
+
+  // A drop here is the ordinary A/V Matrix route, asked for from this page.
+  // It is deliberately the same request the A/V Matrix sends: the server owns
+  // the Multiview exit, the Session 1 route, the verification and the rollback,
+  // and this page implements none of them a second time.
+  async function routeToDisplay(ip) {
+    if (activeGroup()) return;                 // status only, by design
+    const source = state.sources.find((entry) => entry.ip === ip);
+    if (!source || source.normal_route !== 'ready') {
+      notify(source && source.normal_route_reason
+        ? source.normal_route_reason
+        : 'That source cannot be routed to this display.');
+      return;
+    }
+    const output = displayOutput();
+    const active = output && output.state === 'multiview' ? output.multiview : '';
+    const label = source.hostname + (source.ip ? ' (' + source.ip + ')' : '');
+
+    // Asked BEFORE anything is written. Cancel leaves the decoder untouched.
+    if (active) {
+      const proceed = await window.omniMultiviewExit.ask({
+        decoder: decoderLabel(),
+        multiview: active,
+        after: label,
+        message: 'Multiview is currently active on this decoder. Routing this '
+          + 'source to the display output will exit Multiview and replace the '
+          + 'Multiview picture with the selected source. The saved Multiview is '
+          + 'kept and can be shown again later.',
+      });
+      if (!proceed) { notify('Nothing was changed.', 'ok'); return; }
+    }
+
+    await runTransaction('Routing ' + source.hostname + ' to the display…',
+                         '/api/route',
+                         {decoder: readingDecoder(), encoder: ip, mode: 'av',
+                          exit_multiview: !!active});
   }
 
   function pickSource(ip) {
@@ -1128,6 +1319,11 @@
                   : ''));
 
       box.addEventListener('dragover', (event) => {
+        // A source that cannot feed a window is not offered one. It may still
+        // be dragged -- the display output takes it -- so the window says no
+        // rather than the tile being undraggable, which is what used to stop
+        // an otherwise perfectly routable encoder being used at all.
+        if (state.dragging && !state.dragging.multiview) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = 'copy';
         box.classList.add('drop-target');
@@ -1136,6 +1332,7 @@
       box.addEventListener('drop', (event) => {
         event.preventDefault();
         box.classList.remove('drop-target');
+        if (state.dragging && !state.dragging.multiview) return;
         const ip = event.dataTransfer.getData('text/plain');
         if (ip) assign(window_.cell, ip);
       });
@@ -1150,6 +1347,17 @@
 
     const note = el('mv_canvas_note');
     if (note) note.textContent = state.canvas;
+    // Saved and shown are different states and an operator must be able to tell
+    // them apart at a glance. A preset being edited is still a preset: its
+    // windows describe what was asked for, not subscriptions on the display.
+    const canvasState = el('mv_canvas_state');
+    if (canvasState) {
+      const view = currentView();
+      const shown = !!view && !!view.selected_on_output;
+      canvasState.hidden = state.mode !== MODE.EDIT || !view;
+      canvasState.className = 'mv-canvas-state' + (shown ? ' live' : '');
+      canvasState.textContent = shown ? 'LIVE' : 'INACTIVE';
+    }
     const mode = el('mv_canvas_mode');
     if (mode) {
       const live = isLive();
@@ -1158,7 +1366,8 @@
       mode.textContent = live
         ? 'LIVE — changes made on this canvas are applied immediately'
         : state.mode === MODE.EDIT
-          ? 'Not on the display — changes are saved, and shown when you choose'
+          ? 'INACTIVE — saved on this decoder, not currently shown. These '
+            + 'windows are the saved composition, not live subscriptions.'
           : 'New Multiview — changes are saved, and shown when you choose';
     }
     stage.classList.toggle('live', isLive());
@@ -2388,6 +2597,9 @@
 
   function render() {
     renderMode();
+    // Outside the editor branch: what the decoder is displaying is true whether
+    // or not a preset happens to be open.
+    renderDisplayOutput();
     if (isEditingOrCreating()) {
       renderCanvas();
       renderSources();
@@ -2408,11 +2620,43 @@
       if (event.key === 'Escape') closePreview();
     });
     document.addEventListener('dragstart', closePreview, true);
+    // A drag abandoned outside any target still ends, so the armed styling is
+    // cleared from one place rather than from every target.
+    document.addEventListener('dragend', () => {
+      state.dragging = null;
+      renderDisplayOutputArming();
+    }, true);
     document.addEventListener('visibilitychange', syncWindowPreviewTimer);
     window.addEventListener('pagehide', stopWindowPreviews);
     window.addEventListener('beforeunload', stopWindowPreviews);
     window.addEventListener('blur', closePreview);
     window.addEventListener('scroll', closePreview, true);
+
+    const output = el('mv_output');
+    if (output) {
+      output.addEventListener('dragover', (event) => {
+        // Never armed for a group, and never for a source this decoder could
+        // not actually be routed to.
+        if (activeGroup()) return;
+        if (state.dragging && !state.dragging.normal) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+        output.classList.add('drop-target');
+      });
+      output.addEventListener('dragleave', () => {
+        output.classList.remove('drop-target');
+      });
+      output.addEventListener('drop', async (event) => {
+        event.preventDefault();
+        output.classList.remove('drop-target');
+        if (activeGroup()) return;
+        if (state.dragging && !state.dragging.normal) return;
+        const ip = event.dataTransfer.getData('text/plain');
+        state.dragging = null;
+        renderDisplayOutputArming();
+        if (ip) await routeToDisplay(ip);
+      });
+    }
 
     el('mv_decoder').addEventListener('change', async (event) => {
       rememberDecoder(event.target.value);

@@ -608,13 +608,46 @@ def _codec_family(codec):
     return ""
 
 
-def classify_source(device, reachable=None):
+def multiview_headroom(encoder1_bitrate):
+    """What a source has left for Multiview, and whether it is enough.
+
+    Returns (headroom, usable). `headroom` is None when the current Encoder 1
+    bitrate is not known -- an unknown is not a refusal, and the planner will
+    read the device before it writes anything.
+
+    The same arithmetic `allocate_bitrates` uses, in one place, so the source
+    list and the planner cannot come to different conclusions.
+    """
+    if not isinstance(encoder1_bitrate, (int, float)):
+        return None, True
+    headroom = SOURCE_VIDEO_BUDGET - int(encoder1_bitrate)
+    return headroom, _floor_to_step(max(headroom, 0)) >= ENCODER2_MIN_BITRATE
+
+
+HEADROOM_REASON = "Configuration required"
+# States what was measured. "All of its budget" would be false of an encoder at
+# 890 of 900, which is refused too: the shortfall is against the smallest stream
+# the hardware will run, not against the whole budget.
+HEADROOM_DETAIL = (
+    "This encoder's primary stream is using %d of its %d Mb/s budget, which "
+    "leaves %d Mb/s -- less than the %d Mb/s a Multiview stream needs. Lower "
+    "Encoder 1 on the device if this source is needed for Multiview; OmniSuite "
+    "will not change it.")
+
+
+def classify_source(device, reachable=None, encoder1_bitrate=None):
     """Whether a discovered encoder can feed a Multiview window, and why not.
 
     `reachable` is the caller's own liveness answer -- None means it did not
     ask, and the source is then judged on everything else. A device that was
     asked and did not answer is ineligible: a window fed by an encoder that is
     not there is a black rectangle, and offering it is offering a failure.
+
+    `encoder1_bitrate` is the source's CURRENT primary stream, when the caller
+    knows it. A source using its whole budget there has nothing left for a
+    Multiview stream, and saying so in the list is better than letting the
+    operator assign it and meet a refusal. None means unknown, which is not a
+    refusal: the planner reads the device before it writes anything.
 
     Returns {"status", "reason", "detail", "action"} where `action` names the
     thing the operator could do about it, or "" when there is nothing.
@@ -656,6 +689,18 @@ def classify_source(device, reachable=None):
                           "Multiview.",
                 "action": "configure_multicast"}
 
+    # Everything about the source is right; the question left is whether its
+    # current configuration leaves room to carry a window.
+    headroom, usable = multiview_headroom(encoder1_bitrate)
+    if not usable:
+        return {"status": SOURCE_CONFIGURATION_REQUIRED,
+                "reason": HEADROOM_REASON,
+                "detail": HEADROOM_DETAIL % (int(encoder1_bitrate),
+                                             SOURCE_VIDEO_BUDGET,
+                                             max(headroom or 0, 0),
+                                             ENCODER2_MIN_BITRATE),
+                "action": "lower_encoder1"}
+
     return {"status": SOURCE_READY, "reason": "", "detail": "", "action": ""}
 
 
@@ -674,6 +719,57 @@ def is_eligible_source(device):
     if is_excluded_source_model(device.get("model")):
         return False, EXCLUDED_SOURCE_REASON
     return True, ""
+
+
+# --------------------------------------------------------------------------
+# Conventional route eligibility -- a different question
+# --------------------------------------------------------------------------
+# A Multiview window and an ordinary A/V Matrix route ask different things of
+# the same encoder, and conflating them refuses routes that are perfectly legal.
+#
+#   Multiview window       Encoder 2 / Session 2, a Session 2 multicast, a
+#                          supported codec, and enough of the 900 Mb/s budget
+#                          left over for a second stream.
+#   Conventional route     Encoder 1 / Session 1, which is already running.
+#                          No Session 2, no headroom, no second encoder.
+#
+# So a source can legitimately be CONFIGURATION REQUIRED for Multiview and a
+# perfectly good conventional source at the same time -- an encoder whose
+# primary stream uses the whole budget is exactly that, and refusing to route it
+# normally because Multiview cannot use it would be a defect.
+#
+# The Multiview-only model exclusion does not apply here either: it says a model
+# is unsupported *as a Multiview source*, which is a statement about its second
+# encoder, not about the stream the A/V Matrix has always carried.
+
+NORMAL_ROUTE_READY = "ready"
+NORMAL_ROUTE_BLOCKED = "blocked"
+
+
+def normal_route_eligibility(device, reachable=None):
+    """Whether this encoder can be routed to a decoder the ordinary way.
+
+    The conventional route carries the encoder's Session 1 video and Session 1
+    audio -- the stream the A/V Matrix has always used. Deliberately NOT
+    `classify_source`, which answers the Multiview question.
+
+    Returns {"status", "reason"}.
+    """
+    device = device or {}
+    role = str(device.get("role") or device.get("type") or "").strip().lower()
+    if role != "encoder":
+        return {"status": NORMAL_ROUTE_BLOCKED, "reason": "not an encoder"}
+    if reachable is False:
+        return {"status": NORMAL_ROUTE_BLOCKED, "reason": "Offline"}
+    # The A/V Matrix routes a decoder input at this address; without one there
+    # is nothing to point the decoder at.
+    address = str(device.get("session1_video_mcast")
+                  or device.get("v_mcast") or "").strip()
+    if not address:
+        return {"status": NORMAL_ROUTE_BLOCKED,
+                "reason": "Session 1 on this encoder has no video multicast "
+                          "destination, so there is no stream to route."}
+    return {"status": NORMAL_ROUTE_READY, "reason": ""}
 
 
 def classify_decoder(device, reachable=None, multiview_supported=None,

@@ -380,6 +380,21 @@ class MultiviewTestBase(unittest.TestCase):
         saver = mock.patch.object(srv, "_save_multiview_meta", lambda: None)
         saver.start()
         self.addCleanup(saver.stop)
+        # `omni_matrix_logic._decoders` and `_encoders` are process-global, and
+        # /api/state overlays their fields on top of the cache. Without this, a
+        # decoder left there by one test decides what a later test's matrix row
+        # says its video input is -- which is how three tests here came to
+        # assert on `multiview_name` while `video_input` beside it already held
+        # another test's Multiview.
+        if srv.HAS_MATRIX and srv.omni_matrix_logic is not None:
+            for attribute in ("_decoders", "_encoders"):
+                store = getattr(srv.omni_matrix_logic, attribute, None)
+                if store is None:
+                    continue
+                previous = dict(store)
+                store.clear()
+                self.addCleanup(
+                    lambda s=store, p=previous: (s.clear(), s.update(p)))
 
     def _preflight(self, ip, ports, timeout=0.4):
         self.preflights.append(ip)
@@ -1999,6 +2014,651 @@ class UnlockedWindowTests(MultiviewTestBase):
 
 
 # ==========================================================================
+# The A/V Matrix verdict must not outlive the input it was derived from
+# ==========================================================================
+
+class MatrixOverlayFreshnessTests(MultiviewTestBase):
+    """Measured on the bench: `/api/state` said both of two opposite things.
+
+    `_merge_dec` derives `multiview_active` from the cached `video_input`. The
+    live-state overlay that runs afterwards replaces `video_input` with what the
+    device last reported -- and used to leave the derived verdict behind.
+
+    On the bench decoder, after a conventional route and then a Show, the matrix
+    reported `video_input='multiviewBenchLive'` and
+    `multiview_active=False` in the same record. A decoder cannot be showing a
+    Multiview and not showing one, and the Multiview page and the A/V Matrix are
+    required to agree about the same display.
+    """
+
+    MULTIVIEW = "multiviewBenchLive"
+
+    def _state_with(self, cached_input, live_input):
+        devices = [dict(d) for d in _devices()]
+        for device in devices:
+            if device.get("ip") == DECODER_IP:
+                device["video_input"] = cached_input
+                # What the stale derivation would have concluded, written into
+                # the record exactly as the route handler writes it.
+                device["multiview_active"] = bool(
+                    mv.active_multiview_name(cached_input))
+                device["multiview_name"] = mv.active_multiview_name(cached_input)
+        live = {"encoders": [], "decoders": [{"ip": DECODER_IP,
+                                              "video_input": live_input}],
+                "routes": {}}
+        with mock.patch.object(srv, "_load_cache", lambda: devices), \
+                mock.patch.object(srv.omni_matrix_logic, "list_state",
+                                  lambda *a, **k: live):
+            body = self.client.get("/api/state").get_json()
+        return next(d for d in body["decoders"] if d["ip"] == DECODER_IP)
+
+    def test_a_multiview_that_appeared_since_the_cache_is_reported(self):
+        """The exact bench condition: cache says an input, the device says a view."""
+        entry = self._state_with("ip_input1", self.MULTIVIEW)
+        self.assertEqual(entry["video_input"], self.MULTIVIEW)
+        self.assertTrue(entry["multiview_active"],
+                        "the matrix named a Multiview as the input and still "
+                        "said the decoder was not in Multiview")
+        self.assertEqual(entry["multiview_name"], self.MULTIVIEW)
+
+    def test_a_multiview_that_went_away_since_the_cache_is_not_reported(self):
+        """And the other direction, which is how a stale LIVE badge survives."""
+        entry = self._state_with(self.MULTIVIEW, "ip_input1")
+        self.assertEqual(entry["video_input"], "ip_input1")
+        self.assertFalse(entry["multiview_active"],
+                         "the matrix still claimed a Multiview after a route")
+        self.assertIsNone(entry["multiview_name"])
+
+    def test_the_verdict_and_the_input_can_never_disagree(self):
+        """Whatever the pair, the two fields are answers to the same question."""
+        for cached, live in (("ip_input1", self.MULTIVIEW),
+                             (self.MULTIVIEW, "ip_input1"),
+                             (self.MULTIVIEW, self.MULTIVIEW),
+                             ("ip_input1", "ip_input1"),
+                             ("ip_input1", "ip_input7")):
+            entry = self._state_with(cached, live)
+            expected = mv.active_multiview_name(entry["video_input"])
+            self.assertEqual(entry["multiview_name"], expected,
+                             "cached=%s live=%s" % (cached, live))
+            self.assertEqual(entry["multiview_active"], bool(expected),
+                             "cached=%s live=%s" % (cached, live))
+
+    def test_the_multiview_page_and_the_matrix_agree(self):
+        """Two surfaces, one display, one answer."""
+        decoder = self.decoder(
+            multiviews=[_multiview_object(self.MULTIVIEW, 1920, 1088)])
+        decoder.nodes["hdmi_output"][0]["video"]["input"] = self.MULTIVIEW
+        page = self.client.get(
+            "/api/multiview/state?ip=" + DECODER_IP).get_json()
+        entry = self._state_with("ip_input1", self.MULTIVIEW)
+        self.assertEqual(page["display_output"]["state"], "multiview")
+        self.assertEqual(page["display_output"]["multiview"],
+                         entry["multiview_name"],
+                         "the Multiview page and the A/V Matrix disagree about "
+                         "the same decoder")
+
+
+# ==========================================================================
+# Display output: what the decoder is actually showing
+# ==========================================================================
+
+class DisplayOutputTests(MultiviewTestBase):
+    """The panel above the canvas answers a different question from the canvas.
+
+    The canvas shows the Multiview the operator has open, which may be saved and
+    not shown. Display Output shows what is on the display right now. Conflating
+    them is what let a page say LIVE about a composition that had been routed
+    away from somewhere else.
+
+    Everything here is derived from the decoder's own current output selection.
+    A saved object, a remembered selection and the last button pressed all
+    describe intent, and none of them is evidence.
+    """
+
+    MULTIVIEW = "multiviewLive"
+
+    def _state(self, ip=DECODER_IP):
+        return self.client.get(
+            "/api/multiview/state?ip=" + ip).get_json()
+
+    def _showing_multiview(self):
+        decoder = self.decoder(
+            multiviews=[_multiview_object(self.MULTIVIEW, 1920, 1088)])
+        decoder.nodes["hdmi_output"][0]["video"]["input"] = self.MULTIVIEW
+        return decoder
+
+    # ---- the three states --------------------------------------------------
+    def test_a_conventional_source_is_named(self):
+        """The fixture decoder is on ip_input1, which carries Session 1."""
+        self.decoder()
+        self.encoder(ENCODER_IP)
+        output = self._state()["display_output"]
+        self.assertEqual(output["state"], "source")
+        self.assertTrue(output["live"])
+        self.assertEqual(output["video"]["source"]["ip"], ENCODER_IP)
+        self.assertEqual(output["video"]["multicast"], S1_VIDEO)
+
+    def test_the_named_source_is_the_session_1_stream(self):
+        """Not Session 2. A conventional route never carries the Multiview stream."""
+        self.decoder()
+        self.encoder(ENCODER_IP)
+        output = self._state()["display_output"]
+        self.assertEqual(output["video"]["source"]["session"], "session1")
+        self.assertNotEqual(output["video"]["multicast"], S2_VIDEO,
+                            "the display output named the Multiview stream")
+
+    def test_an_active_multiview_is_reported_as_a_multiview(self):
+        self._showing_multiview()
+        output = self._state()["display_output"]
+        self.assertEqual(output["state"], "multiview")
+        self.assertEqual(output["multiview"], self.MULTIVIEW)
+        self.assertTrue(output["live"])
+        self.assertIsNone(output["video"],
+                          "a conventional source was invented for a Multiview")
+
+    def test_an_input_carrying_nothing_is_not_called_live(self):
+        """Selected is not the same as showing something."""
+        inputs = _ip_inputs()
+        inputs[0].update({"enabled": False, "multicast": {"address": ""}})
+        self.decoder(ip_inputs=inputs)
+        output = self._state()["display_output"]
+        self.assertEqual(output["state"], "none")
+        self.assertFalse(output["live"])
+
+    def test_a_stream_from_nothing_discovered_is_still_on_the_screen(self):
+        """Something is plainly playing; it is simply not a device we know."""
+        inputs = _ip_inputs()
+        inputs[0].update({"enabled": True,
+                          "multicast": {"address": "233.252.0.199"}})
+        self.decoder(ip_inputs=inputs)
+        output = self._state()["display_output"]
+        self.assertEqual(output["state"], "source")
+        self.assertIsNone(output["video"]["source"])
+        self.assertEqual(output["video"]["multicast"], "233.252.0.199")
+
+    # ---- it is read, not remembered ---------------------------------------
+    def test_a_saved_multiview_that_is_not_shown_does_not_claim_the_display(self):
+        self.decoder(multiviews=[_multiview_object(self.MULTIVIEW, 1920, 1088)])
+        self.encoder(ENCODER_IP)
+        body = self._state()
+        self.assertEqual(body["display_output"]["state"], "source")
+        view = next(v for v in body["multiviews"] if v["name"] == self.MULTIVIEW)
+        self.assertFalse(view["selected_on_output"],
+                         "a saved Multiview was reported as being on the display")
+
+    def test_an_external_route_is_reflected_the_next_time_state_is_read(self):
+        """Routed from the A/V Matrix; this page is opened afterwards."""
+        decoder = self._showing_multiview()
+        self.assertEqual(self._state()["display_output"]["state"], "multiview")
+        # Somebody else routes it away.
+        decoder.nodes["hdmi_output"][0]["video"]["input"] = "ip_input1"
+        self.encoder(ENCODER_IP)
+        body = self._state()
+        self.assertEqual(body["display_output"]["state"], "source")
+        view = next(v for v in body["multiviews"] if v["name"] == self.MULTIVIEW)
+        self.assertFalse(view["selected_on_output"],
+                         "the Multiview still claimed the display after a route")
+
+    def test_it_costs_the_state_read_nothing(self):
+        """Derived from the same three reads. It is not another request."""
+        decoder = self.decoder()
+        self.encoder(ENCODER_IP)
+        self._state()
+        self.assertEqual(decoder.reads, ["multiview", "hdmi_output", "ip_input"],
+                         "the display output added a device read: %s"
+                         % decoder.reads)
+
+    def test_reading_it_writes_nothing(self):
+        decoder = self._showing_multiview()
+        encoder = self.encoder(ENCODER_IP)
+        decoder.writes, encoder.writes = [], []
+        self._state()
+        self.assertEqual(decoder.writes, [])
+        self.assertEqual(encoder.writes, [])
+
+    def test_no_credential_is_returned(self):
+        self.decoder()
+        self.encoder(ENCODER_IP)
+        raw = self.client.get(
+            "/api/multiview/state?ip=" + DECODER_IP).get_data(as_text=True)
+        for pattern in ('"password"', 'used_password', '"secret"', '"token"',
+                        'credential'):
+            self.assertNotIn(pattern, raw.lower())
+
+
+# ==========================================================================
+# A conventional route is a different question from a Multiview window
+# ==========================================================================
+
+class NormalRouteEligibilityTests(MultiviewTestBase):
+    """A source can be unusable for Multiview and a fine ordinary source.
+
+    Found while adding Display Output: the page made a tile draggable only when
+    it was Multiview-ready, so an encoder whose primary stream uses its whole
+    budget -- refused for a window, and correctly so -- could not be dragged
+    anywhere at all, including to the display output, where the reason it was
+    refused does not apply.
+
+    A Multiview window needs Encoder 2, a Session 2 multicast and enough of the
+    900 Mb/s budget left for a second stream. A conventional route needs the
+    Session 1 stream that is already running, and nothing else.
+    """
+
+    def _encoder(self, **overrides):
+        device = {"ip": ENCODER_IP, "role": "encoder", "codec": "VCx",
+                  "model": "hw-omni-e4111",
+                  "session1_video_mcast": S1_VIDEO,
+                  "session2_video_mcast": S2_VIDEO}
+        device.update(overrides)
+        return device
+
+    def test_a_source_with_no_multiview_headroom_can_still_be_routed(self):
+        """The .218 case: Encoder 1 has the lot, so Multiview cannot, so what."""
+        device = self._encoder()
+        self.assertEqual(
+            mv.classify_source(device, reachable=True, encoder1_bitrate=900)
+            ["status"], mv.SOURCE_CONFIGURATION_REQUIRED)
+        self.assertEqual(
+            mv.normal_route_eligibility(device, reachable=True)["status"],
+            mv.NORMAL_ROUTE_READY,
+            "a perfectly routable encoder was refused an ordinary route")
+
+    def test_the_multiview_model_exclusion_does_not_bar_a_normal_route(self):
+        """It says unsupported *as a Multiview source*, which is about Encoder 2."""
+        device = self._encoder(model="AT-OMNI-111-WP")
+        self.assertEqual(mv.classify_source(device, reachable=True)["status"],
+                         mv.SOURCE_INELIGIBLE)
+        self.assertEqual(
+            mv.normal_route_eligibility(device, reachable=True)["status"],
+            mv.NORMAL_ROUTE_READY)
+
+    def test_a_missing_session_2_does_not_bar_a_normal_route(self):
+        device = self._encoder(session2_video_mcast="")
+        self.assertEqual(mv.classify_source(device, reachable=True)["status"],
+                         mv.SOURCE_CONFIGURATION_REQUIRED)
+        self.assertEqual(
+            mv.normal_route_eligibility(device, reachable=True)["status"],
+            mv.NORMAL_ROUTE_READY)
+
+    def test_a_missing_session_1_video_does_bar_one(self):
+        """There is no stream to point the decoder at."""
+        verdict = mv.normal_route_eligibility(
+            self._encoder(session1_video_mcast=""), reachable=True)
+        self.assertEqual(verdict["status"], mv.NORMAL_ROUTE_BLOCKED)
+        self.assertIn("Session 1", verdict["reason"])
+
+    def test_an_offline_encoder_is_barred(self):
+        self.assertEqual(
+            mv.normal_route_eligibility(self._encoder(), reachable=False)
+            ["status"], mv.NORMAL_ROUTE_BLOCKED)
+
+    def test_a_decoder_is_not_a_source_for_either(self):
+        device = {"ip": DECODER_IP, "role": "decoder"}
+        self.assertEqual(
+            mv.normal_route_eligibility(device, reachable=True)["status"],
+            mv.NORMAL_ROUTE_BLOCKED)
+
+    def test_the_source_list_carries_both_answers(self):
+        """The page holds neither rule; it is told both."""
+        encoder = self.encoder(ENCODER_IP)
+        entry = next(e for e in encoder.nodes["vc2"]
+                     if e["name"] == "vc2_encoder1")
+        entry["bitrate"] = 900
+        body = self.client.get("/api/multiview/sources").get_json()
+        listed = next(s for s in body["sources"] if s["ip"] == ENCODER_IP)
+        self.assertEqual(listed["status"], mv.SOURCE_CONFIGURATION_REQUIRED)
+        self.assertEqual(listed["normal_route"], mv.NORMAL_ROUTE_READY,
+                         "the list did not say it could still be routed")
+
+    def test_the_two_answers_are_not_the_same_field(self):
+        """A test that would pass if one were simply copied from the other."""
+        self.encoder(ENCODER_IP)
+        body = self.client.get("/api/multiview/sources").get_json()
+        listed = next(s for s in body["sources"] if s["ip"] == ENCODER_IP)
+        self.assertEqual(listed["status"], mv.SOURCE_READY)
+        self.assertEqual(listed["normal_route"], mv.NORMAL_ROUTE_READY)
+        self.assertIn("normal_route_reason", listed)
+
+
+# ==========================================================================
+# Routing to the display output is the ordinary A/V Matrix route
+# ==========================================================================
+
+class DisplayOutputRouteTests(MultiviewTestBase):
+    """A drop on Display Output is the A/V Matrix transaction, asked for here.
+
+    Nothing about the teardown, the route, the verification or the rollback is
+    implemented a second time. These tests exist to keep it that way, and to
+    hold the one thing the shortcut would get wrong: a conventional route
+    carries the encoder's SESSION 1 audio and video, never the Session 2 stream
+    that a Multiview window uses -- however conveniently that stream happens to
+    be running already.
+    """
+
+    MULTIVIEW = "multiviewLive"
+
+    def _composing(self):
+        decoder = self.decoder(
+            multiviews=[_multiview_object(self.MULTIVIEW, 1920, 1088)])
+        decoder.nodes["hdmi_output"][0]["video"]["input"] = self.MULTIVIEW
+        decoder.nodes["hdmi_output"][0]["video"]["available_inputs"] = [
+            "ip_input1", self.MULTIVIEW]
+        return decoder
+
+    def _route(self, **extra):
+        payload = {"decoder": DECODER_IP, "encoder": ENCODER_IP, "mode": "av"}
+        payload.update(extra)
+        return self.client.post("/api/route", json=payload)
+
+    # ---- Session 1, and only Session 1 ------------------------------------
+    def test_the_matrix_route_fields_are_the_session_1_streams(self):
+        """`v_mcast`/`a_mcast` are what set_route uses; they are Session 1."""
+        fields = srv._encoder_session_matrix_fields(_sessions())
+        self.assertEqual(fields["v_mcast"], S1_VIDEO)
+        self.assertEqual(fields["a_mcast"], S1_AUDIO)
+        self.assertEqual(fields["session1_video_mcast"], S1_VIDEO)
+        self.assertEqual(fields["session2_video_mcast"], S2_VIDEO)
+        self.assertNotEqual(fields["v_mcast"], fields["session2_video_mcast"],
+                            "the route fields carry the Multiview stream")
+
+    def test_the_route_path_never_reaches_for_session_2(self):
+        """Structural, because the addresses are resolved inside set_route."""
+        source = pathlib.Path(srv.__file__).resolve().parent.joinpath(
+            "omni_matrix_logic.py").read_text(encoding="utf-8")
+        body = source[source.index("def set_route"):]
+        body = body[:body.index("\ndef ", 1)]
+        self.assertIn("v_mcast", body, "the route no longer uses Session 1 video")
+        self.assertIn("a_mcast", body, "the route no longer uses Session 1 audio")
+        self.assertNotIn("session2", body,
+                         "the conventional route reached for Session 2")
+
+    def test_routing_to_the_display_does_not_prepare_encoder_2(self):
+        """No scaler, no bitrate, no Session 2. It is not a Multiview operation."""
+        self._composing()
+        encoder = self.encoder(ENCODER_IP)
+        encoder.writes = []
+        self._route(exit_multiview=True)
+        self.assertEqual(encoder.writes, [],
+                         "a conventional route configured the source encoder: %s"
+                         % encoder.writes)
+
+    def test_a_source_with_no_headroom_is_routed_without_touching_encoder_1(self):
+        """The .218 case, routed conventionally, end to end."""
+        self._composing()
+        encoder = self.encoder(ENCODER_IP)
+        entry = next(e for e in encoder.nodes["vc2"]
+                     if e["name"] == "vc2_encoder1")
+        entry["bitrate"] = 900
+        encoder.writes = []
+        response = self._route(exit_multiview=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(encoder.writes, [],
+                         "routing a full encoder changed it")
+        self.assertEqual(entry["bitrate"], 900,
+                         "Encoder 1 was lowered to make room for something")
+
+    # ---- the transaction is the established one ---------------------------
+    def test_the_route_is_refused_without_consent(self):
+        decoder = self._composing()
+        self.encoder(ENCODER_IP)
+        before = copy.deepcopy(decoder.nodes)
+        response = self._route()
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["status"], "MULTIVIEW ACTIVE")
+        self.assertEqual(decoder.nodes, before,
+                         "a refused route changed the decoder")
+
+    def test_consent_exits_multiview_and_keeps_the_saved_object(self):
+        decoder = self._composing()
+        self.encoder(ENCODER_IP)
+        body = self._route(exit_multiview=True).get_json()
+        self.assertTrue(body["multiview_exit"]["ok"], body["multiview_exit"])
+        self.assertIn(self.MULTIVIEW,
+                      [str(o.get("name") or "")
+                       for o in decoder.nodes["multiview"]],
+                      "exiting Multiview deleted the saved composition")
+
+    def test_a_decoder_not_in_multiview_needs_no_consent(self):
+        """Dropping on Display Output with nothing composited is just a route."""
+        self.decoder()
+        self.encoder(ENCODER_IP)
+        response = self._route()
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("multiview_exit", response.get_json())
+
+    # ---- when the route fails after Multiview has been left ---------------
+    def test_a_failed_route_puts_the_multiview_back(self):
+        """Leaving Multiview and routing are one operation for the operator.
+
+        Half of it is worse than none of it: the display would be blank, and
+        the page would say INACTIVE about a composition that is neither shown
+        nor replaced. The fence makes the route fail here, which is exactly the
+        condition this exists for.
+        """
+        decoder = self._composing()
+        self.encoder(ENCODER_IP)
+        body = self._route(exit_multiview=True).get_json()
+        self.assertFalse(body["ok"], "the route was expected to fail here")
+        self.assertEqual(body["status"], "FAILED — ROLLED BACK")
+        self.assertTrue(body["multiview_exit"]["rollback"]["restored"],
+                        body["multiview_exit"])
+        self.assertEqual(
+            decoder.nodes["hdmi_output"][0]["video"]["input"], self.MULTIVIEW,
+            "the decoder was left on neither the Multiview nor the source")
+
+    def test_the_rollback_tells_the_matrix_what_it_restored(self):
+        """Otherwise the A/V Matrix shows a route that was rolled back.
+
+        Measured on the bench decoder: leaving Multiview recorded the fallback
+        input, the route failed, the Multiview was put back on the device -- and
+        the cache still read ip_input1, so the matrix said the decoder was on a
+        conventional source while it was demonstrably compositing.
+        """
+        self._composing()
+        self.encoder(ENCODER_IP)
+        recorded = []
+        with mock.patch.object(srv, "_remember_decoder_display",
+                               lambda ip, value, audio=None:
+                                   recorded.append((ip, value))):
+            body = self._route(exit_multiview=True).get_json()
+        self.assertTrue(body["multiview_exit"]["rollback"]["restored"],
+                        "the rollback did not restore, so this proves nothing")
+        self.assertEqual(recorded[-1], (DECODER_IP, self.MULTIVIEW),
+                         "the restored Multiview was not recorded for the "
+                         "matrix: %s" % recorded)
+
+    def test_the_display_output_reports_the_restored_multiview(self):
+        """The page must not say INACTIVE merely because a route was attempted."""
+        self._composing()
+        self.encoder(ENCODER_IP)
+        self._route(exit_multiview=True)
+        output = self.client.get(
+            "/api/multiview/state?ip=" + DECODER_IP).get_json()["display_output"]
+        self.assertEqual(output["state"], "multiview")
+        self.assertEqual(output["multiview"], self.MULTIVIEW)
+
+
+# ==========================================================================
+# Source eligibility and the 900 Mb/s source budget
+# ==========================================================================
+
+class SourceHeadroomTests(MultiviewTestBase):
+    """A source whose primary stream uses the whole budget is not Ready.
+
+    It was listed as Ready and then refused by the planner: internally safe,
+    externally baffling. The operator dragged it onto a window and only then
+    learned it could not be used. The list and the planner now answer from one
+    rule, so they cannot disagree.
+    """
+
+    # (Encoder 1, headroom, is the source usable at all)
+    MATRIX = [(0, 900, True), (500, 400, True), (600, 300, True),
+              (700, 200, True), (750, 150, True), (800, 100, True),
+              (850, 50, True), (880, 20, True), (890, 10, False),
+              (900, 0, False)]
+
+    def test_the_headroom_arithmetic(self):
+        for encoder1, expected, usable in self.MATRIX:
+            headroom, ok = mv.multiview_headroom(encoder1)
+            self.assertEqual(headroom, expected, "Encoder 1 at %d" % encoder1)
+            self.assertEqual(ok, usable, "Encoder 1 at %d" % encoder1)
+
+    def test_the_boundary_is_the_minimum_encoder_2_bitrate(self):
+        """Not a number of its own: the smallest stream the hardware will run."""
+        self.assertEqual(mv.ENCODER2_MIN_BITRATE, 20)
+        _headroom, usable = mv.multiview_headroom(
+            mv.SOURCE_VIDEO_BUDGET - mv.ENCODER2_MIN_BITRATE)
+        self.assertTrue(usable, "exactly the minimum should be usable")
+        _headroom, usable = mv.multiview_headroom(
+            mv.SOURCE_VIDEO_BUDGET - mv.ENCODER2_MIN_BITRATE + mv.BITRATE_STEP)
+        self.assertFalse(usable, "below the minimum should not be")
+
+    def test_an_unknown_encoder_1_is_not_a_refusal(self):
+        """The planner reads the device before it writes; unknown is not no."""
+        headroom, usable = mv.multiview_headroom(None)
+        self.assertIsNone(headroom)
+        self.assertTrue(usable)
+
+    def _classify(self, encoder1):
+        device = {"ip": ENCODER_IP, "role": "encoder", "codec": "VCx",
+                  "model": "hw-omni-e4111", "session2_video_mcast": S2_VIDEO}
+        return mv.classify_source(device, reachable=True,
+                                  encoder1_bitrate=encoder1)
+
+    def test_every_value_classifies_the_way_the_planner_would(self):
+        for encoder1, _headroom, usable in self.MATRIX:
+            verdict = self._classify(encoder1)
+            expected = (mv.SOURCE_READY if usable
+                        else mv.SOURCE_CONFIGURATION_REQUIRED)
+            self.assertEqual(verdict["status"], expected,
+                             "Encoder 1 at %d was %s"
+                             % (encoder1, verdict["status"]))
+
+    def test_the_reason_says_what_to_do_about_it(self):
+        verdict = self._classify(900)
+        self.assertEqual(verdict["status"], mv.SOURCE_CONFIGURATION_REQUIRED)
+        self.assertIn("900 of its 900 Mb/s", verdict["detail"])
+        self.assertIn("will not change it", verdict["detail"],
+                      "the operator is not told that OmniSuite leaves Encoder 1 "
+                      "alone: %s" % verdict["detail"])
+
+    def test_the_reason_states_what_was_measured(self):
+        """890 of 900 is not "all of it", and saying so would be false.
+
+        The shortfall is against the smallest stream the hardware will run, not
+        against the whole budget, so the message has to carry both numbers or it
+        tells an operator at 890 to look for a problem that is not there.
+        """
+        verdict = self._classify(890)
+        self.assertEqual(verdict["status"], mv.SOURCE_CONFIGURATION_REQUIRED)
+        self.assertIn("890 of its 900 Mb/s", verdict["detail"])
+        self.assertIn("leaves 10 Mb/s", verdict["detail"])
+        self.assertIn("20 Mb/s a Multiview stream needs", verdict["detail"])
+        self.assertNotIn("all", verdict["detail"].split("Lower")[0],
+                         "an encoder at 890 is not using all of its budget")
+
+    def test_a_source_with_only_the_minimum_is_still_offered(self):
+        """Phase 7C: a window may be given less than its target."""
+        self.assertEqual(self._classify(880)["status"], mv.SOURCE_READY)
+
+    def test_the_planner_agrees_with_the_list(self):
+        """The two must not disagree about the same source."""
+        for encoder1, _headroom, usable in self.MATRIX:
+            allocation = mv.allocate_bitrates([
+                {"source_ip": ENCODER_IP, "target": mv.EQUAL_WINDOW_TARGET,
+                 "encoder1_bitrate": encoder1}])[0]
+            planner_can_run = allocation["bitrate"] is not None
+            self.assertEqual(
+                planner_can_run, usable,
+                "Encoder 1 at %d: list says usable=%s, planner says %s"
+                % (encoder1, usable, allocation))
+
+    def test_no_other_eligibility_answer_is_disturbed(self):
+        """Headroom is asked last, of an otherwise acceptable source."""
+        offline = mv.classify_source(
+            {"role": "encoder", "codec": "VCx", "model": "hw-omni-e4111",
+             "session2_video_mcast": S2_VIDEO},
+            reachable=False, encoder1_bitrate=0)
+        self.assertEqual(offline["status"], mv.SOURCE_INELIGIBLE)
+        self.assertEqual(offline["reason"], "Offline")
+
+        excluded = mv.classify_source(
+            {"role": "encoder", "codec": "VCx", "model": "AT-OMNI-111-WP",
+             "session2_video_mcast": S2_VIDEO},
+            reachable=True, encoder1_bitrate=0)
+        self.assertEqual(excluded["status"], mv.SOURCE_INELIGIBLE)
+
+        codecless = mv.classify_source(
+            {"role": "encoder", "model": "hw-omni-e4111",
+             "session2_video_mcast": S2_VIDEO},
+            reachable=True, encoder1_bitrate=0)
+        self.assertEqual(codecless["status"], mv.SOURCE_INELIGIBLE)
+
+        no_multicast = mv.classify_source(
+            {"role": "encoder", "codec": "VCx", "model": "hw-omni-e4111"},
+            reachable=True, encoder1_bitrate=0)
+        self.assertEqual(no_multicast["status"],
+                         mv.SOURCE_CONFIGURATION_REQUIRED)
+        self.assertIn("Multicast", no_multicast["reason"])
+
+    def test_a_valid_wall_plate_is_still_a_source(self):
+        for model in ("HW-OMNI-E4111-WP", "AT-OMNI-111"):
+            verdict = mv.classify_source(
+                {"role": "encoder", "codec": "VCx", "model": model,
+                 "session2_video_mcast": S2_VIDEO},
+                reachable=True, encoder1_bitrate=0)
+            self.assertEqual(verdict["status"], mv.SOURCE_READY, model)
+
+    def test_encoder_1_is_never_written_to_make_room(self):
+        allocation = mv.allocate_bitrates([
+            {"source_ip": ENCODER_IP, "target": mv.MAIN_WINDOW_TARGET,
+             "encoder1_bitrate": 900}])[0]
+        self.assertIsNone(allocation["encoder1_target"],
+                          "Multiview proposed changing Encoder 1")
+        self.assertIsNone(allocation["bitrate"])
+
+    # ---- what the endpoint answers ----------------------------------------
+    def _with_encoder1(self, bitrate):
+        encoder = self.encoder(ENCODER_IP)
+        entry = next(e for e in encoder.nodes["vc2"]
+                     if e["name"] == "vc2_encoder1")
+        entry["bitrate"] = bitrate
+        return encoder
+
+    def test_the_source_list_marks_it_configuration_required(self):
+        self._with_encoder1(900)
+        body = self.client.get("/api/multiview/sources").get_json()
+        listed = ([s for s in body["sources"] if s["ip"] == ENCODER_IP]
+                  + [s for s in body["excluded"] if s["ip"] == ENCODER_IP])
+        self.assertTrue(listed, "the source vanished from the list entirely")
+        self.assertEqual(listed[0]["status"], mv.SOURCE_CONFIGURATION_REQUIRED)
+        self.assertEqual(listed[0]["encoder1_bitrate"], 900)
+        self.assertEqual(listed[0]["headroom"], 0)
+
+    def test_a_source_with_room_is_still_ready(self):
+        self._with_encoder1(700)
+        body = self.client.get("/api/multiview/sources").get_json()
+        listed = next(s for s in body["sources"] if s["ip"] == ENCODER_IP)
+        self.assertEqual(listed["status"], mv.SOURCE_READY)
+        self.assertEqual(listed["headroom"], 200)
+
+    def test_a_source_that_did_not_answer_is_not_called_unusable(self):
+        """Unknown is unknown. The planner finds out before it writes."""
+        self.encoder(ENCODER_IP)
+        with mock.patch.object(srv, "_encoder1_bitrates", lambda ips: {}):
+            body = self.client.get("/api/multiview/sources").get_json()
+        listed = next(s for s in body["sources"] if s["ip"] == ENCODER_IP)
+        self.assertEqual(listed["status"], mv.SOURCE_READY)
+        self.assertIsNone(listed["encoder1_bitrate"])
+
+    def test_no_credential_is_returned_by_the_source_list(self):
+        self._with_encoder1(900)
+        raw = self.client.get("/api/multiview/sources").get_data(as_text=True)
+        for pattern in ('"password"', 'used_password', '"secret"', '"token"'):
+            self.assertNotIn(pattern, raw.lower())
+
+
+# ==========================================================================
 # What a refusal tells the operator
 # ==========================================================================
 
@@ -2700,12 +3360,32 @@ class SourcePreviewTests(MultiviewTestBase):
         self.assertEqual(entry["status"], mv.SOURCE_READY,
                          "a source became unusable because its preview is off")
 
-    def test_listing_sources_still_asks_no_encoder_anything(self):
-        """The preview must not have quietly made the source list expensive."""
+    def test_listing_sources_reads_one_node_per_encoder_and_no_more(self):
+        """The source list must not become expensive.
+
+        It used to read nothing at all. Phase 8D gave it one job that needs a
+        device: a source whose primary stream is using the whole budget has no
+        room for a Multiview window, and the operator should learn that from the
+        list rather than from a refusal after they have assigned it. That costs
+        one `vc2` read per reachable encoder, concurrently.
+
+        The guard this test exists for is unchanged -- nothing else may creep in.
+        One node, not the sessions, not the Multiview objects, and nothing at
+        all from an encoder nobody is listing.
+        """
         encoder = self.encoder(ENCODER_IP)
         self.client.get("/api/multiview/sources")
+        self.assertEqual(encoder.reads, ["vc2"],
+                         "the source list reads more than the one node it needs "
+                         "for headroom: %s" % encoder.reads)
+
+    def test_listing_sources_reads_nothing_when_it_is_not_probing(self):
+        """`probe=0` is the cheap call, and it stays free."""
+        encoder = self.encoder(ENCODER_IP)
+        self.client.get("/api/multiview/sources?probe=0")
         self.assertEqual(encoder.reads, [],
-                         "the source list read a device: %s" % encoder.reads)
+                         "the unprobed source list read a device: %s"
+                         % encoder.reads)
 
     def test_a_preview_reads_one_node_from_one_device(self):
         encoder = self.encoder(ENCODER_IP)
