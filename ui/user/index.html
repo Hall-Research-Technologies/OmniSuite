@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OmniSuite</title>
+<link rel="icon" href="/ui/favicon.ico">
+<script>
+  (function () {
+    try {
+      if (localStorage.getItem('dark') === 'false') {
+        document.documentElement.classList.add('light');
+      }
+    } catch (err) { /* storage off: the dark default is fine */ }
+  })();
+</script>
+<link rel="stylesheet" href="/ui/templates.css">
+<link rel="stylesheet" href="/ui/remote.css">
+</head>
+<body class="remote">
+
+<header class="remote-header">
+  <div class="brand">
+    <img src="/ui/companylogo.png" alt="Hall Research" class="logo">
+    <h1>OmniSuite</h1>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;">
+    <span class="who" id="who"></span>
+    <button class="btn-quiet" id="signout" type="button" hidden>Sign out</button>
+  </div>
+</header>
+
+<!-- Only the features this account was granted are ever rendered here.
+     Hiding a tab is not authorization -- the server refuses the same request
+     whatever this page draws -- but an operator should not be shown a door
+     they cannot open. -->
+<nav class="remote-tabs" id="tabs" role="tablist" hidden></nav>
+
+<main class="remote-main">
+  <div id="loading" class="empty">Loading&hellip;</div>
+
+  <!-- ------------------------------------------------------------ A/V -->
+  <section id="panel_av" hidden>
+    <div class="panel">
+      <h2>1 &middot; Choose a source</h2>
+      <p class="hint">What do you want to show?</p>
+      <div class="pick-grid" id="sources"></div>
+      <div class="empty" id="sources_empty" hidden>
+        No sources have been assigned to your account.
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>2 &middot; Choose a display</h2>
+      <p class="hint">Where do you want to show it?</p>
+      <div class="pick-grid" id="destinations"></div>
+      <div class="empty" id="destinations_empty" hidden>
+        No displays have been assigned to your account.
+      </div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------ USB -->
+  <section id="panel_usb" hidden>
+    <div class="panel">
+      <h2>USB</h2>
+      <div class="deferred">
+        USB routing is not available yet in this interface.<br>
+        Your account has permission for it; the operator controls are still
+        being built.
+      </div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------ Multiview -->
+  <section id="panel_multiview" hidden>
+    <div class="panel">
+      <h2>Multiview</h2>
+      <div class="deferred">
+        Multiview operation is not available yet in this interface.<br>
+        Your account has permission to show and change approved Multiview
+        layouts; those controls are still being built.
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- The action stays put rather than being withdrawn when the form is
+     incomplete: it says what is still missing. -->
+<div class="action-bar" id="action_bar" hidden>
+  <div class="summary" id="summary">Choose a source and a display.</div>
+  <button class="btn-primary-lg" id="route_btn" type="button" disabled>Show</button>
+</div>
+
+<script src="/ui/toast.js"></script>
+<script src="/ui/user/user.js"></script>
+</body>
+</html>

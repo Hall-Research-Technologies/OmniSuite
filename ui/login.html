@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sign in &mdash; OmniSuite</title>
+<link rel="icon" href="/ui/favicon.ico">
+<!-- The appearance module applies the stored theme to the document element
+     before first paint, so the sign-in page is painted in the right palette
+     the first time rather than flashing and correcting. -->
+<script>
+  (function () {
+    try {
+      if (localStorage.getItem('dark') === 'false') {
+        document.documentElement.classList.add('light');
+      }
+    } catch (err) { /* storage off: the dark default is fine */ }
+  })();
+</script>
+<link rel="stylesheet" href="/ui/templates.css">
+<link rel="stylesheet" href="/ui/remote.css">
+</head>
+<body class="remote">
+  <div class="login-wrap">
+    <main class="login-card">
+      <img src="/ui/companylogo.png" alt="Hall Research" class="logo">
+      <h1>Sign in</h1>
+      <p class="sub">OmniSuite remote access</p>
+
+      <form id="login_form" novalidate>
+        <div class="field">
+          <label for="username">Username</label>
+          <input id="username" name="username" type="text"
+                 autocomplete="username" autocapitalize="none"
+                 autocorrect="off" spellcheck="false" required>
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password"
+                 autocomplete="current-password" required>
+        </div>
+        <button id="submit" class="btn-primary-lg" type="submit">Sign in</button>
+        <p id="error" class="form-error" role="alert" aria-live="assertive"></p>
+      </form>
+
+      <!-- Stated rather than implied. The operator is entitled to know what
+           protects the connection, and at this checkpoint the answer is
+           "nothing at the transport layer". -->
+      <p class="form-note" id="transport_note">
+        This connection is not encrypted. Use it only on a network you trust.
+      </p>
+    </main>
+  </div>
+
+<script>
+(function () {
+  'use strict';
+  const form = document.getElementById('login_form');
+  const errorLine = document.getElementById('error');
+  const submit = document.getElementById('submit');
+
+  // Where to go afterwards. Taken from the query string but validated as a
+  // same-site path, because an open redirect on a login page is how somebody
+  // gets sent to a convincing copy of it.
+  function destination() {
+    const wanted = new URLSearchParams(location.search).get('next') || '';
+    return /^\/[A-Za-z0-9/_-]*$/.test(wanted) ? wanted : '/user';
+  }
+
+  form.addEventListener('submit', async function (event) {
+    event.preventDefault();
+    errorLine.textContent = '';
+    submit.disabled = true;
+    submit.textContent = 'Signing in...';
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        // The session cookie is set by the server and is HttpOnly, so nothing
+        // on this page ever holds it.
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          username: document.getElementById('username').value,
+          password: document.getElementById('password').value,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        // The CSRF token is the one piece the page keeps, in memory only, for
+        // the life of the tab. It is useless without the cookie, and putting
+        // it in storage would outlive the session it belongs to.
+        sessionStorage.setItem('omni_csrf', data.csrf_token || '');
+        location.replace(destination());
+        return;
+      }
+      errorLine.textContent = data.error || 'Sign in failed.';
+    } catch (err) {
+      errorLine.textContent = 'Could not reach OmniSuite.';
+    }
+    submit.disabled = false;
+    submit.textContent = 'Sign in';
+  });
+
+  // If the page is being served over TLS, stop claiming otherwise.
+  if (location.protocol === 'https:') {
+    document.getElementById('transport_note').textContent =
+      'This connection is encrypted.';
+  }
+})();
+</script>
+</body>
+</html>

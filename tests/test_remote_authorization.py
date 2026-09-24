@@ -162,13 +162,30 @@ class RoleTests(GateTestBase):
                 decision = self.decide(rule, "POST", self.teacher_session)
                 self.assertFalse(decision.allowed)
 
-    def test_a_restricted_user_cannot_manage_users(self):
-        """Privilege escalation, attempted directly against the table."""
-        for rule in omni_access.ROUTES:
-            if "user" in rule and rule.startswith("/api/"):
-                with self.subTest(rule=rule):
-                    decision = self.decide(rule, "POST", self.teacher_session)
-                    self.assertFalse(decision.allowed)
+    def test_a_restricted_user_cannot_reach_any_administrative_endpoint(self):
+        """Privilege escalation, attempted directly against the table.
+
+        Matched on the /api/admin/ prefix rather than on the substring "user",
+        which the first version used and which now also catches the account's
+        own surface at /api/user/state -- a route it is supposed to reach. A
+        test that matches by coincidence stops meaning what it says the moment
+        a name is reused.
+        """
+        administrative = [r for r in omni_access.ROUTES
+                          if r.startswith("/api/admin/")]
+        self.assertTrue(administrative, "the admin surface should not be empty")
+        for rule in administrative:
+            with self.subTest(rule=rule):
+                decision = self.decide(rule, "POST", self.teacher_session)
+                self.assertFalse(decision.allowed)
+
+    def test_a_restricted_user_reaches_their_own_surface_and_nothing_more(self):
+        for rule in ("/api/user/state", "/api/user/route"):
+            with self.subTest(rule=rule):
+                decision = self.decide(rule, "POST", self.teacher_session,
+                                       {"source": TEACHER_SOURCES[0],
+                                        "destination": TEACHER_DISPLAYS[0]})
+                self.assertTrue(decision.allowed, decision.reason)
 
     def test_an_admin_reaches_the_admin_surface(self):
         decision = self.decide("/api/scan", "POST", self.admin_session)
@@ -516,6 +533,146 @@ class RemoteDisabledTests(GateTestBase):
         self.store.revoke_every_session()
         self.assertTrue(
             omni_gate.evaluate("/api/scan", "POST", local_env(), {}, self.store).allowed)
+
+
+class RemoteSurfaceTests(GateTestBase):
+    """The Phase E/F pages and endpoints, attacked from the network."""
+
+    def test_the_admin_ui_is_refused_to_an_anonymous_remote_client(self):
+        for page in ("/", "/matrix", "/matrix/configure", "/matrix/usb",
+                     "/matrix/multiview", "/admin/users"):
+            with self.subTest(page=page):
+                decision = omni_gate.evaluate(page, "GET", remote_env(), {},
+                                              self.store)
+                self.assertFalse(decision.allowed)
+                self.assertEqual(decision.status, 401)
+
+    def test_the_user_shell_is_refused_to_an_anonymous_remote_client(self):
+        for page in ("/user", "/api/user/state"):
+            with self.subTest(page=page):
+                decision = omni_gate.evaluate(page, "GET", remote_env(), {},
+                                              self.store)
+                self.assertFalse(decision.allowed)
+                self.assertEqual(decision.status, 401)
+
+    def test_the_sign_in_page_is_reachable_without_a_session(self):
+        """Otherwise nobody could ever sign in."""
+        for page in ("/login", "/api/auth/login"):
+            with self.subTest(page=page):
+                decision = omni_gate.evaluate(page, "POST", remote_env(), {},
+                                              self.store)
+                self.assertTrue(decision.allowed)
+
+    def test_a_remote_client_cannot_bootstrap_itself_as_administrator(self):
+        """The single most valuable property of the bootstrap design.
+
+        Creating the first administrator is local-only, so a remote client
+        cannot reach it -- not anonymously, and not as an authenticated user
+        who would like to be an admin.
+        """
+        for session in (None, self.teacher_session, self.admin_session):
+            label = "anonymous" if session is None else "signed in"
+            with self.subTest(who=label):
+                decision = self.decide("/api/bootstrap/admin", "POST", session,
+                                       {"username": "mallory",
+                                        "password": "hunter2-hunter2",
+                                        "confirm": "hunter2-hunter2"})
+                self.assertFalse(decision.allowed)
+                self.assertEqual(decision.status, 404)
+
+    def test_bootstrap_is_available_locally(self):
+        decision = omni_gate.evaluate("/api/bootstrap/admin", "POST",
+                                      local_env(), {}, self.store)
+        self.assertTrue(decision.allowed)
+
+    def test_a_user_cannot_reach_user_management(self):
+        for rule in ("/admin/users", "/api/admin/users",
+                     "/api/admin/users/<user_id>", "/api/admin/devices",
+                     "/api/admin/audit"):
+            with self.subTest(rule=rule):
+                decision = self.decide(rule, "POST", self.teacher_session,
+                                       {"action": "set_role", "role": "admin"})
+                self.assertFalse(decision.allowed)
+                self.assertEqual(decision.reason, "not_admin")
+
+    def test_a_user_cannot_grant_themselves_permissions(self):
+        """Privilege escalation, attempted the obvious way."""
+        decision = self.decide("/api/admin/users/<user_id>", "POST",
+                               self.teacher_session,
+                               {"action": "set_permissions",
+                                "permissions": {"features": ["av", "usb",
+                                                             "multiview"],
+                                                "sources": [SOMEONE_ELSES_DISPLAY],
+                                                "destinations": [SOMEONE_ELSES_DISPLAY]}})
+        self.assertFalse(decision.allowed)
+
+    def test_a_user_cannot_change_remote_access(self):
+        decision = self.decide("/api/remote_access", "POST",
+                               self.teacher_session, {"enabled": False})
+        self.assertFalse(decision.allowed)
+
+    def test_the_user_route_endpoint_enforces_both_ends(self):
+        allowed = self.decide("/api/user/route", "POST", self.teacher_session,
+                              {"source": TEACHER_SOURCES[0],
+                               "destination": TEACHER_DISPLAYS[0]})
+        self.assertTrue(allowed.allowed, allowed.reason)
+
+        for body, expected in (
+                ({"source": "B8:98:B0:11:11:11",
+                  "destination": TEACHER_DISPLAYS[0]}, "source_not_permitted"),
+                ({"source": TEACHER_SOURCES[0],
+                  "destination": SOMEONE_ELSES_DISPLAY},
+                 "destination_not_permitted")):
+            with self.subTest(expected=expected):
+                decision = self.decide("/api/user/route", "POST",
+                                       self.teacher_session, body)
+                self.assertFalse(decision.allowed)
+                self.assertEqual(decision.reason, expected)
+
+    def test_the_user_route_endpoint_requires_a_csrf_token(self):
+        decision = self.decide("/api/user/route", "POST", self.teacher_session,
+                               {"source": TEACHER_SOURCES[0],
+                                "destination": TEACHER_DISPLAYS[0]},
+                               csrf=False)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "csrf")
+
+    def test_the_admin_endpoints_require_a_csrf_token(self):
+        for rule in ("/api/admin/users", "/api/admin/users/<user_id>",
+                     "/api/remote_access"):
+            with self.subTest(rule=rule):
+                decision = self.decide(rule, "POST", self.admin_session,
+                                       {"action": "delete"}, csrf=False)
+                self.assertFalse(decision.allowed)
+                self.assertEqual(decision.reason, "csrf")
+
+
+class MalformedPermissionTests(unittest.TestCase):
+    """A malformed grant yields nothing, never everything."""
+
+    def setUp(self):
+        import omni_remote_api
+        self.build = omni_remote_api._permissions_from
+
+    def test_rubbish_yields_an_empty_grant(self):
+        for payload in (None, "", [], 42, {"features": "av"},
+                        {"features": None}, {"sources": "everything"},
+                        {"destinations": {"a": 1}}):
+            with self.subTest(payload=payload):
+                permissions = self.build(payload)
+                self.assertEqual(permissions.features, frozenset())
+                self.assertEqual(permissions.sources, frozenset())
+                self.assertEqual(permissions.destinations, frozenset())
+
+    def test_an_unknown_feature_is_dropped_rather_than_stored(self):
+        permissions = self.build({"features": ["av", "root", "*", "admin"]})
+        self.assertEqual(permissions.features, frozenset({"av"}))
+
+    def test_nested_rubbish_in_a_device_list_is_dropped(self):
+        permissions = self.build({"sources": ["B8:98:B0:00:00:01",
+                                              {"evil": True}, None, ["x"]]})
+        self.assertEqual(permissions.sources,
+                         frozenset({"b8:98:b0:00:00:01"}))
 
 
 if __name__ == "__main__":

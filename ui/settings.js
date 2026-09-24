@@ -100,6 +100,74 @@ const SETTINGS_MODAL_HTML = `
         </div>
       </div>
     </div>
+    <!-- Remote access. Off unless an administrator turns it on, and the
+         section says in plain words what turning it on means: other devices
+         on the chosen network can reach OmniSuite. It is deliberately the
+         last section before About, because it is the one an operator visits
+         rarely and should never reach by accident. -->
+    <div class="settings-section" id="cfg_remote_section">
+      <h4>Remote Access</h4>
+      <div class="modal-row" style="align-items:flex-start;">
+        <label>Status</label>
+        <div style="flex:1 1 auto;min-width:0;">
+          <div id="cfg_remote_status" class="update-status">Checking&hellip;</div>
+          <div id="cfg_remote_url" class="small"
+               style="margin-top:4px;color:var(--muted);"></div>
+        </div>
+      </div>
+
+      <!-- Creating the first administrator. Only offered on the computer
+           running OmniSuite, because that is the only place it is reachable. -->
+      <div id="cfg_remote_bootstrap" hidden>
+        <div class="modal-row" style="align-items:flex-start;">
+          <label>First admin</label>
+          <div style="flex:1 1 auto;min-width:0;">
+            <div class="small" style="color:var(--muted);margin-bottom:6px;">
+              Remote access needs an administrator account. Create one here, on
+              this computer.
+            </div>
+            <input id="cfg_boot_user" type="text" placeholder="Username"
+                   autocapitalize="none" spellcheck="false"
+                   style="width:100%;margin-bottom:6px;">
+            <input id="cfg_boot_pw" type="password" placeholder="Password"
+                   autocomplete="new-password" style="width:100%;margin-bottom:6px;">
+            <input id="cfg_boot_pw2" type="password" placeholder="Confirm password"
+                   autocomplete="new-password" style="width:100%;margin-bottom:6px;">
+            <button id="cfg_boot_create" class="btn small secondary" type="button">
+              Create administrator</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="cfg_remote_controls" hidden>
+        <div class="modal-row">
+          <label for="cfg_remote_adapter">Network</label>
+          <select id="cfg_remote_adapter" style="flex:1;"></select>
+        </div>
+        <div class="modal-row" style="align-items:flex-start;">
+          <label>&nbsp;</label>
+          <div style="flex:1 1 auto;">
+            <button id="cfg_remote_toggle" class="btn small" type="button">
+              Turn on remote access</button>
+            <a id="cfg_remote_users" class="btn small secondary" href="/admin/users"
+               style="text-decoration:none;margin-left:6px;">Manage users</a>
+          </div>
+        </div>
+        <!-- Not buried, and not so loud the page is unusable. Accurate: there
+             is no transport encryption at this checkpoint. -->
+        <div class="modal-row" style="align-items:flex-start;">
+          <label>&nbsp;</label>
+          <div class="notice-line" style="flex:1 1 auto;margin:0;">
+            <div>
+              <strong>Connections are not encrypted.</strong>
+              Anyone who can watch this network can read what is sent, including
+              sign-in details. Use remote access only on a network you trust.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Who made it and on what terms. Deliberately small and deliberately in
          one place: this belongs in Settings, not on every page. The version
          above is the authoritative one, so it is not repeated here. -->
@@ -283,6 +351,9 @@ function initConfig() {
 
   if (gear) gear.addEventListener('click', () => {
     syncThemeSelect();
+    // Read when the dialog opens rather than on a timer: this state changes
+    // only through this dialog, so polling it would be traffic for nothing.
+    loadRemoteAccess();
     backdrop.style.display = 'flex';
   });
   if (closeBtn) closeBtn.addEventListener('click', closeSettings);
@@ -386,6 +457,177 @@ function initConfig() {
     guideBtn.addEventListener('click', (e) => {
       e.preventDefault();
       window.open('/help', '_blank', 'noopener');
+    });
+  }
+
+  // ---------------------------------------------------------- remote access
+  //
+  // Three states, and the section shows exactly one of them:
+  //
+  //   no administrator yet  -> create one, here, on this computer
+  //   off                   -> choose a network and turn it on
+  //   on                    -> the address other devices use, and how to stop
+  //
+  // Read once when Settings opens. No timer: this state changes only through
+  // this dialog.
+  let remoteState = null;
+
+  function renderRemoteAccess() {
+    const line = document.getElementById('cfg_remote_status');
+    const url = document.getElementById('cfg_remote_url');
+    const bootstrap = document.getElementById('cfg_remote_bootstrap');
+    const controls = document.getElementById('cfg_remote_controls');
+    const toggle = document.getElementById('cfg_remote_toggle');
+    const adapter = document.getElementById('cfg_remote_adapter');
+    if (!line) return;
+
+    if (!remoteState) {
+      line.textContent = 'Remote access is unavailable in this build.';
+      line.className = 'update-status muted';
+      if (bootstrap) bootstrap.hidden = true;
+      if (controls) controls.hidden = true;
+      return;
+    }
+
+    // Creating the first administrator is only reachable from this computer,
+    // so the form is only offered when the server says one is needed.
+    const needsAdmin = !remoteState.has_admin;
+    if (bootstrap) bootstrap.hidden = !needsAdmin;
+    if (controls) controls.hidden = needsAdmin;
+
+    if (needsAdmin) {
+      line.textContent = 'Off — an administrator account is needed first.';
+      line.className = 'update-status muted';
+      if (url) url.textContent = '';
+      return;
+    }
+
+    if (remoteState.enabled) {
+      line.textContent = 'ON — other devices on this network can reach OmniSuite.';
+      line.className = 'update-status update-available';
+      if (url) {
+        url.textContent = 'They use: ' + (remoteState.url || '') +
+          (remoteState.sessions ? '  ·  ' + remoteState.sessions +
+            ' signed in' : '');
+      }
+      if (toggle) toggle.textContent = 'Turn off remote access';
+    } else {
+      line.textContent = 'Off — OmniSuite is only reachable on this computer.';
+      line.className = 'update-status';
+      if (url) url.textContent = '';
+      if (toggle) toggle.textContent = 'Turn on remote access';
+    }
+
+    if (adapter && !adapter.dataset.filled) {
+      adapter.replaceChildren();
+      (remoteState.adapters || []).forEach((entry) => {
+        const option = document.createElement('option');
+        option.value = entry.address;
+        option.textContent = entry.name + ' — ' + entry.address;
+        adapter.appendChild(option);
+      });
+      if (!(remoteState.adapters || []).length) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'No suitable network found';
+        adapter.appendChild(option);
+      }
+      adapter.dataset.filled = '1';
+      if (remoteState.host) adapter.value = remoteState.host;
+    }
+    if (adapter) adapter.disabled = !!remoteState.enabled;
+  }
+
+  async function loadRemoteAccess() {
+    try {
+      const res = await fetch('/api/remote_access', {credentials: 'same-origin'});
+      remoteState = res.ok ? await res.json() : null;
+    } catch (err) {
+      remoteState = null;
+    }
+    renderRemoteAccess();
+  }
+
+  const bootCreate = document.getElementById('cfg_boot_create');
+  if (bootCreate) {
+    bootCreate.addEventListener('click', async () => {
+      const username = (document.getElementById('cfg_boot_user') || {}).value || '';
+      const password = (document.getElementById('cfg_boot_pw') || {}).value || '';
+      const confirm = (document.getElementById('cfg_boot_pw2') || {}).value || '';
+      if (password !== confirm) {
+        window.toast && window.toast('The passwords do not match', 'error');
+        return;
+      }
+      if (password.length < 8) {
+        window.toast && window.toast('Use at least 8 characters', 'error');
+        return;
+      }
+      bootCreate.disabled = true;
+      try {
+        const res = await fetch('/api/bootstrap/admin', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          credentials: 'same-origin',
+          body: JSON.stringify({username: username.trim(), password, confirm}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok) {
+          window.toast && window.toast('Administrator created', 'ok');
+          ['cfg_boot_user', 'cfg_boot_pw', 'cfg_boot_pw2'].forEach((id) => {
+            const field = document.getElementById(id);
+            if (field) field.value = '';
+          });
+          await loadRemoteAccess();
+        } else {
+          window.toast && window.toast(data.error || 'Could not create it', 'error');
+        }
+      } catch (err) {
+        window.toast && window.toast('Could not reach OmniSuite', 'error');
+      }
+      bootCreate.disabled = false;
+    });
+  }
+
+  const remoteToggle = document.getElementById('cfg_remote_toggle');
+  if (remoteToggle) {
+    remoteToggle.addEventListener('click', async () => {
+      const turningOn = !(remoteState && remoteState.enabled);
+      const adapter = document.getElementById('cfg_remote_adapter');
+      const address = adapter ? adapter.value : '';
+      if (turningOn && !address) {
+        window.toast && window.toast('Choose a network first', 'error');
+        return;
+      }
+      if (turningOn && window.omniConfirm) {
+        const ok = await window.omniConfirm({
+          title: 'Turn on remote access?',
+          message: 'Other devices on this network will be able to reach ' +
+                   'OmniSuite and sign in. Connections are not encrypted.',
+          summary: [{label: 'Address', value: address}],
+          confirmText: 'Turn on',
+        });
+        if (!ok) return;
+      }
+      remoteToggle.disabled = true;
+      try {
+        const res = await fetch('/api/remote_access', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          credentials: 'same-origin',
+          body: JSON.stringify({enabled: turningOn, address}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok) {
+          window.toast && window.toast(
+            turningOn ? 'Remote access is on' : 'Remote access is off', 'ok');
+        } else {
+          window.toast && window.toast(data.error || 'That did not work', 'error');
+        }
+      } catch (err) {
+        window.toast && window.toast('Could not reach OmniSuite', 'error');
+      }
+      remoteToggle.disabled = false;
+      await loadRemoteAccess();
     });
   }
 

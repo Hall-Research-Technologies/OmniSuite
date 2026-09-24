@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Users &mdash; OmniSuite</title>
+<link rel="icon" href="/ui/favicon.ico">
+<script>
+  (function () {
+    try {
+      if (localStorage.getItem('dark') === 'false') {
+        document.documentElement.classList.add('light');
+      }
+    } catch (err) { /* storage off: the dark default is fine */ }
+  })();
+</script>
+<link rel="stylesheet" href="/ui/templates.css">
+<link rel="stylesheet" href="/ui/remote.css">
+</head>
+<body class="remote">
+
+<header class="remote-header">
+  <div class="brand">
+    <img src="/ui/companylogo.png" alt="Hall Research" class="logo">
+    <h1>Users</h1>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;">
+    <a class="btn-quiet" href="/">Back to OmniSuite</a>
+  </div>
+</header>
+
+<main class="remote-main">
+  <div id="loading" class="empty">Loading&hellip;</div>
+
+  <section id="content" hidden>
+    <div class="panel">
+      <h2>Accounts</h2>
+      <p class="hint">
+        An <strong>Administrator</strong> can do everything OmniSuite does. A
+        <strong>User</strong> can only route the sources and displays you
+        assign to them.
+      </p>
+      <table class="user-table">
+        <thead>
+          <tr>
+            <th>Name</th><th>Role</th><th>Status</th><th>Can use</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="users_body"></tbody>
+      </table>
+      <div style="margin-top:12px;">
+        <button class="btn-primary-lg" id="new_user" type="button">Add account</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- The editor. One dialog for create and edit: the difference is whether an
+     id is being carried, not a second copy of the form. -->
+<div class="modal-backdrop" id="editor_backdrop">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="editor_title"
+       style="width:620px;">
+    <h3 id="editor_title">Add account</h3>
+
+    <div class="modal-row">
+      <label for="f_username">Name</label>
+      <input id="f_username" type="text" autocapitalize="none" spellcheck="false">
+    </div>
+
+    <div class="modal-row">
+      <label for="f_role">Role</label>
+      <select id="f_role">
+        <option value="user">User &mdash; routing only</option>
+        <option value="admin">Administrator &mdash; full control</option>
+      </select>
+    </div>
+
+    <div class="modal-row" id="row_password">
+      <label for="f_password">Password</label>
+      <input id="f_password" type="password" autocomplete="new-password"
+             placeholder="At least 8 characters">
+    </div>
+
+    <div id="user_only">
+      <div class="settings-section">
+        <h4>What they can use</h4>
+        <div class="modal-row" style="align-items:flex-start;">
+          <label>Features</label>
+          <div class="feature-choice" style="flex:1 1 auto;">
+            <label><input type="checkbox" value="av" class="f-feature"> A/V</label>
+            <label><input type="checkbox" value="usb" class="f-feature"> USB</label>
+            <label><input type="checkbox" value="multiview" class="f-feature"> Multiview</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Sources they may show</h4>
+        <div class="assign-toolbar">
+          <input type="search" id="src_filter" placeholder="Search sources"
+                 aria-label="Search sources">
+          <button class="btn-quiet" type="button" data-all="sources">All</button>
+          <button class="btn-quiet" type="button" data-none="sources">None</button>
+          <span class="assign-count" id="src_count">0 selected</span>
+        </div>
+        <div class="assign-list" id="src_list"></div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Displays they may control</h4>
+        <div class="assign-toolbar">
+          <input type="search" id="dst_filter" placeholder="Search displays"
+                 aria-label="Search displays">
+          <button class="btn-quiet" type="button" data-all="destinations">All</button>
+          <button class="btn-quiet" type="button" data-none="destinations">None</button>
+          <span class="assign-count" id="dst_count">0 selected</span>
+        </div>
+        <div class="assign-list" id="dst_list"></div>
+      </div>
+    </div>
+
+    <div id="editor_error" class="modal-error"></div>
+    <div class="modal-buttons">
+      <button class="btn secondary" id="editor_cancel" type="button">Cancel</button>
+      <button class="btn" id="editor_save" type="button">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="/ui/toast.js"></script>
+<script src="/ui/confirm.js"></script>
+<script src="/ui/admin/users.js"></script>
+</body>
+</html>

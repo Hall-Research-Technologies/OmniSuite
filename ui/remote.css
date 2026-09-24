@@ -1,0 +1,373 @@
+/*
+ * Shared styling for the remote-access surfaces: login, the restricted user
+ * shell, and user management.
+ *
+ * These pages are built on the same semantic tokens as the rest of OmniSuite
+ * (ui/templates.css), so they follow the operator's chosen palette and both
+ * appearance modes without naming a single colour of their own. The one thing
+ * they deliberately do NOT inherit is the administrative shell's
+ * `min-width: 1000px`: the user shell has to work on a phone held in one hand
+ * while somebody is teaching.
+ */
+
+:root {
+  --remote-max: 1100px;
+  --touch-target: 44px;          /* what a finger can reliably hit */
+}
+
+html, body { height: 100%; margin: 0; }
+
+body.remote {
+  background: var(--surface);
+  color: var(--text);
+  font-family: Calibri, system-ui, "Segoe UI", Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  min-width: 0;                  /* NOT the admin shell's 1000px */
+  -webkit-text-size-adjust: 100%;
+}
+
+/* ------------------------------------------------------------ shell ---- */
+.remote-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--edge);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.remote-header .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.remote-header .logo { height: 34px; width: auto; border-radius: 5px; }
+.remote-header h1 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.remote-header .who {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.remote-main {
+  max-width: var(--remote-max);
+  margin: 0 auto;
+  padding: 16px;
+}
+
+/* Feature tabs. Only what the account was granted is ever rendered. */
+.remote-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 0 16px 10px;
+  max-width: var(--remote-max);
+  margin: 0 auto;
+  flex-wrap: wrap;
+}
+.remote-tabs .tab {
+  min-height: var(--touch-target);
+  display: inline-flex;
+  align-items: center;
+  padding: 0 16px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+}
+.remote-tabs .tab[aria-selected="true"] {
+  background-color: var(--selected-tint-strong);
+  color: var(--text);
+  border-color: var(--selected-edge);
+  box-shadow: inset 0 -2px 0 0 var(--selected-fill);
+}
+
+/* ------------------------------------------------------------ cards ---- */
+.panel {
+  background: var(--surface-raised);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+.panel > h2 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.panel > .hint { margin: 0 0 10px; font-size: 13px; color: var(--text-muted); }
+
+/* A pickable device. Big enough for a finger, and it states its own state. */
+.pick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+}
+.pick {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 62px;
+  padding: 10px 12px;
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  background: var(--surface-elevated);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition: background-color .15s ease, box-shadow .15s ease;
+}
+.pick:hover:not(:disabled) {
+  background-image: linear-gradient(var(--control-hover-veil), var(--control-hover-veil));
+}
+.pick:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.pick[aria-pressed="true"] {
+  background-color: var(--selected-fill);
+  border-color: var(--selected-edge);
+  box-shadow: inset 0 0 0 1px var(--selected-edge);
+}
+.pick:disabled { opacity: var(--control-disabled-opacity); cursor: not-allowed; }
+.pick .pick-name { font-weight: 600; overflow-wrap: anywhere; }
+.pick .pick-state { font-size: 12px; color: var(--text-muted); }
+.pick[aria-pressed="true"] .pick-state { color: inherit; opacity: .85; }
+
+/* The offline marker has to survive every palette, so it is a word as well
+   as a colour. */
+.pick.offline .pick-state { color: var(--state-warning); }
+
+/* ------------------------------------------------------------ action --- */
+.action-bar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  background: var(--surface);
+  border-top: 1px solid var(--edge);
+}
+.action-bar .summary { flex: 1 1 auto; font-size: 14px; min-width: 0; }
+.action-bar .summary strong { color: var(--text); }
+.btn-primary-lg {
+  min-height: var(--touch-target);
+  padding: 0 22px;
+  border-radius: 9px;
+  border: 1px solid var(--edge);
+  background: var(--action-primary);
+  color: var(--on-accent, var(--action-primary-text));
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-primary-lg:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
+  filter: saturate(.4);
+}
+.btn-quiet {
+  min-height: var(--touch-target);
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: var(--surface-elevated);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+/* ------------------------------------------------------------ states --- */
+.empty {
+  padding: 28px 12px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+.notice-line {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 9px 11px;
+  margin-bottom: 12px;
+  border: 1px solid var(--state-warning);
+  border-left: 3px solid var(--state-warning);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--state-warning) 12%, transparent);
+  font-size: 13px;
+}
+.deferred {
+  padding: 22px 14px;
+  border: 1px dashed var(--edge);
+  border-radius: 10px;
+  color: var(--text-muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+/* ------------------------------------------------------------- login --- */
+.login-wrap {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+}
+.login-card {
+  width: min(100%, 380px);
+  background: var(--surface-raised);
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  padding: 24px;
+}
+.login-card .logo { height: 40px; width: auto; margin-bottom: 14px; }
+.login-card h1 { margin: 0 0 4px; font-size: 19px; font-weight: 600; }
+.login-card .sub { margin: 0 0 18px; font-size: 13px; color: var(--text-muted); }
+.field { margin-bottom: 12px; }
+.field label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.field input {
+  width: 100%;
+  min-height: var(--touch-target);
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: var(--surface-elevated);
+  color: var(--text);
+  font-size: 16px;            /* 16px stops iOS zooming the page on focus */
+  box-sizing: border-box;
+}
+.field input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.login-card .btn-primary-lg { width: 100%; margin-top: 4px; }
+.form-error {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--state-error);
+  min-height: 1.2em;
+}
+.form-note { margin: 14px 0 0; font-size: 12px; color: var(--text-muted); }
+
+/* --------------------------------------------------------- user admin -- */
+.user-table { width: 100%; border-collapse: collapse; }
+.user-table th, .user-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--edge);
+  text-align: left;
+  font-size: 14px;
+  vertical-align: middle;
+}
+.user-table th {
+  background: var(--surface-elevated);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.role-pill, .state-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--edge);
+}
+.role-pill.admin { border-color: var(--state-info); color: var(--state-info); }
+.state-pill.disabled { border-color: var(--state-warning); color: var(--state-warning); }
+
+.assign-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.assign-toolbar input[type="search"] {
+  flex: 1 1 180px;
+  min-height: 34px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: var(--surface-elevated);
+  color: var(--text);
+  font-size: 14px;
+}
+.assign-count { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.assign-list {
+  max-height: 210px;
+  overflow-y: auto;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--surface-elevated);
+  padding: 4px;
+}
+.assign-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.assign-row:hover { background: var(--selected-tint); }
+.assign-row input { width: 17px; height: 17px; flex: 0 0 auto; }
+.assign-row .a-name { font-weight: 600; }
+.assign-row .a-meta { color: var(--text-muted); font-size: 12px; }
+.assign-row.hidden { display: none; }
+
+.feature-choice { display: flex; gap: 8px; flex-wrap: wrap; }
+.feature-choice label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--surface-elevated);
+  cursor: pointer;
+  font-size: 14px;
+}
+.feature-choice input { width: 17px; height: 17px; }
+
+/* ------------------------------------------------------------ phone ---- */
+@media (max-width: 560px) {
+  .remote-main { padding: 12px; }
+  .pick-grid { grid-template-columns: 1fr; }
+  .remote-header h1 { font-size: 15px; }
+  .remote-header .logo { height: 28px; }
+  .action-bar { padding: 10px 12px; }
+  .action-bar .summary { flex-basis: 100%; order: -1; }
+  .btn-primary-lg { flex: 1 1 auto; }
+  .user-table thead { display: none; }
+  .user-table tr {
+    display: block;
+    border: 1px solid var(--edge);
+    border-radius: 8px;
+    margin-bottom: 8px;
+    padding: 6px;
+  }
+  .user-table td { display: flex; justify-content: space-between; border: none; }
+  .user-table td::before {
+    content: attr(data-label);
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pick, .btn-primary-lg { transition: none; }
+}
