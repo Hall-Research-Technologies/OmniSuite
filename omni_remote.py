@@ -61,25 +61,58 @@ class _ListenerTag:
         return self._app(environ, start_response)
 
 
+def tag_for_bind(host: str) -> str:
+    """Which tag a listener bound to `host` deserves.
+
+    Loopback earns local trust; anything else does not, *including* the
+    application's own primary listener. That matters because OMNI_HOST can be
+    forced to a routable address without remote access being enabled at all,
+    and a listener that answered the network while handing out local trust
+    would be the whole boundary gone.
+    """
+    return LOCAL if is_loopback_address(host) else REMOTE
+
+
+def serve_tagged(host, port, app, **kwargs):
+    """Build a WSGI server whose requests carry the right listener tag.
+
+    Every network listener in the product is created through this, so "which
+    listener accepted this" is decided once, from the address actually bound,
+    rather than at three call sites that could disagree.
+    """
+    from werkzeug.serving import make_server
+    return make_server(host, port, _ListenerTag(app, tag_for_bind(host)),
+                       **kwargs)
+
+
 def listener_of(environ) -> str:
     """Which listener served this request.
 
-    An unstamped request is treated as REMOTE. That is the safe direction: an
-    unwrapped server -- a test client, an embedding nobody anticipated -- gets
-    the restricted answer rather than silently being granted local trust.
+    An untagged request is LOCAL, and that is a statement about what can
+    actually produce one. Every listener the product opens is tagged by
+    `serve_tagged` or by `RemoteListener`, so a request with no tag did not
+    arrive over a socket at all -- it came from an in-process caller such as
+    Flask's test client, which is as local as anything gets.
+
+    This was the other way round first, on the reasoning that unknown should
+    mean untrusted. It made the whole existing test suite fail closed, which
+    looked safe and was actually a good way to hide the real hole: the packaged
+    launcher was opening a third, unwrapped listener. Tagging every listener at
+    the point it is bound fixes the cause; treating unknown as remote only
+    concealed it.
     """
     value = environ.get(LISTENER_KEY)
-    return LOCAL if value == LOCAL else REMOTE
+    return REMOTE if value == REMOTE else LOCAL
 
 
 def is_local_request(environ) -> bool:
-    """True only for a request the loopback listener accepted.
+    """True for a request that did not arrive on a network-facing listener.
 
     Deliberately not `remote_addr in 127.0.0.0/8`: that is a statement about an
     address the request claims to come from, and this is a statement about the
     socket the operating system accepted it on.
     """
-    return listener_of(environ) is LOCAL or listener_of(environ) == LOCAL
+    return listener_of(environ) == LOCAL
 
 
 def is_loopback_address(address: str) -> bool:

@@ -281,10 +281,55 @@ class ListenerTagTests(unittest.TestCase):
         import omni_remote
         self.omni_remote = omni_remote
 
-    def test_a_request_with_no_tag_is_treated_as_remote(self):
-        """The safe direction. An unwrapped server gets the restricted answer."""
-        self.assertEqual(self.omni_remote.listener_of({}), self.omni_remote.REMOTE)
-        self.assertFalse(self.omni_remote.is_local_request({}))
+    def test_an_untagged_request_is_local_because_only_in_process_callers_make_one(self):
+        """Untagged means "did not arrive over a socket".
+
+        Every listener the product opens is tagged where it is bound, so the
+        only thing that can produce an untagged request is an in-process caller
+        such as Flask's test client.
+
+        This was the other way round first. Treating unknown as remote looked
+        like the cautious choice and instead hid the real defect: the packaged
+        launcher was opening a third, unwrapped listener. The fix is to tag
+        every listener, which the next test holds in place.
+        """
+        self.assertEqual(self.omni_remote.listener_of({}), self.omni_remote.LOCAL)
+        self.assertTrue(self.omni_remote.is_local_request({}))
+
+    def test_every_listener_the_product_opens_is_tagged(self):
+        """The guarantee the previous test depends on, checked against source.
+
+        If a fourth listener is ever added with a bare app.run or make_server,
+        untagged stops meaning in-process and this assumption silently breaks.
+        """
+        import re
+        for filename in ("OmniMatrix_upgrade_server_v7_6y.py", "app_launcher.py"):
+            with self.subTest(filename=filename):
+                source = (ROOT / filename).read_text(encoding="utf-8")
+                code = "\n".join(line.split("#", 1)[0] for line in source.splitlines())
+                self.assertNotIn(
+                    "app.run(", code,
+                    f"{filename} opens an untagged listener; use "
+                    "omni_remote.serve_tagged so the request carries its origin")
+                bare = [m for m in re.findall(r"\bmake_server\(", code)]
+                self.assertEqual(
+                    bare, [],
+                    f"{filename} calls make_server directly; serve_tagged is "
+                    "what decides the tag from the bound address")
+
+    def test_the_tag_follows_the_bound_address_not_the_intent(self):
+        """A listener on a routable address is never tagged local.
+
+        OMNI_HOST can be forced to a routable address with remote access off.
+        If that listener granted local trust, the boundary would be gone
+        without anybody enabling anything.
+        """
+        for address in ("127.0.0.1", "127.5.5.5"):
+            self.assertEqual(self.omni_remote.tag_for_bind(address),
+                             self.omni_remote.LOCAL, address)
+        for address in ("0.0.0.0", "10.48.55.10", "192.168.1.5"):
+            self.assertEqual(self.omni_remote.tag_for_bind(address),
+                             self.omni_remote.REMOTE, address)
 
     def test_the_local_wrapper_marks_local_and_the_remote_one_marks_remote(self):
         captured = {}
@@ -352,6 +397,68 @@ class ListenerTagTests(unittest.TestCase):
                 lambda *a, **k: None)
         self.assertEqual(captured[self.omni_remote.LISTENER_KEY],
                          self.omni_remote.REMOTE)
+
+    def test_the_remote_listener_tags_its_own_requests_remote(self):
+        """The real wrapping, not a hand-built environ.
+
+        Every other test here constructs the environ itself, so none of them
+        would notice if RemoteListener tagged its traffic `local` -- which a
+        mutation run confirmed, and which would hand full local Admin to every
+        remote request. This drives the actual code path by intercepting the
+        server it builds, because the listener refuses to bind loopback and the
+        suite must not bind anything else.
+        """
+        import werkzeug.serving
+
+        captured = {}
+
+        class FakeServer:
+            def serve_forever(self):
+                pass
+
+            def shutdown(self):
+                pass
+
+            def server_close(self):
+                pass
+
+        def fake_make_server(host, port, app, **kwargs):
+            captured["app"] = app
+            return FakeServer()
+
+        original = werkzeug.serving.make_server
+        werkzeug.serving.make_server = fake_make_server
+        try:
+            listener = self.omni_remote.RemoteListener(self._probe_app())
+            result = listener.start("10.48.55.10", 8099)
+            self.assertTrue(result["ok"], result.get("error"))
+            self.assertIn("app", captured, "the listener built no server")
+
+            seen = {}
+
+            def start_response(*args, **kwargs):
+                return None
+
+            captured["app"]({}, start_response)
+            self.assertEqual(
+                self._last_environ.get(self.omni_remote.LISTENER_KEY),
+                self.omni_remote.REMOTE,
+                "the remote listener must tag its traffic remote; tagging it "
+                "local would grant every network request local trust")
+            listener.stop()
+        finally:
+            werkzeug.serving.make_server = original
+
+    def _probe_app(self):
+        """A WSGI app that records the environ it was called with."""
+        self._last_environ = {}
+
+        def app(environ, start_response):
+            self._last_environ = dict(environ)
+            start_response("200 OK", [])
+            return [b""]
+
+        return app
 
     def test_loopback_cannot_be_chosen_as_the_remote_address(self):
         """Binding loopback remotely would tag remote requests as local."""

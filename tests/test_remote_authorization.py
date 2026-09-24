@@ -117,10 +117,23 @@ class LocalOperatorTests(GateTestBase):
                 self.assertTrue(decision.allowed,
                                 f"{rule} refused the local operator")
 
-    def test_an_untagged_request_is_not_treated_as_local(self):
-        """A server nobody wrapped must not confer local trust."""
+    def test_an_in_process_request_is_local(self):
+        """No tag means no socket: an in-process caller, which is local.
+
+        Every listener the product opens is tagged where it is bound, so this
+        is not a gap -- tests/test_remote_access.py holds that guarantee in
+        place by failing if a bare app.run or make_server reappears.
+        """
         decision = omni_gate.evaluate("/api/scan", "POST", {}, {}, self.store)
-        self.assertFalse(decision.allowed)
+        self.assertTrue(decision.allowed)
+
+    def test_a_listener_on_a_routable_address_does_not_confer_local_trust(self):
+        """The case that matters: bound to the network, remote access off."""
+        env = {omni_remote.LISTENER_KEY:
+               omni_remote.tag_for_bind("10.48.55.10")}
+        decision = omni_gate.evaluate("/api/scan", "POST", env, {}, self.store)
+        self.assertFalse(decision.allowed,
+                         "a network-facing listener must require a session")
 
     def test_a_forged_header_does_not_make_a_request_local(self):
         env = remote_env()

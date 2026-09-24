@@ -20,6 +20,14 @@ try:
 except Exception:
     psutil = None
 
+# The remote-access subsystem. Policy (omni_access), mechanism
+# (omni_remote), accounts (omni_users) and enforcement (omni_gate) are separate
+# modules so the trust decision stays reviewable in one place.
+import omni_access
+import omni_gate
+import omni_remote
+import omni_users
+
 # Import matrix logic for unified scanning
 try:
     import omni_matrix_logic
@@ -12698,7 +12706,13 @@ def main():
         # Never debug=True: that serves Werkzeug's interactive console, which is
         # remote code execution behind a console-printed PIN, on any unhandled
         # exception.
-        app.run(host=host, port=selected_port, debug=False, use_reloader=False, threaded=True)
+        #
+        # serve_tagged rather than app.run so the listener records what it is.
+        # The tag comes from the address actually bound, so forcing OMNI_HOST to
+        # a routable address does not hand out local trust -- that listener is
+        # tagged remote and its callers have to authenticate.
+        omni_remote.serve_tagged(host, selected_port, app,
+                                 threaded=True).serve_forever()
     th = threading.Thread(target=run_server, daemon=False); th.start()
     def open_when_ready():
         url = f"http://{host}:{selected_port}/"
@@ -16497,6 +16511,39 @@ def api_multiview_delete():
     return jsonify({"ok": True, "status": "VERIFIED", "steps": steps,
                     "was_active": was_active,
                     "remaining": remaining, "reclamation": reclamation})
+
+
+# ---------------------------------------------------------------- remote access
+#
+# Off by default, and off for every installation that updates into this build.
+# The listener below is created but never started until an administrator turns
+# remote access on, so nothing about the local experience changes.
+#
+# The gate is installed unconditionally, because a request that arrived on the
+# loopback listener is allowed through it untouched -- that is what keeps the
+# local behaviour identical rather than merely similar.
+USERS_FILE = DATA_DIR / "users.json"
+SECURITY_AUDIT_FILE = DATA_DIR / "security_audit.json"
+
+_user_store = omni_users.UserStore(USERS_FILE, SECURITY_AUDIT_FILE)
+_remote_listener = omni_remote.RemoteListener(app)
+
+
+def remote_access_enabled() -> bool:
+    """Whether the remote listener is currently answering."""
+    return _remote_listener.running
+
+
+def remote_access_state() -> dict:
+    """What Settings shows about remote access."""
+    state = _remote_listener.describe()
+    state["has_admin"] = _user_store.has_admin
+    state["accounts"] = 0 if _user_store.is_empty else len(_user_store.list_accounts())
+    state["sessions"] = _user_store.active_session_count()
+    return state
+
+
+omni_gate.install(app, lambda: _user_store, remote_access_enabled)
 
 
 # Restore Multiview metadata now that the helpers above are defined. The device

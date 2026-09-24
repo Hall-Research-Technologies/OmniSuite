@@ -286,7 +286,15 @@ class AppWindow:
                     # network.
                     if hasattr(server, "start_background_startup_tasks"):
                         server.start_background_startup_tasks()
-                    server.app.run(host=self.host, port=self.port, debug=False, use_reloader=False, threaded=True)
+                    # Tagged rather than app.run: the authorization gate reads
+                    # which listener accepted a connection, and this is the
+                    # listener the packaged application serves from. The tag
+                    # follows the bound address, so a launcher forced onto a
+                    # routable host does not grant local trust.
+                    import omni_remote
+                    omni_remote.serve_tagged(
+                        self.host, self.port, server.app,
+                        threaded=True).serve_forever()
                     return
                 except OSError as exc:
                     # Windows reports WSAEADDRINUSE with its own wording, so a
