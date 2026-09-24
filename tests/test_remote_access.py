@@ -270,5 +270,124 @@ class TrustSignalTests(unittest.TestCase):
             f"is local: {offenders}")
 
 
+class ListenerTagTests(unittest.TestCase):
+    """The trust signal itself: which listener accepted the connection.
+
+    Everything about local-versus-remote rests on this one key, so these tests
+    attack it rather than demonstrate it.
+    """
+
+    def setUp(self):
+        import omni_remote
+        self.omni_remote = omni_remote
+
+    def test_a_request_with_no_tag_is_treated_as_remote(self):
+        """The safe direction. An unwrapped server gets the restricted answer."""
+        self.assertEqual(self.omni_remote.listener_of({}), self.omni_remote.REMOTE)
+        self.assertFalse(self.omni_remote.is_local_request({}))
+
+    def test_the_local_wrapper_marks_local_and_the_remote_one_marks_remote(self):
+        captured = {}
+
+        def app(environ, start_response):
+            captured.update(environ)
+            start_response("200 OK", [])
+            return [b""]
+
+        for factory, expected in (
+                (self.omni_remote.local_app, self.omni_remote.LOCAL),
+                (lambda a: self.omni_remote._ListenerTag(a, self.omni_remote.REMOTE),
+                 self.omni_remote.REMOTE)):
+            captured.clear()
+            factory(app)({}, lambda *a, **k: None)
+            self.assertEqual(captured[self.omni_remote.LISTENER_KEY], expected)
+
+    def test_no_http_header_can_produce_the_listener_key(self):
+        """The core claim, asserted from how WSGI names headers.
+
+        A header is exposed as HTTP_<NAME>, so a bare key containing a dot is
+        unreachable from the wire. Measured against a live server as well: a
+        request sending `omni.listener: local` arrived as HTTP_OMNI.LISTENER and
+        the real tag was untouched.
+        """
+        key = self.omni_remote.LISTENER_KEY
+        self.assertIn(".", key,
+                      "the key must contain a character header names cannot "
+                      "produce, or a client could set it directly")
+        self.assertFalse(key.startswith("HTTP_"),
+                         "a HTTP_-prefixed key is exactly what a header becomes")
+
+        # A header of that name, mapped the way a WSGI server maps it.
+        as_header = "HTTP_" + key.upper().replace("-", "_")
+        self.assertNotEqual(as_header, key)
+
+        captured = {}
+
+        def app(environ, start_response):
+            captured.update(environ)
+            start_response("200 OK", [])
+            return [b""]
+
+        # The forged environ a client's header would produce, plus near misses.
+        hostile = {as_header: self.omni_remote.LOCAL,
+                   "HTTP_OMNI_LISTENER": self.omni_remote.LOCAL,
+                   "HTTP_X_OMNI_LISTENER": self.omni_remote.LOCAL}
+        wrapped = self.omni_remote._ListenerTag(app, self.omni_remote.REMOTE)
+        wrapped(dict(hostile), lambda *a, **k: None)
+        self.assertEqual(captured[self.omni_remote.LISTENER_KEY],
+                         self.omni_remote.REMOTE,
+                         "a client-supplied header must not influence the tag")
+
+    def test_a_preset_tag_in_the_environ_is_overwritten_not_trusted(self):
+        """Defence in depth: if the key is somehow present, ours still wins."""
+        captured = {}
+
+        def app(environ, start_response):
+            captured.update(environ)
+            start_response("200 OK", [])
+            return [b""]
+
+        wrapped = self.omni_remote._ListenerTag(app, self.omni_remote.REMOTE)
+        wrapped({self.omni_remote.LISTENER_KEY: self.omni_remote.LOCAL},
+                lambda *a, **k: None)
+        self.assertEqual(captured[self.omni_remote.LISTENER_KEY],
+                         self.omni_remote.REMOTE)
+
+    def test_loopback_cannot_be_chosen_as_the_remote_address(self):
+        """Binding loopback remotely would tag remote requests as local."""
+        listener = self.omni_remote.RemoteListener(object())
+        for address in ("127.0.0.1", "127.1.2.3", " 127.0.0.1 "):
+            with self.subTest(address=address):
+                result = listener.start(address, 8099)
+                self.assertFalse(result["ok"])
+                self.assertIn("loopback", result["error"])
+        self.assertFalse(listener.running)
+
+    def test_remote_access_is_off_until_something_starts_it(self):
+        """Default off, stated as a property of the object (section 28)."""
+        listener = self.omni_remote.RemoteListener(object())
+        self.assertFalse(listener.running)
+        self.assertEqual(listener.describe(),
+                         {"enabled": False, "host": None, "port": None, "url": None})
+
+    def test_stopping_a_listener_that_never_ran_is_not_an_error(self):
+        listener = self.omni_remote.RemoteListener(object())
+        self.assertTrue(listener.stop()["ok"])
+
+    def test_loopback_addresses_are_recognised_and_others_are_not(self):
+        for address in ("127.0.0.1", "127.255.255.254"):
+            self.assertTrue(self.omni_remote.is_loopback_address(address), address)
+        for address in ("10.0.0.5", "192.168.1.10", "", "not-an-address", None):
+            self.assertFalse(self.omni_remote.is_loopback_address(address), address)
+
+    def test_bind_candidates_exclude_loopback_and_malformed_addresses(self):
+        adapters = [{"address": "127.0.0.1", "name": "Loopback"},
+                    {"address": "10.48.55.10", "name": "Ethernet", "cidr": "10.48.55.0/24"},
+                    {"address": "", "name": "Empty"},
+                    {"address": "not-an-address", "name": "Broken"}]
+        usable = self.omni_remote.usable_bind_addresses(adapters)
+        self.assertEqual([a["address"] for a in usable], ["10.48.55.10"])
+
+
 if __name__ == "__main__":
     unittest.main()
