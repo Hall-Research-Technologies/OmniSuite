@@ -25,7 +25,9 @@ except Exception:
 # modules so the trust decision stays reviewable in one place.
 import omni_access
 import omni_gate
+import omni_projection
 import omni_remote
+import omni_remote_api
 import omni_users
 
 # Import matrix logic for unified scanning
@@ -2413,6 +2415,33 @@ def _verify_cache_in_background():
 # ---------------- basic routes ----------------
 @app.route("/__health")
 def __health(): return "ok", 200
+
+# --------------- remote access UI entry ----------------
+def _send_ui_page(*parts):
+    """Serve a UI page, or say plainly that the build is missing it."""
+    page = ASSET_DIR.joinpath("ui", *parts)
+    if page.exists():
+        return send_file(str(page), mimetype="text/html; charset=utf-8")
+    return f"<h1>{parts[-1]} not found</h1>", 404
+
+
+@app.route("/login")
+def login_page():
+    """The remote sign-in page. Public, and the only page that is."""
+    return _send_ui_page("login.html")
+
+
+@app.route("/user")
+def user_page():
+    """The restricted routing shell."""
+    return _send_ui_page("user", "index.html")
+
+
+@app.route("/admin/users")
+def admin_users_page():
+    """User management, for administrators."""
+    return _send_ui_page("admin", "users.html")
+
 
 # --------------- matrix UI entry ----------------
 @app.route("/matrix")
@@ -16544,6 +16573,63 @@ def remote_access_state() -> dict:
 
 
 omni_gate.install(app, lambda: _user_store, remote_access_enabled)
+
+
+REMOTE_ACCESS_FILE = DATA_DIR / "remote_access.json"
+
+
+def _remote_access_preference(enabled, address, port):
+    """Remember what the operator chose.
+
+    Its own file rather than config.json: that one carries the device
+    credentials and maps field for field onto app.config, and a remote-access
+    setting has no business in it.
+
+    Recording the choice is not the same as acting on it. Nothing here starts a
+    listener, and nothing restores one at startup -- a setting that silently
+    reopens a network listener every time the application launches is not one
+    an operator can reason about. It is written so Settings can show what was
+    last chosen and so a future phase can offer to restore it deliberately.
+    """
+    omni_users._atomic_write_json(REMOTE_ACCESS_FILE, {
+        "enabled": bool(enabled),
+        "address": address or "",
+        "port": int(port) if port else None,
+    })
+
+
+def _remote_access_last_choice():
+    """What was last chosen, for display. Never acted on automatically."""
+    try:
+        if REMOTE_ACCESS_FILE.exists():
+            return json.loads(REMOTE_ACCESS_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log.info("[REMOTE] could not read the saved preference: %s",
+                 type(exc).__name__)
+    return {"enabled": False, "address": "", "port": None}
+
+
+def _matrix_state_snapshot():
+    """The administrative view, as /api/state computes it.
+
+    Called rather than recomputed so the projection can never disagree with the
+    matrix about what is routed where, and so no second device read exists.
+    """
+    with app.test_request_context("/api/state"):
+        import json as _json
+        return _json.loads(api_state_matrix().get_data())
+
+
+omni_remote_api.register(
+    app,
+    store=_user_store,
+    listener=_remote_listener,
+    load_cache=_load_cache,
+    matrix_state=_matrix_state_snapshot,
+    route_view=api_route_matrix,
+    remote_enabled=remote_access_enabled,
+    set_remote_state=_remote_access_preference,
+)
 
 
 # Restore Multiview metadata now that the helpers above are defined. The device

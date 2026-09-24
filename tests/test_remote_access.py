@@ -69,17 +69,41 @@ class PublicSurfaceTests(unittest.TestCase):
                   if access is Access.PUBLIC}
         self.assertEqual(
             public,
-            {"/__health", "/api/login", "/license",
-             "/static/<path:filename>", "/ui/<path:filename>"},
+            {"/__health", "/license",
+             "/static/<path:filename>", "/ui/<path:filename>",
+             # The sign-in page and the credential check behind it. Nothing
+             # else was added: /api/login is the *device* login probe and is
+             # administrator-only (see below).
+             "/login", "/api/auth/login"},
             "adding a route to the public surface is a security decision and "
             "has to be made deliberately here")
 
     def test_no_device_route_is_public(self):
+        """Only the sign-in check may be called without a credential."""
         for rule, (access, _f) in omni_access.ROUTES.items():
-            if rule.startswith("/api/") and rule != "/api/login":
+            if rule.startswith("/api/") and rule != "/api/auth/login":
                 self.assertIsNot(
                     access, Access.PUBLIC,
                     f"{rule} would be callable with no credential")
+
+    def test_the_device_login_probe_is_not_the_sign_in_endpoint(self):
+        """/api/login is not user authentication, despite its name.
+
+        It opens a WebSocket to a caller-supplied address using the stored
+        device credentials and reports the result. Phase A classified it public
+        on the strength of the name, which would have made it an anonymous
+        credential-use oracle and a probe for whatever the host can reach.
+        """
+        self.assertIs(omni_access.classify("/api/login")[0], Access.ADMIN)
+        self.assertIs(omni_access.classify("/api/auth/login")[0], Access.PUBLIC)
+
+        source = (ROOT / "OmniMatrix_upgrade_server_v7_6y.py").read_text(encoding="utf-8")
+        body = source[source.index('@app.route("/api/login"'):]
+        body = body[:body.index("\n@app.route")]
+        self.assertIn("_ws_url(ip", body,
+                      "/api/login connects to a caller-supplied address")
+        self.assertIn("app.config['PASSWORD']", body,
+                      "/api/login uses the stored device credentials")
 
 
 class HostSurfaceTests(unittest.TestCase):
@@ -124,7 +148,7 @@ class HostSurfaceTests(unittest.TestCase):
 class RestrictedUserSurfaceTests(unittest.TestCase):
     """What a restricted routing account can reach, stated exhaustively."""
 
-    def test_the_user_surface_is_exactly_the_twelve_routing_routes(self):
+    def test_the_user_surface_is_exactly_the_routing_routes(self):
         user_routes = {rule for rule, (access, _f) in omni_access.ROUTES.items()
                        if access is Access.USER}
         self.assertEqual(user_routes, {
@@ -134,8 +158,26 @@ class RestrictedUserSurfaceTests(unittest.TestCase):
             "/api/multiview/state", "/api/multiview/decoders",
             "/api/multiview/sources", "/api/multiview/preview",
             "/api/multiview/show", "/api/multiview/switch",
+            # The restricted shell's own routing call. It performs no routing
+            # of its own -- it resolves two device identities to the addresses
+            # the verified path expects and hands over to it.
+            "/api/user/route",
         }, "widening what a restricted account may call is a deliberate "
            "security decision, not an implementation detail")
+
+    def test_the_user_shell_never_receives_the_administrative_state(self):
+        """A user's state comes from the projection, not from /api/state.
+
+        Both are User-reachable, because an administrator opens the same shell
+        and because /api/state predates this work. What matters is that the
+        shell reads the projected one: the projection is built from named
+        fields, so an administrative field added later cannot leak through it.
+        """
+        shell = (ROOT / "ui" / "user" / "user.js").read_text(encoding="utf-8")
+        code = "\n".join(line.split("//", 1)[0] for line in shell.splitlines())
+        self.assertIn("/api/user/state", code)
+        self.assertNotIn("'/api/state'", code)
+        self.assertNotIn('"/api/state"', code)
 
     def test_every_user_route_names_the_capability_that_gates_it(self):
         for rule, (access, feature) in omni_access.ROUTES.items():

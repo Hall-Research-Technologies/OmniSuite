@@ -63,10 +63,16 @@ FEATURES = (FEATURE_AV, FEATURE_USB, FEATURE_MULTIVIEW)
 ROUTES: dict[str, tuple[Access, str | None]] = {
     # ---- public -------------------------------------------------------
     "/__health": (Access.PUBLIC, None),
-    "/api/login": (Access.PUBLIC, None),
     "/license": (Access.PUBLIC, None),
     "/static/<path:filename>": (Access.PUBLIC, None),
     "/ui/<path:filename>": (Access.PUBLIC, None),
+    # The remote login page and the credential check behind it.
+    "/login": (Access.PUBLIC, None),
+    "/api/auth/login": (Access.PUBLIC, None),
+
+    # ---- authentication state -----------------------------------------
+    "/api/auth/logout": (Access.AUTHENTICATED, None),
+    "/api/auth/session": (Access.AUTHENTICATED, None),
 
     # ---- any authenticated principal ----------------------------------
     # The guide is operator documentation and carries no device state.
@@ -76,6 +82,30 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     "/api/ui_preferences/reset": (Access.AUTHENTICATED, None),
     "/api/notices": (Access.AUTHENTICATED, None),
     "/api/notices/ack": (Access.AUTHENTICATED, None),
+
+    # ---- the restricted user's own surface ----------------------------
+    # The shell and the projection behind it. AUTHENTICATED rather than USER
+    # because an administrator opens the same pages to review them, and the
+    # projection scopes its answer to whoever is asking rather than relying on
+    # the route class to do it.
+    "/user": (Access.AUTHENTICATED, None),
+    "/api/user/state": (Access.AUTHENTICATED, None),
+    "/api/user/route": (Access.USER, FEATURE_AV),
+
+    # ---- administration of accounts -----------------------------------
+    "/admin/users": (Access.ADMIN, None),
+    "/api/admin/users": (Access.ADMIN, None),
+    "/api/admin/users/<user_id>": (Access.ADMIN, None),
+    "/api/admin/devices": (Access.ADMIN, None),
+    "/api/admin/audit": (Access.ADMIN, None),
+    "/api/remote_access": (Access.ADMIN, None),
+
+    # ---- first-run bootstrap, local host only -------------------------
+    # Creating the first administrator is reachable from the machine running
+    # OmniSuite and from nowhere else, so a remote client can never make
+    # itself one.
+    "/api/bootstrap/state": (Access.LOCAL_ONLY, None),
+    "/api/bootstrap/admin": (Access.LOCAL_ONLY, None),
 
     # ---- restricted routing User --------------------------------------
     # Every one of these is additionally filtered or checked per device by the
@@ -137,6 +167,12 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     "/api/get_thumbnail_status": (Access.ADMIN, None),
     "/api/hostname": (Access.ADMIN, None),
     "/api/lldp": (Access.ADMIN, None),
+    # Not user authentication, despite the name: this opens a WebSocket to a
+    # caller-supplied address using the stored *device* credentials and reports
+    # the result. Phase A classified it public on the strength of its name,
+    # which would have made it an anonymous credential-use oracle and a probe
+    # for whatever the host can reach. Remote user login is /api/auth/login.
+    "/api/login": (Access.ADMIN, None),
     "/api/lldp_topology": (Access.ADMIN, None),
     "/api/lldp_topology/acknowledge": (Access.ADMIN, None),
     "/api/ntp_profile": (Access.ADMIN, None),
