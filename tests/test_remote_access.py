@@ -588,7 +588,7 @@ class BindAddressIsAHostTests(unittest.TestCase):
                   "not-an-address", "", "   ")
 
     #: Anything an adapter on a real machine can actually have.
-    A_HOST = ("192.168.100.185", "10.0.4.12", "172.29.16.1", "169.254.1.1",
+    A_HOST = ("203.0.113.5", "10.0.4.12", "172.29.16.1", "169.254.1.1",
               "198.51.100.7", "2001:db8::1")
 
     def test_nothing_that_cannot_be_bound_is_called_usable(self):
@@ -610,10 +610,10 @@ class BindAddressIsAHostTests(unittest.TestCase):
 
     def test_bind_candidates_drop_them_too(self):
         offered = omni_remote.usable_bind_addresses([
-            {"ip": "192.168.100.185"}, {"ip": "255.255.255.255"},
+            {"ip": "203.0.113.5"}, {"ip": "255.255.255.255"},
             {"ip": "224.0.0.1"}, {"ip": "127.0.0.1"}, {"ip": "0.0.0.0"},
         ])
-        self.assertEqual([a["address"] for a in offered], ["192.168.100.185"])
+        self.assertEqual([a["address"] for a in offered], ["203.0.113.5"])
 
 
 class ReconfiguringDoesNotBreakAWorkingListenerTests(unittest.TestCase):
