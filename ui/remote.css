@@ -334,6 +334,14 @@ body.remote {
   min-height: 1.2em;
 }
 .form-note { margin: 14px 0 0; font-size: 12px; color: var(--text-muted); }
+/* Whether this connection is encrypted is not advisory colour on a muted
+   line -- it is the one fact on this page somebody may act on. Carry it with
+   a rule as well as a hue, so a palette where the two tints converge still
+   tells them apart, and keep the text itself at full contrast. */
+.form-note-ok,
+.form-note-warn { color: var(--text); padding-left: 10px; border-left: 3px solid; }
+.form-note-ok { border-left-color: var(--state-success); }
+.form-note-warn { border-left-color: var(--state-warning); }
 
 /* ------------------------------------------------------ borrowed dialog --
  * The dialog vocabulary comes from settings.css, but the form controls inside

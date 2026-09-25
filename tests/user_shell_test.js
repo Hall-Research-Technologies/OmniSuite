@@ -232,6 +232,79 @@ check('text inputs are 16px so a phone does not zoom on focus', () => {
     'iOS zooms the page when a focused input is smaller than 16px');
 });
 
+
+// ------------------------------------------------- the encryption claim ---
+// What the sign-in page says about THIS connection. Executed rather than read:
+// a headless browser will not navigate to a self-signed certificate -- which
+// is the warning the User Guide describes -- so the HTTPS branch is reached by
+// running the page's own script with the protocol set.
+function transportNote(protocol) {
+  // login.html has two inline scripts (the theme bootstrap runs first), so
+  // take the one that actually carries this, not the first one found.
+  const blocks = [...LOGIN_HTML.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+    .map((m) => m[1]).filter((s) => s.includes('function statement('));
+  assert(blocks.length === 1,
+    `expected exactly one script carrying the statement, found ${blocks.length}`);
+  const inline = [null, blocks[0]];
+  const note = {
+    id: 'transport_note', textContent: '', hidden: true, className: '',
+    classList: {add(name) { note.className = (note.className + ' ' + name).trim(); }},
+  };
+  const document_ = {
+    getElementById(id) { return id === 'transport_note' ? note : null; },
+    addEventListener() {},
+  };
+  const window_ = {location: {protocol: protocol, pathname: '/login', search: ''}};
+  // Only the statement runs; the rest of the page needs elements this shim
+  // deliberately does not provide, and stops at the first one it cannot find.
+  const body = inline[1];
+  const start = body.indexOf('(function statement()');
+  assert(start >= 0, 'the statement should be its own function');
+  const end = body.indexOf('}());', start) + '}());'.length;
+  const fn = new Function('document', 'window', body.slice(start, end));
+  fn(document_, window_);
+  return note;
+}
+
+check('over HTTPS the page says the connection is encrypted', () => {
+  const note = transportNote('https:');
+  assert(note.hidden === false, 'the note must be shown');
+  assert(/This connection is encrypted\./.test(note.textContent),
+    `said: ${note.textContent}`);
+  assert(!/not encrypted/.test(note.textContent),
+    'it must not claim the opposite over TLS');
+  assert(/form-note-ok/.test(note.className), 'it should carry the ok state');
+});
+
+check('over plain HTTP the page says so, and says what to do about it', () => {
+  const note = transportNote('http:');
+  assert(note.hidden === false, 'the note must be shown');
+  assert(/This connection is not encrypted\./.test(note.textContent),
+    `said: ${note.textContent}`);
+  assert(/network you trust/.test(note.textContent),
+    'a warning with no advice is half a warning');
+  assert(/form-note-warn/.test(note.className), 'it should carry the warn state');
+});
+
+check('no verdict is baked into the served markup', () => {
+  const tag = LOGIN_HTML.match(/<p[^>]*id="transport_note"[^>]*>([\s\S]*?)<\/p>/);
+  assert(tag, 'the note element should exist');
+  assert(tag[1].trim() === '', 'the element must be empty until the page decides');
+  assert(/id="transport_note"[^>]*hidden/.test(LOGIN_HTML),
+    'and hidden, so it cannot flicker from one claim to the other');
+});
+
+check('the two states differ by a rule, not only by a hue', () => {
+  const css = code(CSS);
+  assert(/\.form-note-ok\b/.test(css) && /\.form-note-warn\b/.test(css),
+    'both states need styles or the distinction is invisible');
+  assert(/border-left:\s*3px solid/.test(css),
+    'carry the distinction with an edge as well as a colour');
+  assert(/\.form-note-ok\s*\{[^}]*--state-success/.test(css)
+      && /\.form-note-warn\s*\{[^}]*--state-warning/.test(css),
+    'use the shared state tokens, not literal colours');
+});
+
 // --------------------------------------------------------------- report ---
 results.forEach(([status, name]) => console.log(`${status} ${name}`));
 if (failures) {

@@ -4864,6 +4864,83 @@ itself. Nothing about the devices is cached and nothing is written to a device
 to remember a view.
 
 
+
+## Remote access: role-based routing over the network
+
+Full architecture, including what the original plan got wrong, is in
+`docs/REMOTE_ACCESS_ARCHITECTURE.md`. What belongs here is the shape.
+
+OmniSuite answers only on the computer it runs on until an administrator turns
+Remote Access on. Trust is a property of **which listener accepted the
+connection**, never of an address a request claims: every listener is tagged at
+the point it is bound (`omni_remote.serve_tagged`), and the tag lives in a WSGI
+environ key, `omni.listener`, whose dot no HTTP header can produce. An untagged
+request is local, because the only thing that can produce one is an in-process
+caller.
+
+Every route carries a classification in `omni_access.ROUTES` —
+PUBLIC / AUTHENTICATED / USER / ADMIN / LOCAL\_ONLY — and a route nobody
+classified is LOCAL\_ONLY, the most restrictive answer available. A fence turns
+an unclassified route into a test failure, so the default protects the route
+somebody adds rather than being relied upon.
+
+A restricted account never receives the administrative model with the
+unauthorised parts hidden in the browser. Its payloads are **projections**:
+built field by field from named fields, with tests asserting the key sets are
+equal rather than merely contained.
+
+### Transport
+
+HTTPS is the default. A certificate is either supplied by the site or generated
+locally; without one, remote access **does not start**, and there is no
+automatic downgrade and no HTTP listener alongside it — a redirect would have
+to accept a sign-in before it could protect it. Plaintext exists for a closed
+bench and requires an explicit acknowledgement in the request body.
+
+`cryptography` is declared for generation only. Measured: 11.2 MB on a 33.5 MB
+executable, 9.9 MB of it the Rust extension. Declared anyway, because without
+generation an installer with no certificate of their own stays on plain HTTP,
+which defeats the point.
+
+### Concurrency
+
+Two mechanisms, deliberately separate. **Resource locks** serialize operations
+touching the same hardware — per resource, acquired in sorted order, bounded
+wait, `ResourceBusy` surfacing as 409. There is no ownership and no lease: the
+rule is last successful authorized operation wins, so a browser that closed can
+never leave a classroom display unusable. The **state cache** handles reads,
+with a TTL, single-flight, and a generation counter and epoch that order an
+in-flight read against a writer's invalidation.
+
+Measured live, two Users routing one display simultaneously: both verified,
+serialized, 2.3 s and 4.1 s, no deadlock, every lock released, and the display
+restored to its captured source and verified.
+
+Measured for traffic: A/V 1 client 0 device reads / 10 clients 0; USB 4 and 4;
+Multiview 3 and 3. Ratio 1.0x — extra browsers cost the hardware nothing.
+
+### What hardening measured
+
+Twenty-six deliberate defects in the security predicates
+(`tools/mutate_security.py`); eighteen caught first time, eight survivors all
+controls nobody was watching rather than holes in the product, now all caught.
+A V1.1.0 data directory opens under this build without a file being rewritten
+and without acquiring an account or a certificate. The packaged Windows binary
+was driven through the whole remote-access lifecycle
+(`tools/smoke_remote.py`), including generating a certificate from inside the
+onefile package — which is the part that proves the Rust extension was
+collected.
+
+### Known gap
+
+The right way to tell two displays with the same friendly name apart is the
+device's own **location**. OmniStream carries `location` and `description` in
+`systeminfo.config`; OmniSuite reads both today only to write them back
+unchanged when it edits systeminfo for another reason. Surfacing them is
+plumbing an existing field through discovery to the projection. Until then the
+hostname stands in, appended only where a label actually repeats within an
+account's own visible set.
+
 ## Build and publish gate
 
 A build intended for publication to Git is **not publication-ready** until every

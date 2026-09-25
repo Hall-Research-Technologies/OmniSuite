@@ -44,17 +44,35 @@
       </form>
 
       <!-- Stated rather than implied. The operator is entitled to know what
-           protects the connection, and at this checkpoint the answer is
-           "nothing at the transport layer". -->
-      <p class="form-note" id="transport_note">
-        This connection is not encrypted. Use it only on a network you trust.
-      </p>
+           protects the connection, and the answer differs per connection, so
+           it is decided below from the scheme this page was served over.
+           Hidden until then: a note that flickers from one claim to the other
+           is worse than one that arrives a frame late. -->
+      <p class="form-note" id="transport_note" hidden></p>
     </main>
   </div>
 
 <script>
 (function () {
   'use strict';
+  // What protects THIS connection. Read from the page's own scheme rather
+  // than from anything the server said: a claim about encryption that came
+  // over the connection it describes is worth nothing if that connection is
+  // not encrypted.
+  (function statement() {
+    const note = document.getElementById('transport_note');
+    if (!note) return;
+    if (window.location.protocol === 'https:') {
+      note.textContent = 'This connection is encrypted.';
+      note.classList.add('form-note-ok');
+    } else {
+      note.textContent = 'This connection is not encrypted. Use it only on a '
+                       + 'network you trust.';
+      note.classList.add('form-note-warn');
+    }
+    note.hidden = false;
+  }());
+
   const form = document.getElementById('login_form');
   const errorLine = document.getElementById('error');
   const submit = document.getElementById('submit');
