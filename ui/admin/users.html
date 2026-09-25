@@ -15,6 +15,12 @@
   })();
 </script>
 <link rel="stylesheet" href="/ui/templates.css">
+<!-- The dialog classes this page uses -- .modal-backdrop, .modal, .modal-row,
+     .modal-buttons, .modal-error -- are owned by settings.css. Without it the
+     editor renders as bare form controls in the page flow, which is exactly
+     what happened the first time this page was opened in a browser. Markup
+     extracted into a shared vocabulary has to bring its stylesheet with it. -->
+<link rel="stylesheet" href="/ui/settings.css">
 <link rel="stylesheet" href="/ui/remote.css">
 </head>
 <body class="remote">

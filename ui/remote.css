@@ -15,7 +15,66 @@
   --touch-target: 44px;          /* what a finger can reliably hit */
 }
 
+/*
+ * The base palette names, defined for pages that do not load matrix.css.
+ *
+ * settings.css owns the dialog vocabulary these pages reuse -- .modal-backdrop,
+ * .modal, .modal-row, .modal-buttons -- and it asks for `var(--card)`,
+ * `var(--border)` and `var(--fg)` with no fallback. Those are declared in
+ * ui/matrix/matrix.css, which the remote pages have no reason to load, so the
+ * user-management dialog rendered with `background: rgba(0,0,0,0)`: a
+ * completely transparent card with the page showing through its text. The
+ * backdrop, position and size were all correct, which is what made it look
+ * like a layout problem rather than a missing colour.
+ *
+ * These are the base values, not aliases of the semantic tokens. Defining
+ * `--card: var(--surface-raised)` was the obvious first attempt and produced a
+ * cycle: templates.css derives `--surface-raised` *from* `--card`, so each
+ * referred to the other and both resolved to the guaranteed-invalid value --
+ * leaving the card transparent exactly as before, and emptying
+ * `--surface-raised` for the whole page as well. The dependency runs one way,
+ * base to semantic, and this end of it has to be concrete.
+ *
+ * The values are matrix.css's, so a dialog looks the same wherever it is shown.
+ */
+:root {
+  --bg: #1d232a;
+  --card: #222a33;
+  --panel-2: #262f39;
+  --text: #e9eef5;
+  --fg: #e9eef5;
+  --muted: #9aa7b4;
+  --border: rgba(255, 255, 255, .08);
+  --accent: #1e90ff;
+  --danger: #e5534b;
+}
+
+html.light,
+body.light {
+  --bg: #f7f8fb;
+  --card: #ffffff;
+  --panel-2: #f2f5f8;
+  --text: #0d1117;
+  --fg: #0d1117;
+  --muted: #5a6b7a;
+  --border: rgba(0, 0, 0, .08);
+  --danger: #b91c1c;
+}
+
 html, body { height: 100%; margin: 0; }
+
+/*
+ * The `hidden` attribute has to win.
+ *
+ * It is honoured by a UA rule of `display: none`, which any class selector
+ * outranks -- so `.remote-tabs { display: flex }` quietly defeated
+ * `tabs.hidden = true`, and a single-feature account was shown a navigation
+ * bar with one tab in it while the action bar appeared on panels that have no
+ * action. Both were invisible to the unit tests, which assert on the property
+ * rather than on what renders, and showed up the moment the pages were opened
+ * at a phone size.
+ */
+[hidden] { display: none !important; }
 
 body.remote {
   background: var(--surface);
@@ -187,6 +246,20 @@ body.remote {
   cursor: pointer;
   font-size: 14px;
 }
+.btn-quiet:hover:not(:disabled) {
+  background-image: linear-gradient(var(--control-hover-veil), var(--control-hover-veil));
+}
+.btn-quiet:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+/* A control that cannot be used has to look like it. Disable and Delete are
+   refused for the only active administrator, and without this they were
+   indistinguishable from working buttons -- the operator finds out by
+   clicking, which is the thing the disabled state exists to prevent. */
+.btn-quiet:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
+  filter: saturate(.4);
+  background-image: none;
+}
 
 /* ------------------------------------------------------------ states --- */
 .empty {
@@ -261,6 +334,61 @@ body.remote {
   min-height: 1.2em;
 }
 .form-note { margin: 14px 0 0; font-size: 12px; color: var(--text-muted); }
+
+/* ------------------------------------------------------ borrowed dialog --
+ * The dialog vocabulary comes from settings.css, but the form controls inside
+ * it were only ever styled by ui/index.html's inline rules -- so on these
+ * pages they fell back to browser defaults: white boxes and a native select in
+ * the middle of a dark card. Styling the shared markup is part of sharing it.
+ */
+.modal input[type="text"],
+.modal input[type="password"],
+.modal input[type="number"],
+.modal select {
+  min-height: 34px;
+  padding: 5px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--edge);
+  background: var(--surface-elevated);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  box-sizing: border-box;
+}
+.modal input:focus-visible,
+.modal select:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.modal input:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
+}
+.modal .btn,
+.modal button {
+  min-height: 34px;
+  padding: 4px 14px;
+  border-radius: 7px;
+  border: 1px solid var(--edge);
+  background: var(--action-primary);
+  color: var(--on-accent, var(--action-primary-text));
+  font: inherit;
+  cursor: pointer;
+}
+.modal .btn.secondary,
+.modal button.secondary {
+  background: var(--surface-elevated);
+  color: var(--text);
+}
+.modal .btn:hover:not(:disabled),
+.modal button:hover:not(:disabled) {
+  background-image: linear-gradient(var(--control-hover-veil), var(--control-hover-veil));
+}
+.modal .btn:focus-visible,
+.modal button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
 
 /* --------------------------------------------------------- user admin -- */
 .user-table { width: 100%; border-collapse: collapse; }

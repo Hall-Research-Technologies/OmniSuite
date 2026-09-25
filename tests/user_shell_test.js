@@ -1,0 +1,203 @@
+// The restricted user shell: what it renders, and what it must never hold.
+//
+// Two of these guard a defect that unit tests could not see and a browser
+// found immediately. `.remote-tabs` and `.action-bar` are `display: flex`, and
+// a class selector outranks the `hidden` attribute's UA `display: none` -- so
+// `element.hidden = true` set the property, every assertion about the property
+// passed, and the element stayed on screen. A single-feature account was shown
+// a navigation bar with one tab in it.
+//
+// So these assert on the *stylesheet* as well as on the markup: the rule that
+// makes `hidden` win has to exist, and the elements that are toggled have to be
+// covered by it.
+'use strict';
+const fs = require('fs');
+const path = require('path');
+
+const ROOT = path.join(__dirname, '..');
+const CSS = fs.readFileSync(path.join(ROOT, 'ui', 'remote.css'), 'utf8');
+const SHELL_JS = fs.readFileSync(path.join(ROOT, 'ui', 'user', 'user.js'), 'utf8');
+const SHELL_HTML = fs.readFileSync(path.join(ROOT, 'ui', 'user', 'index.html'), 'utf8');
+const LOGIN_HTML = fs.readFileSync(path.join(ROOT, 'ui', 'login.html'), 'utf8');
+const ADMIN_JS = fs.readFileSync(path.join(ROOT, 'ui', 'admin', 'users.js'), 'utf8');
+
+let failures = 0;
+const results = [];
+function check(name, fn) {
+  try {
+    fn();
+    results.push(['ok  ', name]);
+  } catch (err) {
+    failures++;
+    results.push(['FAIL', `${name}: ${err && err.message ? err.message : err}`]);
+  }
+}
+function assert(condition, message) {
+  if (!condition) throw new Error(message || 'assertion failed');
+}
+
+// Strip comments so an explanatory sentence cannot satisfy an assertion about
+// the code it explains.
+function code(source) {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n').map((line) => line.split('//')[0]).join('\n');
+}
+
+// ---------------------------------------------------------------- hidden ---
+check('the stylesheet makes the hidden attribute win', () => {
+  assert(/\[hidden\]\s*\{[^}]*display:\s*none\s*!important/.test(code(CSS)),
+    'without this rule, any class with a display value defeats element.hidden');
+});
+
+check('every element the shell toggles is a real element in the markup', () => {
+  const toggled = [...code(SHELL_JS).matchAll(/el\('([a-z_]+)'\)\.hidden/g)]
+    .map((m) => m[1]);
+  const templated = [...code(SHELL_JS).matchAll(/el\('panel_' \+ ([a-z]+)\)/g)];
+  assert(toggled.length > 0, 'the shell should toggle something');
+  toggled.forEach((id) => {
+    assert(SHELL_HTML.includes(`id="${id}"`), `#${id} is toggled but not present`);
+  });
+  if (templated.length) {
+    ['panel_av', 'panel_usb', 'panel_multiview'].forEach((id) => {
+      assert(SHELL_HTML.includes(`id="${id}"`), `#${id} is missing`);
+    });
+  }
+});
+
+// ----------------------------------------------------------- CSS tokens ---
+// A stylesheet must not ask for a colour nobody defines. `var(--x)` with no
+// fallback resolves to nothing, silently: the user-management dialog rendered
+// with `background: rgba(0,0,0,0)` because settings.css asks for `var(--card)`
+// and that token is declared in matrix.css, which the remote pages do not load.
+// Everything else about the dialog was right, which is what made it read as a
+// layout problem rather than a missing colour.
+check('every token the remote pages use without a fallback is defined', () => {
+  const SETTINGS_CSS = fs.readFileSync(
+    path.join(ROOT, 'ui', 'settings.css'), 'utf8');
+  const TEMPLATES_CSS = fs.readFileSync(
+    path.join(ROOT, 'ui', 'templates.css'), 'utf8');
+
+  // What the remote pages load, and therefore what has to be self-sufficient.
+  const loaded = code(TEMPLATES_CSS) + code(SETTINGS_CSS) + code(CSS);
+  const defined = new Set(
+    [...loaded.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
+
+  const missing = new Set();
+  // var(--x) with no comma is a use with no fallback.
+  for (const m of loaded.matchAll(/var\(\s*(--[a-z0-9-]+)\s*\)/g)) {
+    if (!defined.has(m[1])) missing.add(m[1]);
+  }
+  assert(missing.size === 0,
+    `used with no fallback and never defined: ${[...missing].join(', ')}`);
+});
+
+check('the base tokens are concrete, not aliases of what derives from them', () => {
+  // templates.css derives --surface-raised from --card. Defining --card from
+  // --surface-raised closes the loop, and a cyclic custom property resolves to
+  // nothing -- which emptied both and left the dialog transparent again.
+  const body = code(CSS);
+  const cycles = [
+    ['--card', '--surface-raised'],
+    ['--panel-2', '--surface-elevated'],
+    ['--bg', '--surface'],
+    ['--border', '--edge'],
+  ];
+  cycles.forEach(([base, semantic]) => {
+    const pattern = new RegExp(`${base}\\s*:\\s*var\\(\\s*${semantic}`);
+    assert(!pattern.test(body),
+      `${base} must not be defined from ${semantic}; that is a cycle`);
+  });
+});
+
+// ------------------------------------------------------------ credentials ---
+check('the shell never reads the session cookie', () => {
+  assert(!/document\.cookie/.test(code(SHELL_JS)),
+    'the session cookie is HttpOnly and must stay unreadable to the page');
+  assert(!/document\.cookie/.test(code(ADMIN_JS)));
+});
+
+check('nothing is kept in localStorage by the remote pages', () => {
+  [['shell', SHELL_JS], ['admin', ADMIN_JS], ['login', LOGIN_HTML]]
+    .forEach(([name, source]) => {
+      const body = code(source);
+      // The appearance pre-paint script reads the theme flag, which is a
+      // per-browser convenience and carries nothing sensitive.
+      const writes = [...body.matchAll(/localStorage\.setItem\(([^)]*)\)/g)];
+      assert(writes.length === 0,
+        `${name} writes to localStorage: ${writes.map((m) => m[1]).join(', ')}`);
+    });
+});
+
+check('the CSRF token is the only thing held, and only for the tab', () => {
+  const body = code(SHELL_JS) + code(ADMIN_JS) + code(LOGIN_HTML);
+  const stored = [...body.matchAll(/sessionStorage\.setItem\('([^']+)'/g)]
+    .map((m) => m[1]);
+  stored.forEach((key) => {
+    assert(key === 'omni_csrf', `unexpected stored value: ${key}`);
+  });
+});
+
+check('no password is ever stored or logged by the pages', () => {
+  const body = code(SHELL_JS) + code(ADMIN_JS) + code(LOGIN_HTML);
+  assert(!/(?:local|session)Storage\.setItem\([^)]*password/i.test(body),
+    'a password must never be stored');
+  assert(!/console\.(log|info|warn|error)\([^)]*password/i.test(body),
+    'a password must never be logged');
+});
+
+// ------------------------------------------------------------ projection ---
+check('the shell reads the projection, never the administrative state', () => {
+  const body = code(SHELL_JS);
+  assert(body.includes('/api/user/state'), 'the shell should read the projection');
+  assert(!/['"]\/api\/state['"]/.test(body),
+    'the administrative inventory must not be downloaded and hidden client-side');
+  assert(!/['"]\/api\/cache['"]/.test(body));
+});
+
+check('every state-changing call carries the CSRF header', () => {
+  [['shell', SHELL_JS], ['admin', ADMIN_JS]].forEach(([name, source]) => {
+    const body = code(source);
+    assert(body.includes('X-OmniSuite-CSRF'),
+      `${name} must send the CSRF token on writes`);
+  });
+});
+
+// -------------------------------------------------------------- no polling ---
+check('the shell starts no repeating timer', () => {
+  const body = code(SHELL_JS);
+  assert(!/setInterval\s*\(/.test(body),
+    'the host is the device-I/O authority; ten browsers must not mean ten ' +
+    'times the device traffic');
+});
+
+// ------------------------------------------------------------- deferred ---
+check('deferred features say so rather than pretending', () => {
+  assert(/not available yet/i.test(SHELL_HTML),
+    'a granted feature whose controls are not built must say so');
+  assert(SHELL_HTML.includes('id="panel_usb"'));
+  assert(SHELL_HTML.includes('id="panel_multiview"'));
+});
+
+// --------------------------------------------------------------- mobile ---
+check('the shell is built for a phone, not for the admin minimum width', () => {
+  const css = code(CSS);
+  assert(/body\.remote[^}]*min-width:\s*0/.test(css),
+    'the restricted shell must not inherit the 1000px administrative minimum');
+  assert(/--touch-target:\s*44px/.test(css), 'touch targets should be 44px');
+  assert(/@media\s*\(max-width:\s*560px\)/.test(css),
+    'there should be a phone layout');
+});
+
+check('text inputs are 16px so a phone does not zoom on focus', () => {
+  assert(/\.field input\s*\{[^}]*font-size:\s*16px/.test(code(CSS)),
+    'iOS zooms the page when a focused input is smaller than 16px');
+});
+
+// --------------------------------------------------------------- report ---
+results.forEach(([status, name]) => console.log(`${status} ${name}`));
+if (failures) {
+  console.log(`\nuser shell test: ${failures} failure(s)`);
+  process.exit(1);
+}
+console.log(`\nuser shell test: all ${results.length} checks passed`);
