@@ -43,7 +43,41 @@
             aria-selected="true">Accounts</button>
     <button type="button" class="tab" role="tab" data-panel="names"
             aria-selected="false">Device names</button>
+    <button type="button" class="tab" role="tab" data-panel="audit"
+            aria-selected="false">Activity</button>
   </nav>
+
+  <!-- The security log. Called Activity rather than Audit because that is what
+       an administrator is looking for when they open it. -->
+  <section id="panel_audit" hidden>
+    <div class="panel">
+      <h2>Activity</h2>
+      <p class="hint">
+        Who signed in, what they routed, and what was refused. Newest first.
+        Passwords, tokens and device credentials are never recorded.
+      </p>
+      <div class="assign-toolbar">
+        <input type="search" id="audit_search" placeholder="Search activity"
+               aria-label="Search activity">
+        <select id="audit_event" aria-label="Filter by event"
+                style="min-height:34px;flex:0 1 190px;">
+          <option value="">All events</option>
+        </select>
+        <select id="audit_actor" aria-label="Filter by account"
+                style="min-height:34px;flex:0 1 170px;">
+          <option value="">All accounts</option>
+        </select>
+        <button class="btn-quiet" id="audit_refresh" type="button">Refresh</button>
+        <span class="assign-count" id="audit_count"></span>
+      </div>
+      <table class="user-table">
+        <thead>
+          <tr><th>When</th><th>Account</th><th>Action</th><th>Details</th></tr>
+        </thead>
+        <tbody id="audit_body"></tbody>
+      </table>
+    </div>
+  </section>
 
   <section id="panel_names" hidden>
     <div class="panel">

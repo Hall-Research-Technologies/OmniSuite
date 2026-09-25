@@ -327,3 +327,90 @@ def _admin():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DuplicateLabelTests(unittest.TestCase):
+    """Two rooms may each hold a "Front Display"; an operator must still choose.
+
+    Duplicates are not prevented -- the site may genuinely have them -- so the
+    presentation changes only where a label actually repeats inside what this
+    account can see.
+    """
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="omni-dupe-"))
+        self.aliases = AliasStore(self.dir / "device_aliases.json")
+        self.users = UserStore(self.dir / "users.json")
+        self.users.create("teacher", "teacher-password-1", omni_users.ROLE_USER,
+                          Permissions(features=("av",),
+                                      sources=(TEACHER_PC, DOC_CAMERA),
+                                      destinations=(FRONT_DISPLAY, LAB_DISPLAY)))
+        self.teacher = self.users.find_by_username("teacher")
+
+    def project(self):
+        return omni_projection.user_state(MATRIX, UNITS, self.teacher,
+                                          self.aliases)
+
+    def test_a_unique_label_is_left_exactly_as_it_is(self):
+        self.aliases.set_alias(FRONT_DISPLAY, "Front Display")
+        names = [d["name"] for d in self.project()["destinations"]]
+        self.assertIn("Front Display", names,
+                      "a unique name must not be decorated")
+
+    def test_a_repeated_label_gains_the_device_name(self):
+        self.aliases.set_alias(FRONT_DISPLAY, "Front Display")
+        self.aliases.set_alias(LAB_DISPLAY, "Front Display")
+        names = sorted(d["name"] for d in self.project()["destinations"])
+        self.assertEqual(len(names), 2)
+        for name in names:
+            self.assertTrue(name.startswith("Front Display \u2014 "),
+                            f"{name!r} is still ambiguous")
+        self.assertNotEqual(names[0], names[1])
+
+    def test_the_differentiator_is_the_device_name_not_an_address(self):
+        self.aliases.set_alias(FRONT_DISPLAY, "Front Display")
+        self.aliases.set_alias(LAB_DISPLAY, "Front Display")
+        payload = self.project()
+        names = [d["name"] for d in payload["destinations"]]
+        # The device's own hostname, which is this file's fixture naming.
+        self.assertTrue(any("hw-omni-d4111-7851dd" in n for n in names))
+        self.assertTrue(any("hw-omni-d4111-lab" in n for n in names))
+        # And never an address. The identity in `id` is what the browser posts
+        # back rather than a label, so the check is on the names themselves.
+        blob = json.dumps(names)
+        for unit in UNITS:
+            self.assertNotIn(unit["ip"], blob,
+                             "an address must never be used to disambiguate")
+            self.assertNotIn(unit["mac"].lower(), blob.lower(),
+                             "a MAC must never be used as a label")
+
+    def test_case_and_spacing_still_count_as_the_same_label(self):
+        self.aliases.set_alias(FRONT_DISPLAY, "Front Display")
+        self.aliases.set_alias(LAB_DISPLAY, "  front display ")
+        names = [d["name"] for d in self.project()["destinations"]]
+        self.assertTrue(all("\u2014" in n for n in names),
+                        "a label differing only by case is still ambiguous")
+
+    def test_a_duplicate_the_account_cannot_see_changes_nothing(self):
+        """Ambiguity is judged over this account's own view."""
+        self.users.set_permissions(self.teacher.id, Permissions(
+            features=("av",), sources=(TEACHER_PC,),
+            destinations=(FRONT_DISPLAY,)))
+        teacher = self.users.find_by_username("teacher")
+        self.aliases.set_alias(FRONT_DISPLAY, "Front Display")
+        self.aliases.set_alias(LAB_DISPLAY, "Front Display")   # not visible
+        payload = omni_projection.user_state(MATRIX, UNITS, teacher, self.aliases)
+        self.assertEqual([d["name"] for d in payload["destinations"]],
+                         ["Front Display"],
+                         "a duplicate in another room must not decorate this one")
+
+    def test_an_alias_matching_its_own_hostname_is_not_doubled(self):
+        """"dec-front — dec-front" would be worse than leaving it alone."""
+        self.aliases.set_alias(FRONT_DISPLAY, "hw-omni-d4111-7851dd")
+        self.aliases.set_alias(LAB_DISPLAY, "hw-omni-d4111-7851dd")
+        names = sorted(d["name"] for d in self.project()["destinations"])
+        # The one whose label already is its own device name keeps it; the
+        # other gains its own, so the pair is distinguishable without a
+        # tautology like "X \u2014 X".
+        self.assertIn("hw-omni-d4111-7851dd", names)
+        self.assertIn("hw-omni-d4111-7851dd \u2014 hw-omni-d4111-lab", names)

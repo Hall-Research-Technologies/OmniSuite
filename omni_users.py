@@ -48,8 +48,28 @@ ABSOLUTE_TIMEOUT_SECONDS = 24 * 60 * 60
 MAX_FAILURES = 5
 LOCKOUT_SECONDS = 15 * 60
 
-#: The audit log is bounded. An unbounded security log is its own outage.
+#: The audit log is bounded. An unbounded security log is its own outage, and
+#: a failed login is something an attacker can produce at will.
 AUDIT_MAX_ENTRIES = 5000
+
+#: How often the audit file is rewritten at most. Every event used to rewrite
+#: the whole file -- up to 5000 entries -- while holding the lock that
+#: authentication also needs, so a brute-force attempt was simultaneously a
+#: denial of service against sign-in. Entries are kept in memory and flushed on
+#: this cadence, and always immediately for the events somebody would come
+#: looking for.
+AUDIT_FLUSH_SECONDS = 5.0
+
+#: Events written through immediately rather than waiting for the cadence.
+#: Chosen because these are what an administrator reconstructs an incident
+#: from, and losing the last few seconds of them to a crash would matter.
+AUDIT_IMMEDIATE_EVENTS = frozenset({
+    "bootstrap.admin_created", "user.create", "user.deleted",
+    "user.set_role", "user.set_permissions", "user.set_password",
+    "user.disabled", "user.enabled",
+    "remote_access.enabled", "remote_access.disabled",
+    "certificate.generated", "certificate.configured",
+})
 
 #: Never written to the audit log or returned by any API, whatever a caller
 #: puts in a request body. Mirrors the server's existing audit redaction set.
@@ -294,7 +314,10 @@ class UserStore:
         self._sessions: dict[str, Session] = {}
         self._failures: dict[str, list] = {}
         self._audit: list = []
+        self._audit_dirty = False
+        self._audit_flushed_at = 0.0
         self._load()
+        self._load_audit()
 
     # ---- persistence -------------------------------------------------
     def _load(self) -> None:
@@ -573,26 +596,108 @@ class UserStore:
             return count
 
     # ---- audit -------------------------------------------------------
+    def _load_audit(self) -> None:
+        """Read the audit back so a restart does not blank the view.
+
+        A damaged file costs the history and nothing else: the application
+        starts, and the log begins again rather than failing.
+        """
+        if self._audit_path is None or not self._audit_path.exists():
+            return
+        try:
+            raw = json.loads(self._audit_path.read_text(encoding="utf-8"))
+            entries = (raw or {}).get("entries") or []
+            with self._lock:
+                self._audit = [e for e in entries if isinstance(e, dict)][
+                    -AUDIT_MAX_ENTRIES:]
+        except Exception as exc:
+            log.warning("[AUDIT] could not read the existing log (%s); "
+                        "starting a new one", type(exc).__name__)
+
     def audit(self, event, actor=None, detail=None) -> None:
         """Record a security-relevant event, with secrets stripped first.
 
         Named fields are recorded; a request body is never dumped verbatim,
         because a caller can put a credential in one.
+
+        The file is written outside the lock and no more often than the flush
+        cadence, so recording an event costs an append rather than a rewrite of
+        everything that came before it.
         """
-        entry = {"at": _now(), "event": str(event),
+        name = str(event)
+        entry = {"at": _now(), "event": name,
                  "actor": getattr(actor, "username", None),
                  "actor_id": getattr(actor, "id", None),
                  "detail": redact(detail or {})}
+
+        snapshot = None
         with self._lock:
             self._audit.append(entry)
             if len(self._audit) > AUDIT_MAX_ENTRIES:
                 # Bounded: an unbounded security log is its own outage.
                 self._audit = self._audit[-AUDIT_MAX_ENTRIES:]
-            if self._audit_path is not None:
-                _atomic_write_json(self._audit_path,
-                                   {"version": SCHEMA_VERSION,
-                                    "entries": self._audit})
+            self._audit_dirty = True
+            due = (name in AUDIT_IMMEDIATE_EVENTS
+                   or _now() - self._audit_flushed_at >= AUDIT_FLUSH_SECONDS)
+            if due and self._audit_path is not None:
+                snapshot = list(self._audit)
+                self._audit_flushed_at = _now()
+                self._audit_dirty = False
 
-    def audit_entries(self, limit=200) -> list:
+        # Outside the lock: writing five thousand entries must not hold up a
+        # sign-in, and this is the path an attacker can drive hardest.
+        if snapshot is not None:
+            _atomic_write_json(self._audit_path,
+                               {"version": SCHEMA_VERSION, "entries": snapshot})
+
+    def flush_audit(self) -> bool:
+        """Write anything still held in memory. Called at shutdown."""
         with self._lock:
-            return list(self._audit[-int(limit):])
+            if not self._audit_dirty or self._audit_path is None:
+                return True
+            snapshot = list(self._audit)
+            self._audit_dirty = False
+            self._audit_flushed_at = _now()
+        return _atomic_write_json(self._audit_path,
+                                  {"version": SCHEMA_VERSION,
+                                   "entries": snapshot})
+
+    def audit_entries(self, limit=200, event=None, actor=None,
+                      search=None) -> list:
+        """The most recent entries, newest first, optionally filtered.
+
+        Filtering happens here rather than in the browser so a page never has
+        to hold the whole log to show a slice of it.
+        """
+        needle = str(search or "").strip().lower()
+        wanted_event = str(event or "").strip().lower()
+        wanted_actor = str(actor or "").strip().lower()
+        with self._lock:
+            entries = list(self._audit)
+
+        selected = []
+        for item in reversed(entries):          # newest first
+            if wanted_event and wanted_event not in str(item.get("event", "")).lower():
+                continue
+            if wanted_actor and wanted_actor != str(item.get("actor") or "").lower():
+                continue
+            if needle and needle not in json.dumps(item).lower():
+                continue
+            selected.append(item)
+            if len(selected) >= int(limit):
+                break
+        return selected
+
+    def audit_summary(self) -> dict:
+        """Counts an administrator glances at before reading rows."""
+        with self._lock:
+            entries = list(self._audit)
+        counts: dict = {}
+        actors = set()
+        for item in entries:
+            counts[item.get("event", "")] = counts.get(item.get("event", ""), 0) + 1
+            if item.get("actor"):
+                actors.add(item["actor"])
+        return {"total": len(entries), "capacity": AUDIT_MAX_ENTRIES,
+                "accounts": sorted(actors),
+                "events": sorted(counts)}

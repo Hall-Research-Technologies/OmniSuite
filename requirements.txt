@@ -6,3 +6,8 @@ Pillow
 pystray
 psutil
 openpyxl
+# Remote-access TLS: generating a self-signed certificate when a site
+# has none. A supplied certificate needs only the standard library;
+# this is what makes first-time HTTPS setup possible for an installer
+# who has no certificate of their own.
+cryptography

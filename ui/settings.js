@@ -144,6 +144,40 @@ const SETTINGS_MODAL_HTML = `
           <label for="cfg_remote_adapter">Network</label>
           <select id="cfg_remote_adapter" style="flex:1;"></select>
         </div>
+
+        <!-- Transport. HTTPS is the default and the only thing offered without
+             a deliberate acknowledgement; the certificate row below says
+             whether it can actually start. -->
+        <div class="modal-row">
+          <label for="cfg_remote_transport">Security</label>
+          <select id="cfg_remote_transport" style="flex:1;">
+            <option value="https">HTTPS &mdash; encrypted (recommended)</option>
+            <option value="http">HTTP &mdash; not encrypted</option>
+          </select>
+        </div>
+
+        <div class="modal-row" style="align-items:flex-start;" id="cfg_cert_row">
+          <label>Certificate</label>
+          <div style="flex:1 1 auto;min-width:0;">
+            <div id="cfg_cert_status" class="update-status muted">&nbsp;</div>
+            <div id="cfg_cert_detail" class="small"
+                 style="margin-top:4px;color:var(--muted);"></div>
+            <div class="update-actions" style="margin-top:6px;">
+              <button id="cfg_cert_generate" class="btn small secondary" type="button">
+                Create one for this network</button>
+              <button id="cfg_cert_use" class="btn small secondary" type="button">
+                Use my own files</button>
+            </div>
+            <div id="cfg_cert_files" hidden style="margin-top:8px;">
+              <input id="cfg_cert_path" type="text" style="width:100%;margin-bottom:6px;"
+                     placeholder="Path to certificate (.pem or .crt)">
+              <input id="cfg_key_path" type="text" style="width:100%;margin-bottom:6px;"
+                     placeholder="Path to private key (.pem or .key)">
+              <button id="cfg_cert_save" class="btn small" type="button">
+                Use these</button>
+            </div>
+          </div>
+        </div>
         <div class="modal-row" style="align-items:flex-start;">
           <label>&nbsp;</label>
           <div style="flex:1 1 auto;">
@@ -157,8 +191,9 @@ const SETTINGS_MODAL_HTML = `
              is no transport encryption at this checkpoint. -->
         <div class="modal-row" style="align-items:flex-start;">
           <label>&nbsp;</label>
-          <div class="cfg-warning" style="flex:1 1 auto;margin:0;">
-            <div>
+          <div class="cfg-warning" style="flex:1 1 auto;margin:0;"
+               id="cfg_remote_warning">
+            <div id="cfg_remote_warning_text">
               <strong>Connections are not encrypted.</strong>
               Anyone who can watch this network can read what is sent, including
               sign-in details. Use remote access only on a network you trust.
@@ -519,8 +554,25 @@ function initConfig() {
       return;
     }
 
+    // The warning belongs to plaintext, not to remote access as such. An
+    // encrypted listener must not carry a notice saying it is not.
+    const warning = document.getElementById('cfg_remote_warning');
+    const warningText = document.getElementById('cfg_remote_warning_text');
+    const insecure = (remoteState.transport === 'http');
+    if (warning) warning.hidden = !insecure;
+    if (warningText && insecure) {
+      warningText.replaceChildren();
+      const strong = document.createElement('strong');
+      strong.textContent = 'Connections are not encrypted. ';
+      warningText.append(strong,
+        'Anyone who can watch this network can read what is sent, including '
+        + 'sign-in details. Use remote access only on a network you trust.');
+    }
+
     if (remoteState.enabled) {
-      line.textContent = 'ON — other devices on this network can reach OmniSuite.';
+      line.textContent = remoteState.secure
+        ? 'ON — other devices on this network can reach OmniSuite securely.'
+        : 'ON — other devices on this network can reach OmniSuite.';
       line.className = 'update-status update-available';
       if (url) {
         url.textContent = 'They use: ' + (remoteState.url || '') +
@@ -533,6 +585,66 @@ function initConfig() {
       line.className = 'update-status';
       if (url) url.textContent = '';
       if (toggle) toggle.textContent = 'Turn on remote access';
+    }
+
+    // The certificate row, and what it can honestly claim.
+    const certStatus = document.getElementById('cfg_cert_status');
+    const certDetail = document.getElementById('cfg_cert_detail');
+    const certRow = document.getElementById('cfg_cert_row');
+    const transport = document.getElementById('cfg_remote_transport');
+    if (transport && !transport.dataset.set) {
+      transport.value = remoteState.transport === 'http' ? 'http' : 'https';
+      transport.dataset.set = '1';
+    }
+    if (certRow) certRow.hidden = (transport && transport.value === 'http');
+
+    if (certStatus) {
+      const cert = remoteState.certificate || {};
+      const generate = document.getElementById('cfg_cert_generate');
+      if (generate) {
+        generate.disabled = !cert.can_generate;
+        generate.title = cert.can_generate ? ''
+          : 'This build cannot create a certificate. Supply one instead.';
+      }
+      if (remoteState.tls_error) {
+        certStatus.textContent = remoteState.tls_error;
+        certStatus.className = 'update-status remote-unavailable';
+        if (certDetail) certDetail.textContent = '';
+      } else if (!cert.present) {
+        certStatus.textContent = 'No certificate yet.';
+        certStatus.className = 'update-status muted';
+        if (certDetail) {
+          certDetail.textContent = 'Remote access cannot start over HTTPS '
+            + 'until one is configured.';
+        }
+      } else if (!cert.readable) {
+        certStatus.textContent = cert.error || 'The certificate cannot be read.';
+        certStatus.className = 'update-status remote-unavailable';
+      } else if (cert.expired) {
+        certStatus.textContent = 'The certificate has expired.';
+        certStatus.className = 'update-status remote-unavailable';
+        if (certDetail) certDetail.textContent = 'Expired ' + cert.not_after;
+      } else {
+        certStatus.textContent = cert.self_signed
+          ? 'Self-signed certificate in place.'
+          : 'Certificate in place.';
+        certStatus.className = 'update-status';
+        if (certDetail) {
+          const parts = [];
+          if (cert.subject) parts.push('For ' + cert.subject);
+          if (typeof cert.days_remaining === 'number') {
+            parts.push(cert.days_remaining + ' days left');
+          }
+          if (cert.fingerprint) {
+            parts.push('Fingerprint ' + cert.fingerprint.slice(0, 16));
+          }
+          if (cert.self_signed) {
+            parts.push('Browsers will warn the first time; check the '
+                       + 'fingerprint matches.');
+          }
+          certDetail.textContent = parts.join(' \u00b7 ');
+        }
+      }
     }
 
     if (adapter && !adapter.dataset.filled) {
@@ -606,6 +718,88 @@ function initConfig() {
     });
   }
 
+  // ---- certificate -----------------------------------------------------
+  const certGenerate = document.getElementById('cfg_cert_generate');
+  const certUse = document.getElementById('cfg_cert_use');
+  const certSave = document.getElementById('cfg_cert_save');
+  const certFiles = document.getElementById('cfg_cert_files');
+  const transportSelect = document.getElementById('cfg_remote_transport');
+
+  if (transportSelect) {
+    transportSelect.addEventListener('change', () => {
+      const row = document.getElementById('cfg_cert_row');
+      if (row) row.hidden = transportSelect.value === 'http';
+      const warning = document.getElementById('cfg_remote_warning');
+      if (warning) warning.hidden = transportSelect.value !== 'http';
+    });
+  }
+
+  if (certUse && certFiles) {
+    certUse.addEventListener('click', () => { certFiles.hidden = !certFiles.hidden; });
+  }
+
+  if (certGenerate) {
+    certGenerate.addEventListener('click', async () => {
+      const adapter = document.getElementById('cfg_remote_adapter');
+      const address = adapter ? adapter.value : '';
+      if (!address) {
+        window.toast && window.toast('Choose a network first', 'error');
+        return;
+      }
+      certGenerate.disabled = true;
+      try {
+        const res = await fetch('/api/admin/certificate', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          credentials: 'same-origin',
+          body: JSON.stringify({action: 'generate', address}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok) {
+          window.toast && window.toast('Certificate created', 'ok');
+        } else {
+          window.toast && window.toast(data.error || 'Could not create it', 'error');
+        }
+      } catch (err) {
+        window.toast && window.toast('Could not reach OmniSuite', 'error');
+      }
+      certGenerate.disabled = false;
+      await loadRemoteAccess();
+    });
+  }
+
+  if (certSave) {
+    certSave.addEventListener('click', async () => {
+      const certPath = (document.getElementById('cfg_cert_path') || {}).value || '';
+      const keyPath = (document.getElementById('cfg_key_path') || {}).value || '';
+      if (!certPath.trim() || !keyPath.trim()) {
+        window.toast && window.toast('Both files are needed', 'error');
+        return;
+      }
+      certSave.disabled = true;
+      try {
+        const res = await fetch('/api/admin/certificate', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          credentials: 'same-origin',
+          body: JSON.stringify({action: 'use', cert_path: certPath.trim(),
+                                key_path: keyPath.trim()}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok) {
+          window.toast && window.toast('Certificate configured', 'ok');
+          if (certFiles) certFiles.hidden = true;
+        } else {
+          window.toast && window.toast(data.error || 'Could not use those', 'error');
+        }
+      } catch (err) {
+        window.toast && window.toast('Could not reach OmniSuite', 'error');
+      }
+      certSave.disabled = false;
+      await loadRemoteAccess();
+    });
+  }
+
   const remoteToggle = document.getElementById('cfg_remote_toggle');
   if (remoteToggle) {
     remoteToggle.addEventListener('click', async () => {
@@ -616,13 +810,22 @@ function initConfig() {
         window.toast && window.toast('Choose a network first', 'error');
         return;
       }
+      const transport = transportSelect ? transportSelect.value : 'https';
       if (turningOn && window.omniConfirm) {
         const ok = await window.omniConfirm({
           title: 'Turn on remote access?',
-          message: 'Other devices on this network will be able to reach ' +
-                   'OmniSuite and sign in. Connections are not encrypted.',
-          summary: [{label: 'Address', value: address}],
+          message: transport === 'http'
+            ? 'Other devices on this network will be able to reach OmniSuite '
+              + 'and sign in. Connections will NOT be encrypted, so sign-in '
+              + 'details can be read by anyone watching this network.'
+            : 'Other devices on this network will be able to reach OmniSuite '
+              + 'and sign in over an encrypted connection.',
+          summary: [{label: 'Address', value: address},
+                    {label: 'Security',
+                     value: transport === 'http' ? 'Not encrypted' : 'HTTPS'}],
           confirmText: 'Turn on',
+          // Plaintext is the costly answer, so Cancel takes the focus.
+          danger: transport === 'http',
         });
         if (!ok) return;
       }
@@ -632,7 +835,12 @@ function initConfig() {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           credentials: 'same-origin',
-          body: JSON.stringify({enabled: turningOn, address}),
+          body: JSON.stringify({
+            enabled: turningOn, address, transport,
+            // The server refuses plaintext without this, so it cannot be
+            // reached by a request that simply omits a field.
+            accept_insecure: transport === 'http',
+          }),
         });
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.ok) {

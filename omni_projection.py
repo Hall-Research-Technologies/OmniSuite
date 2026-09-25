@@ -46,6 +46,43 @@ def _identity_by_address(units) -> dict:
     return index
 
 
+def disambiguate(items, detail_of) -> None:
+    """Make repeated labels distinguishable, and leave unique ones alone.
+
+    Two rooms may each legitimately hold a "Front Display", so duplicates are
+    not prevented -- but an operator shown two identical cards cannot choose
+    between them. Where a label repeats *within what this account can see*, the
+    device's own name is appended:
+
+        Front Display                     (unique -- untouched)
+        Front Display - dec-front-101     (ambiguous)
+        Front Display - dec-front-102
+
+    The hostname is used because it is the only human-readable per-device
+    identifier OmniSuite has. There is no room, location or description field
+    anywhere in the model, and inventing one here would be a device database
+    rather than a disambiguator. A proper fix is an administrator-editable
+    location, which is recorded as a gap rather than improvised.
+
+    An address or MAC is deliberately not used. Those would disambiguate, and
+    they are exactly the engineering detail the whole projection exists to keep
+    out of an operator's hands.
+
+    Ambiguity is judged over the account's own visible set, so a duplicate in
+    another room the account cannot see never changes what it is shown.
+    """
+    seen: dict = {}
+    for item in items:
+        seen.setdefault(item["name"].strip().casefold(), []).append(item)
+    for group in seen.values():
+        if len(group) < 2:
+            continue
+        for item in group:
+            detail = str(detail_of(item) or "").strip()
+            if detail and detail.casefold() != item["name"].strip().casefold():
+                item["name"] = f"{item['name']} — {detail}"
+
+
 def _device_name(row, unit) -> str:
     """The device's own name: hostname, or the model if it has none.
 
@@ -159,6 +196,9 @@ def user_state(matrix_state, units, account, aliases=None) -> dict:
 
     identity_of = _identity_by_address(units)
     unit_of = {(u.get("ip") or "").strip(): u for u in (units or [])}
+    # The device's own name, kept beside the label so a repeated label can be
+    # told apart without the projection ever carrying an address.
+    device_names = {}
 
     encoders = matrix_state.get("encoders") or []
     decoders = matrix_state.get("decoders") or []
@@ -180,6 +220,7 @@ def user_state(matrix_state, units, account, aliases=None) -> dict:
             continue
         unit = unit_of.get(address)
         projected = project_source(row, unit, identity, aliases)
+        device_names[identity] = _device_name(row, unit)
         sources.append(projected)
         source_names[identity] = projected["name"]
         permitted_sources.add(identity)
@@ -199,8 +240,13 @@ def user_state(matrix_state, units, account, aliases=None) -> dict:
         routed_identity = identity_of.get((routed_address or "").strip())
         showing = describe_showing(row, routed_identity, source_names,
                                    permitted_sources)
+        device_names[identity] = _device_name(row, unit_of.get(address))
         destinations.append(project_destination(row, unit_of.get(address),
                                                 identity, showing, aliases))
+
+    # Only where a label actually repeats in this account's own view.
+    disambiguate(sources, lambda s: device_names.get(s["id"], ""))
+    disambiguate(destinations, lambda d: device_names.get(d["id"], ""))
 
     sources.sort(key=lambda s: s["name"].lower())
     destinations.sort(key=lambda d: d["name"].lower())
@@ -303,12 +349,23 @@ def project_usb_state(usb_state, units, account, aliases=None) -> dict:
             "online": bool(row.get("usb_discovered", True)),
         }
 
+    usb_device_names = {}
+
+    def remember(row):
+        identity = _usb_endpoint_identity(row)
+        address = (row.get("ip") or "").strip()
+        unit = unit_of.get(address)
+        usb_device_names[identity] = (_device_name({"host": row.get("host")}, unit)
+                                      if unit else (row.get("host") or ""))
+
     computers, peripherals = [], []
     for row in (usb_state.get("matrix_lex") or usb_state.get("lex") or []):
         if visible(row, permissions.sources):
+            remember(row)
             computers.append(describe(row))
     for row in (usb_state.get("matrix_rex") or usb_state.get("rex") or []):
         if visible(row, permissions.destinations):
+            remember(row)
             peripherals.append(describe(row))
 
     # What is joined to what, expressed only between endpoints this account can
@@ -336,6 +393,9 @@ def project_usb_state(usb_state, units, account, aliases=None) -> dict:
         peripheral["attached_to"] = joined.get(
             peripheral["id"], {"mode": "none", "computer_id": None,
                                "computer_name": None})
+
+    disambiguate(computers, lambda c: usb_device_names.get(c["id"], ""))
+    disambiguate(peripherals, lambda p: usb_device_names.get(p["id"], ""))
 
     computers.sort(key=lambda c: c["name"].lower())
     peripherals.sort(key=lambda p: p["name"].lower())

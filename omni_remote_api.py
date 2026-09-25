@@ -417,7 +417,26 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
 
     @app.route("/api/admin/audit", methods=["GET"])
     def api_admin_audit():
-        return jsonify({"ok": True, "entries": store.audit_entries(200)})
+        """The security log, newest first, filtered server-side.
+
+        Filtering here rather than in the browser so a page never has to hold
+        the whole log to show a slice of it. Entries are already redacted when
+        they are recorded -- there is no second pass here that could be
+        forgotten.
+        """
+        try:
+            limit = max(1, min(500, int(request.args.get("limit") or 200)))
+        except (TypeError, ValueError):
+            limit = 200
+        return jsonify({
+            "ok": True,
+            "entries": store.audit_entries(
+                limit=limit,
+                event=request.args.get("event"),
+                actor=request.args.get("actor"),
+                search=request.args.get("q")),
+            "summary": store.audit_summary(),
+        })
 
     # ------------------------------------------------------- user surface
     @app.route("/api/user/state", methods=["GET"])

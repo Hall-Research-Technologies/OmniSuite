@@ -573,6 +573,8 @@
     state.tab = name;
     el('panel_accounts').hidden = name !== 'accounts';
     el('panel_names').hidden = name !== 'names';
+    el('panel_audit').hidden = name !== 'audit';
+    if (name === 'audit') loadAudit().catch(() => {});
     el('admin_tabs').querySelectorAll('.tab').forEach((tab) => {
       tab.setAttribute('aria-selected', String(tab.dataset.panel === name));
     });
@@ -581,6 +583,135 @@
   document.getElementById('admin_tabs').addEventListener('click', (event) => {
     const tab = event.target.closest('.tab');
     if (tab) selectTab(tab.dataset.panel);
+  });
+
+  // ---------------------------------------------------------- activity
+  //
+  // Read on demand and filtered server-side. The log is bounded, so a page
+  // never holds all of it and filtering never means shipping the whole thing
+  // to the browser to sift through.
+  const EVENT_LABELS = {
+    'login.success': 'Signed in',
+    'login.failure': 'Sign-in refused',
+    'login.throttled': 'Sign-in throttled',
+    'logout': 'Signed out',
+    'user.create': 'Account created',
+    'user.deleted': 'Account deleted',
+    'user.enabled': 'Account enabled',
+    'user.disabled': 'Account disabled',
+    'user.set_role': 'Role changed',
+    'user.role_changed': 'Role changed',
+    'user.set_permissions': 'Permissions changed',
+    'user.permissions_changed': 'Permissions changed',
+    'user.set_password': 'Password changed',
+    'user.password_changed': 'Password changed',
+    'route': 'Routed',
+    'usb.attach': 'USB connected',
+    'usb.detach': 'USB disconnected',
+    'multiview.show': 'Multiview shown',
+    'multiview.switch': 'Multiview window changed',
+    'access.denied': 'Refused',
+    'remote_access.enabled': 'Remote access on',
+    'remote_access.disabled': 'Remote access off',
+    'remote_access.restored': 'Remote access restored',
+    'certificate.generated': 'Certificate created',
+    'certificate.configured': 'Certificate configured',
+    'device.aliases_changed': 'Device names changed',
+    'bootstrap.admin_created': 'First administrator created',
+  };
+
+  function when(seconds) {
+    if (!seconds) return '';
+    const date = new Date(seconds * 1000);
+    const sameDay = date.toDateString() === new Date().toDateString();
+    return sameDay ? date.toLocaleTimeString()
+                   : date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+  }
+
+  // Built from the named fields an entry carries, never a dump of the record.
+  function describeEntry(entry) {
+    const d = entry.detail || {};
+    const bits = [];
+    if (d.source_label || d.source) bits.push('from ' + (d.source_label || d.source));
+    if (d.destination_label || d.destination) {
+      bits.push('to ' + (d.destination_label || d.destination));
+    }
+    if (d.display_label || d.display) bits.push('on ' + (d.display_label || d.display));
+    if (d.preset) bits.push('layout ' + d.preset);
+    if (d.window) bits.push('window ' + d.window);
+    if (d.computer_label) bits.push('computer ' + d.computer_label);
+    if (d.peripherals_label) bits.push('peripherals ' + d.peripherals_label);
+    if (d.username) bits.push(d.username);
+    if (d.role) bits.push('role ' + d.role);
+    if (d.address) bits.push(d.address);
+    if (d.transport) bits.push(String(d.transport).toUpperCase());
+    if (d.reason) bits.push(d.reason);
+    if (d.rule) bits.push(d.rule);
+    return bits.join(' \u00b7 ');
+  }
+
+  async function loadAudit() {
+    const params = new URLSearchParams();
+    const search = el('audit_search').value.trim();
+    if (search) params.set('q', search);
+    if (el('audit_event').value) params.set('event', el('audit_event').value);
+    if (el('audit_actor').value) params.set('actor', el('audit_actor').value);
+    params.set('limit', '200');
+
+    const {status, body} = await api('/api/admin/audit?' + params.toString());
+    const tbody = el('audit_body');
+    tbody.replaceChildren();
+    if (status !== 200 || !body.ok) {
+      el('audit_count').textContent = 'could not load';
+      return;
+    }
+    const entries = body.entries || [];
+    entries.forEach((entry) => {
+      const row = document.createElement('tr');
+      cell(row, 'When', when(entry.at));
+      cell(row, 'Account', entry.actor || '\u2014');
+      const action = document.createElement('span');
+      action.textContent = EVENT_LABELS[entry.event] || entry.event;
+      if (['access.denied', 'login.failure', 'login.throttled']
+          .indexOf(entry.event) !== -1) {
+        action.className = 'state-pill disabled';
+      }
+      cell(row, 'Action', action);
+      cell(row, 'Details', describeEntry(entry));
+      tbody.appendChild(row);
+    });
+
+    const summary = body.summary || {};
+    el('audit_count').textContent = entries.length + ' of ' +
+      (summary.total || 0) + ' kept';
+    fillFilter('audit_event', summary.events || [],
+               (v) => EVENT_LABELS[v] || v);
+    fillFilter('audit_actor', summary.accounts || [], (v) => v);
+  }
+
+  function fillFilter(id, values, labelOf) {
+    const select = el(id);
+    if (select.dataset.filled === String(values.length)) return;
+    const current = select.value;
+    const first = select.options[0];
+    select.replaceChildren(first);
+    values.forEach((value) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = labelOf(value);
+      select.appendChild(option);
+    });
+    select.value = current;
+    select.dataset.filled = String(values.length);
+  }
+
+  el('audit_refresh').addEventListener('click', () => loadAudit().catch(() => {}));
+  ['audit_event', 'audit_actor'].forEach((id) => {
+    el(id).addEventListener('change', () => loadAudit().catch(() => {}));
+  });
+  el('audit_search').addEventListener('input', () => {
+    clearTimeout(state.auditTimer);
+    state.auditTimer = setTimeout(() => loadAudit().catch(() => {}), 300);
   });
 
   async function load() {
