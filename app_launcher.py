@@ -286,6 +286,20 @@ class AppWindow:
                     # network.
                     if hasattr(server, "start_background_startup_tasks"):
                         server.start_background_startup_tasks()
+                    # An unattended host should come back the way the
+                    # administrator left it. This is the packaged application's
+                    # startup path -- the module's own main() is not used here --
+                    # so the restore has to be invoked from both or the
+                    # behaviour would exist only when run from source.
+                    # It restores nothing unless remote access was explicitly
+                    # enabled and the saved address is present on this machine,
+                    # and it never prevents the local application from starting.
+                    if hasattr(server, "restore_remote_access"):
+                        try:
+                            server.restore_remote_access()
+                        except Exception as exc:
+                            log_message(
+                                f"Remote access restore skipped: {type(exc).__name__}")
                     # Tagged rather than app.run: the authorization gate reads
                     # which listener accepted a connection, and this is the
                     # listener the packaged application serves from. The tag

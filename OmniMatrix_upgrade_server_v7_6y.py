@@ -24,6 +24,7 @@ except Exception:
 # (omni_remote), accounts (omni_users) and enforcement (omni_gate) are separate
 # modules so the trust decision stays reviewable in one place.
 import omni_access
+import omni_aliases
 import omni_gate
 import omni_projection
 import omni_remote
@@ -12729,6 +12730,9 @@ def main():
     # module used to probe every address in whatever cache OMNI_DATA_DIR resolved
     # to, which put a plain unit-test run on real hardware.
     start_background_startup_tasks()
+    # Only an explicitly enabled, still-valid configuration comes back, and a
+    # refusal here never stops the local application from serving.
+    restore_remote_access()
     log.info("Serving on http://%s:%s/", host, selected_port)
 
     def run_server():
@@ -16554,7 +16558,10 @@ def api_multiview_delete():
 USERS_FILE = DATA_DIR / "users.json"
 SECURITY_AUDIT_FILE = DATA_DIR / "security_audit.json"
 
+ALIASES_FILE = DATA_DIR / "device_aliases.json"
+
 _user_store = omni_users.UserStore(USERS_FILE, SECURITY_AUDIT_FILE)
+_device_aliases = omni_aliases.AliasStore(ALIASES_FILE)
 _remote_listener = omni_remote.RemoteListener(app)
 
 
@@ -16578,19 +16585,20 @@ omni_gate.install(app, lambda: _user_store, remote_access_enabled)
 REMOTE_ACCESS_FILE = DATA_DIR / "remote_access.json"
 
 
+#: Why a saved configuration could not be restored, for Settings to show.
+#: Held in memory: it describes this run, not the stored preference.
+_remote_restore_error = ""
+
+
 def _remote_access_preference(enabled, address, port):
     """Remember what the operator chose.
 
     Its own file rather than config.json: that one carries the device
     credentials and maps field for field onto app.config, and a remote-access
     setting has no business in it.
-
-    Recording the choice is not the same as acting on it. Nothing here starts a
-    listener, and nothing restores one at startup -- a setting that silently
-    reopens a network listener every time the application launches is not one
-    an operator can reason about. It is written so Settings can show what was
-    last chosen and so a future phase can offer to restore it deliberately.
     """
+    global _remote_restore_error
+    _remote_restore_error = ""
     omni_users._atomic_write_json(REMOTE_ACCESS_FILE, {
         "enabled": bool(enabled),
         "address": address or "",
@@ -16599,14 +16607,100 @@ def _remote_access_preference(enabled, address, port):
 
 
 def _remote_access_last_choice():
-    """What was last chosen, for display. Never acted on automatically."""
+    """The stored preference, plus why a restore failed if one did.
+
+    Three states an installed system has to distinguish, and "off" is only one
+    of them: never configured, explicitly disabled, and configured but the
+    selected network is not here today.
+    """
+    saved = {"enabled": False, "address": "", "port": None}
     try:
         if REMOTE_ACCESS_FILE.exists():
-            return json.loads(REMOTE_ACCESS_FILE.read_text(encoding="utf-8"))
+            stored = json.loads(REMOTE_ACCESS_FILE.read_text(encoding="utf-8"))
+            if isinstance(stored, dict):
+                saved.update({
+                    "enabled": bool(stored.get("enabled")),
+                    "address": str(stored.get("address") or ""),
+                    "port": stored.get("port"),
+                })
     except Exception as exc:
-        log.info("[REMOTE] could not read the saved preference: %s",
+        # A damaged preference file means "not configured", which is the safe
+        # reading: it can never mean "expose this machine".
+        log.warning("[REMOTE] saved preference unreadable (%s); treating as off",
+                    type(exc).__name__)
+    saved["restore_error"] = _remote_restore_error
+    return saved
+
+
+def restore_remote_access():
+    """Bring back a remote listener the administrator explicitly asked for.
+
+    An unattended classroom host should not need somebody to walk over and
+    re-enable remote access after every power cut. But restoring a network
+    listener from a file is exactly the kind of convenience that quietly
+    exposes a machine, so every one of these has to hold:
+
+      * the preference says enabled -- absent, unreadable or disabled means no
+      * an administrator account exists -- otherwise the restored listener
+        would answer with nobody able to sign in, and bootstrap is local-only
+      * a concrete address was saved -- never 0.0.0.0, never "any"
+      * that exact address is on this machine right now
+
+    A failure here is a status to report, never a startup failure: the local
+    application must come up normally whatever the network is doing. And a
+    saved address that is missing is the end of it -- no second adapter is
+    tried, because the administrator chose a network and picking a different
+    one for them is how equipment ends up reachable from somewhere nobody
+    intended.
+    """
+    global _remote_restore_error
+    _remote_restore_error = ""
+    saved = _remote_access_last_choice()
+    if not saved.get("enabled"):
+        return {"restored": False, "reason": "not enabled"}
+
+    if not _user_store.has_admin:
+        _remote_restore_error = ("Remote access is configured, but no "
+                                 "administrator account exists.")
+        log.warning("[REMOTE] not restoring: no administrator account")
+        return {"restored": False, "reason": "no administrator"}
+
+    address = saved.get("address") or ""
+    if not omni_remote.is_usable_remote_address(address):
+        _remote_restore_error = "The saved remote address is not usable."
+        log.warning("[REMOTE] not restoring: saved address is unusable")
+        return {"restored": False, "reason": "unusable address"}
+
+    try:
+        with app.test_request_context("/api/adapters"):
+            available = omni_remote.usable_bind_addresses(
+                json.loads(api_adapters().get_data()).get("adapters") or [])
+    except Exception as exc:
+        available = []
+        log.info("[REMOTE] adapter enumeration failed during restore: %s",
                  type(exc).__name__)
-    return {"enabled": False, "address": "", "port": None}
+
+    if not any(a.get("address") == address for a in available):
+        _remote_restore_error = (
+            f"Remote access is configured for {address}, but that network is "
+            "not available on this computer right now.")
+        log.warning("[REMOTE] not restoring: %s is not present on this host",
+                    address)
+        return {"restored": False, "reason": "address unavailable"}
+
+    port = saved.get("port") or int(os.getenv("OMNI_PORT", PORT) or PORT)
+    result = _remote_listener.start(address, port)
+    if not result.get("ok"):
+        _remote_restore_error = (
+            f"Remote access is configured for {address}, but the listener "
+            f"could not start: {result.get('error', 'unknown error')}")
+        log.warning("[REMOTE] restore failed: %s", result.get("error"))
+        return {"restored": False, "reason": result.get("error")}
+
+    log.info("[REMOTE] restored on %s:%s", address, port)
+    _user_store.audit("remote_access.restored", actor=None,
+                      detail={"address": address, "port": int(port)})
+    return {"restored": True, "address": address, "port": int(port)}
 
 
 def _matrix_state_snapshot():
@@ -16624,11 +16718,13 @@ omni_remote_api.register(
     app,
     store=_user_store,
     listener=_remote_listener,
+    aliases=_device_aliases,
     load_cache=_load_cache,
     matrix_state=_matrix_state_snapshot,
     route_view=api_route_matrix,
     remote_enabled=remote_access_enabled,
     set_remote_state=_remote_access_preference,
+    remote_config=_remote_access_last_choice,
 )
 
 

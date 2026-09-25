@@ -157,7 +157,7 @@ const SETTINGS_MODAL_HTML = `
              is no transport encryption at this checkpoint. -->
         <div class="modal-row" style="align-items:flex-start;">
           <label>&nbsp;</label>
-          <div class="notice-line" style="flex:1 1 auto;margin:0;">
+          <div class="cfg-warning" style="flex:1 1 auto;margin:0;">
             <div>
               <strong>Connections are not encrypted.</strong>
               Anyone who can watch this network can read what is sent, including
@@ -502,6 +502,23 @@ function initConfig() {
       return;
     }
 
+    // Configured but unavailable is its own state. An installed system whose
+    // network moved must not read as simply "off", or somebody re-enables it
+    // on whatever adapter happens to be first in the list.
+    if (!remoteState.enabled && remoteState.configured) {
+      line.textContent = remoteState.restore_error
+        || ('Configured for ' + (remoteState.configured_address || 'a network') +
+            ', which is not available on this computer right now.');
+      line.className = 'update-status remote-unavailable';
+      if (url) {
+        url.textContent = 'OmniSuite is running normally on this computer. ' +
+          'Choose another network below to turn remote access back on.';
+      }
+      if (toggle) toggle.textContent = 'Turn on remote access';
+      if (adapter) adapter.disabled = false;
+      return;
+    }
+
     if (remoteState.enabled) {
       line.textContent = 'ON — other devices on this network can reach OmniSuite.';
       line.className = 'update-status update-available';
@@ -533,7 +550,8 @@ function initConfig() {
         adapter.appendChild(option);
       }
       adapter.dataset.filled = '1';
-      if (remoteState.host) adapter.value = remoteState.host;
+      const preferred = remoteState.host || remoteState.configured_address;
+      if (preferred) adapter.value = preferred;
     }
     if (adapter) adapter.disabled = !!remoteState.enabled;
   }

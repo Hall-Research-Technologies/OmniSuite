@@ -959,6 +959,27 @@
       computer exactly as before, and turning Remote Access off stops network
       access at once and signs out everyone who was using it.</p>
 
+      <h3 id="remote-restart">After a restart</h3>
+      <p>Once you have turned Remote Access on, it stays on. When OmniSuite or
+      the computer restarts, it comes back on the same network automatically, so
+      an unattended machine in a rack does not need somebody to visit it after
+      every power cut.</p>
+      <p>Two things do not come back on their own, deliberately:</p>
+      <ul>
+        <li><strong>Everyone has to sign in again.</strong> Sign-ins are not kept
+        across a restart. Accounts, passwords and permissions are.</li>
+        <li><strong>A network that is no longer there is not replaced.</strong>
+        If the adapter you chose is missing &mdash; a cable out, a network card
+        changed, a different dock &mdash; OmniSuite does not pick another one and
+        does not fall back to "all networks". It starts normally on this
+        computer, and Settings says that Remote Access is configured but the
+        chosen network is unavailable, so you can pick a replacement.</li>
+      </ul>
+      <div class="note">A brand-new installation always starts with Remote
+      Access <strong>off</strong>, and updating OmniSuite never turns it on.
+      Only an administrator turning it on makes it persist; turning it off makes
+      that persist too.</div>
+
       <div class="warn"><strong>Connections are not encrypted.</strong>
       OmniSuite uses plain HTTP. Anyone able to watch the network can read what
       is sent, including passwords typed at sign-in. Use Remote Access only on a
@@ -976,6 +997,29 @@
         Settings, cannot touch firmware, cannot see other rooms' equipment and
         cannot create accounts or change their own permissions.</td></tr>
       </table>
+
+      <h3 id="device-names">Giving devices friendly names</h3>
+      <p>Equipment arrives with names like <code>at-omni-111-04553</code>. That
+      is fine for an engineer and useless to a teacher, so OmniSuite lets you
+      give each device a name people will recognise &mdash; <em>Teacher PC</em>,
+      <em>Document Camera</em>, <em>Front Display</em>.</p>
+      <p><strong>Settings &gt; Remote Access &gt; Manage users</strong>, then the
+      <strong>Device names</strong> tab. Each row shows the device's own name,
+      model, address and whether it is a source or a display, so you can tell
+      similar units apart. Type a name and press <strong>Save names</strong>.
+      Clear the box to go back to the device's own name.</p>
+      <div class="note"><strong>The device is not renamed.</strong> This is
+      OmniSuite's own label, stored on this computer. Nothing is written to the
+      OmniStream unit, its hostname is unchanged, and other systems on your
+      network see no difference. The name follows the device by its hardware
+      identity, so it survives an IP address change and an OmniSuite restart.</div>
+      <p>Where you have set a name, Users see it instead of the hostname, and so
+      do the source and display lists when you assign permissions. Names are
+      labels only &mdash; renaming a device never changes who is allowed to use
+      it.</p>
+      <p>You may give two devices the same name if that genuinely reflects the
+      site, but OmniSuite will point it out: identical names are impossible to
+      tell apart on the permission screens.</p>
 
       <h3 id="remote-users">Managing accounts</h3>
       <p><strong>Settings &gt; Remote Access &gt; Manage users</strong>, or
@@ -1022,9 +1066,13 @@
       <p>Each display also says what is on it now. A display showing something
       the account is not allowed to use is reported as showing another source,
       without naming it.</p>
-      <p>They see only the equipment you assigned. Device addresses, firmware
-      versions, multicast settings and every other engineering detail are not
-      sent to them at all &mdash; not hidden, not sent.</p>
+      <p>Sources and displays appear under the friendly names you set, or
+      their own names where you have not set one.</p>
+      <p>They see only the equipment you assigned. Device addresses, hostnames,
+      firmware versions, multicast settings and every other engineering detail
+      are not sent to them at all &mdash; not hidden, not sent. The same applies
+      to the administrative pages: a User account cannot read the device
+      inventory even by asking for it directly.</p>
       <p>A device that is assigned but not answering is shown as
       <strong>Offline</strong> and cannot be selected, so it is clear the
       assignment is still there and the equipment is not responding.</p>
@@ -1053,6 +1101,14 @@
         restarted.</td></tr>
         <tr><td>A display is missing from a User's list</td><td>It is not
         assigned to that account, or discovery has not found it.</td></tr>
+        <tr><td>Settings says Remote Access is configured but the network is
+        unavailable</td><td>The adapter you chose is not present on this
+        computer right now. Check the cable and the network connection, or
+        choose a different network and turn Remote Access on again.</td></tr>
+        <tr><td>Everyone was signed out</td><td>OmniSuite restarted. Accounts and
+        permissions are unaffected; people simply sign in again.</td></tr>
+        <tr><td>A device still shows its hostname</td><td>No friendly name has
+        been set for it. Add one in Manage users &gt; Device names.</td></tr>
       </table>
     </section>
 

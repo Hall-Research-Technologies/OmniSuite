@@ -99,6 +99,44 @@ border-radius:6px;background:var(--panel-2);color:var(--fg);cursor:pointer;font-
 }
 
 
+/* The Remote Access warning.
+   It lived in ui/remote.css, which the administrative pages have no reason to
+   load -- so the one warning that has to be read before exposing equipment to
+   a network rendered as plain bold text with no callout at all. Settings is
+   injected into every page, so its styling belongs here with the rest of the
+   dialog's.
+   Advisory treatment rather than danger: turning remote access on is a
+   supported thing to do, and the warning is about the transport, not a fault.
+   Semantic tokens only, so it follows every preset and both palettes. */
+.cfg-warning {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 9px 11px;
+  border: 1px solid var(--state-warning, var(--accent));
+  border-left: 3px solid var(--state-warning, var(--accent));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--state-warning, var(--accent)) 14%, transparent);
+  color: var(--text, var(--fg));
+  font-size: 12px;
+  line-height: 1.45;
+}
+@supports not (background: color-mix(in srgb, white 50%, black)) {
+  .cfg-warning { background: var(--panel-2); }
+}
+.cfg-warning strong { color: var(--text, var(--fg)); }
+
+/* Remote access is configured but the network it names is not here. Neither
+   on nor off, and an installed system has to be able to tell. */
+.update-status.remote-unavailable {
+  color: var(--text, var(--fg));
+  background: color-mix(in srgb, var(--state-warning, var(--accent)) 22%, transparent);
+  border: 1px solid var(--state-warning, var(--accent));
+  padding: 5px 9px;
+  border-radius: 6px;
+  display: inline-block;
+}
+
 /* The About line in Settings. Quiet: it is a statement of fact, not a banner,
    and it appears once in the application rather than on every page. */
 .cfg-about { align-items: flex-start; }

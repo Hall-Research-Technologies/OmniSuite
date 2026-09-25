@@ -126,6 +126,39 @@ def is_loopback_address(address: str) -> bool:
         return False
 
 
+def is_wildcard_address(address: str) -> bool:
+    """Whether an address means "every interface on this machine".
+
+    Its own predicate because `is_loopback_address("0.0.0.0")` is False --
+    0.0.0.0 is the unspecified address, not a loopback one -- so a check
+    written to refuse loopback silently accepts the one value that exposes the
+    host on every network it is attached to. A test that removed the
+    availability check found that: the guard had been passing for the wrong
+    reason.
+    """
+    try:
+        return ipaddress.ip_address(str(address).strip()).is_unspecified
+    except ValueError:
+        return False
+
+
+def is_usable_remote_address(address: str) -> bool:
+    """Whether this is a concrete address an administrator may bind remotely.
+
+    A remote listener is always a deliberate choice of one network. Loopback is
+    already served, the wildcard is every network at once, and anything that is
+    not an address at all cannot be one of them.
+    """
+    text = str(address or "").strip()
+    if not text:
+        return False
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    return not (is_loopback_address(text) or is_wildcard_address(text))
+
+
 class RemoteListener:
     """The optional second listener, and its lifecycle.
 
@@ -174,12 +207,16 @@ class RemoteListener:
         host = str(host or "").strip()
         if not host:
             return {"ok": False, "error": "no address selected"}
-        if is_loopback_address(host):
-            # Loopback is already served, and binding it here would mean remote
-            # requests could arrive tagged as local.
-            return {"ok": False,
-                    "error": "loopback is always served locally and cannot be "
-                             "chosen as the remote address"}
+        if not is_usable_remote_address(host):
+            # Loopback is already served and binding it here would tag remote
+            # requests as local; the wildcard exposes every network at once,
+            # which is never something to arrive at by default.
+            reason = ("loopback is always served locally and cannot be chosen "
+                      "as the remote address" if is_loopback_address(host)
+                      else ("choose one network rather than all of them"
+                            if is_wildcard_address(host)
+                            else "that is not a usable address"))
+            return {"ok": False, "error": reason}
         try:
             port = int(port)
         except (TypeError, ValueError):
@@ -250,11 +287,9 @@ def usable_bind_addresses(adapters) -> list:
     usable = []
     for adapter in adapters or []:
         address = (adapter.get("address") or adapter.get("ip") or "").strip()
-        if not address or is_loopback_address(address):
-            continue
-        try:
-            ipaddress.ip_address(address)
-        except ValueError:
+        # One concrete network. Loopback is already served, and the wildcard is
+        # not a network an administrator can reason about.
+        if not is_usable_remote_address(address):
             continue
         usable.append({
             "address": address,
