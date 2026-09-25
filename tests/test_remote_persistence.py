@@ -191,14 +191,18 @@ class RemoteAccessPersistenceTests(unittest.TestCase):
             address at all.
             """
 
-            def start(self, address, port):
+            def start(self, address, port, ssl_context=None):
                 attempted.append((address, port))
                 if not omni_remote.is_usable_remote_address(address):
                     return {"ok": False, "error": "that is not a usable address"}
                 started["address"] = address
                 started["port"] = port
+                started["secure"] = ssl_context is not None
+                scheme = "https" if ssl_context is not None else "http"
                 return {"ok": True, "enabled": True, "host": address,
-                        "port": port, "url": f"http://{address}:{port}/"}
+                        "port": port, "scheme": scheme,
+                        "secure": ssl_context is not None,
+                        "url": f"{scheme}://{address}:{port}/"}
 
         if has_admin and not self.store.has_admin:
             self.store.create("admin", "admin-password-1", omni_users.ROLE_ADMIN)
@@ -226,6 +230,11 @@ class RemoteAccessPersistenceTests(unittest.TestCase):
     ADAPTER = [{"address": "10.48.55.10", "name": "Ethernet",
                 "cidr": "10.48.55.0/24"}]
 
+    #: The address tests below declare transport explicitly. They were written
+    #: before TLS existed and are about which address is bound, not about how
+    #: it is secured; leaving transport out would make every one of them a
+    #: certificate test by accident.
+
     def test_a_clean_install_does_not_restore_anything(self):
         result, started, _state, _tried = self._server(
             {"enabled": False, "address": "", "port": None}, self.ADAPTER)
@@ -234,7 +243,8 @@ class RemoteAccessPersistenceTests(unittest.TestCase):
 
     def test_an_explicit_disable_stays_disabled(self):
         result, started, _state, _tried = self._server(
-            {"enabled": False, "address": "10.48.55.10", "port": 8080},
+            {"enabled": False, "address": "10.48.55.10", "port": 8080,
+             "transport": "http"},
             self.ADAPTER)
         self.assertFalse(result["restored"],
                          "a disabled preference must not come back because an "
@@ -243,7 +253,8 @@ class RemoteAccessPersistenceTests(unittest.TestCase):
 
     def test_an_explicit_enable_restores_the_saved_address(self):
         result, started, _state, _tried = self._server(
-            {"enabled": True, "address": "10.48.55.10", "port": 8080},
+            {"enabled": True, "address": "10.48.55.10", "port": 8080,
+             "transport": "http"},
             self.ADAPTER)
         self.assertTrue(result["restored"])
         self.assertEqual(started["address"], "10.48.55.10")
@@ -252,7 +263,8 @@ class RemoteAccessPersistenceTests(unittest.TestCase):
     def test_a_missing_adapter_binds_nothing_at_all(self):
         """The case that matters: the saved network is not here today."""
         result, started, state, _tried = self._server(
-            {"enabled": True, "address": "10.48.55.10", "port": 8080},
+            {"enabled": True, "address": "10.48.55.10", "port": 8080,
+             "transport": "http"},
             [{"address": "192.168.9.4", "name": "Other"}])
         self.assertFalse(result["restored"])
         self.assertEqual(started, {}, "nothing may be bound")
@@ -260,7 +272,8 @@ class RemoteAccessPersistenceTests(unittest.TestCase):
 
     def test_a_missing_adapter_does_not_choose_another_one(self):
         _result, started, _state, _tried = self._server(
-            {"enabled": True, "address": "10.48.55.10", "port": 8080},
+            {"enabled": True, "address": "10.48.55.10", "port": 8080,
+             "transport": "http"},
             [{"address": "192.168.9.4", "name": "Other"},
              {"address": "172.16.0.9", "name": "Another"}])
         self.assertEqual(started, {},
@@ -272,14 +285,16 @@ class RemoteAccessPersistenceTests(unittest.TestCase):
         for saved_address in ("0.0.0.0", "", "::"):
             with self.subTest(address=saved_address):
                 _r, started, _s, tried = self._server(
-                    {"enabled": True, "address": saved_address, "port": 8080},
+                    {"enabled": True, "address": saved_address, "port": 8080,
+                     "transport": "http"},
                     self.ADAPTER)
                 self.assertEqual(started, {})
                 self.assertEqual(tried, [])
 
     def test_a_saved_loopback_address_is_refused(self):
         _r, started, _s, tried = self._server(
-            {"enabled": True, "address": "127.0.0.1", "port": 8080},
+            {"enabled": True, "address": "127.0.0.1", "port": 8080,
+             "transport": "http"},
             self.ADAPTER)
         self.assertEqual(started, {},
                          "loopback is already served; binding it remotely "
@@ -300,7 +315,8 @@ class RemoteAccessPersistenceTests(unittest.TestCase):
         for address in ("127.0.0.1", "0.0.0.0", ""):
             with self.subTest(address=address):
                 _r, started, _s, tried = self._server(
-                    {"enabled": True, "address": address, "port": 8080},
+                    {"enabled": True, "address": address, "port": 8080,
+                     "transport": "http"},
                     [{"address": "127.0.0.1", "name": "Loopback"},
                      {"address": "0.0.0.0", "name": "All interfaces"},
                      {"address": "", "name": "Nothing"}])
@@ -320,7 +336,8 @@ class RemoteAccessPersistenceTests(unittest.TestCase):
         answer the network and offer no way in.
         """
         _r, started, state, _tried = self._server(
-            {"enabled": True, "address": "10.48.55.10", "port": 8080},
+            {"enabled": True, "address": "10.48.55.10", "port": 8080,
+             "transport": "http"},
             self.ADAPTER, has_admin=False)
         self.assertEqual(started, {})
         self.assertIn("administrator", state["restore_error"])
@@ -341,7 +358,8 @@ class RemoteAccessPersistenceTests(unittest.TestCase):
 
     def test_a_failed_restore_is_not_a_startup_failure(self):
         result, _started, _state, _tried = self._server(
-            {"enabled": True, "address": "10.48.55.10", "port": 8080},
+            {"enabled": True, "address": "10.48.55.10", "port": 8080,
+             "transport": "http"},
             [], has_admin=True)
         self.assertIsInstance(result, dict,
                               "restore reports a result; it must not raise")

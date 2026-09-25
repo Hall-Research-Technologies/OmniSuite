@@ -116,6 +116,10 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     "/api/admin/aliases": (Access.ADMIN, None),
     # Saved Multiviews on one display, for approving them to an account.
     "/api/admin/multiviews": (Access.ADMIN, None),
+    # Certificate management. Administrative, and the handler never
+    # returns key material -- only what the certificate says about
+    # itself.
+    "/api/admin/certificate": (Access.ADMIN, None),
     "/api/admin/audit": (Access.ADMIN, None),
     "/api/remote_access": (Access.ADMIN, None),
 

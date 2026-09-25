@@ -26,10 +26,12 @@ except Exception:
 import omni_access
 import omni_aliases
 import omni_gate
+import omni_locks
 import omni_projection
 import omni_remote
 import omni_remote_api
 import omni_statecache
+import omni_tls
 import omni_users
 
 # Import matrix logic for unified scanning
@@ -16561,9 +16563,20 @@ SECURITY_AUDIT_FILE = DATA_DIR / "security_audit.json"
 
 ALIASES_FILE = DATA_DIR / "device_aliases.json"
 
+#: Where a certificate and key live if OmniSuite manages them. In the runtime
+#: data directory, never in the package: a clean installation contains no key
+#: material at all.
+REMOTE_CERT_FILE = DATA_DIR / omni_tls.CERT_FILE
+REMOTE_KEY_FILE = DATA_DIR / omni_tls.KEY_FILE
+
 _user_store = omni_users.UserStore(USERS_FILE, SECURITY_AUDIT_FILE)
 _device_aliases = omni_aliases.AliasStore(ALIASES_FILE)
 _remote_listener = omni_remote.RemoteListener(app)
+
+#: One short lock per piece of equipment, so two operators cannot interleave
+#: inside one device transaction. Narrow on purpose: Room 101 never waits on
+#: Room 102.
+_resource_locks = omni_locks.ResourceLocks()
 
 
 def remote_access_enabled() -> bool:
@@ -16591,19 +16604,29 @@ REMOTE_ACCESS_FILE = DATA_DIR / "remote_access.json"
 _remote_restore_error = ""
 
 
-def _remote_access_preference(enabled, address, port):
-    """Remember what the operator chose.
+def _remote_access_preference(enabled, address, port, transport=None,
+                              cert_path=None, key_path=None):
+    """Remember what the operator chose, including how to secure it.
 
     Its own file rather than config.json: that one carries the device
     credentials and maps field for field onto app.config, and a remote-access
     setting has no business in it.
+
+    Only paths are stored. Key material stays in its own file, and nothing here
+    ever holds it.
     """
     global _remote_restore_error
     _remote_restore_error = ""
+    previous = _remote_access_last_choice()
     omni_users._atomic_write_json(REMOTE_ACCESS_FILE, {
         "enabled": bool(enabled),
         "address": address or "",
         "port": int(port) if port else None,
+        "transport": transport or previous.get("transport") or "https",
+        "cert_path": cert_path if cert_path is not None
+                     else previous.get("cert_path", ""),
+        "key_path": key_path if key_path is not None
+                    else previous.get("key_path", ""),
     })
 
 
@@ -16614,7 +16637,8 @@ def _remote_access_last_choice():
     of them: never configured, explicitly disabled, and configured but the
     selected network is not here today.
     """
-    saved = {"enabled": False, "address": "", "port": None}
+    saved = {"enabled": False, "address": "", "port": None,
+             "transport": "https", "cert_path": "", "key_path": ""}
     try:
         if REMOTE_ACCESS_FILE.exists():
             stored = json.loads(REMOTE_ACCESS_FILE.read_text(encoding="utf-8"))
@@ -16623,6 +16647,13 @@ def _remote_access_last_choice():
                     "enabled": bool(stored.get("enabled")),
                     "address": str(stored.get("address") or ""),
                     "port": stored.get("port"),
+                    # An unreadable or absent transport reads as https: the
+                    # safe direction is to refuse to start rather than to serve
+                    # something in clear.
+                    "transport": ("http" if stored.get("transport") == "http"
+                                  else "https"),
+                    "cert_path": str(stored.get("cert_path") or ""),
+                    "key_path": str(stored.get("key_path") or ""),
                 })
     except Exception as exc:
         # A damaged preference file means "not configured", which is the safe
@@ -16631,6 +16662,34 @@ def _remote_access_last_choice():
                     type(exc).__name__)
     saved["restore_error"] = _remote_restore_error
     return saved
+
+
+def _remote_tls_context(saved):
+    """The TLS context for a saved configuration, or a reason it cannot start.
+
+    Returns (context, error). A configuration asking for HTTPS that cannot
+    produce a context yields (None, reason) and the caller must not start --
+    never a silent downgrade to plaintext, because an administrator who
+    configured HTTPS and got HTTP would have no way of knowing.
+    """
+    if (saved or {}).get("transport") == "http":
+        return None, ""
+    cert = (saved or {}).get("cert_path") or str(REMOTE_CERT_FILE)
+    key = (saved or {}).get("key_path") or str(REMOTE_KEY_FILE)
+    try:
+        return omni_tls.load_context(cert, key), ""
+    except omni_tls.TlsError as exc:
+        return None, str(exc)
+
+
+def remote_certificate_state():
+    """What Settings shows about the certificate. Never key material."""
+    saved = _remote_access_last_choice()
+    cert = saved.get("cert_path") or str(REMOTE_CERT_FILE)
+    described = omni_tls.describe(cert)
+    described["path_configured"] = bool(saved.get("cert_path"))
+    described["can_generate"] = omni_tls.generation_available()
+    return described
 
 
 def restore_remote_access():
@@ -16690,7 +16749,19 @@ def restore_remote_access():
         return {"restored": False, "reason": "address unavailable"}
 
     port = saved.get("port") or int(os.getenv("OMNI_PORT", PORT) or PORT)
-    result = _remote_listener.start(address, port)
+
+    context, tls_error = _remote_tls_context(saved)
+    if tls_error:
+        # Configured for HTTPS and unable to produce a context. The listener
+        # stays down and the local application carries on; falling back to
+        # plaintext here would be the worst possible outcome.
+        _remote_restore_error = (
+            f"Remote access is configured for HTTPS on {address}, but the "
+            f"certificate could not be used: {tls_error}")
+        log.warning("[REMOTE] not restoring: %s", tls_error)
+        return {"restored": False, "reason": "tls unavailable"}
+
+    result = _remote_listener.start(address, port, ssl_context=context)
     if not result.get("ok"):
         _remote_restore_error = (
             f"Remote access is configured for {address}, but the listener "
@@ -16698,10 +16769,13 @@ def restore_remote_access():
         log.warning("[REMOTE] restore failed: %s", result.get("error"))
         return {"restored": False, "reason": result.get("error")}
 
-    log.info("[REMOTE] restored on %s:%s", address, port)
+    log.info("[REMOTE] restored on %s:%s (%s)", address, port,
+             saved.get("transport"))
     _user_store.audit("remote_access.restored", actor=None,
-                      detail={"address": address, "port": int(port)})
-    return {"restored": True, "address": address, "port": int(port)}
+                      detail={"address": address, "port": int(port),
+                              "transport": saved.get("transport")})
+    return {"restored": True, "address": address, "port": int(port),
+            "transport": saved.get("transport")}
 
 
 #: Observation for the restricted surfaces. Reading USB state queries every
@@ -16774,6 +16848,11 @@ omni_remote_api.register(
     multiview_show_view=api_multiview_show,
     multiview_switch_view=api_multiview_switch,
     forget_observation=_forget_user_observation,
+    locks=_resource_locks,
+    tls=omni_tls,
+    cert_paths=(REMOTE_CERT_FILE, REMOTE_KEY_FILE),
+    tls_context_for=_remote_tls_context,
+    certificate_state=remote_certificate_state,
 )
 
 

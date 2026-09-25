@@ -11,10 +11,12 @@ reach the network without somebody having decided who may call it.
 from __future__ import annotations
 
 import logging
+import pathlib
 
 from flask import g, jsonify, request
 
 import omni_access
+import omni_locks
 import omni_projection
 import omni_remote
 import omni_users
@@ -46,7 +48,8 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
              route_view, remote_enabled, set_remote_state, remote_config,
              usb_state, usb_pair_view, usb_unpair_view,
              multiview_state, multiview_show_view, multiview_switch_view,
-             forget_observation):
+             forget_observation, locks, tls, cert_paths, tls_context_for,
+             certificate_state):
     """Attach the remote-access API.
 
     Everything the module needs is passed in rather than imported from the
@@ -146,6 +149,10 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         # neither "on" nor "off".
         configured = bool(saved.get("enabled"))
         available = any(a["address"] == saved.get("address") for a in adapters)
+        # What the certificate is, never what the key is.
+        certificate = certificate_state()
+        transport = saved.get("transport") or "https"
+        _context, tls_error = tls_context_for(saved)
         return jsonify({
             "ok": True,
             **state,
@@ -156,9 +163,14 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
             "restore_error": saved.get("restore_error") or "",
             "has_admin": store.has_admin,
             "sessions": store.active_session_count(),
-            # Said plainly so the Settings page cannot imply otherwise.
-            "transport": "http",
-            "encrypted": False,
+            # The transport that is configured, whether it can start, and what
+            # is actually serving. All three, because they can differ: a
+            # configuration asking for HTTPS whose certificate is unusable is
+            # neither "secure" nor "insecure", it is "not running".
+            "transport": transport,
+            "encrypted": bool(state.get("secure")),
+            "tls_error": tls_error,
+            "certificate": certificate,
         })
 
     @app.route("/api/remote_access", methods=["POST"])
@@ -180,13 +192,82 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                          "remote access"}), 409
         address = str(data.get("address") or "").strip()
         port = data.get("port") or request.environ.get("SERVER_PORT") or 8080
-        result = listener.start(address, port)
+        transport = "http" if data.get("transport") == "http" else "https"
+
+        # Turning on plaintext remote access is possible, but only when the
+        # administrator says so in as many words. It is not a default and it is
+        # not reachable by omitting a field.
+        if transport == "http" and not data.get("accept_insecure"):
+            return jsonify({
+                "ok": False,
+                "error": "Remote access without HTTPS sends sign-in details in "
+                         "clear. Confirm you intend that, or configure a "
+                         "certificate.",
+                "needs_confirmation": True}), 400
+
+        proposed = {"transport": transport,
+                    "cert_path": str(data.get("cert_path") or ""),
+                    "key_path": str(data.get("key_path") or "")}
+        context, tls_error = tls_context_for(proposed)
+        if tls_error:
+            # Never start in the clear because TLS could not be arranged.
+            return jsonify({"ok": False, "error": tls_error,
+                            "certificate": certificate_state()}), 400
+
+        result = listener.start(address, port, ssl_context=context)
         if not result.get("ok"):
             return jsonify(result), 400
         store.audit("remote_access.enabled", actor=_principal(),
-                    detail={"address": address, "port": int(port)})
-        set_remote_state(True, address, int(port))
-        return jsonify(result)
+                    detail={"address": address, "port": int(port),
+                            "transport": transport})
+        set_remote_state(True, address, int(port), transport,
+                         proposed["cert_path"], proposed["key_path"])
+        return jsonify({**result, "certificate": certificate_state()})
+
+    @app.route("/api/admin/certificate", methods=["POST"])
+    def api_admin_certificate():
+        """Create a self-signed certificate, or point at a supplied pair.
+
+        Nothing about a private key comes back out of here. The response
+        describes the certificate -- subject, issuer, validity, fingerprint --
+        which is what an administrator needs to confirm the thing their browser
+        warned about is the one OmniSuite is serving.
+        """
+        data = request.get_json(silent=True) or {}
+        action = str(data.get("action") or "").strip()
+
+        if action == "generate":
+            address = str(data.get("address") or "").strip()
+            cert_path, key_path = cert_paths
+            try:
+                described = tls.generate_self_signed(address, cert_path, key_path)
+            except tls.TlsError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
+            store.audit("certificate.generated", actor=_principal(),
+                        detail={"address": address,
+                                "fingerprint": described.get("fingerprint")})
+            # Stored as the configured pair so a restart uses it.
+            saved = remote_config()
+            set_remote_state(saved.get("enabled"), saved.get("address"),
+                             saved.get("port"), "https", "", "")
+            return jsonify({"ok": True, "certificate": certificate_state()})
+
+        if action == "use":
+            cert_path = str(data.get("cert_path") or "").strip()
+            key_path = str(data.get("key_path") or "").strip()
+            try:
+                tls.load_context(cert_path, key_path)
+            except tls.TlsError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
+            tls.restrict_existing(key_path)
+            saved = remote_config()
+            set_remote_state(saved.get("enabled"), saved.get("address"),
+                             saved.get("port"), "https", cert_path, key_path)
+            store.audit("certificate.configured", actor=_principal(),
+                        detail={"certificate": pathlib.Path(cert_path).name})
+            return jsonify({"ok": True, "certificate": certificate_state()})
+
+        return jsonify({"ok": False, "error": "unknown action"}), 400
 
     # -------------------------------------------------- admin: accounts
     @app.route("/api/admin/users", methods=["GET"])
@@ -367,7 +448,14 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
             return jsonify({"ok": False,
                             "error": "source and destination required"}), 400
 
-        account = _principal()
+        # Re-read the account rather than trusting the one the gate resolved.
+        # An administrator may have changed a permission, disabled the account
+        # or reset its password in the moments since, and authorisation belongs
+        # at the operation boundary rather than at the start of the request.
+        account = _current_account()
+        if account is _REVOKED:
+            return jsonify({"ok": False,
+                            "error": "your sign-in is no longer valid"}), 401
         if account is not None and not account.is_admin:
             # The gate checked these too. Checking again here is not
             # redundancy for its own sake: this endpoint translates identities
@@ -394,11 +482,39 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         store.audit("route", actor=account, detail={
             "source": source_id, "destination": destination_id, "mode": mode})
 
-        # The verified path, called rather than reimplemented.
-        with app.test_request_context(
-                "/api/route", method="POST",
-                json={"encoder": encoder_ip, "decoder": decoder_ip, "mode": mode}):
-            return route_view()
+        # The verified path, called rather than reimplemented, with the
+        # destination held so two operators cannot interleave inside one
+        # transaction. Last successful operation wins; the loser waits for the
+        # winner to finish rather than corrupting it.
+        try:
+            with locks.hold(locks.decoder(destination_id)):
+                with app.test_request_context(
+                        "/api/route", method="POST",
+                        json={"encoder": encoder_ip, "decoder": decoder_ip,
+                              "mode": mode}):
+                    return route_view()
+        except omni_locks.ResourceBusy:
+            return jsonify({"ok": False,
+                            "error": "That display is busy with another "
+                                     "change. Try again in a moment."}), 409
+
+    def _current_account():
+        """The account as it stands right now, not as the gate found it.
+
+        Authorisation belongs at the operation boundary. Between the gate
+        admitting a request and the handler acting on it, an administrator may
+        have removed a permission, disabled the account or changed its
+        password, and a long-running transaction must not proceed on what was
+        true when it started.
+
+        Returns the live account, None for the local operator, or _REVOKED if
+        the session no longer resolves.
+        """
+        if getattr(g, "is_local", False):
+            return None
+        token = request.cookies.get(SESSION_COOKIE)
+        account, _session = store.resolve_session(token)
+        return account if account is not None else _REVOKED
 
     def _denied(account, reason, rule="/api/user/route"):
         store.audit("access.denied", actor=account,
@@ -463,7 +579,10 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
             return jsonify({"ok": False,
                             "error": "computer and peripherals required"}), 400
 
-        account = _principal()
+        account = _current_account()
+        if account is _REVOKED:
+            return jsonify({"ok": False,
+                            "error": "your sign-in is no longer valid"}), 401
         if account is not None and not account.is_admin:
             if not account.permissions.has_feature(omni_access.FEATURE_USB):
                 return _denied(account, "missing_feature:usb", "/api/user/usb_route")
@@ -483,13 +602,21 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                             "peripherals_label": _label(peripherals)})
         view = usb_unpair_view if detach else usb_pair_view
         try:
-            with app.test_request_context(
-                    "/api/usb_route", method="POST",
-                    json={"lex_mac": computer, "rex_mac": peripherals}):
-                return view()
-        finally:
-            # This just changed what a USB read would report.
-            forget_observation("usb")
+            # Both endpoints, sorted by hold(), so an attach and a detach
+            # racing over the same pair cannot each hold one of them.
+            with locks.hold(*locks.usb_pair(computer, peripherals)):
+                try:
+                    with app.test_request_context(
+                            "/api/usb_route", method="POST",
+                            json={"lex_mac": computer, "rex_mac": peripherals}):
+                        return view()
+                finally:
+                    # This just changed what a USB read would report.
+                    forget_observation("usb")
+        except omni_locks.ResourceBusy:
+            return jsonify({"ok": False,
+                            "error": "That equipment is busy with another "
+                                     "change. Try again in a moment."}), 409
 
     def _usb_permitted_endpoints(account):
         """The USB endpoint identities this account may act on.
@@ -541,7 +668,10 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         data = request.get_json(silent=True) or {}
         identity = omni_users._normalise_identity(data.get("display"))
         name = str(data.get("preset") or "").strip()
-        account = _principal()
+        account = _current_account()
+        if account is _REVOKED:
+            return jsonify({"ok": False,
+                            "error": "your sign-in is no longer valid"}), 401
 
         refusal = _multiview_gate(account, identity, name,
                                   "/api/user/multiview_show")
@@ -557,12 +687,18 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                     detail={"display": identity, "display_label": _label(identity),
                             "preset": name})
         try:
-            with app.test_request_context("/api/multiview/show", method="POST",
-                                          json={"decoder": address,
-                                                "name": name}):
-                return multiview_show_view()
-        finally:
-            forget_observation("multiview:" + str(address))
+            with locks.hold(locks.decoder(identity)):
+                try:
+                    with app.test_request_context(
+                            "/api/multiview/show", method="POST",
+                            json={"decoder": address, "name": name}):
+                        return multiview_show_view()
+                finally:
+                    forget_observation("multiview:" + str(address))
+        except omni_locks.ResourceBusy:
+            return jsonify({"ok": False,
+                            "error": "That display is busy with another "
+                                     "change. Try again in a moment."}), 409
 
     @app.route("/api/user/multiview_switch", methods=["POST"])
     def api_user_multiview_switch():
@@ -572,7 +708,10 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         name = str(data.get("preset") or "").strip()
         cell = str(data.get("window") or "").strip()
         source = omni_users._normalise_identity(data.get("source"))
-        account = _principal()
+        account = _current_account()
+        if account is _REVOKED:
+            return jsonify({"ok": False,
+                            "error": "your sign-in is no longer valid"}), 401
 
         refusal = _multiview_gate(account, identity, name,
                                   "/api/user/multiview_switch")
@@ -601,13 +740,19 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                             "preset": name, "window": cell,
                             "source": source, "source_label": _label(source)})
         try:
-            with app.test_request_context(
-                    "/api/multiview/switch", method="POST",
-                    json={"decoder": display_address, "name": name,
-                          "cell": cell, "source": source_address}):
-                return multiview_switch_view()
-        finally:
-            forget_observation("multiview:" + str(display_address))
+            with locks.hold(locks.decoder(identity)):
+                try:
+                    with app.test_request_context(
+                            "/api/multiview/switch", method="POST",
+                            json={"decoder": display_address, "name": name,
+                                  "cell": cell, "source": source_address}):
+                        return multiview_switch_view()
+                finally:
+                    forget_observation("multiview:" + str(display_address))
+        except omni_locks.ResourceBusy:
+            return jsonify({"ok": False,
+                            "error": "That display is busy with another "
+                                     "change. Try again in a moment."}), 409
 
     def _multiview_gate(account, identity, name, rule):
         """Capability, display and preset approval. None means proceed.
@@ -646,6 +791,12 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         return None
 
     return app
+
+#: Returned by _current_account when a session stopped resolving mid-request.
+#: A sentinel rather than None, because None is the local operator and the two
+#: must never be confused.
+_REVOKED = object()
+
 
 class _LocalAdmin:
     """The local operator, as the projection expects an account to look.

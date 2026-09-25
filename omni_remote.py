@@ -174,6 +174,7 @@ class RemoteListener:
         self._thread = None
         self._lock = threading.RLock()
         self._bound = None                      # (host, port) while running
+        self._scheme = "http"
 
     # -- state ---------------------------------------------------------
     @property
@@ -187,22 +188,37 @@ class RemoteListener:
             return self._bound
 
     def describe(self) -> dict:
-        """What Settings shows: enabled, where, and the URL that reaches it."""
+        """What Settings shows: enabled, where, and the URL that reaches it.
+
+        The advertised URL carries the scheme actually in use. An address given
+        as http:// when the listener is serving TLS would simply fail to
+        connect, and the other way round would be worse.
+        """
         with self._lock:
             if not self._server:
-                return {"enabled": False, "host": None, "port": None, "url": None}
+                return {"enabled": False, "host": None, "port": None,
+                        "url": None, "scheme": None, "secure": False}
             host, port = self._bound
             return {"enabled": True, "host": host, "port": port,
-                    "url": f"http://{host}:{port}/"}
+                    "scheme": self._scheme,
+                    "secure": self._scheme == "https",
+                    "url": f"{self._scheme}://{host}:{port}/"}
 
     # -- lifecycle -----------------------------------------------------
-    def start(self, host: str, port: int) -> dict:
-        """Begin answering on `host:port`.
+    def start(self, host: str, port: int, ssl_context=None) -> dict:
+        """Begin answering on `host:port`, over TLS when a context is given.
 
         Returns a result dict rather than raising for an ordinary operator
         mistake -- an address that is not on this machine, or a port already
         taken -- because those are answers the Settings page has to display, not
         faults.
+
+        There is exactly one remote listener, and it is either TLS or it is
+        not. No plaintext listener is opened alongside an HTTPS one, not even
+        to redirect: a redirect surface would accept a request -- including,
+        eventually, somebody typing a password into a page it served -- before
+        it could be protected. An operator who reaches the wrong scheme gets a
+        connection failure, which is unambiguous.
         """
         host = str(host or "").strip()
         if not host:
@@ -230,7 +246,7 @@ class RemoteListener:
                 # The remote listener serves the SAME application object, with
                 # its own tag. One application, one set of state, two doors.
                 server = make_server(host, port, _ListenerTag(self._app, REMOTE),
-                                     threaded=True)
+                                     threaded=True, ssl_context=ssl_context)
             except OSError as exc:
                 log.warning("[REMOTE] cannot bind %s:%s: %s", host, port,
                             type(exc).__name__)
@@ -245,7 +261,8 @@ class RemoteListener:
                 name="omni-remote-listener", daemon=True)
             thread.start()
             self._server, self._thread, self._bound = server, thread, (host, port)
-            log.info("[REMOTE] listening on %s:%s", host, port)
+            self._scheme = "https" if ssl_context is not None else "http"
+            log.info("[REMOTE] listening on %s://%s:%s", self._scheme, host, port)
             return {"ok": True, **self.describe()}
 
     def stop(self) -> dict:
@@ -253,6 +270,7 @@ class RemoteListener:
         with self._lock:
             server, thread = self._server, self._thread
             self._server = self._thread = self._bound = None
+            self._scheme = "http"
         if server is None:
             return {"ok": True, "enabled": False}
         try:

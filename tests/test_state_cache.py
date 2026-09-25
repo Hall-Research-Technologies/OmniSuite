@@ -178,3 +178,230 @@ class WiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StressTests(unittest.TestCase):
+    """The cache is not correct merely because the simple measurement passes.
+
+    Each of these is a named failure mode from the hardening brief. The ones
+    that matter most are the poisoning cases: a cache that keeps serving a
+    failed read, or that strands a key after an exception, disables a surface
+    for the life of the process rather than for one request.
+    """
+
+    def setUp(self):
+        self.calls = []
+        self.lock = threading.Lock()
+
+    def counting(self, value="v", delay=0.0, fail=False):
+        def produce():
+            with self.lock:
+                self.calls.append(time.time())
+            if delay:
+                time.sleep(delay)
+            if fail:
+                raise RuntimeError("the device did not answer")
+            return value
+        return produce
+
+    def test_many_simultaneous_cold_requests_cost_one_read(self):
+        """Fifty browsers opening at once on a cold cache."""
+        cache = StateCache(ttl=5)
+        produce = self.counting(delay=0.2)
+        results = []
+        barrier = threading.Barrier(50, timeout=20)
+
+        def worker():
+            barrier.wait()
+            results.append(cache.get("k", produce))
+
+        threads = [threading.Thread(target=worker) for _ in range(50)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        self.assertEqual(len(results), 50)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_readers_crossing_the_expiry_boundary_do_not_stampede(self):
+        """The moment an answer expires is when everyone arrives at once."""
+        cache = StateCache(ttl=0.15)
+        produce = self.counting(delay=0.05)
+        cache.get("k", produce)
+        time.sleep(0.2)                     # everything below is now stale
+
+        barrier = threading.Barrier(20, timeout=20)
+
+        def worker():
+            barrier.wait()
+            cache.get("k", produce)
+
+        threads = [threading.Thread(target=worker) for _ in range(20)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        # One for the warm-up, and one for the crowd.
+        self.assertLessEqual(len(self.calls), 2,
+                             "expiry let a stampede through")
+
+    def test_a_writer_invalidating_during_a_read_is_not_lost(self):
+        """The race that would serve a picture from before the write.
+
+        A reader in flight publishes its answer after the writer invalidated.
+        The next reader must not be served that answer as though it were
+        current, because it describes the device before the change.
+        """
+        cache = StateCache(ttl=30)
+        produced = threading.Event()
+        proceed = threading.Event()
+
+        def slow():
+            produced.set()
+            proceed.wait(timeout=10)
+            return "before"
+
+        reader = threading.Thread(target=lambda: cache.get("k", slow))
+        reader.start()
+        produced.wait(timeout=5)
+        cache.invalidate("k")               # a writer changed the device
+        proceed.set()
+        reader.join(timeout=10)
+
+        # Whatever the in-flight reader published, a fresh read must happen.
+        value = cache.get("k", lambda: "after")
+        self.assertEqual(value, "after",
+                         "an answer from before the write was served after it")
+
+    def test_a_failed_read_is_not_cached(self):
+        cache = StateCache(ttl=30)
+        with self.assertRaises(RuntimeError):
+            cache.get("k", self.counting(fail=True))
+        self.assertEqual(cache.get("k", self.counting("good")), "good")
+
+    def test_repeated_failures_never_poison_the_key(self):
+        cache = StateCache(ttl=30)
+        for _ in range(20):
+            with self.assertRaises(RuntimeError):
+                cache.get("k", self.counting(fail=True))
+        self.assertEqual(cache.get("k", self.counting("good")), "good",
+                         "the key was permanently poisoned")
+
+    def test_a_slow_read_does_not_block_a_different_key(self):
+        cache = StateCache(ttl=5)
+        slow_done = threading.Event()
+
+        def slow():
+            time.sleep(0.6)
+            slow_done.set()
+            return "slow"
+
+        threading.Thread(target=lambda: cache.get("slow", slow)).start()
+        time.sleep(0.05)
+        started = time.time()
+        cache.get("fast", lambda: "fast")
+        self.assertLess(time.time() - started, 0.4,
+                        "one slow device blocked an unrelated one")
+        slow_done.wait(timeout=10)
+
+    def test_concurrent_writers_invalidating_do_not_deadlock(self):
+        cache = StateCache(ttl=1)
+        stop = threading.Event()
+
+        def reader():
+            while not stop.is_set():
+                cache.get("k", lambda: "v")
+
+        def writer():
+            while not stop.is_set():
+                cache.invalidate("k")
+
+        threads = ([threading.Thread(target=reader) for _ in range(6)]
+                   + [threading.Thread(target=writer) for _ in range(4)])
+        for thread in threads:
+            thread.start()
+        time.sleep(1.0)
+        stop.set()
+        for thread in threads:
+            thread.join(timeout=10)
+            self.assertFalse(thread.is_alive(), "a thread did not finish")
+
+    def test_a_user_and_an_admin_watching_share_one_read(self):
+        """Observation is keyed by what is observed, not by who is asking."""
+        cache = StateCache(ttl=5)
+        produce = self.counting()
+        cache.get("multiview:192.0.2.1", produce)   # the user's browser
+        cache.get("multiview:192.0.2.1", produce)   # the admin's page
+        self.assertEqual(len(self.calls), 1)
+
+    def test_invalidating_everything_is_safe_while_readers_are_active(self):
+        """What a shutdown or a broad change does."""
+        cache = StateCache(ttl=5)
+        stop = threading.Event()
+        errors = []
+
+        def reader():
+            try:
+                while not stop.is_set():
+                    cache.get("k", lambda: "v")
+            except Exception as exc:       # pragma: no cover - failure path
+                errors.append(exc)
+
+        threads = [threading.Thread(target=reader) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for _ in range(50):
+            cache.invalidate()
+            time.sleep(0.005)
+        stop.set()
+        for thread in threads:
+            thread.join(timeout=10)
+        self.assertEqual(errors, [])
+
+    def test_a_wholesale_invalidation_also_discards_an_in_flight_read(self):
+        """The gap a per-key counter alone left open.
+
+        A key that had never been invalidated individually had no counter
+        entry, so dropping everything at once did not move it and the stale
+        answer was stored. Confirmed by experiment before the epoch was added.
+        """
+        cache = StateCache(ttl=30)
+        produced = threading.Event()
+        proceed = threading.Event()
+
+        def slow():
+            produced.set()
+            proceed.wait(timeout=10)
+            return "before"
+
+        reader = threading.Thread(target=lambda: cache.get("never_dropped", slow))
+        reader.start()
+        produced.wait(timeout=5)
+        cache.invalidate()                  # everything, not this key by name
+        proceed.set()
+        reader.join(timeout=10)
+
+        self.assertEqual(cache.get("never_dropped", lambda: "after"), "after")
+
+    def test_a_discarded_answer_is_still_returned_to_whoever_asked(self):
+        """It is that caller's best available answer; it is just not shared."""
+        cache = StateCache(ttl=30)
+        produced = threading.Event()
+        proceed = threading.Event()
+        result = []
+
+        def slow():
+            produced.set()
+            proceed.wait(timeout=10)
+            return "mine"
+
+        reader = threading.Thread(
+            target=lambda: result.append(cache.get("k", slow)))
+        reader.start()
+        produced.wait(timeout=5)
+        cache.invalidate("k")
+        proceed.set()
+        reader.join(timeout=10)
+
+        self.assertEqual(result, ["mine"])
+        self.assertGreaterEqual(cache.stats()["discarded"], 1)

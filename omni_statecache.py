@@ -43,7 +43,17 @@ class StateCache:
         self._lock = threading.Lock()
         self._entries: dict = {}        # key -> (expires_at, value)
         self._inflight: dict = {}       # key -> threading.Event
-        self._stats = {"served": 0, "computed": 0, "joined": 0}
+        #: Bumped whenever a key is invalidated. A read that began before the
+        #: bump is describing a world that no longer exists, so its answer is
+        #: returned to the caller who asked for it and never stored.
+        #:
+        #: Two counters, not one. A per-key counter alone missed the case where
+        #: everything is dropped at once while a read is in flight for a key
+        #: that had never been invalidated individually: it had no entry, so
+        #: its generation was unchanged and the stale answer was stored.
+        self._generation: dict = {}
+        self._epoch = 0
+        self._stats = {"served": 0, "computed": 0, "joined": 0, "discarded": 0}
 
     def get(self, key, producer):
         """Return a fresh-enough value for `key`, computing it at most once.
@@ -58,6 +68,10 @@ class StateCache:
             if entry and entry[0] > now:
                 self._stats["served"] += 1
                 return entry[1]
+            # Remembered before the read starts, and checked before its answer
+            # is stored. Both halves: the key's own counter and the epoch that
+            # a wholesale invalidation moves.
+            generation = (self._epoch, self._generation.get(key, 0))
             waiting = self._inflight.get(key)
             if waiting is None:
                 waiting = threading.Event()
@@ -88,9 +102,16 @@ class StateCache:
             raise
 
         with self._lock:
-            self._entries[key] = (time.time() + self._ttl, value)
+            if (self._epoch, self._generation.get(key, 0)) == generation:
+                self._entries[key] = (time.time() + self._ttl, value)
+                self._stats["computed"] += 1
+            else:
+                # Something changed the device while this read was in flight.
+                # The value is still returned to whoever asked -- it is the
+                # best answer that caller has -- but it must not be handed to
+                # anybody else as though it were current.
+                self._stats["discarded"] += 1
             self._inflight.pop(key, None)
-            self._stats["computed"] += 1
         waiting.set()
         return value
 
@@ -103,8 +124,12 @@ class StateCache:
         with self._lock:
             if key is None:
                 self._entries.clear()
+                # One counter covers every key, including ones this cache has
+                # never seen before.
+                self._epoch += 1
             else:
                 self._entries.pop(key, None)
+                self._generation[key] = self._generation.get(key, 0) + 1
 
     def stats(self) -> dict:
         with self._lock:

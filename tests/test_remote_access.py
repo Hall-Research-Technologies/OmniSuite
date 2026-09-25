@@ -543,7 +543,14 @@ class ListenerTagTests(unittest.TestCase):
         listener = self.omni_remote.RemoteListener(object())
         self.assertFalse(listener.running)
         self.assertEqual(listener.describe(),
-                         {"enabled": False, "host": None, "port": None, "url": None})
+                         {"enabled": False, "host": None, "port": None,
+                          "url": None, "scheme": None, "secure": False})
+
+    def test_a_listener_that_is_not_running_never_claims_to_be_secure(self):
+        """`secure` says what the transport is, so off must not read as secure."""
+        listener = self.omni_remote.RemoteListener(object())
+        self.assertFalse(listener.describe()["secure"])
+        self.assertIsNone(listener.describe()["scheme"])
 
     def test_stopping_a_listener_that_never_ran_is_not_an_error(self):
         listener = self.omni_remote.RemoteListener(object())
