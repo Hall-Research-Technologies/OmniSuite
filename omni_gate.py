@@ -110,7 +110,9 @@ def _identities_in(payload, keys) -> list:
 
 def evaluate(rule, method, environ, payload, store) -> Decision:
     """Decide one request. Pure: no Flask globals, so it is directly testable."""
-    access, feature = omni_access.classify(rule)
+    # With the method: one rule can classify its read and its write
+    # differently, and the gate is the only place that knows which this is.
+    access, feature = omni_access.classify(rule, method)
 
     # 1. The local operator. A fact about which socket accepted the connection,
     #    not an inference from an address a request claims to come from.

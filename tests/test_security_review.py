@@ -62,11 +62,14 @@ class FinalInventoryTests(unittest.TestCase):
                          "the anonymous surface changed")
         self.assertEqual(counts[Access.USER], 6,
                          "what a restricted account may call changed")
-        self.assertEqual(counts[Access.AUTHENTICATED], 9,
+        # Three moved to ADMIN in the release-candidate audit: the update
+        # alert, its acknowledgement and the appearance reset all write or
+        # read state belonging to the installation rather than to an account.
+        self.assertEqual(counts[Access.AUTHENTICATED], 6,
                          "what any signed-in principal may call changed")
         self.assertEqual(counts[Access.LOCAL_ONLY], 11,
                          "the local-host-only surface changed")
-        self.assertEqual(counts[Access.ADMIN], 103,
+        self.assertEqual(counts[Access.ADMIN], 106,
                          "the administrative surface changed")
         self.assertEqual(sum(counts.values()), len(registered_rules()))
         self.assertEqual(sum(counts.values()), 135)
@@ -332,7 +335,7 @@ class DefaultDenyTests(unittest.TestCase):
         session = store._sessions[result["token"]]
 
         original = omni_access.classify
-        omni_access.classify = lambda rule: (Unknown(), None)
+        omni_access.classify = lambda rule, method=None: (Unknown(), None)
         try:
             decision = omni_gate.evaluate(
                 "/api/anything", "GET",
@@ -354,10 +357,13 @@ class ActivityLabelTests(unittest.TestCase):
     have been written from the same literals that missed these two.
     """
 
-    #: Actions api_admin_user_action turns into "user.<action>". These never
-    #: appear as string literals anywhere, which is how they were missed.
-    CONCATENATED = ("set_enabled", "set_role", "set_password",
-                    "set_permissions", "delete")
+    #: api_admin_user_action used to turn its `action` into "user.<action>",
+    #: producing ids that appeared nowhere as a literal -- which is how two of
+    #: them came to have no label. That layer no longer records anything: the
+    #: store emits one event per action, saying what changed rather than which
+    #: verb was asked for. Nothing is concatenated any more, and this fence
+    #: exists to notice if something starts again.
+    CONCATENATED = ()
 
     @staticmethod
     def _emitted() -> set:
@@ -398,6 +404,16 @@ class ActivityLabelTests(unittest.TestCase):
         self.assertEqual(missing, [],
                          "these reach the Activity view as internal names")
 
+    def test_no_event_name_is_built_by_concatenation(self):
+        """That is how two of them came to have no label.
+
+        A name assembled at the call site appears nowhere as a literal, so
+        nobody writing the map from the literals can see it.
+        """
+        source = (Path(ROOT) / "omni_remote_api.py").read_text(encoding="utf-8")
+        self.assertNotIn('audit("user." +', source)
+        self.assertNotIn("audit('user.' +", source)
+
     def test_an_unmapped_event_is_still_rendered_as_english(self):
         """The fallback, for the event somebody adds after this test was written."""
         source = (Path(ROOT) / "ui" / "admin" / "users.js").read_text(
@@ -418,6 +434,88 @@ class ActivityLabelTests(unittest.TestCase):
                 self.assertNotIn(".", label)
                 self.assertNotIn("_", label)
                 self.assertNotEqual(label, event)
+
+
+class InstallationSettingsAreAdministrativeTests(unittest.TestCase):
+    """Global files, one per installation, not one per account.
+
+    `ui_preferences.json` and `notice_ack.json` belong to the machine. They
+    were classified AUTHENTICATED when remote access was built, which was
+    right while the only authenticated caller was the local operator, and
+    became wrong the moment restricted Users existed: a signed-in classroom
+    account could restyle the administrator's interface and dismiss their
+    update alert.
+
+    The read of the theme stays open, because the User Guide is offered at
+    /help and reads it to paint itself.
+    """
+
+    WRITES = ("/api/ui_preferences/reset", "/api/notices/ack")
+    READS = ("/api/notices",)
+
+    def test_writing_an_installation_setting_is_administrative(self):
+        for rule in self.WRITES:
+            with self.subTest(rule=rule):
+                access, _feature = omni_access.classify(rule, "POST")
+                self.assertIs(access, omni_access.Access.ADMIN)
+
+    def test_the_update_alert_is_administrative(self):
+        for rule in self.READS:
+            with self.subTest(rule=rule):
+                access, _feature = omni_access.classify(rule, "GET")
+                self.assertIs(access, omni_access.Access.ADMIN)
+
+    def test_the_theme_may_be_read_by_anyone_signed_in(self):
+        """The User Guide is offered to a restricted account and reads this."""
+        access, _feature = omni_access.classify("/api/ui_preferences", "GET")
+        self.assertIs(access, omni_access.Access.AUTHENTICATED)
+
+    def test_but_writing_the_theme_is_not(self):
+        access, _feature = omni_access.classify("/api/ui_preferences", "POST")
+        self.assertIs(access, omni_access.Access.ADMIN)
+
+    def test_a_user_is_refused_the_write_and_allowed_the_read(self):
+        store = UserStore(Path(tempfile.mkdtemp(prefix="omni-prefs-")) / "u.json")
+        store.create("teacher", "teacher-password-1", omni_users.ROLE_USER)
+        teacher = store.find_by_username("teacher")
+        session = store.open_session(teacher.id)
+        env = {omni_remote.LISTENER_KEY: omni_remote.REMOTE,
+               "HTTP_COOKIE": "omnisuite_session=" + session.token,
+               "HTTP_X_OMNISUITE_CSRF": session.csrf_token}
+
+        write = omni_gate.evaluate("/api/ui_preferences", "POST", env,
+                                   {"template": "compact"}, store)
+        self.assertFalse(write.allowed)
+        self.assertEqual(write.status, 403)
+
+        read = omni_gate.evaluate("/api/ui_preferences", "GET", env, {}, store)
+        self.assertTrue(read.allowed)
+
+    def test_the_local_operator_is_unaffected(self):
+        """None of this touches the machine OmniSuite is running on."""
+        for rule in self.WRITES + self.READS + ("/api/ui_preferences",):
+            with self.subTest(rule=rule):
+                decision = omni_gate.evaluate(rule, "POST", {}, {}, None)
+                self.assertTrue(decision.allowed)
+
+    def test_method_specific_entries_stay_rare_and_deliberate(self):
+        """A rule needing one is usually a rule that should have been two."""
+        self.assertLessEqual(len(omni_access.METHOD_ROUTES), 3)
+        for (method, rule) in omni_access.METHOD_ROUTES:
+            with self.subTest(rule=rule):
+                self.assertIn(method, ("GET", "POST", "PUT", "DELETE"))
+                self.assertIn(rule, omni_access.ROUTES,
+                              "a method override must narrow a classified rule")
+
+    def test_a_method_override_is_never_more_permissive(self):
+        order = [omni_access.Access.LOCAL_ONLY, omni_access.Access.ADMIN,
+                 omni_access.Access.USER, omni_access.Access.AUTHENTICATED,
+                 omni_access.Access.PUBLIC]
+        for (method, rule), (access, _f) in omni_access.METHOD_ROUTES.items():
+            with self.subTest(rule=rule, method=method):
+                base, _bf = omni_access.ROUTES[rule]
+                self.assertLessEqual(order.index(access), order.index(base),
+                                     "an override must not widen a rule")
 
 
 if __name__ == "__main__":

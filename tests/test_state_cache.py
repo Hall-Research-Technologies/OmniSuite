@@ -170,14 +170,15 @@ class WiringTests(unittest.TestCase):
         for endpoint in ("usb_route", "multiview_show", "multiview_switch"):
             with self.subTest(endpoint=endpoint):
                 start = code.index("def api_user_" + endpoint)
-                block = code[start:start + 2500]
+                # To the end of that function, not a fixed number of
+                # characters: a slice of 2500 made this assertion fail the day
+                # the handler grew, which says nothing about invalidation.
+                end = code.index("\n    def ", start + 10)
+                block = code[start:end]
                 self.assertIn("forget_observation", block,
                               f"api_user_{endpoint} changes device state and "
                               "must drop the shared answer it invalidated")
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class StressTests(unittest.TestCase):
@@ -405,3 +406,7 @@ class StressTests(unittest.TestCase):
 
         self.assertEqual(result, ["mine"])
         self.assertGreaterEqual(cache.stats()["discarded"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

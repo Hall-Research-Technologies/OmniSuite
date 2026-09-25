@@ -382,7 +382,8 @@ class UserStore:
             return [a.public() for a in
                     sorted(self._accounts.values(), key=lambda a: a.username.lower())]
 
-    def create(self, username, password, role, permissions=None) -> dict:
+    def create(self, username, password, role, permissions=None,
+               *, actor=None, audit=True) -> dict:
         username = str(username or "").strip()
         if not username:
             return {"ok": False, "error": "username required"}
@@ -399,11 +400,12 @@ class UserStore:
                 permissions=permissions or Permissions())
             self._accounts[account.id] = account
             self._persist()
-            self.audit("user.create", actor=None,
-                       detail={"username": username, "role": role})
+            if audit:
+                self.audit("user.create", actor=actor,
+                           detail={"username": username, "role": role})
             return {"ok": True, "user": account.public()}
 
-    def set_enabled(self, user_id, enabled: bool) -> dict:
+    def set_enabled(self, user_id, enabled: bool, *, actor=None) -> dict:
         with self._lock:
             account = self._accounts.get(user_id)
             if not account:
@@ -418,7 +420,7 @@ class UserStore:
                 # must not survive in a session that is already open.
                 self.revoke_all_for_user(user_id, _locked=True)
             self.audit("user.enabled" if enabled else "user.disabled",
-                       actor=None, detail={"username": account.username})
+                       actor=actor, detail={"username": account.username})
             return {"ok": True, "user": account.public()}
 
     def _last_enabled_admin(self, account: Account) -> bool:
@@ -426,7 +428,7 @@ class UserStore:
                   if a.is_admin and a.enabled and a.id != account.id]
         return not others
 
-    def set_password(self, user_id, password) -> dict:
+    def set_password(self, user_id, password, *, actor=None) -> dict:
         if len(str(password or "")) < 8:
             return {"ok": False, "error": "password must be at least 8 characters"}
         with self._lock:
@@ -439,11 +441,11 @@ class UserStore:
             # Every other session for this account ends. A password change that
             # left old sessions alive would not be a password change.
             self.revoke_all_for_user(user_id, _locked=True)
-            self.audit("user.password_changed", actor=None,
+            self.audit("user.password_changed", actor=actor,
                        detail={"username": account.username})
             return {"ok": True}
 
-    def set_role(self, user_id, role) -> dict:
+    def set_role(self, user_id, role, *, actor=None) -> dict:
         if role not in ROLES:
             return {"ok": False, "error": "role must be admin or user"}
         with self._lock:
@@ -455,11 +457,12 @@ class UserStore:
             account.role = role
             self._persist()
             self.revoke_all_for_user(user_id, _locked=True)
-            self.audit("user.role_changed", actor=None,
+            self.audit("user.role_changed", actor=actor,
                        detail={"username": account.username, "role": role})
             return {"ok": True, "user": account.public()}
 
-    def set_permissions(self, user_id, permissions: Permissions) -> dict:
+    def set_permissions(self, user_id, permissions: Permissions,
+                        *, actor=None) -> dict:
         with self._lock:
             account = self._accounts.get(user_id)
             if not account:
@@ -468,12 +471,12 @@ class UserStore:
             self._persist()
             # A permission change takes effect now, not at next login.
             self.revoke_all_for_user(user_id, _locked=True)
-            self.audit("user.permissions_changed", actor=None,
+            self.audit("user.permissions_changed", actor=actor,
                        detail={"username": account.username,
                                "permissions": permissions.to_json()})
             return {"ok": True, "user": account.public()}
 
-    def delete(self, user_id) -> dict:
+    def delete(self, user_id, *, actor=None) -> dict:
         with self._lock:
             account = self._accounts.get(user_id)
             if not account:
@@ -483,7 +486,7 @@ class UserStore:
             del self._accounts[user_id]
             self._persist()
             self.revoke_all_for_user(user_id, _locked=True)
-            self.audit("user.deleted", actor=None,
+            self.audit("user.deleted", actor=actor,
                        detail={"username": account.username})
             return {"ok": True}
 

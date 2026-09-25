@@ -130,7 +130,12 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         confirm = str(data.get("confirm") or "")
         if password != confirm:
             return jsonify({"ok": False, "error": "passwords do not match"}), 400
-        result = store.create(username, password, omni_users.ROLE_ADMIN)
+        # The generic account-created event is suppressed: creating the
+        # first administrator on a machine that had none is a distinct and
+        # more meaningful thing, and recording both says one action happened
+        # twice.
+        result = store.create(username, password, omni_users.ROLE_ADMIN,
+                              audit=False)
         if not result["ok"]:
             return jsonify(result), 400
         store.audit("bootstrap.admin_created", actor=None,
@@ -277,16 +282,18 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
     @app.route("/api/admin/users", methods=["POST"])
     def api_admin_create_user():
         data = request.get_json(silent=True) or {}
+        # The store records this, with the actor passed down. It is the
+        # layer that knows what was actually created -- the request body is
+        # what was asked for, which is not the same thing when it was refused
+        # or normalised.
         result = store.create(
             str(data.get("username") or "").strip(),
             str(data.get("password") or ""),
             str(data.get("role") or omni_users.ROLE_USER),
-            _permissions_from(data.get("permissions")))
+            _permissions_from(data.get("permissions")),
+            actor=_principal())
         if not result["ok"]:
             return jsonify(result), 400
-        store.audit("user.create", actor=_principal(),
-                    detail={"username": data.get("username"),
-                            "role": data.get("role")})
         return jsonify(result)
 
     @app.route("/api/admin/users/<user_id>", methods=["POST"])
@@ -302,23 +309,29 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         action = str(data.get("action") or "").strip()
         actor = _principal()
 
+        # Each of these records its own event, in the store, naming the
+        # account rather than its id and saying what actually changed --
+        # "Account disabled", not "set_enabled". The actor is passed down
+        # because it is the one thing only this layer knows.
         if action == "set_enabled":
-            result = store.set_enabled(user_id, bool(data.get("enabled")))
+            result = store.set_enabled(user_id, bool(data.get("enabled")),
+                                       actor=actor)
         elif action == "set_role":
-            result = store.set_role(user_id, str(data.get("role") or ""))
+            result = store.set_role(user_id, str(data.get("role") or ""),
+                                    actor=actor)
         elif action == "set_password":
-            result = store.set_password(user_id, str(data.get("password") or ""))
+            result = store.set_password(user_id, str(data.get("password") or ""),
+                                        actor=actor)
         elif action == "set_permissions":
             result = store.set_permissions(
-                user_id, _permissions_from(data.get("permissions")))
+                user_id, _permissions_from(data.get("permissions")), actor=actor)
         elif action == "delete":
-            result = store.delete(user_id)
+            result = store.delete(user_id, actor=actor)
         else:
             return jsonify({"ok": False, "error": "unknown action"}), 400
 
         if not result.get("ok"):
             return jsonify(result), 400
-        store.audit("user." + action, actor=actor, detail={"user_id": user_id})
         return jsonify(result)
 
     @app.route("/api/admin/devices", methods=["GET"])
@@ -329,9 +342,13 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         enforcement agree by construction rather than by both happening to
         normalise the same way.
 
-        An administrator gets the device's own name, model and address
-        alongside the alias: two displays both called "Front Display" are only
-        distinguishable by what is underneath them.
+        An administrator gets the device's own name, model, address,
+        location and description alongside the alias: two displays both called
+        "Front Display" are only distinguishable by what is underneath them.
+
+        Location and description come from the device's own systeminfo, which
+        the cache already holds -- no extra read is issued to obtain them, and
+        nothing here writes them back.
         """
         devices = []
         for unit in load_cache() or []:
@@ -350,6 +367,13 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                 "name": aliases.display_name(identity, device_name),
                 "model": unit.get("model") or "",
                 "ip": unit.get("ip") or "",
+                # Device-provided, from systeminfo the cache already holds.
+                # Presented beside the alias so an administrator naming two
+                # identical units can tell which is which -- and kept in
+                # separate fields from the alias, because one belongs to
+                # OmniSuite and these belong to the equipment.
+                "location": omni_projection.device_location(unit),
+                "description": omni_projection.device_description(unit),
                 "role": "encoder" if "enc" in role else
                         ("decoder" if "dec" in role else "other"),
             })
@@ -471,21 +495,25 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         # An administrator may have changed a permission, disabled the account
         # or reset its password in the moments since, and authorisation belongs
         # at the operation boundary rather than at the start of the request.
-        account = _current_account()
-        if account is _REVOKED:
-            return jsonify({"ok": False,
-                            "error": "your sign-in is no longer valid"}), 401
-        if account is not None and not account.is_admin:
-            # The gate checked these too. Checking again here is not
-            # redundancy for its own sake: this endpoint translates identities
-            # into addresses, and the check has to be on the same values the
-            # translation will use, or the two could drift apart.
+        # The gate checked these too. Checking again here is not redundancy
+        # for its own sake: this endpoint translates identities into addresses,
+        # and the check has to be on the same values the translation will use,
+        # or the two could drift apart.
+        def _check(account):
             if not account.permissions.has_feature(omni_access.FEATURE_AV):
-                return _denied(account, "missing_feature:av")
+                return "missing_feature:av"
             if not account.permissions.may_use_source(source_id):
-                return _denied(account, "source_not_permitted")
+                return "source_not_permitted"
             if not account.permissions.may_control_destination(destination_id):
-                return _denied(account, "destination_not_permitted")
+                return "destination_not_permitted"
+            return None
+
+        # Before the wait, so a request that was never going to be allowed
+        # does not queue for a lock.
+        refusal = _revalidate(_check, "/api/user/route")
+        if refusal is not None:
+            return refusal
+        account = _current_account()
 
         address_of = {}
         for unit in load_cache() or []:
@@ -498,15 +526,20 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
             return jsonify({"ok": False,
                             "error": "that device is not currently known"}), 404
 
-        store.audit("route", actor=account, detail={
-            "source": source_id, "destination": destination_id, "mode": mode})
-
         # The verified path, called rather than reimplemented, with the
         # destination held so two operators cannot interleave inside one
         # transaction. Last successful operation wins; the loser waits for the
         # winner to finish rather than corrupting it.
         try:
             with locks.hold(locks.decoder(destination_id)):
+                # Again, now that the wait is over and the next statement
+                # writes to hardware.
+                refusal = _revalidate(_check, "/api/user/route")
+                if refusal is not None:
+                    return refusal
+                store.audit("route", actor=_current_account(), detail={
+                    "source": source_id, "destination": destination_id,
+                    "mode": mode})
                 with app.test_request_context(
                         "/api/route", method="POST",
                         json={"encoder": encoder_ip, "decoder": decoder_ip,
@@ -534,6 +567,29 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         token = request.cookies.get(SESSION_COOKIE)
         account, _session = store.resolve_session(token)
         return account if account is not None else _REVOKED
+
+    def _revalidate(check, rule):
+        """Still allowed? Asked again after waiting for a resource lock.
+
+        Returns None when the operation may proceed, or the response to send
+        instead. `check` takes the freshly read account and returns a reason
+        string, or None if it is satisfied.
+
+        This exists because acquiring a lock is a wait. Everything decided
+        before it describes a world that may have moved on: an administrator
+        can disable an account, change its permissions or take a display away
+        while a request sits in the queue, and the far side of the wait is the
+        last moment before a device is written to.
+        """
+        account = _current_account()
+        if account is _REVOKED:
+            return jsonify({"ok": False,
+                            "error": "your sign-in is no longer valid"}), 401
+        if account is not None and not account.is_admin:
+            reason = check(account)
+            if reason is not None:
+                return _denied(account, reason, rule)
+        return None
 
     def _denied(account, reason, rule="/api/user/route"):
         store.audit("access.denied", actor=account,
@@ -598,32 +654,37 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
             return jsonify({"ok": False,
                             "error": "computer and peripherals required"}), 400
 
-        account = _current_account()
-        if account is _REVOKED:
-            return jsonify({"ok": False,
-                            "error": "your sign-in is no longer valid"}), 401
-        if account is not None and not account.is_admin:
+        def _check(account):
             if not account.permissions.has_feature(omni_access.FEATURE_USB):
-                return _denied(account, "missing_feature:usb", "/api/user/usb_route")
+                return "missing_feature:usb"
             # Both ends, against the identity the projection authorised them
             # under -- never the endpoint MAC a browser happened to send.
             allowed = _usb_permitted_endpoints(account)
             if computer not in allowed["computers"]:
-                return _denied(account, "computer_not_permitted",
-                               "/api/user/usb_route")
+                return "computer_not_permitted"
             if peripherals not in allowed["peripherals"]:
-                return _denied(account, "peripherals_not_permitted",
-                               "/api/user/usb_route")
+                return "peripherals_not_permitted"
+            return None
 
-        store.audit("usb.detach" if detach else "usb.attach", actor=account,
-                    detail={"computer": computer, "peripherals": peripherals,
-                            "computer_label": _label(computer),
-                            "peripherals_label": _label(peripherals)})
+        refusal = _revalidate(_check, "/api/user/usb_route")
+        if refusal is not None:
+            return refusal
+
         view = usb_unpair_view if detach else usb_pair_view
         try:
             # Both endpoints, sorted by hold(), so an attach and a detach
             # racing over the same pair cannot each hold one of them.
             with locks.hold(*locks.usb_pair(computer, peripherals)):
+                # The wait is over and the next statement reaches hardware.
+                refusal = _revalidate(_check, "/api/user/usb_route")
+                if refusal is not None:
+                    return refusal
+                store.audit("usb.detach" if detach else "usb.attach",
+                            actor=_current_account(),
+                            detail={"computer": computer,
+                                    "peripherals": peripherals,
+                                    "computer_label": _label(computer),
+                                    "peripherals_label": _label(peripherals)})
                 try:
                     with app.test_request_context(
                             "/api/usb_route", method="POST",
@@ -702,11 +763,17 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
             return jsonify({"ok": False,
                             "error": "that display is not currently known"}), 404
 
-        store.audit("multiview.show", actor=account,
-                    detail={"display": identity, "display_label": _label(identity),
-                            "preset": name})
         try:
             with locks.hold(locks.decoder(identity)):
+                # The wait is over and the next statement reaches hardware.
+                refusal = _revalidate_multiview(
+                    identity, name, "/api/user/multiview_show")
+                if refusal is not None:
+                    return refusal
+                store.audit("multiview.show", actor=_current_account(),
+                            detail={"display": identity,
+                                    "display_label": _label(identity),
+                                    "preset": name})
                 try:
                     with app.test_request_context(
                             "/api/multiview/show", method="POST",
@@ -754,12 +821,19 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
             return jsonify({"ok": False,
                             "error": "that source is not currently known"}), 404
 
-        store.audit("multiview.switch", actor=account,
-                    detail={"display": identity, "display_label": _label(identity),
-                            "preset": name, "window": cell,
-                            "source": source, "source_label": _label(source)})
         try:
             with locks.hold(locks.decoder(identity)):
+                # The wait is over and the next statement reaches hardware.
+                refusal = _revalidate_multiview(
+                    identity, name, "/api/user/multiview_switch", source=source)
+                if refusal is not None:
+                    return refusal
+                store.audit("multiview.switch", actor=_current_account(),
+                            detail={"display": identity,
+                                    "display_label": _label(identity),
+                                    "preset": name, "window": cell,
+                                    "source": source,
+                                    "source_label": _label(source)})
                 try:
                     with app.test_request_context(
                             "/api/multiview/switch", method="POST",
@@ -772,6 +846,24 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
             return jsonify({"ok": False,
                             "error": "That display is busy with another "
                                      "change. Try again in a moment."}), 409
+
+    def _revalidate_multiview(identity, name, rule, source=None):
+        """The Multiview gate, asked again after waiting for the lock.
+
+        Same rule, freshly read account. Acquiring a lock is a wait, and an
+        approval can be withdrawn during one.
+        """
+        account = _current_account()
+        if account is _REVOKED:
+            return jsonify({"ok": False,
+                            "error": "your sign-in is no longer valid"}), 401
+        refusal = _multiview_gate(account, identity, name, rule)
+        if refusal:
+            return refusal
+        if source and account is not None and not account.is_admin:
+            if not account.permissions.may_use_source(source):
+                return _denied(account, "source_not_permitted", rule)
+        return None
 
     def _multiview_gate(account, identity, name, rule):
         """Capability, display and preset approval. None means proceed.
@@ -862,8 +954,15 @@ def _adapters(app):
             view = current_app.view_functions.get("api_adapters")
             if view is None:
                 return []
+            # A view may return (response, status); reading get_data off
+            # the tuple raises, and the caller sees a 500 for what is usually
+            # an ordinary "nothing to report".
+            result = view()
+            if isinstance(result, tuple):
+                result = result[0] if result else None
             import json
-            payload = json.loads(view().get_data())
+            payload = json.loads(
+                (result.get_data() if result is not None else b"{}") or b"{}")
             return payload.get("adapters") or []
     except Exception as exc:
         log.info("[REMOTE] adapter enumeration failed: %s", type(exc).__name__)

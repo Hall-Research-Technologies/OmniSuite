@@ -141,7 +141,13 @@
         <tr><td>Finding <strong>unknown</strong> standalone HW-OMNI-311/324 USB extenders on the attached network</td><td>The HW-OMNI-311/324 binary UDP API on port <code>6137</code>, sent as a local broadcast, with the devices' replies returning to OmniSuite.</td></tr>
         <tr><td>Polling, configuring and controlling <strong>known</strong> standalone USB extenders, routed ones included</td><td>The same binary UDP API on port <code>6137</code>, sent as directed unicast to each known address.</td></tr>
         <tr><td>Using OmniSuite itself</td><td>The browser connects to the local OmniSuite server; the address and port it bound to are printed at startup.</td></tr>
+        <tr><td><strong>Only if you turn on <a href="#remote-access">Remote Access</a>:</strong> reaching OmniSuite from a phone, tablet or laptop</td><td><strong>Inbound</strong> HTTPS to the OmniSuite computer, on the network adapter and port you choose in Settings. This is the one item in this table that lets something else start a connection <em>to</em> OmniSuite, so it is usually the one that needs a firewall rule of its own.</td></tr>
       </table>
+      <div class="note"><strong>Until Remote Access is turned on, nothing on the
+      network can reach OmniSuite at all.</strong> It answers only on the
+      computer it is running on, and updating OmniSuite never changes that. The
+      row above describes what to ask for <em>if</em> you want remote access,
+      not something to permit in advance.</div>
       <div class="note"><strong>Do not disable your firewall.</strong> What OmniSuite needs is permission for its own process and the traffic above, not an unprotected machine. On a corporate PC, endpoint-security policy is often centrally managed and cannot be changed locally; in that case the permission has to be granted by your IT department, and the table above is what to give them.</div>
 
       <h3>What a scan can reach, and what it remembers</h3>
@@ -233,8 +239,28 @@
         <tr><td><code>ui_preferences.json</code></td><td>Layout, colour preset and light background.</td><td>Yes. Appearance returns to defaults.</td></tr>
         <tr><td><code>notice_ack.json</code></td><td>Which one-time notices you have already seen &mdash; the first-run network notice, and the release an update alert has been acknowledged for.</td><td>Yes. The first-run notice appears again, and a pending update alert returns once.</td></tr>
         <tr><td><code>topology_ack.json</code></td><td>Which topology advisories have been dismissed for the current discovered inventory.</td><td>Yes. Any outstanding advisory is shown again.</td></tr>
+        <tr><td><code>multiview_meta.json</code></td><td>Which layout each saved Multiview uses, and which source is in which window.</td><td>Yes, but OmniSuite then has to work each saved Multiview&rsquo;s layout out from the geometry on the decoder, and may show it as Custom.</td></tr>
+        <tr><td><code>multiview_groups.json</code></td><td>Decoder groups &mdash; which displays are meant to show the same Multiview.</td><td>Yes. The groups disappear and would have to be created again. No display changes.</td></tr>
         <tr><td><code>launcher.log</code></td><td>Launcher startup and error log.</td><td>Yes. It is recreated if the launcher needs to log again.</td></tr>
       </table>
+
+      <h3 id="files-remote">Files for Remote Access</h3>
+      <p>These appear only once you use <a href="#remote-access">Remote
+      Access</a>. A machine that has never had it turned on has none of them.</p>
+      <table>
+        <tr><th>File</th><th>Purpose</th><th>Safe to delete?</th></tr>
+        <tr><td><code>users.json</code></td><td>Accounts: usernames, roles, permissions, and passwords stored as one-way hashes. Sign-ins are <strong>not</strong> kept here &mdash; they live in memory only and end when OmniSuite restarts.</td><td><strong>No, not casually.</strong> Deleting it removes every account and every permission you have assigned, and OmniSuite asks for a first administrator again. There is no way to recover it.</td></tr>
+        <tr><td><code>device_aliases.json</code></td><td>The friendly names you have given devices. They belong to OmniSuite and are never written to the equipment.</td><td>Yes, but every device goes back to showing its own name, and you would have to type the names again.</td></tr>
+        <tr><td><code>security_audit.json</code></td><td>The <a href="#remote-activity">Activity</a> history. It holds no passwords, no sign-in tokens and no device credentials.</td><td>Yes. The Activity list starts empty. Nothing else is affected.</td></tr>
+        <tr><td><code>remote_access.json</code></td><td>Whether Remote Access is on, which network it uses, which port, and whether it is encrypted.</td><td>Yes. Remote Access comes back <strong>off</strong> after the next restart and has to be turned on again. Accounts are unaffected.</td></tr>
+        <tr><td><code>remote_cert.pem</code></td><td>The certificate that encrypts remote connections.</td><td>Yes, but Remote Access will not start until you create or supply another one. It does not fall back to an unencrypted connection.</td></tr>
+        <tr><td><code>remote_key.pem</code></td><td>The private key belonging to that certificate. <strong>Keep this private.</strong></td><td>Yes, with the same consequence as the certificate. Never copy it anywhere, never email it, and never put it in a support bundle.</td></tr>
+      </table>
+      <div class="warn"><strong>The private key is the one file here that
+      must stay private.</strong> OmniSuite writes it so only your Windows
+      account can read it, never shows it on screen, never returns it through
+      its own interface and never includes it in a support file. Treat a copy
+      of it the way you would treat a password.</div>
       <p>In the packaged app, the launcher log is stored in the user log folder: Windows uses <code>%LOCALAPPDATA%\OmniSuite\logs\launcher.log</code>, macOS uses <code>~/Library/Logs/OmniSuite/launcher.log</code>, and Linux uses <code>~/.omnisuite/logs/launcher.log</code>.</p>
       <div class="warn">Do not edit cache files while OmniSuite is running. To refresh device information, scan again; Clear Units is not a refresh. When you do want to start from an empty inventory, use Clear Units, and close OmniSuite before manually deleting any cache/config file.</div>
     </section>

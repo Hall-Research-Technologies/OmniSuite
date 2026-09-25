@@ -334,6 +334,18 @@ body.remote {
   min-height: 1.2em;
 }
 .form-note { margin: 14px 0 0; font-size: 12px; color: var(--text-muted); }
+
+/* Device-reported metadata in the administrative tables. Location is short and
+   earns a column; a description is free text of unpredictable length, so it
+   sits under the device name and is clamped to two lines -- a column would push
+   Address and Role off a laptop screen, and a native title tooltip renders as
+   one very wide line. */
+.device-description {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; max-width: 34ch;
+  font-size: 11px; font-style: italic; opacity: .85;
+}
+.device-location { max-width: 22ch; overflow-wrap: anywhere; }
 /* Whether this connection is encrypted is not advisory colour on a muted
    line -- it is the one fact on this page somebody may act on. Carry it with
    a rule as well as a hue, so a palette where the two tints converge still

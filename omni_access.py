@@ -78,10 +78,17 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     # The guide is operator documentation and carries no device state.
     "/help": (Access.AUTHENTICATED, None),
     # Appearance is a per-browser convenience, not a permission.
+    # Readable by anyone signed in, because the User Guide is offered at
+    # /help and it reads the theme. Writing is administrative: the file is one
+    # per installation, so a restricted account saving a preference would be
+    # changing the local operator's interface. See METHOD_ROUTES.
     "/api/ui_preferences": (Access.AUTHENTICATED, None),
-    "/api/ui_preferences/reset": (Access.AUTHENTICATED, None),
-    "/api/notices": (Access.AUTHENTICATED, None),
-    "/api/notices/ack": (Access.AUTHENTICATED, None),
+    "/api/ui_preferences/reset": (Access.ADMIN, None),
+    # The update alert and its acknowledgement. Only Settings uses these, and
+    # notice_ack.json is likewise one file for the installation -- a restricted
+    # account must not be able to dismiss an administrator's alert.
+    "/api/notices": (Access.ADMIN, None),
+    "/api/notices/ack": (Access.ADMIN, None),
 
     # ---- the restricted user's own surface ----------------------------
     # The shell and the projection behind it. AUTHENTICATED rather than USER
@@ -278,14 +285,33 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
 }
 
 
-def classify(rule: str) -> tuple[Access, str | None]:
+#: Where one rule serves two audiences by method. Checked before ROUTES.
+#:
+#: Kept deliberately small. A rule that needs an entry here is usually a rule
+#: that should have been two rules, and the exception is a route whose read is
+#: ordinary and whose write is not.
+METHOD_ROUTES: dict[tuple[str, str], tuple[Access, str | None]] = {
+    ("POST", "/api/ui_preferences"): (Access.ADMIN, None),
+}
+
+
+def classify(rule: str, method: str | None = None) -> tuple[Access, str | None]:
     """Who may call `rule`, and under which capability.
 
     An unknown rule is ADMIN and LOCAL-only in effect -- the most restrictive
     answer available -- because a route nobody classified is a route nobody has
     reasoned about. The fence turns that into a test failure so it is noticed at
     development time rather than relied on at runtime.
+
+    `method` narrows the answer where a rule serves a read and a write with
+    different audiences. Omitting it gives the rule's own classification, which
+    is the less restrictive of the two, so every caller that decides access
+    passes it.
     """
+    if method:
+        specific = METHOD_ROUTES.get((str(method).upper(), rule))
+        if specific is not None:
+            return specific
     return ROUTES.get(rule, (Access.LOCAL_ONLY, None))
 
 

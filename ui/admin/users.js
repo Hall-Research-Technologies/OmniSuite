@@ -170,8 +170,9 @@
     devices.forEach((device) => {
       const row = document.createElement('label');
       row.className = 'assign-row';
-      row.dataset.search = (device.name + ' ' + device.model + ' ' + device.ip)
-        .toLowerCase();
+      row.dataset.search = [device.name, device.model, device.ip,
+                            device.location].filter(Boolean)
+        .join(' ').toLowerCase();
 
       const box = document.createElement('input');
       box.type = 'checkbox';
@@ -189,11 +190,12 @@
       name.textContent = device.name;
       const meta = document.createElement('span');
       meta.className = 'a-meta';
-      // The device's own hostname, model and address. They let an
-      // administrator tell two identically named devices apart, and the
+      // What the device says about itself -- location first, because that
+      // is what tells two identically named units apart in a building. The
       // hostname is shown only when an alias is hiding it. None of this is
-      // ever sent to a restricted user.
-      const detail = [device.alias ? device.device_name : '',
+      // ever sent to a restricted user; their own view is built separately.
+      const detail = [device.location,
+                      device.alias ? device.device_name : '',
                       device.model, device.ip].filter(Boolean);
       meta.textContent = detail.length ? ' · ' + detail.join(' · ') : '';
       text.append(name, meta);
@@ -464,8 +466,12 @@
 
     state.devices.forEach((device) => {
       const row = document.createElement('tr');
+      // Searchable on everything this row displays, and on nothing it
+      // does not: a result the operator cannot see the reason for looks
+      // arbitrary.
       row.dataset.search = [device.device_name, device.alias, device.model,
-                            device.ip].join(' ').toLowerCase();
+                            device.ip, device.location, device.description]
+        .join(' ').toLowerCase();
 
       const nameCell = document.createElement('td');
       nameCell.dataset.label = 'Friendly name';
@@ -489,7 +495,25 @@
 
       // The device's own identity, always visible to an administrator: two
       // displays called "Front Display" are only distinguishable by this.
-      [['Device', device.device_name], ['Model', device.model || '—'],
+      //
+      // Device and Location come from the equipment; the friendly name on the
+      // left belongs to OmniSuite. They are deliberately in separate columns
+      // so nobody reads one as the other.
+      const deviceCell = document.createElement('td');
+      deviceCell.dataset.label = 'Device';
+      deviceCell.style.color = 'var(--text-muted)';
+      deviceCell.appendChild(document.createTextNode(device.device_name));
+      if (device.description) {
+        // Free text of unpredictable length, so it goes under the name and is
+        // clamped rather than becoming a column or a very wide tooltip.
+        const note = document.createElement('span');
+        note.className = 'device-description';
+        note.textContent = device.description;
+        deviceCell.append(document.createElement('br'), note);
+      }
+      row.appendChild(deviceCell);
+
+      [['Location', device.location || '—'], ['Model', device.model || '—'],
        ['Address', device.ip || '—'],
        ['Role', device.role === 'encoder' ? 'Source' :
                 (device.role === 'decoder' ? 'Display' : 'Other')]]
@@ -498,6 +522,7 @@
           td.dataset.label = label;
           td.textContent = value;
           td.style.color = 'var(--text-muted)';
+          if (label === 'Location') td.className = 'device-location';
           row.appendChild(td);
         });
 
@@ -599,13 +624,9 @@
     'user.deleted': 'Account deleted',
     'user.enabled': 'Account enabled',
     'user.disabled': 'Account disabled',
-    'user.set_role': 'Role changed',
-    'user.set_enabled': 'Account enabled or disabled',
-    'user.delete': 'Account deleted',
+
     'user.role_changed': 'Role changed',
-    'user.set_permissions': 'Permissions changed',
     'user.permissions_changed': 'Permissions changed',
-    'user.set_password': 'Password changed',
     'user.password_changed': 'Password changed',
     'route': 'Routed',
     'usb.attach': 'USB connected',

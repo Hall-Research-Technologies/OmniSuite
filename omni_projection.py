@@ -58,23 +58,22 @@ def disambiguate(items, detail_of) -> None:
         Front Display - dec-front-101     (ambiguous)
         Front Display - dec-front-102
 
-    The hostname is used because it is the only human-readable per-device
-    identifier OmniSuite currently holds.
+What gets appended is decided by `distinguisher`: the device's own
+    location where it has one, then its description, then its hostname. A site
+    that has filled in `location` on its OmniStream units therefore gets
 
-    It is not the only one that exists. OmniStream carries `location` and
-    `description` in `systeminfo.config`, beside `hostname`; this application
-    reads both, but only so that editing systeminfo for some other reason
-    writes them back unchanged. Neither is cached, displayed or reachable from
-    here, and both were empty on every unit measured.
+        Front Display — Room 101
+        Front Display — Room 102
 
-    So the gap is recorded precisely: the right disambiguator is the device's
-    own location, and the work is to plumb an existing field through discovery
-    to the projection -- not to invent a room database. Until that exists,
-    nothing here fabricates one.
+    and a site that has not still gets something that distinguishes.
 
     An address or MAC is deliberately not used. Those would disambiguate, and
     they are exactly the engineering detail the whole projection exists to keep
     out of an operator's hands.
+
+    None of this is identity. A device whose location changes is the same
+    device, with the same permissions, the same alias and the same routing
+    identity; only the words after the dash change.
 
     Ambiguity is judged over the account's own visible set, so a duplicate in
     another room the account cannot see never changes what it is shown.
@@ -89,6 +88,57 @@ def disambiguate(items, detail_of) -> None:
             detail = str(detail_of(item) or "").strip()
             if detail and detail.casefold() != item["name"].strip().casefold():
                 item["name"] = f"{item['name']} — {detail}"
+
+
+def _systeminfo(unit) -> dict:
+    """The device's own systeminfo configuration, or an empty mapping.
+
+    Every probe already fetches this and every cached unit already carries it,
+    so reading it here costs nothing and adds no device round trip.
+    """
+    details = (unit or {}).get("details") or {}
+    return ((details.get("systeminfo") or {}).get("config") or {})
+
+
+def device_location(unit) -> str:
+    """Where the device says it is. Device-provided, never written by us.
+
+    Read from the cached record first and from systeminfo underneath it, so a
+    unit discovered before this field was promoted still answers. Empty on a
+    device nobody has filled in, which is the common case.
+    """
+    for candidate in ((unit or {}).get("location"), _systeminfo(unit).get("location")):
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def device_description(unit) -> str:
+    """The device's own free-text description. Same provenance as location."""
+    for candidate in ((unit or {}).get("description"),
+                      _systeminfo(unit).get("description")):
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def distinguisher(row, unit) -> str:
+    """What to append when two devices share a label.
+
+    Precedence is human-readability, not availability: a room number tells an
+    operator which display is in front of them, a description sometimes does,
+    and a hostname always distinguishes but says nothing. So location first,
+    description second, the device's own name last.
+
+    All three are things the device reports about itself. An address or a MAC
+    would also distinguish, and neither is ever used: they are exactly the
+    engineering detail the projection exists to keep out of an operator's
+    hands.
+    """
+    return (device_location(unit) or device_description(unit)
+            or _device_name(row, unit))
 
 
 def _device_name(row, unit) -> str:
@@ -204,8 +254,11 @@ def user_state(matrix_state, units, account, aliases=None) -> dict:
 
     identity_of = _identity_by_address(units)
     unit_of = {(u.get("ip") or "").strip(): u for u in (units or [])}
-    # The device's own name, kept beside the label so a repeated label can be
-    # told apart without the projection ever carrying an address.
+    # How to tell two identical labels apart -- the device's own location
+    # where it reports one, otherwise its description, otherwise its name.
+    # Kept beside the label so a repeat can be resolved without the projection
+    # ever carrying an address, and never sent for a device this account
+    # cannot already see: only permitted rows are recorded here.
     device_names = {}
 
     encoders = matrix_state.get("encoders") or []
@@ -228,7 +281,7 @@ def user_state(matrix_state, units, account, aliases=None) -> dict:
             continue
         unit = unit_of.get(address)
         projected = project_source(row, unit, identity, aliases)
-        device_names[identity] = _device_name(row, unit)
+        device_names[identity] = distinguisher(row, unit)
         sources.append(projected)
         source_names[identity] = projected["name"]
         permitted_sources.add(identity)
@@ -248,7 +301,7 @@ def user_state(matrix_state, units, account, aliases=None) -> dict:
         routed_identity = identity_of.get((routed_address or "").strip())
         showing = describe_showing(row, routed_identity, source_names,
                                    permitted_sources)
-        device_names[identity] = _device_name(row, unit_of.get(address))
+        device_names[identity] = distinguisher(row, unit_of.get(address))
         destinations.append(project_destination(row, unit_of.get(address),
                                                 identity, showing, aliases))
 
@@ -363,8 +416,9 @@ def project_usb_state(usb_state, units, account, aliases=None) -> dict:
         identity = _usb_endpoint_identity(row)
         address = (row.get("ip") or "").strip()
         unit = unit_of.get(address)
-        usb_device_names[identity] = (_device_name({"host": row.get("host")}, unit)
-                                      if unit else (row.get("host") or ""))
+        usb_device_names[identity] = (
+            distinguisher({"host": row.get("host")}, unit)
+            if unit else (row.get("host") or ""))
 
     computers, peripherals = [], []
     for row in (usb_state.get("matrix_lex") or usb_state.get("lex") or []):

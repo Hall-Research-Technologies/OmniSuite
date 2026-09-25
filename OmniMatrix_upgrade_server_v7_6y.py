@@ -16734,7 +16734,7 @@ def restore_remote_access():
     try:
         with app.test_request_context("/api/adapters"):
             available = omni_remote.usable_bind_addresses(
-                json.loads(api_adapters().get_data()).get("adapters") or [])
+                _view_payload(api_adapters()).get("adapters") or [])
     except Exception as exc:
         available = []
         log.info("[REMOTE] adapter enumeration failed during restore: %s",
@@ -16795,8 +16795,32 @@ def _usb_state_snapshot():
     def read():
         with app.test_request_context("/api/usb_state"):
             import json as _json
-            return _json.loads(api_usb_state().get_data())
+            return _view_payload(api_usb_state())
     return _user_observation.get("usb", read)
+
+
+def _view_payload(result):
+    """The JSON body of whatever a Flask view returned.
+
+    A view may hand back a Response, or (Response, status), or
+    (Response, status, headers). Reading `.get_data()` off the tuple raises,
+    and because these callers run inside a request the operator sees a 500 --
+    which claims the application is broken when the truth is usually that a
+    device is not known or not answering.
+    """
+    import json as _json
+    if isinstance(result, tuple):
+        result = result[0] if result else None
+    if result is None:
+        return {}
+    data = getattr(result, "get_data", None)
+    if data is None:
+        # Already a mapping, which some views return directly.
+        return result if isinstance(result, dict) else {}
+    try:
+        return _json.loads(data() or b"{}")
+    except ValueError:
+        return {}
 
 
 def _multiview_state_snapshot(ip):
@@ -16804,7 +16828,7 @@ def _multiview_state_snapshot(ip):
     def read():
         with app.test_request_context("/api/multiview/state?ip=" + str(ip)):
             import json as _json
-            return _json.loads(api_multiview_state().get_data())
+            return _view_payload(api_multiview_state())
     return _user_observation.get("multiview:" + str(ip), read)
 
 
@@ -16825,7 +16849,7 @@ def _matrix_state_snapshot():
     """
     with app.test_request_context("/api/state"):
         import json as _json
-        return _json.loads(api_state_matrix().get_data())
+        return _view_payload(api_state_matrix())
 
 
 omni_remote_api.register(
