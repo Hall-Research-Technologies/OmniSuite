@@ -120,7 +120,8 @@
       <a href="#usb">10. USB Endpoints and USB Matrix</a>
       <a href="#popups">11. Configuration Popups</a>
       <a href="#gotchas">12. Gotchas and Field Rules</a>
-      <a href="#troubleshooting">13. Troubleshooting</a>
+      <a href="#remote-access">13. Remote Access and User Accounts</a>
+      <a href="#troubleshooting">14. Troubleshooting</a>
     </div>
 
     <section id="before-first-use">
@@ -928,8 +929,135 @@
       </table>
     </section>
 
+    <section id="remote-access">
+      <h2>13. Remote Access and User Accounts</h2>
+
+      <p>Normally OmniSuite answers only on the computer it is running on.
+      <strong>Remote Access</strong> lets you also reach it from a phone,
+      tablet or laptop on your network, so somebody can change what is on a
+      display without sitting at the OmniSuite PC.</p>
+
+      <div class="warn"><strong>Remote Access is off until you turn it on.</strong>
+      Updating OmniSuite never switches it on, and nothing on the network can
+      reach OmniSuite while it is off.</div>
+
+      <h3 id="remote-turning-on">Turning it on</h3>
+      <p>Everything here is in <strong>Settings &gt; Remote Access</strong>, on
+      the OmniSuite computer itself.</p>
+      <ol>
+        <li><strong>Create an administrator.</strong> The first time, Settings
+        asks for a username and password. This can only be done at the OmniSuite
+        computer &mdash; nobody on the network can create the first account, and
+        there is no default password to change.</li>
+        <li><strong>Choose the network.</strong> Pick the adapter other devices
+        will reach OmniSuite on. Only real network adapters are offered.</li>
+        <li><strong>Turn on remote access.</strong> Settings then shows the
+        address people type into their browser, such as
+        <code>http://10.0.4.12:8080/</code>.</li>
+      </ol>
+      <p>It takes effect immediately. OmniSuite keeps working on its own
+      computer exactly as before, and turning Remote Access off stops network
+      access at once and signs out everyone who was using it.</p>
+
+      <div class="warn"><strong>Connections are not encrypted.</strong>
+      OmniSuite uses plain HTTP. Anyone able to watch the network can read what
+      is sent, including passwords typed at sign-in. Use Remote Access only on a
+      network you trust and control. Do not expose OmniSuite to the internet or
+      to a guest network.</div>
+
+      <h3 id="remote-roles">Administrators and Users</h3>
+      <table>
+        <tr><th>Role</th><th>Can do</th></tr>
+        <tr><td><strong>Administrator</strong></td><td>Everything OmniSuite
+        does: scanning, configuration, firmware, Settings, Multiview, USB,
+        diagnostics and managing accounts.</td></tr>
+        <tr><td><strong>User</strong></td><td>Only routing, and only with the
+        sources and displays you assign. A User cannot scan, cannot open
+        Settings, cannot touch firmware, cannot see other rooms' equipment and
+        cannot create accounts or change their own permissions.</td></tr>
+      </table>
+
+      <h3 id="remote-users">Managing accounts</h3>
+      <p><strong>Settings &gt; Remote Access &gt; Manage users</strong>, or
+      <code>/admin/users</code>. You can add an account, change its role, reset
+      its password, disable it temporarily, or delete it.</p>
+      <p>For a User you also choose:</p>
+      <ul>
+        <li><strong>Features</strong> &mdash; A/V, USB and Multiview. The person
+        only sees the ones you tick.</li>
+        <li><strong>Sources they may show</strong> &mdash; tick the encoders
+        they are allowed to use.</li>
+        <li><strong>Displays they may control</strong> &mdash; tick the decoders
+        they are allowed to change.</li>
+      </ul>
+      <p>Both lists have a search box and <strong>All</strong> /
+      <strong>None</strong> buttons, and show each device's model and address so
+      you can tell similar units apart.</p>
+      <p>Changes apply immediately. If you disable an account, change its
+      password, change its role or change its permissions, anyone signed in on
+      that account is signed out and has to sign in again.</p>
+      <div class="note">OmniSuite will not let you disable, demote or delete the
+      last active administrator, so you cannot lock yourself out. Those buttons
+      are greyed out when only one administrator is left.</div>
+
+      <h3 id="remote-signing-in">Signing in and out</h3>
+      <p>People open the address shown in Settings and sign in with the username
+      and password you gave them. Signing in on a second device is fine &mdash; a
+      phone and a laptop can both be signed in at once. <strong>Sign out</strong>
+      is in the top right.</p>
+      <p>Sessions end on their own after a period of inactivity, and everyone is
+      signed out if OmniSuite restarts. Repeated wrong passwords are slowed down
+      for a while.</p>
+      <p>Accounts you create here are OmniSuite sign-ins. They are not the
+      <a href="#settings">device passwords</a> OmniSuite uses to talk to
+      encoders and decoders; those are separate and unchanged.</p>
+
+      <h3 id="remote-user-view">What a User sees</h3>
+      <p>A User gets a simple screen built for a phone or tablet:</p>
+      <ol>
+        <li>Choose a source &mdash; what to show.</li>
+        <li>Choose a display &mdash; where to show it.</li>
+        <li>Press <strong>Show</strong>.</li>
+      </ol>
+      <p>Each display also says what is on it now. A display showing something
+      the account is not allowed to use is reported as showing another source,
+      without naming it.</p>
+      <p>They see only the equipment you assigned. Device addresses, firmware
+      versions, multicast settings and every other engineering detail are not
+      sent to them at all &mdash; not hidden, not sent.</p>
+      <p>A device that is assigned but not answering is shown as
+      <strong>Offline</strong> and cannot be selected, so it is clear the
+      assignment is still there and the equipment is not responding.</p>
+
+      <div class="note"><strong>Not finished yet.</strong> At this release
+      <strong>A/V routing is the only feature a User can operate.</strong> If you
+      grant USB or Multiview, the person sees that tab and a message saying the
+      controls are not built yet. Nothing is hidden from them and nothing
+      pretends to work. A User will never be able to create, edit, copy or
+      delete Multiview layouts &mdash; that stays administrator work &mdash; but
+      showing an approved layout and changing a source within it is planned.</div>
+
+      <h3 id="remote-troubleshooting">If it does not work</h3>
+      <table>
+        <tr><th>What you see</th><th>What to check</th></tr>
+        <tr><td>Nobody can reach the address</td><td>Confirm Remote Access shows
+        <strong>ON</strong>; confirm the device is on the same network as the
+        adapter you chose; confirm the host firewall allows OmniSuite.</td></tr>
+        <tr><td>The sign-in page appears but the password is refused</td>
+        <td>Reset it in Manage users. After several wrong attempts OmniSuite
+        pauses that account briefly.</td></tr>
+        <tr><td>A User sees no sources or displays</td><td>Nothing has been
+        assigned to them yet. Edit the account and tick the equipment.</td></tr>
+        <tr><td>A User is signed out unexpectedly</td><td>Their permissions,
+        role or password were changed, the account was disabled, or OmniSuite
+        restarted.</td></tr>
+        <tr><td>A display is missing from a User's list</td><td>It is not
+        assigned to that account, or discovery has not found it.</td></tr>
+      </table>
+    </section>
+
     <section id="troubleshooting">
-      <h2>13. Troubleshooting</h2>
+      <h2>14. Troubleshooting</h2>
       <p>Most reports of a missing or unresponsive device are answered by the same short sequence. The order matters: there is nothing to gain from rescanning a subnet the PC is not on, and nothing to learn from suspecting OmniSuite while its traffic is being filtered.</p>
       <div class="note">Device missing &rarr; Verify interface/subnet &rarr; Verify IP connectivity &rarr; Verify firewall/security policy &rarr; For routed USB: verify Discovery Network / known address &rarr; Scan again &rarr; Review TS Dump</div>
 
