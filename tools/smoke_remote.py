@@ -32,6 +32,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+# One implementation of "which port did the launcher bind", shared with the
+# release smoke test rather than written a second time here.
+from smoke_release import launcher_log_path, wait_for_port   # noqa: E402
+
 FAILURES: list[str] = []
 
 
@@ -57,17 +61,23 @@ def local_address():
 class Packaged:
     """The executable, started against a data directory of our choosing."""
 
-    def __init__(self, binary: Path, data_dir: Path, port: int):
-        self.binary, self.data_dir, self.port = binary, data_dir, port
+    def __init__(self, binary: Path, data_dir: Path):
+        self.binary, self.data_dir = binary, data_dir
+        self.port = None
         self.process = None
 
     def start(self, timeout=180):
         env = dict(os.environ, OMNI_DATA_DIR=str(self.data_dir),
-                   OMNI_HOST="127.0.0.1", OMNI_PORT=str(self.port),
-                   OMNI_NO_BROWSER="1")
+                   OMNI_SMOKE="1")
+        env.pop("OMNI_PORT", None)
+        log_file = launcher_log_path()
+        launched = time.time()
         self.process = subprocess.Popen(
             [str(self.binary)], env=env, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, cwd=str(self.binary.parent))
+        self.port = wait_for_port(log_file, launched, timeout=timeout)
+        if self.port is None:
+            raise RuntimeError("the launcher never recorded a port")
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self.process.poll() is not None:
@@ -136,9 +146,9 @@ def main(argv=None):
         return 2
 
     data_dir = Path(tempfile.mkdtemp(prefix="omni-smoke-remote-"))
-    local_port, remote_port = free_port(), free_port()
+    remote_port = free_port()
     address = local_address()
-    app = Packaged(binary, data_dir, local_port)
+    app = Packaged(binary, data_dir)
 
     try:
         print("=== a clean installation ===", flush=True)
@@ -207,7 +217,7 @@ def main(argv=None):
         print()
         print("=== after a restart ===", flush=True)
         app.stop()
-        app = Packaged(binary, data_dir, local_port)
+        app = Packaged(binary, data_dir)
         app.start()
         time.sleep(1.5)
         status, _b, _c = call(remote + "/__health", context=INSECURE)
@@ -220,7 +230,7 @@ def main(argv=None):
         app.stop()
         (data_dir / "remote_cert.pem").write_text("not a certificate",
                                                   encoding="utf-8")
-        app = Packaged(binary, data_dir, local_port)
+        app = Packaged(binary, data_dir)
         app.start()
         time.sleep(1.5)
         try:

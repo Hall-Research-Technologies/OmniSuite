@@ -501,12 +501,22 @@ can see one *Front Display* sees it named exactly as the administrator typed it.
 This is a projection, computed server-side from the same derived object both
 pages consume.
 
-**The gap, reported rather than papered over:** OmniSuite has no location, room,
-site or description field anywhere in its data model. The only human-readable
-differentiator available is the hostname, which is an engineering string. A
-room field would be the correct answer and does not exist; inventing one from
-address ranges or hostname patterns would be fabricating location data, so
-nothing does. The User Guide says so in the operator's words.
+**The gap, reported rather than papered over — and corrected once measured.**
+The first version of this said no location field existed anywhere. That was
+wrong, and reading a live `systeminfo` response during the concurrency
+validation is what showed it: OmniStream carries `location` and `description`
+in `systeminfo.config`, beside `hostname`. OmniSuite already reads both —
+but only to write them back unchanged when it edits systeminfo for another
+reason. Neither is cached, displayed, or reachable from the projection, and
+both were empty on every bench unit.
+
+The accurate statement is therefore: **the right disambiguator exists on the
+hardware and this application does not surface it.** The remedy is to carry an
+existing device field through discovery to the projection, which is plumbing
+rather than a new data model. That is out of scope for a hardening checkpoint
+and is recorded here as the next piece of work, with the hostname standing in
+meanwhile. Nothing fabricates a location from an address range or a hostname
+pattern.
 
 MAC and IP are not used for this. A hostname is already visible on the
 administrative screens; a MAC is not, and exposing one to solve a label problem

@@ -600,6 +600,8 @@
     'user.enabled': 'Account enabled',
     'user.disabled': 'Account disabled',
     'user.set_role': 'Role changed',
+    'user.set_enabled': 'Account enabled or disabled',
+    'user.delete': 'Account deleted',
     'user.role_changed': 'Role changed',
     'user.set_permissions': 'Permissions changed',
     'user.permissions_changed': 'Permissions changed',
@@ -619,6 +621,16 @@
     'device.aliases_changed': 'Device names changed',
     'bootstrap.admin_created': 'First administrator created',
   };
+
+  // An id nobody mapped must still read as English. An internal name in
+  // front of an operator is a defect whichever way it got there, and the next
+  // event added on the server would arrive here exactly as these two did.
+  function eventLabel(id) {
+    if (EVENT_LABELS[id]) return EVENT_LABELS[id];
+    const words = String(id || '').replace(/[._]+/g, ' ').trim();
+    if (!words) return 'Activity';
+    return words.charAt(0).toUpperCase() + words.slice(1);
+  }
 
   function when(seconds) {
     if (!seconds) return '';
@@ -671,7 +683,7 @@
       cell(row, 'When', when(entry.at));
       cell(row, 'Account', entry.actor || '\u2014');
       const action = document.createElement('span');
-      action.textContent = EVENT_LABELS[entry.event] || entry.event;
+      action.textContent = eventLabel(entry.event);
       if (['access.denied', 'login.failure', 'login.throttled']
           .indexOf(entry.event) !== -1) {
         action.className = 'state-pill disabled';
@@ -685,7 +697,7 @@
     el('audit_count').textContent = entries.length + ' of ' +
       (summary.total || 0) + ' kept';
     fillFilter('audit_event', summary.events || [],
-               (v) => EVENT_LABELS[v] || v);
+               (v) => eventLabel(v));
     fillFilter('audit_actor', summary.accounts || [], (v) => v);
   }
 

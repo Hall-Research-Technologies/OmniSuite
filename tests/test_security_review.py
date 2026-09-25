@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -344,6 +345,79 @@ class DefaultDenyTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.status, 403)
         self.assertEqual(decision.reason, "unclassified")
+
+
+class ActivityLabelTests(unittest.TestCase):
+    """No internal event name may reach the Activity view.
+
+    Derived from the source rather than from a list kept by hand: a list would
+    have been written from the same literals that missed these two.
+    """
+
+    #: Actions api_admin_user_action turns into "user.<action>". These never
+    #: appear as string literals anywhere, which is how they were missed.
+    CONCATENATED = ("set_enabled", "set_role", "set_password",
+                    "set_permissions", "delete")
+
+    @staticmethod
+    def _emitted() -> set:
+        """Every literal event id the application passes to audit()."""
+        found = set()
+        for path in sorted(Path(ROOT).glob("omni_*.py")) + \
+                [Path(ROOT) / "OmniMatrix_upgrade_server_v7_6y.py"]:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = getattr(node.func, "attr", None)
+                if name != "audit" or not node.args:
+                    continue
+                first = node.args[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    found.add(first.value)
+                elif isinstance(first, ast.IfExp):
+                    for branch in (first.body, first.orelse):
+                        if isinstance(branch, ast.Constant):
+                            found.add(branch.value)
+        return found
+
+    @staticmethod
+    def _labelled() -> set:
+        source = (Path(ROOT) / "ui" / "admin" / "users.js").read_text(
+            encoding="utf-8")
+        start = source.index("const EVENT_LABELS = {")
+        block = source[start:source.index("};", start)]
+        return set(re.findall(r"'([a-z_][a-z_.]*)'\s*:", block))
+
+    def test_every_emitted_event_has_a_label(self):
+        labelled = self._labelled()
+        self.assertTrue(labelled, "the label map could not be read")
+        expected = self._emitted() | {
+            "user." + action for action in self.CONCATENATED}
+        missing = sorted(event for event in expected if event not in labelled)
+        self.assertEqual(missing, [],
+                         "these reach the Activity view as internal names")
+
+    def test_an_unmapped_event_is_still_rendered_as_english(self):
+        """The fallback, for the event somebody adds after this test was written."""
+        source = (Path(ROOT) / "ui" / "admin" / "users.js").read_text(
+            encoding="utf-8")
+        self.assertIn("function eventLabel(", source)
+        # The raw id must not be the fallback anywhere it is displayed.
+        for line in source.splitlines():
+            stripped = line.split("//")[0]
+            self.assertNotIn("EVENT_LABELS[entry.event] || entry.event", stripped)
+
+    def test_the_labels_are_not_themselves_internal_names(self):
+        source = (Path(ROOT) / "ui" / "admin" / "users.js").read_text(
+            encoding="utf-8")
+        start = source.index("const EVENT_LABELS = {")
+        block = source[start:source.index("};", start)]
+        for event, label in re.findall(r"'([a-z_.]+)'\s*:\s*'([^']+)'", block):
+            with self.subTest(event=event):
+                self.assertNotIn(".", label)
+                self.assertNotIn("_", label)
+                self.assertNotEqual(label, event)
 
 
 if __name__ == "__main__":

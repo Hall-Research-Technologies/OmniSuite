@@ -572,3 +572,39 @@ Four things, and collapsing any two of them is how a saved layout comes to chang
 - Write it for an operator. What the feature does, how to use it, what the messages mean. Not function names, routes, protocol verbs, internal algorithms, test architecture or phase numbers — none of those help the person reading it, and all of them age badly.
 - The guide states the version it was built from, substituted at serve time. Never hand-type a version into it.
 - Screenshots must match the controls the build actually has. A screenshot that contradicts the current workflow is worse than none. Bench addresses, MAC addresses, serial numbers and hostnames are acceptable in it; credentials, tokens and secrets never are.
+
+
+### Remote access: hardening
+
+- **HTTPS is the default and there is no automatic downgrade.** A certificate that is missing, unreadable, encrypted or mismatched refuses remote access and says why; it never starts plaintext instead. Plain HTTP requires an explicit acknowledgement in the request body, so a caller that merely omits a field cannot reach it, and a truthy field of some other name will not do.
+- **There is no HTTP listener at all while HTTPS is active.** A redirect has to accept the request before it can protect it, and a sign-in posted to that listener has already crossed the network in clear. Refusing to listen is the only version of this that is true.
+- **A private key is never returned, logged or packaged.** A certificate description carries subject, issuer, fingerprint and expiry and nothing else. A generated key is written with `os.open` at `0o600` and an existing one has its mode narrowed on load. A clean installation contains no certificate and no key.
+- **The Secure flag follows the transport, not a setting.** It is decided from the request, beside the existing HttpOnly, SameSite and CSRF design rather than in place of any of it. A Secure cookie over plaintext is simply never sent, so the flag must not be forced on either.
+- **Authorization is re-evaluated at the operation boundary**, from the session as it is at that moment. An account disabled, demoted or re-permissioned a second ago is refused on its next operation; nothing waits for a browser to refresh itself.
+- **Lock the affected resource, never the application.** Per-resource locks, acquired in sorted order when an operation touches several, released in full if any acquisition fails, with a bounded wait that surfaces as 409 naming the resource. Hold one for the duration of one operation and no longer: the rule is last successful authorized operation wins, and a browser that closed must never leave a display unusable.
+- **An in-flight read must be ordered against the writes it races.** A cached read that began before an invalidation will otherwise publish a value the writer has already replaced. A per-key generation counter fixes the single-key case; a global invalidation needs its own epoch, because a key that was never individually invalidated has no generation to compare against. Both gaps were real, and both were found by stress tests rather than by reading the code.
+- **A discarded cache result is still returned to the caller that asked for it.** It simply is not stored. Count what was computed and what was discarded separately, or the behaviour cannot be observed.
+- **An audit write must not hold the lock authentication needs.** Rewriting the whole log on every event, under that lock, turns failed sign-ins into a way to stop the application answering. Snapshot under the lock, write outside it, batch on a cadence with security-relevant events immediate, and bound the entry count so a flood costs history rather than the disk.
+- **A username is not a secret.** Redacting it makes an activity view unreadable. Passwords, hashes, tokens, CSRF tokens, session data and device credentials are, and recursion through nested objects and lists belongs in the redactor rather than in the discipline of its callers.
+- **Do not prohibit duplicate friendly names.** Two displays legitimately share one, and a uniqueness rule is the application overruling the site. Disambiguate instead, and only where a label actually repeats **within that viewer's visible set** — a person who can see one *Front Display* sees it named exactly as it was typed. Never reach for an address or a MAC to solve a label problem: those are the engineering detail the projection exists to keep out of an operator's hands.
+- **Say what was tested, not what sounds strong.** Resistance to sophisticated timing analysis is not claimed anywhere. What is asserted is that the obvious differences are absent: an unknown username and a wrong password give the same answer and both cost a verification. A timing measurement inside a test suite would be flaky and would prove less than reading the code path, so the test reads the code path and says that is what it is doing.
+
+### A mutation harness is a test of the tests
+
+- **Break each security predicate on purpose and require the suite to notice.** An assertion nobody has watched fail is an assertion nobody has verified. Every predicate a trust boundary depends on — listener trust, route classification, the local-only refusal, the session requirement, CSRF, role, feature, source, destination, preset approval, expiry, the Secure cookie, address validation — earns a deliberate defect.
+- **A survivor is investigated, never waved through**: a real gap, a test gap, or a genuinely redundant control, and which one has to be established rather than assumed.
+- **A default nothing reaches still needs its own test.** Every route being classified means `classify()` never falls back and the gate never reaches its final return — which is exactly why a mutation of either survives, and exactly why they need testing directly. They are what protects the route somebody adds next.
+- **A second line of defence is tested by disabling the first.** A check that the ordinary path never reaches because something upstream already refused is not redundant; it is untested. Reach it deliberately.
+- **Record each suite's whole output, not its summary line.** A runner that greps the last line reports every mutation as uncaught, which is indistinguishable from tests that do not work.
+- **Restore the file in a `finally`**, so an interrupted run never leaves a deliberately defective source behind, and **translate the anchor's line endings to the file's** — sources here are CRLF, an anchor written with newlines matches nothing, and rewriting the file to match the anchor turns every mutation into a whole-file diff.
+
+### An internal name in front of an operator is a defect however it got there
+
+- **A label map written from string literals misses every name built by concatenation.** `"user." + action` produces ids that appear nowhere as a literal, so they were absent from the map and would have rendered as themselves. Derive the set of emittable names from the source, including the concatenated ones, and fail the suite when one has no label.
+- **The fallback for an unmapped id is English, never the id.** The map is today's fix; the fallback is the fix for the name somebody adds after the test was written.
+
+### Instrument the transport, and check the instrument
+
+- **A read counter belongs on the thing that opens the socket.** Wrapping a convenient helper counted zero device reads for every page, which reads exactly like a perfect cache and is no measurement at all.
+- **Settle background work before measuring, and discard a warm-up.** Startup threads open their own connections; counting those against the first sample reported seventeen reads for one client and four for ten.
+- **A zero is a result only once the request succeeded.** An endpoint answering 400 because the measurement omitted a parameter reports no device traffic for a reason that has nothing to do with caching. Report the status beside the count.

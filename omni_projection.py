@@ -59,10 +59,18 @@ def disambiguate(items, detail_of) -> None:
         Front Display - dec-front-102
 
     The hostname is used because it is the only human-readable per-device
-    identifier OmniSuite has. There is no room, location or description field
-    anywhere in the model, and inventing one here would be a device database
-    rather than a disambiguator. A proper fix is an administrator-editable
-    location, which is recorded as a gap rather than improvised.
+    identifier OmniSuite currently holds.
+
+    It is not the only one that exists. OmniStream carries `location` and
+    `description` in `systeminfo.config`, beside `hostname`; this application
+    reads both, but only so that editing systeminfo for some other reason
+    writes them back unchanged. Neither is cached, displayed or reachable from
+    here, and both were empty on every unit measured.
+
+    So the gap is recorded precisely: the right disambiguator is the device's
+    own location, and the work is to plumb an existing field through discovery
+    to the projection -- not to invent a room database. Until that exists,
+    nothing here fabricates one.
 
     An address or MAC is deliberately not used. Those would disambiguate, and
     they are exactly the engineering detail the whole projection exists to keep
