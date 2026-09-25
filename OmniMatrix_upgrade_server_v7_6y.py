@@ -6016,8 +6016,8 @@ def _usb_endpoint_network(entry):
 
     For an integrated endpoint this is the Icron interface as the parent `net`
     API reports it, never the parent's management address. An E4521 managed on
-    192.168.100.x whose Icron endpoint sits on 192.168.200.0/24 belongs, for
-    pairing purposes, to 192.168.200.0/24.
+    198.51.100.x whose Icron endpoint sits on 203.0.113.0/24 belongs, for
+    pairing purposes, to 203.0.113.0/24.
 
     Order of authority: whatever the derived view stamped on this entry (the same
     object every surface renders), then the parent Icron configuration, then the
@@ -8043,7 +8043,7 @@ def api_state_matrix():
                 # last reported, and the Multiview verdict was derived from the
                 # cached one. Leaving it there made the matrix say a decoder was
                 # not in Multiview while naming a Multiview as its video input --
-                # measured on 192.168.100.32 after a route and a Show. Derived
+                # measured on a bench decoder after a route and a Show. Derived
                 # again here, from the value that actually survived, because a
                 # derived field must never outlive what it was derived from.
                 name = omni_multiview.active_multiview_name(
@@ -8306,7 +8306,7 @@ def _restore_multiview_after_failed_route(ip, name):
         # Leaving the Multiview recorded the fallback input the display moved
         # to. Putting it back has to record that too, or the A/V Matrix goes on
         # showing the conventional route that was rolled back -- measured on
-        # 192.168.100.32, where the cache still read ip_input1 while the decoder
+        # a bench decoder, where the cache still read ip_input1 while the decoder
         # was demonstrably compositing again. The device is the truth; the cache
         # has to be told when the device changes back.
         if good:

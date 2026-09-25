@@ -4931,15 +4931,73 @@ was driven through the whole remote-access lifecycle
 onefile package — which is the part that proves the Rust extension was
 collected.
 
-### Known gap
+### Device-reported location
 
 The right way to tell two displays with the same friendly name apart is the
-device's own **location**. OmniStream carries `location` and `description` in
-`systeminfo.config`; OmniSuite reads both today only to write them back
-unchanged when it edits systeminfo for another reason. Surfacing them is
-plumbing an existing field through discovery to the projection. Until then the
-hostname stands in, appended only where a label actually repeats within an
-account's own visible set.
+device's own **location**, and it is now used. OmniStream carries `location`
+and `description` in `systeminfo.config`, which every probe already fetches and
+every cached unit already holds, so reading them costs no device round trip and
+writes nothing back.
+
+An administrator sees Location as its own column and a description as secondary
+text under the device name. A repeated friendly name is resolved by location
+first, description second, hostname last -- so a site that fills in its rooms
+gets *Front Display — Room 101* rather than a hostname. A unit cached before
+the field was read still answers, because the value is taken from the record's
+own `systeminfo` when no promoted field is present; no rescan is required.
+
+The restricted projection gains **no new field**. Location is used to build a
+name and is never shipped separately, so what a restricted account receives is
+exactly as narrow as it was.
+
+**None of it is identity.** A friendly name belongs to OmniSuite; location and
+description belong to the equipment; permissions, aliases, routing and
+Multiview approval are keyed to normalised hardware identity and are unchanged
+by any of them. `MetadataIsNotIdentityTests` is the fence around that, and a
+mutation that lets an address reach a user-visible name is caught.
+
+### One operator action, one audit entry
+
+Every account-management action was recorded twice: the store knew *what*
+changed and to whom but not who did it, and the API knew *who* but named the
+event after the verb in the request body and identified the account by an
+opaque id. The store keeps the event and receives the actor; the API records
+nothing of its own. An internal caller still produces a record with no actor,
+which is the truthful account of something nobody did through the interface.
+Bootstrap keeps its own more specific event and suppresses the generic one.
+
+No event name is built by concatenation any more. That is how `user.set_enabled`
+and `user.delete` came to have no label at all: a name assembled at the call
+site appears nowhere as a literal, so nobody writing the label map from the
+literals could see it.
+
+### Authorisation after the lock wait
+
+A lock is a wait, and an administrator can disable an account or take a display
+away during one. All four user operations now check before the wait -- so a
+request that was never going to be allowed does not queue for a lock -- and
+again immediately before the device write. The audit entry moved inside the
+lock with it, so a route that never happened is no longer recorded as one.
+
+Measured: a User whose display is withdrawn while their request is queued is
+refused with 403 and writes nothing; one whose account is disabled gets 401.
+The Multiview equivalent is held structurally and by mutation rather than end
+to end, because its gate reads the decoder first and a fenced test cannot reach
+one.
+
+### Installation settings are administrative
+
+`ui_preferences.json` and `notice_ack.json` are one file per installation, not
+one per account. Their endpoints were AUTHENTICATED, which was right while the
+only authenticated caller was the local operator and became wrong once
+restricted Users existed: a signed-in classroom account could restyle the
+administrator's interface and dismiss their update alert. All are
+administrative now, except *reading* the theme, which the User Guide needs at
+`/help`.
+
+That required the classification to answer per method. `METHOD_ROUTES` is
+deliberately tiny and may only ever narrow a rule, never widen it -- a rule
+that needs an entry is usually a rule that should have been two.
 
 ## Build and publish gate
 

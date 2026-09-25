@@ -577,3 +577,63 @@ local listener means.
 self-signed certificate. The User Guide says the browser warning is about who
 vouches for the address, not about whether the connection is encrypted, which
 is the accurate statement.
+
+---
+
+# Part 3 — The release-candidate audit
+
+Part 2 records what was built. This records what re-reading the whole branch
+found, which is a different exercise: an assumption that was safe at one
+checkpoint and became false at a later one is invisible from inside either.
+
+## Two findings
+
+**Installation settings were reachable by a restricted account.** Four
+endpoints -- the appearance preference, its reset, the update alert and its
+acknowledgement -- were AUTHENTICATED. Each reads or writes a file that belongs
+to the machine rather than to an account. Nothing about it is device control
+and nothing leaks, so it is a small finding; it is still a restricted account
+writing state the local operator owns, which is precisely what this branch
+exists to prevent. The fix moved three to ADMIN and split the fourth by method,
+because the User Guide at `/help` reads the theme to paint itself.
+
+**Four callers read `.get_data()` off a Flask view's result.** A view returns a
+tuple on its error paths, so asking about a decoder that is not in the
+inventory produced a 500 reading `'tuple' object has no attribute 'get_data'`.
+That is the wrong answer twice: the condition is ordinary, and a 500 claims the
+application is broken when the truth is that a device is not known. One helper
+now unwraps whatever shape the view returned.
+
+Both were found by building tests for something else -- the second by a test
+guard that refused to assert anything until its precondition held.
+
+## The route inventory, final
+
+138 registered rules, **none unclassified**.
+
+| Class | Count |
+| --- | --- |
+| PUBLIC | 6 |
+| AUTHENTICATED | 6 |
+| USER | 6 |
+| ADMIN | 106 |
+| LOCAL_ONLY | 11 |
+
+Eleven are pages, 125 are APIs, two are static trees. `/api/user/state` is
+AUTHENTICATED rather than USER on purpose: it is per-device filtered, and the
+USB panel needs source names for equipment granted without the A/V capability.
+
+## What is still true, and what is not claimed
+
+- Permissions, routing, aliases and Multiview approval are keyed to normalised
+  hardware identity. A friendly name, a location, a description and a hostname
+  are presentation, and there are adversarial tests holding that a room
+  renamed changes none of them.
+- `_normalise_identity` lowercases any string it is given, so a display label
+  does produce *a* normalised value. It can never equal a stored identity,
+  which is a normalised hardware address, and the tests assert non-membership
+  rather than that the normaliser refuses. Worth knowing; not exploitable,
+  because nothing writes a name into a permission.
+- The Multiview lock revalidation is proven structurally and by mutation, not
+  end to end. Its gate reads the decoder before anything else and a fenced test
+  may not reach one. Said plainly rather than implied.

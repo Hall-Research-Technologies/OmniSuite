@@ -39,6 +39,12 @@ USERS = ["tests.test_user_operations", "tests.test_login_hardening",
 REMOTE = ["tests.test_remote_access", "tests.test_remote_persistence",
           "tests.test_hardening", "tests.test_login_hardening"]
 
+#: The guarantees this release-candidate pass added.
+RELOCK = ["tests.test_lock_revalidation"]
+META = ["tests.test_device_metadata", "tests.test_user_projection"]
+AUDIT = ["tests.test_account_audit"]
+PREFS = ["tests.test_security_review", "tests.test_remote_authorization"]
+
 #: (id, file, anchor, replacement, what the defect would be, suites)
 MUTATIONS = [
     # ---- the listener trust model -----------------------------------
@@ -166,6 +172,71 @@ MUTATIONS = [
      '    return not (is_loopback_address(text) or is_wildcard_address(text))',
      '    return not is_wildcard_address(text)',
      "remote access could bind loopback and reach nobody", REMOTE),
+
+    # ---- authorisation on the far side of a lock wait ----------------
+    ("relock.route-no-recheck", "omni_remote_api.py",
+     '                # Again, now that the wait is over and the next statement\n'
+     '                # writes to hardware.\n'
+     '                refusal = _revalidate(_check, "/api/user/route")\n'
+     '                if refusal is not None:\n'
+     '                    return refusal\n',
+     '',
+     "a User revoked while queued would still route", RELOCK),
+    ("relock.multiview-no-recheck", "omni_remote_api.py",
+     '                refusal = _revalidate_multiview(\n'
+     '                    identity, name, "/api/user/multiview_show")\n'
+     '                if refusal is not None:\n'
+     '                    return refusal\n',
+     '',
+     "an approval withdrawn while queued would still be shown", RELOCK),
+
+    # ---- presentation metadata is not identity, and does not widen ----
+    ("meta.address-as-distinguisher", "omni_projection.py",
+     '    return (device_location(unit) or device_description(unit)\n'
+     '            or _device_name(row, unit))',
+     '    return (device_location(unit) or device_description(unit)\n'
+     '            or str((unit or {}).get("ip") or "")\n'
+     '            or _device_name(row, unit))',
+     "an address would reach a user-visible name", META),
+    ("meta.projection-widens", "omni_projection.py",
+     '        "id": identity,\n'
+     '        "name": _friendly_name(row, unit, identity, aliases),\n'
+     '        "online": _is_online(row, unit),\n'
+     '    }\n'
+     '\n'
+     '\n'
+     'def project_destination',
+     '        "id": identity,\n'
+     '        "name": _friendly_name(row, unit, identity, aliases),\n'
+     '        "online": _is_online(row, unit),\n'
+     '        "location": device_location(unit),\n'
+     '    }\n'
+     '\n'
+     '\n'
+     'def project_destination',
+     "systeminfo would widen the restricted projection", META),
+
+    # ---- one action, one entry ---------------------------------------
+    ("audit.duplicate-returns", "omni_remote_api.py",
+     '        if not result.get("ok"):\n'
+     '            return jsonify(result), 400\n'
+     '        return jsonify(result)\n\n    @app.route("/api/admin/devices"',
+     '        if not result.get("ok"):\n'
+     '            return jsonify(result), 400\n'
+     '        store.audit("user." + action, actor=actor,\n'
+     '                    detail={"user_id": user_id})\n'
+     '        return jsonify(result)\n\n    @app.route("/api/admin/devices"',
+     "one operator action would be recorded twice", AUDIT),
+
+    # ---- installation settings are administrative ---------------------
+    ("prefs.global-write-open", "omni_access.py",
+     '    ("POST", "/api/ui_preferences"): (Access.ADMIN, None),',
+     '    ("POST", "/api/ui_preferences"): (Access.AUTHENTICATED, None),',
+     "a restricted User could restyle the operator's interface", PREFS),
+    ("prefs.notice-ack-open", "omni_access.py",
+     '    "/api/notices/ack": (Access.ADMIN, None),',
+     '    "/api/notices/ack": (Access.AUTHENTICATED, None),',
+     "a restricted User could dismiss the operator's update alert", PREFS),
 ]
 
 

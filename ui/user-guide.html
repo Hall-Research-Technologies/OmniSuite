@@ -1035,13 +1035,36 @@
       for, who issued it, and when it expires. A certificate OmniSuite created
       lasts a little over two years; create a new one before it runs out.</p>
 
-      <div class="note"><strong>The browser warning, and why it appears.</strong>
-      A certificate OmniSuite creates for itself is not signed by an authority
-      your browser has heard of, so the first visit says something like "Your
-      connection is not private". Choose <em>Advanced</em> and continue. The
-      connection is encrypted either way &mdash; the warning is about
-      <em>who</em> vouches for the address, not about whether anyone can read
-      what is sent. Most browsers only ask once per device.</div>
+      <h4 id="remote-warning">The browser warning, and why it appears</h4>
+      <p>A certificate OmniSuite creates for itself is not signed by an
+      authority your browser has heard of, so the first visit says something
+      like &ldquo;Your connection is not private&rdquo; or &ldquo;Warning:
+      Potential Security Risk Ahead&rdquo;. That is expected. Choose
+      <strong>Advanced</strong>, then the option to continue to the site. Most
+      browsers only ask once per device.</p>
+      <table>
+        <tr><th></th><th>Created by OmniSuite</th><th>Issued by your
+        organisation</th></tr>
+        <tr><td>Traffic is encrypted</td><td><strong>Yes</strong></td>
+        <td><strong>Yes</strong></td></tr>
+        <tr><td>Passwords readable on the network</td><td>No</td><td>No</td></tr>
+        <tr><td>Browser shows a warning</td><td>Yes, the first time</td>
+        <td>No</td></tr>
+        <tr><td>Browser can confirm it is really your OmniSuite</td>
+        <td><strong>No</strong></td><td>Yes</td></tr>
+      </table>
+      <p>So the warning is about the last row, not the first. The connection is
+      encrypted either way, and nobody watching the network can read the
+      password somebody types.</p>
+      <div class="note"><strong>What a certificate OmniSuite created does not
+      give you.</strong> Your browser cannot tell whether it is talking to your
+      OmniSuite computer or to something else that answered on that address,
+      because nothing it trusts vouches for the name. On a switch and a network
+      you control, that is usually an acceptable trade for being able to set it
+      up in one click. If you need the browser to be sure &mdash; a larger
+      site, a shared network, anywhere the traffic leaves equipment you manage
+      &mdash; use a certificate your organisation issued instead. Do not treat
+      the two as equivalent because both say HTTPS.</div>
 
       <div class="warn"><strong>If the certificate is missing or unreadable,
       Remote Access does not start.</strong> OmniSuite will not quietly fall
@@ -1089,15 +1112,40 @@
       labels only &mdash; renaming a device never changes who is allowed to use
       it.</p>
       <p>You may give two devices the same name if that genuinely reflects the
-      site. Where a name is used more than once, OmniSuite adds the device's own
-      hostname after it &mdash; <em>Front Display &mdash; at-omni-121-04553</em>
-      &mdash; on the screens where somebody has to choose between them, so the
-      choice is never a guess. Names that are already unique are shown exactly
-      as you typed them.</p>
-      <div class="note">A clearer name is still better than a disambiguated one.
-      OmniSuite has no separate field for a room or building, so if two displays
-      really are in different rooms, put that in the name itself &mdash;
-      <em>Front Display (Room 204)</em>.</div>
+      site. Where a name is used more than once, OmniSuite adds something after
+      it on the screens where somebody has to choose &mdash; so the choice is
+      never a guess. Names that are already unique are shown exactly as you
+      typed them.</p>
+
+      <h3 id="device-location">Location and Description</h3>
+      <p>OmniStream units carry a <strong>Location</strong> and a
+      <strong>Description</strong> of their own, set on the device itself.
+      OmniSuite reads both and shows them in <strong>Manage users &gt; Device
+      names</strong>, beside the friendly name. It never changes them, and
+      nothing is written to the equipment.</p>
+      <p>Where they are filled in, they are what OmniSuite uses to tell two
+      identical names apart:</p>
+      <table>
+        <tr><th>Order</th><th>What is added</th><th>Looks like</th></tr>
+        <tr><td>1</td><td>The device&rsquo;s Location</td><td>Front Display
+        &mdash; Room 101</td></tr>
+        <tr><td>2</td><td>Its Description, if there is no Location</td>
+        <td>Front Display &mdash; House left</td></tr>
+        <tr><td>3</td><td>Its own name, if it has neither</td><td>Front Display
+        &mdash; at-omni-121-04553</td></tr>
+      </table>
+      <div class="note"><strong>Setting Location on your OmniStream units is
+      worth the few minutes.</strong> It is the difference between a teacher
+      choosing between <em>Room 101</em> and <em>Room 102</em>, and choosing
+      between two hostnames. Set it on the device (its own web interface, under
+      system settings), then scan again in OmniSuite.</div>
+      <div class="note">Friendly name and Location are different things and are
+      kept apart on purpose. The <strong>friendly name</strong> is yours: it
+      lives in OmniSuite, you can change it at any time and the device never
+      sees it. <strong>Location</strong> and <strong>Description</strong> belong
+      to the equipment and are shown exactly as the device reports them.
+      Changing either one never changes who is allowed to use a device &mdash;
+      permissions follow the hardware, not what anything is called.</div>
 
       <h3 id="remote-users">Managing accounts</h3>
       <p><strong>Settings &gt; Remote Access &gt; Manage users</strong>, or

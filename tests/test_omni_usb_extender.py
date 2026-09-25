@@ -473,6 +473,16 @@ class QueryFieldParsingTests(unittest.TestCase):
 
 #
 
+# The addresses below are bench addresses on purpose, and are the one
+# place in the suite where that is correct. They are not targets -- the
+# fence blocks every non-loopback transport -- they are values DECODED
+# from the captured bytes a few lines down, and the assertions check what
+# the parser produces from those exact bytes. Rewriting them to a
+# documentation range would mean either editing the capture, which is
+# forging evidence, or asserting that the parser turns one address into
+# another, which is a test that lies. A parser needs exact captured
+# fixtures, and that rule wins here.
+#
 # Ground truth established from the devices themselves, because Basic Device
 
 # Information reports the local MAC alongside that device's own IP address:

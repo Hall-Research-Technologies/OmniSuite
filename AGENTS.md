@@ -608,3 +608,51 @@ Four things, and collapsing any two of them is how a saved layout comes to chang
 - **A read counter belongs on the thing that opens the socket.** Wrapping a convenient helper counted zero device reads for every page, which reads exactly like a perfect cache and is no measurement at all.
 - **Settle background work before measuring, and discard a warm-up.** Startup threads open their own connections; counting those against the first sample reported seventeen reads for one client and four for ten.
 - **A zero is a result only once the request succeeded.** An endpoint answering 400 because the measurement omitted a parameter reports no device traffic for a reason that has nothing to do with caching. Report the status beside the count.
+
+
+### An audit entry is a record of what happened, not of what was asked
+
+- **One operator action, one entry.** Two layers each recording half of it produces a log that reads as though everything happened twice, and neither half answers the question on its own. Record it in the layer that knows *what changed and to whom*, and pass the actor down to it -- the actor is usually the only thing the outer layer knows that the inner one does not.
+- **Name the event after what happened, never after the verb in the request.** "Account disabled" is a fact; "set_enabled" is an instruction that may have been refused. Identify the account by something a person can read, not by an opaque id.
+- **An event name built by concatenation is invisible to a label map.** `"user." + action` appears nowhere as a literal, so nobody writing the map from the literals can see it, and the internal name reaches the operator. Derive the set of emittable names from the source and fail the suite when one has no label.
+- **Record it where the operation happened, not before it.** An entry written before a wait records an operation that may still be refused.
+- **A record with no actor is not a gap.** A local request is trusted by the socket it arrived on, not by a sign-in, so there is no account behind it. Writing one in would be inventing it.
+
+### A lock is a wait, and a wait is time in which permission can be withdrawn
+
+- **Authorisation is checked again on the far side of the lock**, immediately before the device write. Everything decided before the wait describes a world that may have moved on: an administrator can disable an account, change a permission or take a display away while a request sits in the queue.
+- **Check before the wait as well**, so a request that was never going to be allowed does not queue for a lock and delay one that was.
+- **A refusal after the wait is recorded as a refusal**, and the operation that did not happen is not recorded as though it did.
+
+### A setting that belongs to the installation is not a setting a user may write
+
+- **One file for the whole installation is not one file per account.** An appearance preference and a notice acknowledgement look harmless until a restricted account can restyle the operator's interface or dismiss their alert. Classify the write as administrative even when nothing about it is device control.
+- **A classification may narrow by method; it must never widen.** Where a rule's read is ordinary and its write is not, say so in one small table, and assert both that an override only ever restricts and that the rule it overrides is itself classified. A rule that needs an entry is usually a rule that should have been two.
+
+### Device-reported metadata is presentation, and only presentation
+
+- **Surface what the device already tells you before inventing a field.** Location and description sit in `systeminfo`, which every probe fetches and every cached record holds, so using them costs no device read and writes nothing back. Read from the record first and from the nested configuration underneath it, so something discovered before the field was promoted still answers and no rescan is required.
+- **Precedence is human-readability, not availability**: the room, then the description, then the device's own name. An address or a MAC would also distinguish and neither is ever used -- they are the engineering detail the projection exists to keep out of an operator's hands.
+- **A friendly name belongs to the application; location and description belong to the equipment.** Keep them in separate fields and separate columns, and never let either become authorization identity. A room renamed must change no permission, no alias, no routing identity and no approval, and that deserves adversarial tests rather than a comment.
+- **Use it to build the name; do not ship it as a new field.** A projection that gains a key for every fact it renders is no longer a projection.
+
+### A view's result is not always a response
+
+- **A Flask view may return `(response, status)`, and every error path usually does.** Reading `.get_data()` off the tuple raises inside a request, so the operator gets a 500 claiming the application is broken when the truth is that a device is not known or not answering. Unwrap in one helper and route every caller through it.
+
+### Make a test say which of its preconditions broke
+
+- **A guard that asserts the precondition, and names what it saw instead, turns a puzzling failure into a two-line diagnosis.** "The request finished without queueing (HTTP 502, display unavailable)" says the test never reached the thing it was written to measure; "expected 403, got 200" would have been read as the feature being broken.
+- **When the precondition cannot be met, say so and narrow the claim** rather than asserting something weaker and calling it the same test. A path whose gate reads a device cannot be driven end to end from a fenced test; hold it structurally and by mutation, and write down that this is what was done.
+
+### An object captured at registration cannot be substituted later
+
+- **Passing a function or a store into a registration captures it by value.** Reassigning the module attribute afterwards changes nothing the registered code can see -- so a test that substitutes `_user_store` or `_load_cache` silently drives the real one. Redirect what the captured object *reads* (its file paths) instead, and restore everything it held.
+- **Werkzeug's test client owns `HTTP_COOKIE`.** Setting it through `environ_base` is discarded, because the client rebuilds that header from its own cookie jar on every request. Put the session in the jar; ordinary headers still pass through.
+- **A remote request is refused outright while remote access is off**, which is correct and is not what a test about authorisation is measuring. Throw that switch where the gate reads it.
+
+### A cleanliness check must know what it is looking for
+
+- **"A bench address" is not "any private address".** Flagging all of RFC 1918 reports the fixtures as contraband, and noise is how a real finding gets scrolled past. Derive the actual bench from the machine's own cache and flag only that; report synthetic private addresses as fine.
+- **Read the artifact's own table of contents, not the archive around it.** A onefile package contains one file, so looking for a shipped page in the zip reports every one of them missing.
+- **A public CA bundle is not key material.** A `.pem` suffix alone is not evidence of a secret.
