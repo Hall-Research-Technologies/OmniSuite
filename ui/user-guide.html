@@ -1029,11 +1029,19 @@
       <ul>
         <li><strong>Features</strong> &mdash; A/V, USB and Multiview. The person
         only sees the ones you tick.</li>
-        <li><strong>Sources they may show</strong> &mdash; tick the encoders
+        <li><strong>Sources they may show</strong> &mdash; tick the equipment
         they are allowed to use.</li>
-        <li><strong>Displays they may control</strong> &mdash; tick the decoders
+        <li><strong>Displays they may control</strong> &mdash; tick the displays
         they are allowed to change.</li>
+        <li><strong>Multiview layouts they may show</strong> &mdash; choose a
+        display, then tick the saved layouts this person may put on it.</li>
       </ul>
+      <div class="note"><strong>Ticking Multiview is not enough on its own.</strong>
+      You also choose which saved layouts the person may show, one display at a
+      time. A layout you create later is not available to them until you approve
+      it. A layout containing a source they are not allowed to use is not
+      offered to them at all, even if you approve it &mdash; so nobody can see
+      another room's equipment through a layout.</div>
       <p>Both lists have a search box and <strong>All</strong> /
       <strong>None</strong> buttons, and show each device's model and address so
       you can tell similar units apart.</p>
@@ -1057,7 +1065,11 @@
       encoders and decoders; those are separate and unchanged.</p>
 
       <h3 id="remote-user-view">What a User sees</h3>
-      <p>A User gets a simple screen built for a phone or tablet:</p>
+      <p>A User gets a simple screen built for a phone or tablet, with a tab for
+      each feature you granted. If you granted only one, there are no tabs at
+      all.</p>
+
+      <h4>A/V</h4>
       <ol>
         <li>Choose a source &mdash; what to show.</li>
         <li>Choose a display &mdash; where to show it.</li>
@@ -1066,6 +1078,42 @@
       <p>Each display also says what is on it now. A display showing something
       the account is not allowed to use is reported as showing another source,
       without naming it.</p>
+
+      <h4>USB</h4>
+      <p>USB extension moves a keyboard, mouse, camera or other USB device from
+      one place to another, so it is not described as sources and displays. The
+      User picks:</p>
+      <ol>
+        <li>a <strong>computer</strong> &mdash; which machine the USB devices
+        should work with;</li>
+        <li>the <strong>USB devices</strong> &mdash; the peripherals to give it;</li>
+        <li><strong>Connect</strong>.</li>
+      </ol>
+      <p>If those two are already joined the button reads
+      <strong>Disconnect</strong> instead. Peripherals connected to a computer
+      the account is not allowed to see are shown as connected to another
+      computer, without naming it.</p>
+      <p>A User can only use USB on equipment you already assigned: the USB
+      built into a source is covered by that source's permission, and the USB
+      built into a display by that display's.</p>
+
+      <h4>Multiview</h4>
+      <p>Multiview shows several sources on one display at once. A User
+      <em>operates</em> Multiview; they never build or change layouts.</p>
+      <ol>
+        <li>Choose a display.</li>
+        <li>Choose one of the layouts you approved &mdash; it goes on the
+        screen.</li>
+        <li>To change one window, tap it and choose a different source.</li>
+      </ol>
+      <p>The layout is drawn the way it appears on the screen, so a window is
+      chosen by pointing at where it is rather than by reading a name. Each
+      window shows what is currently in it.</p>
+      <div class="note">A User cannot create, edit, copy, delete or install
+      Multiview layouts, cannot change the equipment that feeds them, and cannot
+      manage Multiview groups. Those stay with you. They also never see the
+      technical settings behind a Multiview &mdash; inputs, encoders, bit rates
+      and the rest are OmniSuite's job.</div>
       <p>Sources and displays appear under the friendly names you set, or
       their own names where you have not set one.</p>
       <p>They see only the equipment you assigned. Device addresses, hostnames,
@@ -1077,13 +1125,11 @@
       <strong>Offline</strong> and cannot be selected, so it is clear the
       assignment is still there and the equipment is not responding.</p>
 
-      <div class="note"><strong>Not finished yet.</strong> At this release
-      <strong>A/V routing is the only feature a User can operate.</strong> If you
-      grant USB or Multiview, the person sees that tab and a message saying the
-      controls are not built yet. Nothing is hidden from them and nothing
-      pretends to work. A User will never be able to create, edit, copy or
-      delete Multiview layouts &mdash; that stays administrator work &mdash; but
-      showing an approved layout and changing a source within it is planned.</div>
+      <div class="note"><strong>All three features now work.</strong> A User
+      with A/V, USB or Multiview granted can operate each of them from the same
+      simple screen. What a User still cannot do is administer anything: no
+      scanning, no configuration, no firmware, no Settings, no account
+      management, and no building or changing Multiview layouts.</div>
 
       <h3 id="remote-troubleshooting">If it does not work</h3>
       <table>
@@ -1109,6 +1155,16 @@
         permissions are unaffected; people simply sign in again.</td></tr>
         <tr><td>A device still shows its hostname</td><td>No friendly name has
         been set for it. Add one in Manage users &gt; Device names.</td></tr>
+        <tr><td>A User sees no Multiview layouts on a display</td><td>None have
+        been approved for them on that display, or the layouts saved there use a
+        source the User is not allowed to use.</td></tr>
+        <tr><td>A User sees no computers under USB</td><td>The equipment with
+        the USB host connection has not been assigned to them as a source.</td></tr>
+        <tr><td>A Multiview layout will not show</td><td>OmniSuite reports why.
+        &ldquo;No record of what feeds this layout&rdquo; means the layout needs
+        opening and saving once on the Multiview page, as an administrator.</td></tr>
+        <tr><td>Two displays have the same name</td><td>Give them different
+        friendly names. Users cannot tell identically named equipment apart.</td></tr>
       </table>
     </section>
 
