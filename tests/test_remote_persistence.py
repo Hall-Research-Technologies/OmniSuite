@@ -434,38 +434,38 @@ class SessionsDoNotSurviveRestartTests(unittest.TestCase):
 class AdapterSelectionSurvivesTests(RemoteAccessPersistenceTests):
     """C and D at the restore level, through the real predicate."""
 
-    ETH = "guid:8222555e-632a-4c00-b050-7dc5bc4ba912"
-    WIFI = "guid:bf3f0723-43fd-4165-b804-9b04e810cd0e"
+    ETH = "guid:aaaa1111-2222-3333-4444-555566667777"
+    WIFI = "guid:bbbb1111-2222-3333-4444-555566667777"
 
     def test_a_saved_adapter_restores_after_a_restart(self):
         result, started, _state, _tried = self._server(
             {"enabled": True, "adapter_id": self.ETH,
-             "adapter_name": "Ethernet 3", "address": "192.168.100.185",
+             "adapter_name": "Ethernet 3", "address": "198.51.100.85",
              "port": 8081, "transport": "http"},
             [{"id": self.ETH, "name": "Ethernet 3",
-              "address": "192.168.100.185"}])
+              "address": "198.51.100.85"}])
         self.assertTrue(result["restored"])
-        self.assertEqual(started["address"], "192.168.100.185")
+        self.assertEqual(started["address"], "198.51.100.85")
 
     def test_the_same_adapter_at_a_new_address_restores_there(self):
         """The defect, at the level an operator experiences it."""
         result, started, _state, _tried = self._server(
             {"enabled": True, "adapter_id": self.ETH,
-             "adapter_name": "Ethernet 3", "address": "192.168.100.180",
+             "adapter_name": "Ethernet 3", "address": "198.51.100.80",
              "port": 8081, "transport": "http"},
             [{"id": self.ETH, "name": "Ethernet 3",
-              "address": "192.168.100.185"}])
+              "address": "198.51.100.85"}])
         self.assertTrue(result["restored"])
-        self.assertEqual(started["address"], "192.168.100.185",
+        self.assertEqual(started["address"], "198.51.100.85",
                          "the chosen adapter moved; the listener follows it")
 
     def test_another_adapter_holding_the_old_address_inherits_nothing(self):
         """E: Wi-Fi had .180. Ethernet must not answer for that selection."""
         result, started, state, _tried = self._server(
             {"enabled": True, "adapter_id": self.WIFI, "adapter_name": "Wi-Fi",
-             "address": "192.168.100.180", "port": 8081, "transport": "http"},
+             "address": "198.51.100.80", "port": 8081, "transport": "http"},
             [{"id": self.ETH, "name": "Ethernet 3",
-              "address": "192.168.100.180"}])
+              "address": "198.51.100.80"}])
         self.assertFalse(result["restored"])
         self.assertEqual(started, {})
         self.assertIn("Wi-Fi", state["restore_error"])
@@ -475,7 +475,7 @@ class AdapterSelectionSurvivesTests(RemoteAccessPersistenceTests):
         """F: an operator needs to know which network to plug back in."""
         _result, _started, state, _tried = self._server(
             {"enabled": True, "adapter_id": self.ETH,
-             "adapter_name": "Ethernet 3", "address": "192.168.100.185",
+             "adapter_name": "Ethernet 3", "address": "198.51.100.85",
              "port": 8081, "transport": "http"},
             [{"id": self.WIFI, "name": "Wi-Fi", "address": "10.0.0.5"}])
         self.assertIn("Ethernet 3", state["restore_error"])
@@ -492,10 +492,10 @@ class AdapterSelectionSurvivesTests(RemoteAccessPersistenceTests):
     def test_an_address_only_config_refuses_when_it_cannot_be_established(self):
         """Q: the state Wylie's machine was actually in."""
         result, started, state, _tried = self._server(
-            {"enabled": True, "address": "192.168.100.180", "port": 8081,
+            {"enabled": True, "address": "198.51.100.80", "port": 8081,
              "transport": "http"},
             [{"id": self.ETH, "name": "Ethernet 3",
-              "address": "192.168.100.185"}])
+              "address": "198.51.100.85"}])
         self.assertFalse(result["restored"])
         self.assertEqual(started, {}, "nothing may be bound on a guess")
         self.assertIn("cannot be established", state["restore_error"])
@@ -504,9 +504,9 @@ class AdapterSelectionSurvivesTests(RemoteAccessPersistenceTests):
         """N."""
         result, started, _state, _tried = self._server(
             {"enabled": False, "adapter_id": self.ETH,
-             "address": "192.168.100.185", "port": 8081},
+             "address": "198.51.100.85", "port": 8081},
             [{"id": self.ETH, "name": "Ethernet 3",
-              "address": "192.168.100.185"}])
+              "address": "198.51.100.85"}])
         self.assertFalse(result["restored"])
         self.assertEqual(started, {})
 
@@ -514,10 +514,10 @@ class AdapterSelectionSurvivesTests(RemoteAccessPersistenceTests):
         """O: a saved HTTPS configuration with no certificate still refuses."""
         result, started, _state, _tried = self._server(
             {"enabled": True, "adapter_id": self.ETH,
-             "adapter_name": "Ethernet 3", "address": "192.168.100.185",
+             "adapter_name": "Ethernet 3", "address": "198.51.100.85",
              "port": 8081, "transport": "https"},
             [{"id": self.ETH, "name": "Ethernet 3",
-              "address": "192.168.100.185"}])
+              "address": "198.51.100.85"}])
         self.assertFalse(result["restored"])
         self.assertEqual(started, {}, "no plaintext fallback, ever")
 

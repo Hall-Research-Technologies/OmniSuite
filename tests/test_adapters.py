@@ -6,7 +6,7 @@ address as unavailable and the Network dropdown offered nothing, so there was
 no way to put it right from the screen that was telling you to.
 
 The machine it was found on made the second half of the problem concrete too:
-192.168.100.180 belonged to a Wi-Fi adapter and 192.168.100.185 to an Ethernet
+198.51.100.80 belonged to a Wi-Fi adapter and 198.51.100.85 to an Ethernet
 one. Same subnet, same building, different hardware -- so "the address moved"
 and "a different adapter got that address" are genuinely different events and
 must not be confused.
@@ -28,8 +28,8 @@ import omni_adapters                                    # noqa: E402
 import omni_remote                                      # noqa: E402
 
 #: Two adapters on one subnet, which is the shape that made this confusing.
-ETHERNET = "guid:8222555e-632a-4c00-b050-7dc5bc4ba912"
-WIFI = "guid:bf3f0723-43fd-4165-b804-9b04e810cd0e"
+ETHERNET = "guid:aaaa1111-2222-3333-4444-555566667777"
+WIFI = "guid:bbbb1111-2222-3333-4444-555566667777"
 
 
 def adapter(identity, name, address, up=True, virtual=False, how="guid"):
@@ -42,11 +42,11 @@ def adapter(identity, name, address, up=True, virtual=False, how="guid"):
     }
 
 
-ETH_185 = adapter(ETHERNET, "Ethernet 3", "192.168.100.185")
-ETH_190 = adapter(ETHERNET, "Ethernet 3", "192.168.100.190")
-WIFI_180 = adapter(WIFI, "Wi-Fi", "192.168.100.180")
-HYPERV = adapter("guid:542af5c7-b71f-4b42-9cb4-3e7275a270bf",
-                 "vEthernet (Default Switch)", "172.29.16.1", virtual=True)
+ETH_185 = adapter(ETHERNET, "Ethernet 3", "198.51.100.85")
+ETH_190 = adapter(ETHERNET, "Ethernet 3", "198.51.100.90")
+WIFI_180 = adapter(WIFI, "Wi-Fi", "198.51.100.80")
+HYPERV = adapter("guid:cccc1111-2222-3333-4444-555566667777",
+                 "vEthernet (Default Switch)", "203.0.113.1", virtual=True)
 
 
 class IdentityTests(unittest.TestCase):
@@ -54,16 +54,16 @@ class IdentityTests(unittest.TestCase):
 
     def test_a_guid_is_preferred(self):
         identity, how = omni_adapters.identity_for(
-            guid="{8222555E-632A-4C00-B050-7DC5BC4BA912}",
-            mac="84-5C-31-F4-44-63", name="Ethernet 3")
+            guid="{AAAA1111-2222-3333-4444-555566667777}",
+            mac="02-00-5E-10-00-01", name="Ethernet 3")
         self.assertEqual(how, omni_adapters.BY_GUID)
         self.assertEqual(identity, ETHERNET)
 
     def test_a_mac_is_the_fallback(self):
         identity, how = omni_adapters.identity_for(
-            guid="", mac="84-5C-31-F4-44-63", name="Ethernet 3")
+            guid="", mac="02-00-5E-10-00-01", name="Ethernet 3")
         self.assertEqual(how, omni_adapters.BY_MAC)
-        self.assertEqual(identity, "mac:845c31f44463")
+        self.assertEqual(identity, "mac:02005e100001")
 
     def test_the_name_is_the_last_resort(self):
         identity, how = omni_adapters.identity_for(name="eth0")
@@ -71,15 +71,15 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(identity, "name:eth0")
 
     def test_a_guid_is_recognised_however_it_is_punctuated(self):
-        braced, _ = omni_adapters.identity_for(guid="{8222555E-632A-4C00-B050-7DC5BC4BA912}")
-        bare, _ = omni_adapters.identity_for(guid="8222555e-632a-4c00-b050-7dc5bc4ba912")
+        braced, _ = omni_adapters.identity_for(guid="{AAAA1111-2222-3333-4444-555566667777}")
+        bare, _ = omni_adapters.identity_for(guid="aaaa1111-2222-3333-4444-555566667777")
         self.assertEqual(braced, bare)
 
     def test_renaming_the_adapter_changes_nothing(self):
         """L: a friendly rename must not lose the selection."""
-        before, _ = omni_adapters.identity_for(guid="{8222555E-632A-4C00-B050-7DC5BC4BA912}",
+        before, _ = omni_adapters.identity_for(guid="{AAAA1111-2222-3333-4444-555566667777}",
                                                name="Ethernet 3")
-        after, _ = omni_adapters.identity_for(guid="{8222555E-632A-4C00-B050-7DC5BC4BA912}",
+        after, _ = omni_adapters.identity_for(guid="{AAAA1111-2222-3333-4444-555566667777}",
                                               name="Bench Network")
         self.assertEqual(before, after)
 
@@ -88,24 +88,24 @@ class WhatIsOfferedTests(unittest.TestCase):
     """A: a legitimate adapter appears. B: it is projected readably."""
 
     def test_a_physical_adapter_with_a_usable_address_is_offered(self):
-        entry = omni_adapters._entry("Ethernet 3", "192.168.100.185",
+        entry = omni_adapters._entry("Ethernet 3", "198.51.100.85",
                                      netmask="255.255.255.0",
-                                     guid="{8222555E-632A-4C00-B050-7DC5BC4BA912}")
+                                     guid="{AAAA1111-2222-3333-4444-555566667777}")
         self.assertIsNotNone(entry)
         self.assertEqual(entry["id"], ETHERNET)
-        self.assertEqual(entry["address"], "192.168.100.185")
+        self.assertEqual(entry["address"], "198.51.100.85")
         self.assertEqual(entry["netmask"], "255.255.255.0")
 
     def test_the_label_is_the_name_and_the_address(self):
-        entry = omni_adapters._entry("Ethernet 3", "192.168.100.185",
+        entry = omni_adapters._entry("Ethernet 3", "198.51.100.85",
                                      netmask="255.255.255.0", guid="{aaaa1111-2222-3333-4444-555566667777}")
-        self.assertEqual(entry["label"], "Ethernet 3 — 192.168.100.185")
+        self.assertEqual(entry["label"], "Ethernet 3 — 198.51.100.85")
 
     def test_a_virtual_adapter_is_not_excluded_for_being_virtual(self):
         """The operator chooses the network; the product does not pre-judge."""
-        entry = omni_adapters._entry("vEthernet (Default Switch)", "172.29.16.1",
+        entry = omni_adapters._entry("vEthernet (Default Switch)", "203.0.113.1",
                                      netmask="255.255.240.0",
-                                     guid="{542af5c7-b71f-4b42-9cb4-3e7275a270bf}",
+                                     guid="{cccc1111-2222-3333-4444-555566667777}",
                                      virtual=True)
         self.assertIsNotNone(entry)
         self.assertTrue(entry["virtual"])
@@ -133,50 +133,50 @@ class FollowingTheAdapterTests(unittest.TestCase):
 
     def test_the_saved_address_is_used_when_it_is_still_there(self):
         address, reason = omni_adapters.resolve_address(
-            ETHERNET, "192.168.100.185", [ETH_185, HYPERV])
-        self.assertEqual((address, reason), ("192.168.100.185", ""))
+            ETHERNET, "198.51.100.85", [ETH_185, HYPERV])
+        self.assertEqual((address, reason), ("198.51.100.85", ""))
 
     def test_the_same_adapter_with_a_new_address_is_followed(self):
         """D: this is the defect, stated as a test."""
         address, reason = omni_adapters.resolve_address(
-            ETHERNET, "192.168.100.180", [ETH_190, HYPERV])
-        self.assertEqual(address, "192.168.100.190")
+            ETHERNET, "198.51.100.80", [ETH_190, HYPERV])
+        self.assertEqual(address, "198.51.100.90")
         self.assertEqual(reason, "")
 
     def test_a_different_adapter_holding_the_old_address_inherits_nothing(self):
         """E: the trap. Wi-Fi had .180; Ethernet must not answer for it."""
         address, reason = omni_adapters.resolve_address(
-            ETHERNET, "192.168.100.180", [WIFI_180, HYPERV])
+            ETHERNET, "198.51.100.80", [WIFI_180, HYPERV])
         self.assertEqual(address, "")
         self.assertEqual(reason, "adapter missing")
 
     def test_a_missing_adapter_yields_nothing(self):
         """F: no listener when the chosen adapter is gone."""
         address, reason = omni_adapters.resolve_address(
-            ETHERNET, "192.168.100.185", [WIFI_180, HYPERV])
+            ETHERNET, "198.51.100.85", [WIFI_180, HYPERV])
         self.assertEqual((address, reason), ("", "adapter missing"))
 
     def test_no_other_adapter_is_substituted(self):
         """G: not Wi-Fi, not Hyper-V, not the first in the list."""
         address, _reason = omni_adapters.resolve_address(
-            ETHERNET, "192.168.100.185", [WIFI_180, HYPERV])
-        self.assertNotIn(address, ("192.168.100.180", "172.29.16.1"))
+            ETHERNET, "198.51.100.85", [WIFI_180, HYPERV])
+        self.assertNotIn(address, ("198.51.100.80", "203.0.113.1"))
         self.assertEqual(address, "")
 
     def test_several_addresses_on_one_adapter_are_not_guessed_between(self):
         """K: deterministic, and a choice rather than a coin toss."""
         second = dict(ETH_190)
         address, reason = omni_adapters.resolve_address(
-            ETHERNET, "192.168.100.7", [ETH_185, second])
+            ETHERNET, "198.51.100.7", [ETH_185, second])
         self.assertEqual((address, reason), ("", "ambiguous"))
 
     def test_several_addresses_still_honour_the_saved_one(self):
         address, reason = omni_adapters.resolve_address(
-            ETHERNET, "192.168.100.190", [ETH_185, ETH_190])
-        self.assertEqual((address, reason), ("192.168.100.190", ""))
+            ETHERNET, "198.51.100.90", [ETH_185, ETH_190])
+        self.assertEqual((address, reason), ("198.51.100.90", ""))
 
     def test_an_empty_identity_resolves_to_nothing(self):
-        self.assertEqual(omni_adapters.resolve_address("", "192.168.100.185",
+        self.assertEqual(omni_adapters.resolve_address("", "198.51.100.85",
                                                        [ETH_185]),
                          ("", "adapter missing"))
 
@@ -185,7 +185,7 @@ class MigrationFromAnAddressOnlyConfigTests(unittest.TestCase):
     """P and Q: adopt only when it is unambiguous."""
 
     def test_one_owner_is_adopted(self):
-        adopted = omni_adapters.adopt_saved_address("192.168.100.185",
+        adopted = omni_adapters.adopt_saved_address("198.51.100.85",
                                                     [ETH_185, HYPERV])
         self.assertIsNotNone(adopted)
         self.assertEqual(adopted["id"], ETHERNET)
@@ -193,14 +193,14 @@ class MigrationFromAnAddressOnlyConfigTests(unittest.TestCase):
     def test_no_owner_is_refused(self):
         """The real case: .180 was on a Wi-Fi adapter that is not here."""
         self.assertIsNone(
-            omni_adapters.adopt_saved_address("192.168.100.180",
+            omni_adapters.adopt_saved_address("198.51.100.80",
                                               [ETH_185, HYPERV]))
 
     def test_two_owners_is_refused(self):
         """Two adapters reporting one address proves nothing about intent."""
-        impostor = adapter("guid:cccc", "Ethernet 9", "192.168.100.185")
+        impostor = adapter("guid:cccc", "Ethernet 9", "198.51.100.85")
         self.assertIsNone(
-            omni_adapters.adopt_saved_address("192.168.100.185",
+            omni_adapters.adopt_saved_address("198.51.100.85",
                                               [ETH_185, impostor]))
 
     def test_an_empty_address_is_refused(self):

@@ -13,9 +13,11 @@ persisted. Three things are deliberately NOT identity:
     on any platform two machines can use the same word for different hardware.
   * The IP address. It is the thing that changes; using it as identity is the
     defect this module exists to fix. Worse, an address can be reassigned to a
-    different adapter entirely -- on the machine this was found on,
-    192.168.100.180 belonged to a Wi-Fi adapter and 192.168.100.185 to an
-    Ethernet one, same subnet, different hardware.
+    defect this module exists to fix. Worse, an address can be reassigned to a
+    different adapter entirely -- on the machine this was found on, the
+    previously configured address belonged to a Wi-Fi adapter and the
+    current one to an Ethernet adapter, on the same subnet. Same network to
+    a person, different hardware to Windows.
   * Position in the list. Enumeration order is not stable and never was.
 
 What IS identity, per platform:
