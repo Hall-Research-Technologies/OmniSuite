@@ -165,13 +165,20 @@ MUTATIONS = [
      'if transport == "http" and not data.get("accept_insecure"):',
      'if False:',
      "plaintext would start without the operator saying so", REMOTE),
+    # Both clauses, because `is_unspecified` also refuses 0.0.0.0: together
+    # they are what keeps the wildcard out, so removing one is a redundant
+    # control rather than a defect worth catching.
     ("addr.wildcard-accepted", "omni_remote.py",
-     '    return not (is_loopback_address(text) or is_wildcard_address(text))',
-     '    return not is_loopback_address(text)',
+     '    if is_loopback_address(text) or is_wildcard_address(text):\n'
+     '        return False\n'
+     '    if parsed.is_multicast or parsed.is_reserved or parsed.is_unspecified:',
+     '    if is_loopback_address(text):\n'
+     '        return False\n'
+     '    if parsed.is_multicast or parsed.is_reserved:',
      "remote access could bind every interface", REMOTE),
     ("addr.loopback-accepted", "omni_remote.py",
-     '    return not (is_loopback_address(text) or is_wildcard_address(text))',
-     '    return not is_wildcard_address(text)',
+     '    if is_loopback_address(text) or is_wildcard_address(text):',
+     '    if is_wildcard_address(text):',
      "remote access could bind loopback and reach nobody", REMOTE),
 
     # ---- authorisation on the far side of a lock wait ----------------

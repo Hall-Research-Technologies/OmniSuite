@@ -166,9 +166,9 @@ def is_usable_remote_address(address: str) -> bool:
     if is_loopback_address(text) or is_wildcard_address(text):
         return False
     if parsed.is_multicast or parsed.is_reserved or parsed.is_unspecified:
-        return False
-    if parsed.version == 4 and int(parsed) == 0xFFFFFFFF:
-        # The limited broadcast address. `is_reserved` does not cover it.
+        # `is_reserved` is 240.0.0.0/4, which includes the limited broadcast
+        # address 255.255.255.255 -- checked, because a separate clause for it
+        # was carrying a comment claiming otherwise.
         return False
     return True
 
