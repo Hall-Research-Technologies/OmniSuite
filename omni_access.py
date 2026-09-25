@@ -97,6 +97,10 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     "/api/admin/users": (Access.ADMIN, None),
     "/api/admin/users/<user_id>": (Access.ADMIN, None),
     "/api/admin/devices": (Access.ADMIN, None),
+    # Friendly device names. Administrative because naming equipment is an
+    # administrator's job, and because the response carries the hostname,
+    # model and address a restricted account is deliberately never given.
+    "/api/admin/aliases": (Access.ADMIN, None),
     "/api/admin/audit": (Access.ADMIN, None),
     "/api/remote_access": (Access.ADMIN, None),
 
@@ -108,24 +112,31 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     "/api/bootstrap/admin": (Access.LOCAL_ONLY, None),
 
     # ---- restricted routing User --------------------------------------
-    # Every one of these is additionally filtered or checked per device by the
-    # caller: a capability alone never authorises a specific source or
-    # destination.
-    "/api/state": (Access.USER, FEATURE_AV),
-    "/api/route": (Access.USER, FEATURE_AV),
-    "/api/usb_state": (Access.USER, FEATURE_USB),
-    "/api/usb_route/resolve": (Access.USER, FEATURE_USB),
-    "/api/usb_route/pair": (Access.USER, FEATURE_USB),
-    "/api/usb_route/unpair": (Access.USER, FEATURE_USB),
-    "/api/multiview/state": (Access.USER, FEATURE_MULTIVIEW),
-    "/api/multiview/decoders": (Access.USER, FEATURE_MULTIVIEW),
-    "/api/multiview/sources": (Access.USER, FEATURE_MULTIVIEW),
-    "/api/multiview/preview": (Access.USER, FEATURE_MULTIVIEW),
-    # Operating an approved preset. Creating, editing, copying, deleting and
-    # installing layouts are administration and stay Admin-only -- the boundary
-    # follows Multiview's own preset-versus-execution split.
-    "/api/multiview/show": (Access.USER, FEATURE_MULTIVIEW),
-    "/api/multiview/switch": (Access.USER, FEATURE_MULTIVIEW),
+    #
+    # Being allowed to CALL an endpoint is not the same as being allowed to SEE
+    # everything it returns, and the administrative endpoints were classified
+    # here on the first reading of the brief. Measured, each hands a restricted
+    # account the administrative object in full:
+    #
+    #     /api/state               12,087 bytes  serials, multicast, video wall,
+    #                                            HDCP, firmware, ip1_addr
+    #     /api/usb_state           12,938 bytes  MACs, USB firmware
+    #     /api/multiview/decoders   1,350 bytes  MACs
+    #     /api/multiview/sources    1,757 bytes  MACs
+    #
+    # The gate cannot fix that: it decides whether a request proceeds, not what
+    # the handler then returns. So the surface is the two endpoints that were
+    # written for a restricted account and answer with a projection built from
+    # named fields. Everything else is administrative until a projected
+    # equivalent exists for it.
+    #
+    # This is a reduction from thirteen routes to two, and it matches what the
+    # shipped shell actually calls. Phases H and I add /api/user/usb_state and
+    # the Multiview operating endpoints the same way -- projected, not merely
+    # permitted. Until then a granted USB or Multiview capability opens a tab
+    # that says the controls are not built, which is true, rather than an
+    # endpoint that quietly returns the deployment.
+    "/api/user/route": (Access.USER, FEATURE_AV),
 
     # ---- Admin, and only from the loopback listener --------------------
     # These act on the host computer, not on AV devices.
@@ -151,6 +162,20 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
 
     "/api/adapters": (Access.ADMIN, None),
     "/api/blink": (Access.ADMIN, None),
+    # Administrative state. A restricted account reaches the projected
+    # equivalents instead; see the note on the User surface above.
+    "/api/state": (Access.ADMIN, None),
+    "/api/route": (Access.ADMIN, None),
+    "/api/usb_state": (Access.ADMIN, None),
+    "/api/usb_route/resolve": (Access.ADMIN, None),
+    "/api/usb_route/pair": (Access.ADMIN, None),
+    "/api/usb_route/unpair": (Access.ADMIN, None),
+    "/api/multiview/state": (Access.ADMIN, None),
+    "/api/multiview/decoders": (Access.ADMIN, None),
+    "/api/multiview/sources": (Access.ADMIN, None),
+    "/api/multiview/preview": (Access.ADMIN, None),
+    "/api/multiview/show": (Access.ADMIN, None),
+    "/api/multiview/switch": (Access.ADMIN, None),
     "/api/cache": (Access.ADMIN, None),
     "/api/clear": (Access.ADMIN, None),
     "/api/clear_units": (Access.ADMIN, None),

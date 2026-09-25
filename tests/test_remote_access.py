@@ -148,22 +148,22 @@ class HostSurfaceTests(unittest.TestCase):
 class RestrictedUserSurfaceTests(unittest.TestCase):
     """What a restricted routing account can reach, stated exhaustively."""
 
-    def test_the_user_surface_is_exactly_the_routing_routes(self):
+    def test_the_user_surface_is_exactly_the_projected_endpoints(self):
+        """One route, and it answers with a projection.
+
+        This was thirteen. The other twelve were administrative endpoints that
+        a restricted account was permitted to *call*, which is not the same as
+        being permitted to see what they return -- each handed back the
+        administrative object in full. Being on this list now means the
+        endpoint was written for a restricted account and answers with named
+        fields.
+        """
         user_routes = {rule for rule, (access, _f) in omni_access.ROUTES.items()
                        if access is Access.USER}
-        self.assertEqual(user_routes, {
-            "/api/state", "/api/route",
-            "/api/usb_state", "/api/usb_route/resolve",
-            "/api/usb_route/pair", "/api/usb_route/unpair",
-            "/api/multiview/state", "/api/multiview/decoders",
-            "/api/multiview/sources", "/api/multiview/preview",
-            "/api/multiview/show", "/api/multiview/switch",
-            # The restricted shell's own routing call. It performs no routing
-            # of its own -- it resolves two device identities to the addresses
-            # the verified path expects and hands over to it.
-            "/api/user/route",
-        }, "widening what a restricted account may call is a deliberate "
-           "security decision, not an implementation detail")
+        self.assertEqual(user_routes, {"/api/user/route"},
+                         "widening what a restricted account may call is a "
+                         "deliberate security decision, not an implementation "
+                         "detail")
 
     def test_the_user_shell_never_receives_the_administrative_state(self):
         """A user's state comes from the projection, not from /api/state.
@@ -210,24 +210,20 @@ class RestrictedUserSurfaceTests(unittest.TestCase):
                                  f"a restricted user must not reach {rule}")
                 self.assertIsNot(access, Access.PUBLIC)
 
-    def test_multiview_administration_is_not_granted_by_the_multiview_feature(self):
-        """Operating an approved preset is not the same as preparing one.
+    def test_no_multiview_endpoint_is_reachable_by_a_restricted_account(self):
+        """The operating endpoints return administrative objects as they stand.
 
-        Multiview's own architecture already separates a preset from its
-        execution; the permission boundary follows that split rather than
-        cutting a new one.
+        The Phase A boundary is unchanged in intent -- a User will operate an
+        approved preset and never administer one -- but show and switch are
+        reached today through endpoints that also disclose decoder and source
+        inventories. They are administrative until Phase I gives them a
+        projection, which is the same rule applied to Multiview that closed
+        /api/state.
         """
-        operate = ("/api/multiview/show", "/api/multiview/switch")
-        administer = ("/api/multiview/apply", "/api/multiview/copy",
-                      "/api/multiview/delete", "/api/multiview/plan",
-                      "/api/multiview/layouts/install",
-                      "/api/multiview/groups/save",
-                      "/api/multiview/groups/delete")
-        for rule in operate:
-            with self.subTest(operate=rule):
-                self.assertIs(omni_access.classify(rule)[0], Access.USER)
-        for rule in administer:
-            with self.subTest(administer=rule):
+        multiview = [r for r in omni_access.ROUTES if r.startswith("/api/multiview")]
+        self.assertTrue(multiview)
+        for rule in multiview:
+            with self.subTest(rule=rule):
                 self.assertIs(omni_access.classify(rule)[0], Access.ADMIN)
 
 

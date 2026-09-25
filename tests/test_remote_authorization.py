@@ -201,27 +201,35 @@ class RoleTests(GateTestBase):
 class FeaturePermissionTests(GateTestBase):
     """A capability gates a whole class of routing."""
 
-    def test_a_user_without_usb_cannot_reach_usb_routing(self):
-        for rule in ("/api/usb_state", "/api/usb_route/pair",
-                     "/api/usb_route/unpair", "/api/usb_route/resolve"):
-            with self.subTest(rule=rule):
-                decision = self.decide(rule, "POST", self.teacher_session,
-                                       {"host_mac": TEACHER_SOURCES[0]})
-                self.assertFalse(decision.allowed)
-                self.assertEqual(decision.reason, "missing_feature:usb")
+    def test_no_usb_endpoint_is_reachable_by_a_restricted_account_yet(self):
+        """USB operation is Phase H, and until then there is nothing to reach.
 
-    def test_granting_usb_opens_only_usb(self):
+        These endpoints return the administrative USB inventory -- measured at
+        12,938 bytes carrying MACs and USB firmware -- so a granted USB
+        capability opens a tab saying the controls are not built, rather than
+        an endpoint that hands over the deployment.
+        """
         self.store.set_permissions(self.teacher.id, Permissions(
             features=("usb",), sources=TEACHER_SOURCES,
             destinations=TEACHER_DISPLAYS))
         session = self.store.open_session(self.teacher.id)
-        allowed = self.decide("/api/usb_route/pair", "POST", session,
-                              {"host_mac": TEACHER_SOURCES[0],
-                               "device_mac": TEACHER_DISPLAYS[0]})
-        self.assertTrue(allowed.allowed)
-        denied = self.decide("/api/route", "POST", session,
-                             {"encoder": TEACHER_SOURCES[0],
-                              "decoder": TEACHER_DISPLAYS[0]})
+        for rule in ("/api/usb_state", "/api/usb_route/pair",
+                     "/api/usb_route/unpair", "/api/usb_route/resolve"):
+            with self.subTest(rule=rule):
+                decision = self.decide(rule, "POST", session,
+                                       {"host_mac": TEACHER_SOURCES[0]})
+                self.assertFalse(decision.allowed)
+                self.assertEqual(decision.reason, "not_admin")
+
+    def test_a_capability_still_gates_the_one_route_a_user_can_reach(self):
+        """Granting USB does not grant A/V."""
+        self.store.set_permissions(self.teacher.id, Permissions(
+            features=("usb",), sources=TEACHER_SOURCES,
+            destinations=TEACHER_DISPLAYS))
+        session = self.store.open_session(self.teacher.id)
+        denied = self.decide("/api/user/route", "POST", session,
+                             {"source": TEACHER_SOURCES[0],
+                              "destination": TEACHER_DISPLAYS[0]})
         self.assertFalse(denied.allowed)
         self.assertEqual(denied.reason, "missing_feature:av")
 
@@ -236,51 +244,57 @@ class FeaturePermissionTests(GateTestBase):
                 self.assertFalse(decision.allowed,
                                  f"{rule} is administration, not operation")
 
-    def test_multiview_show_and_switch_are_permitted_on_a_granted_display(self):
+    def test_multiview_operation_is_not_reachable_yet_either(self):
+        """Phase I. The boundary is unchanged; the endpoints are not projected."""
+        self.store.set_permissions(self.teacher.id, Permissions(
+            features=("multiview",), sources=TEACHER_SOURCES,
+            destinations=TEACHER_DISPLAYS))
+        session = self.store.open_session(self.teacher.id)
         for rule in ("/api/multiview/show", "/api/multiview/switch"):
             with self.subTest(rule=rule):
-                decision = self.decide(rule, "POST", self.teacher_session,
+                decision = self.decide(rule, "POST", session,
                                        {"ip": TEACHER_DISPLAYS[0],
                                         "source": TEACHER_SOURCES[0]})
-                self.assertTrue(decision.allowed, decision.reason)
+                self.assertFalse(decision.allowed)
 
 
 class DevicePermissionTests(GateTestBase):
     """A capability is not a device grant. This is the check that cannot be skipped."""
 
     def test_a_permitted_route_is_allowed(self):
-        decision = self.decide("/api/route", "POST", self.teacher_session,
-                               {"encoder": TEACHER_SOURCES[0],
-                                "decoder": TEACHER_DISPLAYS[0]})
+        decision = self.decide("/api/user/route", "POST", self.teacher_session,
+                               {"source": TEACHER_SOURCES[0],
+                                "destination": TEACHER_DISPLAYS[0]})
         self.assertTrue(decision.allowed, decision.reason)
 
     def test_an_unauthorised_source_is_refused(self):
-        decision = self.decide("/api/route", "POST", self.teacher_session,
-                               {"encoder": "B8:98:B0:11:11:11",
-                                "decoder": TEACHER_DISPLAYS[0]})
+        decision = self.decide("/api/user/route", "POST", self.teacher_session,
+                               {"source": "B8:98:B0:11:11:11",
+                                "destination": TEACHER_DISPLAYS[0]})
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "source_not_permitted")
 
     def test_an_unauthorised_destination_is_refused(self):
         """Routing into another classroom."""
-        decision = self.decide("/api/route", "POST", self.teacher_session,
-                               {"encoder": TEACHER_SOURCES[0],
-                                "decoder": SOMEONE_ELSES_DISPLAY})
+        decision = self.decide("/api/user/route", "POST", self.teacher_session,
+                               {"source": TEACHER_SOURCES[0],
+                                "destination": SOMEONE_ELSES_DISPLAY})
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "destination_not_permitted")
 
     def test_both_ends_are_checked_not_just_one(self):
         """A gate that checked only the destination would pass this."""
-        decision = self.decide("/api/route", "POST", self.teacher_session,
-                               {"encoder": "B8:98:B0:11:11:11",
-                                "decoder": TEACHER_DISPLAYS[0]})
+        decision = self.decide("/api/user/route", "POST", self.teacher_session,
+                               {"source": "B8:98:B0:11:11:11",
+                                "destination": TEACHER_DISPLAYS[0]})
         self.assertFalse(decision.allowed)
 
     def test_a_list_of_destinations_is_checked_element_by_element(self):
-        """One permitted decoder must not carry an unpermitted one in with it."""
-        decision = self.decide("/api/multiview/show", "POST", self.teacher_session,
-                               {"decoder": [TEACHER_DISPLAYS[0],
-                                            SOMEONE_ELSES_DISPLAY]})
+        """One permitted display must not carry an unpermitted one in with it."""
+        decision = self.decide("/api/user/route", "POST", self.teacher_session,
+                               {"source": TEACHER_SOURCES[0],
+                                "destination": [TEACHER_DISPLAYS[0],
+                                                SOMEONE_ELSES_DISPLAY]})
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "destination_not_permitted")
 
@@ -293,9 +307,9 @@ class DevicePermissionTests(GateTestBase):
         for spelling in ("B8:98:B0:06:41:B3", "b8:98:b0:06:41:b3",
                          "b8-98-b0-06-41-b3", "B898B00641B3"):
             with self.subTest(spelling=spelling):
-                decision = self.decide("/api/route", "POST", self.teacher_session,
-                                       {"encoder": TEACHER_SOURCES[0],
-                                        "decoder": spelling})
+                decision = self.decide("/api/user/route", "POST", self.teacher_session,
+                                       {"source": TEACHER_SOURCES[0],
+                                        "destination": spelling})
                 self.assertTrue(decision.allowed,
                                 f"{spelling} is the permitted display")
 
@@ -306,20 +320,20 @@ class DevicePermissionTests(GateTestBase):
         is responsible for rejecting a request that names no device. Asserted so
         the division of responsibility is explicit rather than assumed.
         """
-        decision = self.decide("/api/route", "POST", self.teacher_session, {})
+        decision = self.decide("/api/user/route", "POST", self.teacher_session, {})
         self.assertTrue(decision.allowed)
 
 
 class SessionLifecycleTests(GateTestBase):
     def test_logout_ends_the_session_immediately(self):
-        self.assertTrue(self.decide("/api/state", "GET", self.teacher_session).allowed)
+        self.assertTrue(self.decide("/api/user/state", "GET", self.teacher_session).allowed)
         self.store.revoke(self.teacher_session.token)
-        self.assertFalse(self.decide("/api/state", "GET", self.teacher_session).allowed)
+        self.assertFalse(self.decide("/api/user/state", "GET", self.teacher_session).allowed)
 
     def test_disabling_an_account_ends_its_sessions_at_once(self):
-        self.assertTrue(self.decide("/api/state", "GET", self.teacher_session).allowed)
+        self.assertTrue(self.decide("/api/user/state", "GET", self.teacher_session).allowed)
         self.store.set_enabled(self.teacher.id, False)
-        decision = self.decide("/api/state", "GET", self.teacher_session)
+        decision = self.decide("/api/user/state", "GET", self.teacher_session)
         self.assertFalse(decision.allowed,
                          "a disabled account must not survive in an open session")
 
@@ -337,7 +351,7 @@ class SessionLifecycleTests(GateTestBase):
         account, session = self.store.resolve_session(self.teacher_session.token)
         self.assertIsNone(account,
                           "a live session for a disabled account must not resolve")
-        self.assertFalse(self.decide("/api/state", "GET", self.teacher_session).allowed)
+        self.assertFalse(self.decide("/api/user/state", "GET", self.teacher_session).allowed)
 
     def test_a_deleted_account_is_refused_even_if_its_session_survives(self):
         """Same argument for deletion: the session must not outlive the account."""
@@ -345,38 +359,38 @@ class SessionLifecycleTests(GateTestBase):
             del self.store._accounts[self.teacher.id]
         account, _session = self.store.resolve_session(self.teacher_session.token)
         self.assertIsNone(account)
-        self.assertFalse(self.decide("/api/state", "GET", self.teacher_session).allowed)
+        self.assertFalse(self.decide("/api/user/state", "GET", self.teacher_session).allowed)
 
     def test_changing_a_password_ends_every_other_session(self):
         second = self.store.open_session(self.teacher.id)
         self.store.set_password(self.teacher.id, "a-new-password-1")
         for session in (self.teacher_session, second):
-            self.assertFalse(self.decide("/api/state", "GET", session).allowed)
+            self.assertFalse(self.decide("/api/user/state", "GET", session).allowed)
 
     def test_a_permission_change_takes_effect_without_a_new_login(self):
-        allowed = self.decide("/api/route", "POST", self.teacher_session,
-                              {"encoder": TEACHER_SOURCES[0],
-                               "decoder": TEACHER_DISPLAYS[0]})
+        allowed = self.decide("/api/user/route", "POST", self.teacher_session,
+                              {"source": TEACHER_SOURCES[0],
+                               "destination": TEACHER_DISPLAYS[0]})
         self.assertTrue(allowed.allowed)
         self.store.set_permissions(self.teacher.id, Permissions(features=("av",)))
-        after = self.decide("/api/route", "POST", self.teacher_session,
-                            {"encoder": TEACHER_SOURCES[0],
-                             "decoder": TEACHER_DISPLAYS[0]})
+        after = self.decide("/api/user/route", "POST", self.teacher_session,
+                            {"source": TEACHER_SOURCES[0],
+                             "destination": TEACHER_DISPLAYS[0]})
         self.assertFalse(after.allowed)
 
     def test_an_expired_session_is_refused(self):
         self.teacher_session.created_at -= omni_users.ABSOLUTE_TIMEOUT_SECONDS + 10
-        self.assertFalse(self.decide("/api/state", "GET", self.teacher_session).allowed)
+        self.assertFalse(self.decide("/api/user/state", "GET", self.teacher_session).allowed)
 
     def test_an_idle_session_is_refused(self):
         self.teacher_session.last_seen -= omni_users.IDLE_TIMEOUT_SECONDS + 10
-        self.assertFalse(self.decide("/api/state", "GET", self.teacher_session).allowed)
+        self.assertFalse(self.decide("/api/user/state", "GET", self.teacher_session).allowed)
 
     def test_a_made_up_token_is_refused(self):
         class Fake:
             token = "not-a-real-token"
             csrf_token = "not-a-real-csrf"
-        self.assertFalse(self.decide("/api/state", "GET", Fake()).allowed)
+        self.assertFalse(self.decide("/api/user/state", "GET", Fake()).allowed)
 
     def test_logging_in_twice_issues_two_distinct_sessions(self):
         """A phone and a laptop are the ordinary case."""
@@ -389,9 +403,9 @@ class SessionLifecycleTests(GateTestBase):
 
 class CsrfTests(GateTestBase):
     def test_a_state_changing_request_without_a_csrf_token_is_refused(self):
-        decision = self.decide("/api/route", "POST", self.teacher_session,
-                               {"encoder": TEACHER_SOURCES[0],
-                                "decoder": TEACHER_DISPLAYS[0]}, csrf=False)
+        decision = self.decide("/api/user/route", "POST", self.teacher_session,
+                               {"source": TEACHER_SOURCES[0],
+                                "destination": TEACHER_DISPLAYS[0]}, csrf=False)
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "csrf")
 
@@ -406,7 +420,7 @@ class CsrfTests(GateTestBase):
         self.assertEqual(decision.reason, "csrf")
 
     def test_a_read_does_not_require_a_csrf_token(self):
-        self.assertTrue(self.decide("/api/state", "GET", self.teacher_session,
+        self.assertTrue(self.decide("/api/user/state", "GET", self.teacher_session,
                                     csrf=False).allowed)
 
 
@@ -527,7 +541,7 @@ class RemoteDisabledTests(GateTestBase):
         self.assertEqual(self.store.active_session_count(), 2)
         self.store.revoke_every_session()
         self.assertEqual(self.store.active_session_count(), 0)
-        self.assertFalse(self.decide("/api/state", "GET", self.teacher_session).allowed)
+        self.assertFalse(self.decide("/api/user/state", "GET", self.teacher_session).allowed)
 
     def test_local_use_is_unaffected_by_revoking_remote_sessions(self):
         self.store.revoke_every_session()
