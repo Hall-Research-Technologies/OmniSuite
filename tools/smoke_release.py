@@ -59,6 +59,15 @@ REQUIRED_PATHS = [
     # Settings links to this. A package that omits the file gives a dead link
     # in the About area of every installation.
     ("/license", "text/plain"),
+    # Remote access. These pages are served to a phone on the network, so a
+    # file left out of the package is a blank screen for somebody who is not
+    # sitting at the OmniSuite computer and cannot investigate it.
+    ("/login", "text/html"),
+    ("/admin/users", "text/html"),
+    ("/ui/admin/users.js", None),
+    ("/user", "text/html"),
+    ("/ui/user/user.js", None),
+    ("/ui/remote.css", None),
 ]
 
 

@@ -382,3 +382,188 @@ directly with a crafted body, not drive the UI (§25).
 6. **A restricted User's filtered `/api/state` is a new derived view.**
    AGENTS.md requires derived values be recomputed from their source rather
    than cached forward; the filtered view must not become a second inventory.
+
+---
+
+# Part 2 — What was built, and what the plan above got wrong
+
+Everything above was written before any of it existed. This part records what
+the implementation actually does, where it departed from the plan, and what the
+bench and the mutation harness measured. Where the two disagree, this part is
+the truth.
+
+## K resolved — HTTPS
+
+All four options in K were considered; three shipped and one was rejected.
+
+| Plan | Outcome |
+| --- | --- |
+| 1. Operator-provided certificate and key | **Shipped.** `Settings > Remote Access > Use my own files`, two paths. Needs only the standard library. |
+| 2. Locally generated self-signed | **Shipped.** `cryptography` was declared as a dependency for this, after measuring the cost. |
+| 3. Reverse proxy | **Not shipped.** No proxy support was added, so nothing claims it. |
+| 4. HTTP-only | **Retained, off by default, and it cannot happen by accident.** |
+
+`cryptography` was already present transitively, through pypdf's optional
+extra, but a transitive presence is not a dependency. Measured: it adds 11.2 MB
+to a 33.5 MB executable, 9.9 MB of that the Rust extension. It was declared
+anyway, because without generation an installer with no certificate of their
+own stays on plain HTTP, which is the outcome the whole section exists to
+avoid.
+
+**HTTPS is the default and there is no automatic downgrade.** If the
+certificate is missing, unreadable, encrypted, or does not match its key,
+remote access does not start: the reason is reported and nothing listens.
+Plain HTTP requires `accept_insecure` in the request body, so a caller that
+merely omits a field cannot reach it.
+
+**There is no HTTP listener at all while HTTPS is active.** A redirect from
+HTTP to HTTPS has to accept the request before it can protect it, and a sign-in
+posted to that listener has already been sent in clear. The strict reading of
+§13 is the one implemented: nothing answers on plaintext.
+
+`omni_tls.describe()` returns subject, issuer, fingerprint, expiry and whether
+the certificate is self-signed. **It never returns key material**, and there is
+no endpoint that can. The generated key is written with `os.open` and mode
+`0o600`; an existing key has its mode narrowed on load. Neither file is in the
+package: a clean installation contains no certificate and no key.
+
+Minimum protocol version is TLS 1.2.
+
+## The Secure cookie
+
+`secure=request.is_secure`, so the flag follows the transport rather than a
+setting. `HttpOnly`, `SameSite=Lax`, the opaque server-side session and the
+`X-OmniSuite-CSRF` header are all unchanged — HTTPS was added beside the
+authentication design, not in place of any part of it.
+
+## Concurrency — O.4 resolved
+
+Two mechanisms, deliberately separate.
+
+**Resource locks** (`omni_locks.py`) serialize operations that touch the same
+hardware. A lock is per affected resource — `decoder:<identity>`, `usb:<mac>` —
+never one global application lock. An operation touching several resources
+acquires them in sorted order, which is what makes deadlock impossible rather
+than unlikely, and releases everything it holds if any acquisition fails. The
+wait is bounded; exceeding it is `ResourceBusy`, which the API reports as 409
+with the resource named.
+
+**The rule is last successful authorized operation wins.** A lock is held for
+the duration of one operation and no longer. There is no ownership, no claim
+and no lease, because a browser that closed must never be able to leave a
+classroom display unusable.
+
+**The state cache** (`omni_statecache.py`) is about reads, not writes. It
+already had a TTL and single-flight; this phase added a generation counter and
+an epoch so an in-flight read cannot publish a value that a writer has since
+invalidated. Two gaps were found by stress tests written for this section:
+
+1. A read that began before an invalidation would store its result afterwards,
+   so a writer's invalidation could be silently undone. Fixed with a per-key
+   generation counter compared at publication time.
+2. A *global* `invalidate()` could not discard an in-flight read for a key that
+   had never been individually invalidated. Confirmed by experiment before it
+   was fixed — the stale value survived. Fixed with an epoch counter.
+
+A discarded result is still returned to the caller that asked for it; it is
+simply not cached. The statistics distinguish `computed` from `discarded`, so
+the behaviour is observable rather than asserted.
+
+Device traffic does not scale with browser count. Re-measured after all of the
+above: A/V 1 client 0 reads and 10 clients 0 reads; USB 4 and 4; Multiview 6
+and 6. Ratio 1.0x.
+
+## The audit log — and a denial of service found in it
+
+Every event rewrote the whole file, up to 5000 entries, **while holding the
+lock authentication needs**. Anyone who could reach the sign-in page could
+produce those events at will, so the log was a way to make the application
+stop answering.
+
+Now: the snapshot is taken under the lock and the write happens outside it, and
+writes are batched on a flush cadence with security-relevant events
+(`AUDIT_IMMEDIATE_EVENTS`) still written at once. The entry count is bounded, so
+a flood costs history rather than the disk. Redaction is recursive through
+nested objects and lists.
+
+`username` is deliberately **not** redacted. It is not a secret and the view is
+unreadable without it. Passwords, hashes, tokens, CSRF tokens, session data and
+device credentials are.
+
+## Duplicate friendly names — and an architectural gap
+
+Duplicate names are **not** prohibited: two displays legitimately share a name,
+and a global uniqueness rule would be the application overruling the site.
+
+`omni_projection.disambiguate()` appends the device's own hostname, but only
+where a label actually repeats **within that account's visible set**. A User who
+can see one *Front Display* sees it named exactly as the administrator typed it.
+This is a projection, computed server-side from the same derived object both
+pages consume.
+
+**The gap, reported rather than papered over:** OmniSuite has no location, room,
+site or description field anywhere in its data model. The only human-readable
+differentiator available is the hostname, which is an engineering string. A
+room field would be the correct answer and does not exist; inventing one from
+address ranges or hostname patterns would be fabricating location data, so
+nothing does. The User Guide says so in the operator's words.
+
+MAC and IP are not used for this. A hostname is already visible on the
+administrative screens; a MAC is not, and exposing one to solve a label problem
+would be leaking identity to solve presentation.
+
+## Authorization at the operation boundary — §6
+
+`_current_account()` re-reads the session at the moment an operation is
+performed, not when the page was rendered. An account disabled, deleted,
+demoted, or whose permissions changed a moment ago is refused immediately;
+`resolve_session` re-checks the account on every request rather than trusting
+what was true at sign-in. Nothing depends on a browser refreshing itself.
+
+## N — the three fences, plus a fourth
+
+The three fences in N exist. A fourth was added: the **mutation harness**,
+`tools/mutate_security.py`. It breaks each security predicate on purpose and
+requires the suite to notice. A test that cannot fail proves nothing, and the
+only way to know an assertion is load-bearing is to make the defect it names
+and watch it fail.
+
+It covers the listener trust model, route classification, the local-only
+refusal, the session requirement, CSRF, the Admin check, the feature check, the
+source and destination checks, Multiview approval, session expiry and
+revocation of a disabled account, the Secure cookie, the plaintext
+acknowledgement, and address validation.
+
+The harness records each suite's whole output rather than its summary line,
+because a runner that reads only the summary reports every mutation as
+uncaught, which is indistinguishable from tests that do not work. It restores
+the file in a `finally`, so an interrupted run never leaves a deliberately
+defective source behind.
+
+## O revisited
+
+| Item | Now |
+| --- | --- |
+| 1. HTTPS is the largest open item | **Closed.** Default, with no automatic downgrade. |
+| 2. The local bypass is the highest-risk mechanism | **Unchanged and re-proved.** Trust is the socket the request was accepted on (`omni.listener`, a key no HTTP header can produce), never an address a request claims. Four mutations attack it directly. |
+| 3. `/api/list_dir` and `/api/files` accept arbitrary paths | **Still true, still out of scope, now LOCAL_ONLY** so it is unreachable from the network. Recorded, not fixed. |
+| 4. Concurrency needs service-layer decisions | **Closed** — resource locks and the cache generation counter, above. |
+| 5. Device traffic must not scale with browser count | **Closed and re-measured** at 1.0x. |
+| 6. The filtered view must not become a second inventory | **Closed.** It is a projection built from named fields, recomputed per request; tests assert the key sets are equal rather than merely contained. |
+
+## What is claimed, and what is not
+
+**Not claimed:** resistance to sophisticated timing analysis. What is asserted,
+and tested, is that the obvious differences are absent — an unknown username
+and a wrong password produce the same answer and both cost a verification. A
+timing measurement in a test suite on a loaded machine would be flaky and would
+prove less than reading the code path does, so the test reads the code path.
+
+**Not claimed:** anything about an attacker with physical access to the
+OmniSuite computer. The local operator is trusted by design; that is what the
+local listener means.
+
+**Not claimed:** protection against an active attacker on first contact with a
+self-signed certificate. The User Guide says the browser warning is about who
+vouches for the address, not about whether the connection is encrypted, which
+is the accurate statement.

@@ -951,9 +951,14 @@
         there is no default password to change.</li>
         <li><strong>Choose the network.</strong> Pick the adapter other devices
         will reach OmniSuite on. Only real network adapters are offered.</li>
+        <li><strong>Set up encryption.</strong> Remote Access uses
+        <strong>HTTPS</strong>, which needs a certificate. Press
+        <strong>Create certificate</strong> and OmniSuite makes one for the
+        address you chose. See
+        <a href="#remote-https">Encryption and certificates</a> below.</li>
         <li><strong>Turn on remote access.</strong> Settings then shows the
         address people type into their browser, such as
-        <code>http://10.0.4.12:8080/</code>.</li>
+        <code>https://10.0.4.12:8080/</code>.</li>
       </ol>
       <p>It takes effect immediately. OmniSuite keeps working on its own
       computer exactly as before, and turning Remote Access off stops network
@@ -974,17 +979,57 @@
         does not fall back to "all networks". It starts normally on this
         computer, and Settings says that Remote Access is configured but the
         chosen network is unavailable, so you can pick a replacement.</li>
+        <li><strong>A certificate that cannot be read is not worked around.</strong>
+        If the certificate file has been moved, replaced or damaged, Remote
+        Access stays off and Settings says why. It does not start unencrypted
+        instead.</li>
       </ul>
       <div class="note">A brand-new installation always starts with Remote
       Access <strong>off</strong>, and updating OmniSuite never turns it on.
       Only an administrator turning it on makes it persist; turning it off makes
       that persist too.</div>
 
-      <div class="warn"><strong>Connections are not encrypted.</strong>
-      OmniSuite uses plain HTTP. Anyone able to watch the network can read what
-      is sent, including passwords typed at sign-in. Use Remote Access only on a
-      network you trust and control. Do not expose OmniSuite to the internet or
-      to a guest network.</div>
+      <h3 id="remote-https">Encryption and certificates</h3>
+      <p>Remote Access uses <strong>HTTPS</strong>, so what travels across your
+      network &mdash; including the password somebody types at sign-in &mdash;
+      is encrypted. HTTPS needs a certificate, and you have two ways to get
+      one. Both are in <strong>Settings &gt; Remote Access</strong>.</p>
+      <table>
+        <tr><th>Option</th><th>What it means</th></tr>
+        <tr><td><strong>Create certificate</strong></td><td>OmniSuite makes one
+        for the address you chose. Nothing else is needed and it works
+        immediately. Because nobody else vouches for it, browsers show a warning
+        the first time &mdash; see below.</td></tr>
+        <tr><td><strong>Use my own files</strong></td><td>If your organisation
+        issues certificates, give OmniSuite the paths to the certificate file
+        and its private key. Browsers that already trust your organisation show
+        no warning at all.</td></tr>
+      </table>
+      <p>Settings shows what OmniSuite currently has: who the certificate is
+      for, who issued it, and when it expires. A certificate OmniSuite created
+      lasts a little over two years; create a new one before it runs out.</p>
+
+      <div class="note"><strong>The browser warning, and why it appears.</strong>
+      A certificate OmniSuite creates for itself is not signed by an authority
+      your browser has heard of, so the first visit says something like "Your
+      connection is not private". Choose <em>Advanced</em> and continue. The
+      connection is encrypted either way &mdash; the warning is about
+      <em>who</em> vouches for the address, not about whether anyone can read
+      what is sent. Most browsers only ask once per device.</div>
+
+      <div class="warn"><strong>If the certificate is missing or unreadable,
+      Remote Access does not start.</strong> OmniSuite will not quietly fall
+      back to an unencrypted connection, because that would send passwords in
+      the clear without anyone being told. Settings says what is wrong. OmniSuite
+      keeps working normally on its own computer throughout.</div>
+
+      <h4>Turning encryption off</h4>
+      <p>There is a <strong>Not encrypted (HTTP)</strong> option for a closed
+      test bench. OmniSuite asks you to confirm it, and it means exactly what it
+      says: anyone able to watch the network can read what is sent, including
+      passwords typed at sign-in. Do not use it on a network carrying anyone
+      else's traffic, and never expose OmniSuite to the internet or to a guest
+      network under any setting.</p>
 
       <h3 id="remote-roles">Administrators and Users</h3>
       <table>
@@ -1018,8 +1063,15 @@
       labels only &mdash; renaming a device never changes who is allowed to use
       it.</p>
       <p>You may give two devices the same name if that genuinely reflects the
-      site, but OmniSuite will point it out: identical names are impossible to
-      tell apart on the permission screens.</p>
+      site. Where a name is used more than once, OmniSuite adds the device's own
+      hostname after it &mdash; <em>Front Display &mdash; at-omni-121-04553</em>
+      &mdash; on the screens where somebody has to choose between them, so the
+      choice is never a guess. Names that are already unique are shown exactly
+      as you typed them.</p>
+      <div class="note">A clearer name is still better than a disambiguated one.
+      OmniSuite has no separate field for a room or building, so if two displays
+      really are in different rooms, put that in the name itself &mdash;
+      <em>Front Display (Room 204)</em>.</div>
 
       <h3 id="remote-users">Managing accounts</h3>
       <p><strong>Settings &gt; Remote Access &gt; Manage users</strong>, or
@@ -1051,6 +1103,31 @@
       <div class="note">OmniSuite will not let you disable, demote or delete the
       last active administrator, so you cannot lock yourself out. Those buttons
       are greyed out when only one administrator is left.</div>
+
+      <h3 id="remote-activity">Activity</h3>
+      <p><strong>Settings &gt; Remote Access &gt; Manage users</strong>, then the
+      <strong>Activity</strong> tab. It shows what has happened on this
+      installation, newest first: who signed in, who was refused, what was
+      routed, and what an administrator changed.</p>
+      <p>Three boxes narrow it down &mdash; a search box, a list of event types,
+      and a list of people. Use them together to answer a question like "what did
+      this account do this afternoon".</p>
+      <ul>
+        <li><strong>Sign-ins</strong> &mdash; successful, failed, and attempts
+        that were slowed down after repeated wrong passwords.</li>
+        <li><strong>Refusals</strong> &mdash; somebody asked for something they
+        are not allowed. Worth a look if a person says a control does nothing.</li>
+        <li><strong>Routing</strong> &mdash; what was shown where, and by whom.</li>
+        <li><strong>Administration</strong> &mdash; accounts created, changed,
+        disabled or deleted, and Remote Access being turned on or off.</li>
+      </ul>
+      <div class="note"><strong>Passwords are never recorded.</strong> Neither
+      are session details, nor the passwords OmniSuite uses to talk to encoders
+      and decoders. A failed sign-in records that one happened and for which
+      username, never what was typed.</div>
+      <p>The list keeps a fixed amount of recent history and discards the oldest
+      as it fills, so it cannot grow without limit. It survives a restart. Only
+      administrators can see it &mdash; Users have no access to it at all.</p>
 
       <h3 id="remote-signing-in">Signing in and out</h3>
       <p>People open the address shown in Settings and sign in with the username
@@ -1136,7 +1213,23 @@
         <tr><th>What you see</th><th>What to check</th></tr>
         <tr><td>Nobody can reach the address</td><td>Confirm Remote Access shows
         <strong>ON</strong>; confirm the device is on the same network as the
-        adapter you chose; confirm the host firewall allows OmniSuite.</td></tr>
+        adapter you chose; confirm the host firewall allows OmniSuite. Check the
+        address begins <code>https://</code> &mdash; a browser that was given
+        <code>http://</code> will not connect.</td></tr>
+        <tr><td>The browser warns that the connection is not private</td>
+        <td>Expected with a certificate OmniSuite created for itself. Choose
+        <em>Advanced</em> and continue; the connection is encrypted. To remove
+        the warning entirely, supply a certificate your organisation issued.</td></tr>
+        <tr><td>Remote Access will not turn on</td><td>HTTPS needs a
+        certificate. Press <strong>Create certificate</strong>, or supply your
+        own files, then turn it on.</td></tr>
+        <tr><td>After a restart, Settings says the certificate cannot be
+        read</td><td>The file has been moved, replaced or damaged. Create a new
+        one or point OmniSuite at the correct files. It deliberately does not
+        start unencrypted instead.</td></tr>
+        <tr><td>The browser says the certificate has expired</td><td>Settings
+        shows the expiry date. Press <strong>Create certificate</strong> again,
+        or supply a current one.</td></tr>
         <tr><td>The sign-in page appears but the password is refused</td>
         <td>Reset it in Manage users. After several wrong attempts OmniSuite
         pauses that account briefly.</td></tr>
