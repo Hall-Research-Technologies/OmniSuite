@@ -14,6 +14,9 @@
     devices: [],
     editing: null,        // the account being edited, or null when creating
     selected: {sources: new Set(), destinations: new Set()},
+    // identity -> the alias currently typed, for names not yet saved.
+    pendingAliases: new Map(),
+    tab: 'accounts',
   };
 
   const el = (id) => document.getElementById(id);
@@ -182,10 +185,13 @@
       name.textContent = device.name;
       const meta = document.createElement('span');
       meta.className = 'a-meta';
-      // The model and address help an administrator tell two identically
-      // named devices apart. They are never sent to a restricted user.
-      meta.textContent = ' · ' + [device.model, device.ip]
-        .filter(Boolean).join(' · ');
+      // The device's own hostname, model and address. They let an
+      // administrator tell two identically named devices apart, and the
+      // hostname is shown only when an alias is hiding it. None of this is
+      // ever sent to a restricted user.
+      const detail = [device.alias ? device.device_name : '',
+                      device.model, device.ip].filter(Boolean);
+      meta.textContent = detail.length ? ' · ' + detail.join(' · ') : '';
       text.append(name, meta);
 
       row.append(box, text);
@@ -351,6 +357,137 @@
     });
   }
 
+  // ------------------------------------------------------ device names
+  //
+  // An alias is a label OmniSuite keeps against a device's stable identity. It
+  // never reaches the device and never takes part in a permission decision --
+  // the checkbox lists below still store identities, and this screen only
+  // changes what those checkboxes are called.
+  function renderAliases() {
+    const body = el('alias_body');
+    body.replaceChildren();
+
+    state.devices.forEach((device) => {
+      const row = document.createElement('tr');
+      row.dataset.search = [device.device_name, device.alias, device.model,
+                            device.ip].join(' ').toLowerCase();
+
+      const nameCell = document.createElement('td');
+      nameCell.dataset.label = 'Friendly name';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.maxLength = 48;
+      input.placeholder = device.device_name;
+      input.value = state.pendingAliases.has(device.id)
+        ? state.pendingAliases.get(device.id) : (device.alias || '');
+      input.style.cssText = 'width:100%;min-height:32px;padding:4px 8px;' +
+        'border-radius:7px;border:1px solid var(--edge);' +
+        'background:var(--surface-elevated);color:var(--text);font:inherit;';
+      input.addEventListener('input', () => {
+        const original = device.alias || '';
+        if (input.value === original) state.pendingAliases.delete(device.id);
+        else state.pendingAliases.set(device.id, input.value);
+        updateDirty();
+      });
+      nameCell.appendChild(input);
+      row.appendChild(nameCell);
+
+      // The device's own identity, always visible to an administrator: two
+      // displays called "Front Display" are only distinguishable by this.
+      [['Device', device.device_name], ['Model', device.model || '—'],
+       ['Address', device.ip || '—'],
+       ['Role', device.role === 'encoder' ? 'Source' :
+                (device.role === 'decoder' ? 'Display' : 'Other')]]
+        .forEach(([label, value]) => {
+          const td = document.createElement('td');
+          td.dataset.label = label;
+          td.textContent = value;
+          td.style.color = 'var(--text-muted)';
+          row.appendChild(td);
+        });
+
+      body.appendChild(row);
+    });
+
+    el('alias_count').textContent = state.devices.length + ' device' +
+      (state.devices.length === 1 ? '' : 's');
+    updateDirty();
+    renderDuplicateWarning();
+  }
+
+  function updateDirty() {
+    const n = state.pendingAliases.size;
+    el('alias_dirty').textContent = n ? (n + ' unsaved change' +
+      (n === 1 ? '' : 's')) : '';
+    el('alias_save').disabled = n === 0;
+  }
+
+  // Duplicates are allowed -- two rooms may each have a "Front Display" -- but
+  // an administrator picking from a list of identical names is choosing blind,
+  // so the ambiguity is stated rather than prevented.
+  function renderDuplicateWarning() {
+    const counts = new Map();
+    state.devices.forEach((device) => {
+      const name = (state.pendingAliases.has(device.id)
+        ? state.pendingAliases.get(device.id) : (device.alias || '')).trim();
+      if (!name) return;
+      const key = name.toLowerCase();
+      counts.set(key, (counts.get(key) || 0) + 1);
+    });
+    const repeated = [...counts.entries()].filter(([, n]) => n > 1)
+      .map(([name]) => name);
+    const box = el('dupe_warning');
+    box.hidden = repeated.length === 0;
+    if (repeated.length) {
+      box.replaceChildren();
+      const strong = document.createElement('strong');
+      strong.textContent = 'The same name is used more than once. ';
+      box.append(strong,
+        'These devices will look identical when you assign permissions: ' +
+        repeated.join(', ') + '. That is allowed, but give them distinct ' +
+        'names if you need to tell them apart.');
+    }
+  }
+
+  el('alias_filter').addEventListener('input', function () {
+    const needle = this.value.trim().toLowerCase();
+    el('alias_body').querySelectorAll('tr').forEach((row) => {
+      row.hidden = needle !== '' && row.dataset.search.indexOf(needle) === -1;
+    });
+  });
+
+  el('alias_save').addEventListener('click', async () => {
+    if (!state.pendingAliases.size) return;
+    const payload = {};
+    state.pendingAliases.forEach((value, id) => { payload[id] = value; });
+    const {status, body} = await api('/api/admin/aliases', {
+      method: 'POST', body: JSON.stringify({aliases: payload}),
+    });
+    if (status === 200 && body.ok) {
+      state.pendingAliases.clear();
+      window.toast && window.toast('Names saved', 'ok');
+      await load();
+      selectTab('names');
+    } else {
+      window.toast && window.toast(body.error || 'Could not save', 'error');
+    }
+  });
+
+  // ------------------------------------------------------------- tabs
+  function selectTab(name) {
+    state.tab = name;
+    el('panel_accounts').hidden = name !== 'accounts';
+    el('panel_names').hidden = name !== 'names';
+    el('admin_tabs').querySelectorAll('.tab').forEach((tab) => {
+      tab.setAttribute('aria-selected', String(tab.dataset.panel === name));
+    });
+  }
+
+  document.getElementById('admin_tabs').addEventListener('click', (event) => {
+    const tab = event.target.closest('.tab');
+    if (tab) selectTab(tab.dataset.panel);
+  });
+
   async function load() {
     const [users, devices] = await Promise.all([
       api('/api/admin/users'),
@@ -359,8 +496,10 @@
     state.users = (users.body && users.body.users) || [];
     state.devices = (devices.body && devices.body.devices) || [];
     renderUsers();
+    renderAliases();
     el('loading').hidden = true;
-    el('content').hidden = false;
+    el('admin_tabs').hidden = false;
+    selectTab(state.tab);
   }
 
   load().catch((err) => {

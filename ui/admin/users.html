@@ -28,7 +28,7 @@
 <header class="remote-header">
   <div class="brand">
     <img src="/ui/companylogo.png" alt="Hall Research" class="logo">
-    <h1>Users</h1>
+    <h1>Accounts &amp; Devices</h1>
   </div>
   <div style="display:flex;align-items:center;gap:10px;">
     <a class="btn-quiet" href="/">Back to OmniSuite</a>
@@ -38,7 +38,42 @@
 <main class="remote-main">
   <div id="loading" class="empty">Loading&hellip;</div>
 
-  <section id="content" hidden>
+  <nav class="remote-tabs" id="admin_tabs" role="tablist" hidden>
+    <button type="button" class="tab" role="tab" data-panel="accounts"
+            aria-selected="true">Accounts</button>
+    <button type="button" class="tab" role="tab" data-panel="names"
+            aria-selected="false">Device names</button>
+  </nav>
+
+  <section id="panel_names" hidden>
+    <div class="panel">
+      <h2>Device names</h2>
+      <p class="hint">
+        Give a device a name people will recognise &mdash; <em>Teacher PC</em>,
+        <em>Front Display</em>. Users see this name instead of the device's
+        hostname. The device itself is not renamed and nothing is written to it;
+        this is OmniSuite's own label. Clear a name to go back to the hostname.
+      </p>
+      <div id="dupe_warning" class="cfg-warning" style="margin-bottom:10px;" hidden></div>
+      <div class="assign-toolbar">
+        <input type="search" id="alias_filter" placeholder="Search devices"
+               aria-label="Search devices">
+        <span class="assign-count" id="alias_count"></span>
+      </div>
+      <table class="user-table">
+        <thead>
+          <tr><th>Friendly name</th><th>Device</th><th>Model</th><th>Address</th><th>Role</th></tr>
+        </thead>
+        <tbody id="alias_body"></tbody>
+      </table>
+      <div style="margin-top:12px;display:flex;gap:8px;align-items:center;">
+        <button class="btn-primary-lg" id="alias_save" type="button">Save names</button>
+        <span class="assign-count" id="alias_dirty"></span>
+      </div>
+    </div>
+  </section>
+
+  <section id="panel_accounts">
     <div class="panel">
       <h2>Accounts</h2>
       <p class="hint">

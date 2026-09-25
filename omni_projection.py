@@ -46,13 +46,11 @@ def _identity_by_address(units) -> dict:
     return index
 
 
-def _friendly_name(row, unit) -> str:
-    """What to call a device on screen.
+def _device_name(row, unit) -> str:
+    """The device's own name: hostname, or the model if it has none.
 
-    The hostname is what an operator already reads on every other page, so it is
-    used rather than inventing a naming scheme nobody has configured. Falling
-    back to the model keeps a nameless device identifiable without exposing its
-    address.
+    This is the fallback, not the label. It is what OmniSuite has always shown
+    and what a device with no alias still shows.
     """
     for candidate in (row.get("host"), row.get("hostname"),
                       (unit or {}).get("hostname"), (unit or {}).get("name")):
@@ -61,6 +59,21 @@ def _friendly_name(row, unit) -> str:
             return text
     model = str(row.get("model") or (unit or {}).get("model") or "").strip()
     return model or "Unnamed device"
+
+
+def _friendly_name(row, unit, identity, aliases) -> str:
+    """What to call a device on screen.
+
+    An administrator's alias wins -- "Document Camera" rather than
+    "at-omni-111-04553" -- and a device without one reads exactly as it did
+    before aliases existed. The alias is looked up *by identity*; there is no
+    path from a name back to a device anywhere in the projection, which is what
+    keeps a label from ever behaving like an identifier.
+    """
+    fallback = _device_name(row, unit)
+    if aliases is None:
+        return fallback
+    return aliases.display_name(identity, fallback)
 
 
 def _is_online(row, unit) -> bool:
@@ -80,16 +93,16 @@ def _is_online(row, unit) -> bool:
     return True
 
 
-def project_source(row, unit, identity) -> dict:
+def project_source(row, unit, identity, aliases=None) -> dict:
     """One encoder, as a user may see it. Named fields only."""
     return {
         "id": identity,
-        "name": _friendly_name(row, unit),
+        "name": _friendly_name(row, unit, identity, aliases),
         "online": _is_online(row, unit),
     }
 
 
-def project_destination(row, unit, identity, showing) -> dict:
+def project_destination(row, unit, identity, showing, aliases=None) -> dict:
     """One decoder, as a user may see it.
 
     `showing` describes what is on that display in the user's own terms -- the
@@ -98,7 +111,7 @@ def project_destination(row, unit, identity, showing) -> dict:
     """
     return {
         "id": identity,
-        "name": _friendly_name(row, unit),
+        "name": _friendly_name(row, unit, identity, aliases),
         "online": _is_online(row, unit),
         "showing": showing,
     }
@@ -129,7 +142,7 @@ def describe_showing(decoder_row, source_identity, source_names, permitted_sourc
     return {"mode": "other", "source_id": None, "source_name": None}
 
 
-def user_state(matrix_state, units, account) -> dict:
+def user_state(matrix_state, units, account, aliases=None) -> dict:
     """The whole of what a restricted account receives about the deployment.
 
     `matrix_state` is the administrative view the application already computes;
@@ -166,7 +179,7 @@ def user_state(matrix_state, units, account) -> dict:
         if not (admin or permissions.may_use_source(identity)):
             continue
         unit = unit_of.get(address)
-        projected = project_source(row, unit, identity)
+        projected = project_source(row, unit, identity, aliases)
         sources.append(projected)
         source_names[identity] = projected["name"]
         permitted_sources.add(identity)
@@ -187,7 +200,7 @@ def user_state(matrix_state, units, account) -> dict:
         showing = describe_showing(row, routed_identity, source_names,
                                    permitted_sources)
         destinations.append(project_destination(row, unit_of.get(address),
-                                                identity, showing))
+                                                identity, showing, aliases))
 
     sources.sort(key=lambda s: s["name"].lower())
     destinations.sort(key=lambda d: d["name"].lower())

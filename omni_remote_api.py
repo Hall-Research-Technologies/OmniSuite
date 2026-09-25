@@ -42,8 +42,8 @@ def _is_local():
     return bool(getattr(g, "is_local", False))
 
 
-def register(app, *, store, listener, load_cache, matrix_state, route_view,
-             remote_enabled, set_remote_state):
+def register(app, *, store, listener, aliases, load_cache, matrix_state,
+             route_view, remote_enabled, set_remote_state, remote_config):
     """Attach the remote-access API.
 
     Everything the module needs is passed in rather than imported from the
@@ -136,10 +136,21 @@ def register(app, *, store, listener, load_cache, matrix_state, route_view,
     def api_remote_access_state():
         adapters = omni_remote.usable_bind_addresses(_adapters(app))
         state = listener.describe()
+        saved = remote_config()
+        # Configured and running are different facts, and an installed system
+        # needs to be able to tell them apart: a saved address whose adapter has
+        # gone away leaves remote access configured and unavailable, which is
+        # neither "on" nor "off".
+        configured = bool(saved.get("enabled"))
+        available = any(a["address"] == saved.get("address") for a in adapters)
         return jsonify({
             "ok": True,
             **state,
             "adapters": adapters,
+            "configured": configured,
+            "configured_address": saved.get("address") or "",
+            "configured_available": bool(configured and available),
+            "restore_error": saved.get("restore_error") or "",
             "has_admin": store.has_admin,
             "sessions": store.active_session_count(),
             # Said plainly so the Settings page cannot imply otherwise.
@@ -228,11 +239,15 @@ def register(app, *, store, listener, load_cache, matrix_state, route_view,
 
     @app.route("/api/admin/devices", methods=["GET"])
     def api_admin_devices():
-        """Devices an administrator can assign, by stable identity.
+        """Devices an administrator can assign or name, by stable identity.
 
         The identity is what a permission stores, so the assignment UI and the
         enforcement agree by construction rather than by both happening to
         normalise the same way.
+
+        An administrator gets the device's own name, model and address
+        alongside the alias: two displays both called "Front Display" are only
+        distinguishable by what is underneath them.
         """
         devices = []
         for unit in load_cache() or []:
@@ -240,16 +255,49 @@ def register(app, *, store, listener, load_cache, matrix_state, route_view,
             if not identity:
                 continue
             role = (unit.get("role") or unit.get("type") or "").strip().lower()
+            device_name = unit.get("hostname") or unit.get("name") or identity
             devices.append({
                 "id": identity,
-                "name": unit.get("hostname") or unit.get("name") or identity,
+                # The device's own name, always, so an administrator can see
+                # what they are labelling.
+                "device_name": device_name,
+                "alias": aliases.alias_for(identity),
+                # What to show in a list: the alias where one is set.
+                "name": aliases.display_name(identity, device_name),
                 "model": unit.get("model") or "",
                 "ip": unit.get("ip") or "",
                 "role": "encoder" if "enc" in role else
                         ("decoder" if "dec" in role else "other"),
             })
         devices.sort(key=lambda d: (d["role"], d["name"].lower()))
-        return jsonify({"ok": True, "devices": devices})
+        return jsonify({"ok": True, "devices": devices,
+                        "duplicate_aliases": aliases.duplicates()})
+
+    @app.route("/api/admin/aliases", methods=["GET"])
+    def api_admin_aliases():
+        return jsonify({"ok": True, "aliases": aliases.all(),
+                        "duplicate_aliases": aliases.duplicates()})
+
+    @app.route("/api/admin/aliases", methods=["POST"])
+    def api_admin_set_aliases():
+        """Name devices, or clear a name with an empty string.
+
+        Takes a mapping so one editing session is one save. Nothing is written
+        to any device: this is OmniSuite's own label for a piece of equipment
+        and the OmniStream hostname is untouched.
+        """
+        data = request.get_json(silent=True) or {}
+        mapping = data.get("aliases")
+        if not isinstance(mapping, dict):
+            return jsonify({"ok": False, "error": "aliases must be an object"}), 400
+        result = aliases.set_many(mapping)
+        if not result.get("ok"):
+            return jsonify(result), 400
+        store.audit("device.aliases_changed", actor=_principal(),
+                    detail={"count": result.get("applied", 0)})
+        return jsonify({"ok": True, "applied": result.get("applied", 0),
+                        "aliases": aliases.all(),
+                        "duplicate_aliases": aliases.duplicates()})
 
     @app.route("/api/admin/audit", methods=["GET"])
     def api_admin_audit():
@@ -265,7 +313,7 @@ def register(app, *, store, listener, load_cache, matrix_state, route_view,
             # projection with nothing filtered out.
             account = _LocalAdmin()
         return jsonify(omni_projection.user_state(
-            matrix_state(), load_cache() or [], account))
+            matrix_state(), load_cache() or [], account, aliases))
 
     @app.route("/api/user/route", methods=["POST"])
     def api_user_route():
