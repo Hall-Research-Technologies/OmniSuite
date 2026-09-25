@@ -15,6 +15,7 @@ import pathlib
 
 from flask import g, jsonify, request
 
+import omni_adapters
 import omni_access
 import omni_locks
 import omni_projection
@@ -145,7 +146,15 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
     # ------------------------------------------------------ remote access
     @app.route("/api/remote_access", methods=["GET"])
     def api_remote_access_state():
-        adapters = omni_remote.usable_bind_addresses(_adapters(app))
+        # Enumerated with a stable identity, so a selection can survive the
+        # address changing. `usable_bind_addresses` still has the final say on
+        # what may be bound -- this adds identity, it does not widen the gate.
+        try:
+            enumerated = omni_adapters.enumerate_adapters()
+        except Exception:
+            enumerated = []
+        adapters = [a for a in enumerated
+                    if omni_remote.is_usable_remote_address(a.get("address"))]
         state = listener.describe()
         saved = remote_config()
         # Configured and running are different facts, and an installed system
@@ -153,7 +162,12 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         # gone away leaves remote access configured and unavailable, which is
         # neither "on" nor "off".
         configured = bool(saved.get("enabled"))
-        available = any(a["address"] == saved.get("address") for a in adapters)
+        # Available means the chosen ADAPTER is here, not that the address it
+        # had last time is. That distinction is the defect this fixes.
+        chosen = saved.get("adapter_id") or ""
+        available = (any(a.get("id") == chosen for a in adapters) if chosen
+                     else any(a.get("address") == saved.get("address")
+                              for a in adapters))
         # What the certificate is, never what the key is.
         certificate = certificate_state()
         transport = saved.get("transport") or "https"
@@ -164,6 +178,8 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
             "adapters": adapters,
             "configured": configured,
             "configured_address": saved.get("address") or "",
+            "configured_adapter": saved.get("adapter_id") or "",
+            "configured_adapter_name": saved.get("adapter_name") or "",
             "configured_available": bool(configured and available),
             "restore_error": saved.get("restore_error") or "",
             "has_admin": store.has_admin,
@@ -196,8 +212,40 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                 "error": "create an administrator account before enabling "
                          "remote access"}), 409
         address = str(data.get("address") or "").strip()
+        adapter_id = str(data.get("adapter_id") or "").strip()
         port = data.get("port") or request.environ.get("SERVER_PORT") or 8080
         transport = "http" if data.get("transport") == "http" else "https"
+
+        # An adapter chosen by identity decides the address, so a stale one in
+        # the request body cannot send the listener somewhere else.
+        adapter_name = ""
+        if adapter_id:
+            try:
+                enumerated = omni_adapters.enumerate_adapters()
+            except Exception:
+                enumerated = []
+            resolved, why = omni_adapters.resolve_address(adapter_id, address,
+                                                          enumerated)
+            if not resolved:
+                return jsonify({
+                    "ok": False,
+                    "error": ("That network adapter is no longer available on "
+                              "this computer." if why == "adapter missing"
+                              else "That adapter has several addresses; "
+                                   "choose which one to use.")}), 400
+            address = resolved
+            adapter_name = next((a["name"] for a in enumerated
+                                 if a.get("id") == adapter_id), "")
+        else:
+            # No identity offered: adopt the one that owns this address, if
+            # exactly one does. Anything else is refused rather than guessed.
+            try:
+                enumerated = omni_adapters.enumerate_adapters()
+            except Exception:
+                enumerated = []
+            owner = omni_adapters.adopt_saved_address(address, enumerated)
+            if owner is not None:
+                adapter_id, adapter_name = owner["id"], owner["name"]
 
         # Turning on plaintext remote access is possible, but only when the
         # administrator says so in as many words. It is not a default and it is
@@ -224,9 +272,10 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
             return jsonify(result), 400
         store.audit("remote_access.enabled", actor=_principal(),
                     detail={"address": address, "port": int(port),
-                            "transport": transport})
+                            "transport": transport, "adapter": adapter_name})
         set_remote_state(True, address, int(port), transport,
-                         proposed["cert_path"], proposed["key_path"])
+                         proposed["cert_path"], proposed["key_path"],
+                         adapter_id, adapter_name)
         return jsonify({**result, "certificate": certificate_state()})
 
     @app.route("/api/admin/certificate", methods=["POST"])
@@ -254,7 +303,8 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
             # Stored as the configured pair so a restart uses it.
             saved = remote_config()
             set_remote_state(saved.get("enabled"), saved.get("address"),
-                             saved.get("port"), "https", "", "")
+                             saved.get("port"), "https", "", "",
+                             saved.get("adapter_id"), saved.get("adapter_name"))
             return jsonify({"ok": True, "certificate": certificate_state()})
 
         if action == "use":
@@ -267,10 +317,49 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
             tls.restrict_existing(key_path)
             saved = remote_config()
             set_remote_state(saved.get("enabled"), saved.get("address"),
-                             saved.get("port"), "https", cert_path, key_path)
+                             saved.get("port"), "https", cert_path, key_path,
+                             saved.get("adapter_id"), saved.get("adapter_name"))
             store.audit("certificate.configured", actor=_principal(),
                         detail={"certificate": pathlib.Path(cert_path).name})
             return jsonify({"ok": True, "certificate": certificate_state()})
+
+        if action == "remove":
+            # Not while it is in use: removing the certificate under a running
+            # HTTPS listener would drop every signed-in browser and leave the
+            # machine unreachable, which is not something to do as a side
+            # effect of tidying up.
+            if listener.running and listener.describe().get("secure"):
+                return jsonify({
+                    "ok": False,
+                    "error": "Turn remote access off before removing the "
+                             "certificate it is using."}), 409
+
+            saved = remote_config()
+            cert_path, key_path = cert_paths
+            removed = []
+            # Only OmniSuite's own pair is deleted. A certificate the site
+            # supplied belongs to the site: that selection is cleared so
+            # OmniSuite stops using it, and the files are left where they are.
+            if not saved.get("cert_path"):
+                for path in (pathlib.Path(cert_path), pathlib.Path(key_path)):
+                    try:
+                        if path.exists():
+                            path.unlink()
+                            removed.append(path.name)
+                    except OSError as exc:
+                        return jsonify({
+                            "ok": False,
+                            "error": f"Could not remove {path.name}: "
+                                     f"{exc.strerror or exc}"}), 500
+            set_remote_state(saved.get("enabled"), saved.get("address"),
+                             saved.get("port"), saved.get("transport"),
+                             "", "",
+                             saved.get("adapter_id"), saved.get("adapter_name"))
+            store.audit("certificate.removed", actor=_principal(),
+                        detail={"files": removed,
+                                "supplied": bool(saved.get("cert_path"))})
+            return jsonify({"ok": True, "removed": removed,
+                            "certificate": certificate_state()})
 
         return jsonify({"ok": False, "error": "unknown action"}), 400
 

@@ -305,6 +305,74 @@ check('the two states differ by a rule, not only by a hue', () => {
     'use the shared state tokens, not literal colours');
 });
 
+
+// ------------------------------------------------ the network selector ---
+//
+// The defect: renderRemoteAccess() told the operator "Choose another network
+// below", enabled the dropdown, and returned -- before the code that fills
+// it. The one state where choosing a network is the entire point was the one
+// state with nothing to choose from.
+const SETTINGS_JS = fs.readFileSync(path.join(ROOT, 'ui', 'settings.js'), 'utf8');
+
+check('the network list is filled before any branch can return', () => {
+  const src = code(SETTINGS_JS);
+  const render = src.indexOf('function renderRemoteAccess');
+  assert(render >= 0, 'renderRemoteAccess should exist');
+  const body = src.slice(render, src.indexOf('async function loadRemoteAccess'));
+  const fill = body.indexOf('fillAdapterList(');
+  assert(fill >= 0, 'the list must be built by a named function');
+  // Not the very first return -- the "no state at all" branch legitimately
+  // has nothing to fill. The one that mattered is the branch that tells the
+  // operator to choose a network and then used to return without offering
+  // any, which is precisely the state a moved address puts you in.
+  const unavailable = body.indexOf('Choose another network below');
+  assert(unavailable >= 0, 'that branch should still exist');
+  assert(fill < unavailable,
+    'the list must be filled before the branch that says "choose another '
+    + 'network", or that branch leaves the dropdown empty');
+});
+
+check('the list is rebuilt every time, not cached behind a flag', () => {
+  assert(!/dataset\.filled/.test(code(SETTINGS_JS)),
+    'an adapter appearing, or an address moving, must be reflected');
+});
+
+check('an option carries the adapter identity and its address', () => {
+  const src = code(SETTINGS_JS);
+  const fill = src.slice(src.indexOf('function fillAdapterList'));
+  assert(/option\.value = entry\.id/.test(fill),
+    'the value must be the adapter, because the address is what changes');
+  assert(/dataset\.address = entry\.address/.test(fill),
+    'the address rides along for display and certificate generation');
+});
+
+check('the identity is never put in front of an operator', () => {
+  const src = code(SETTINGS_JS);
+  assert(!/textContent\s*=\s*entry\.id\b/.test(src),
+    'a GUID on screen is noise somebody cannot act on');
+  assert(/entry\.label/.test(src), 'the readable label is what is shown');
+});
+
+check('turning on sends which adapter was chosen', () => {
+  assert(/adapter_id:\s*adapterId/.test(code(SETTINGS_JS)),
+    'the server resolves the address from the adapter, so a stale address '
+    + 'in the body cannot misdirect the listener');
+});
+
+check('a certificate can be removed', () => {
+  const src = code(SETTINGS_JS);
+  assert(/id="cfg_cert_remove"/.test(SETTINGS_JS), 'there should be a control');
+  assert(/action: 'remove'/.test(src), 'it should ask the server to remove');
+  assert(/omniConfirm/.test(src.slice(src.indexOf("cfg_cert_remove'"))),
+    'deleting a private key is not something to do on a single click');
+});
+
+check('remove is offered only when there is a certificate', () => {
+  assert(/remove\.hidden = !\(cert\.present \|\| cert\.path_configured\)/
+         .test(code(SETTINGS_JS)),
+    'a control that would do nothing should not be offered');
+});
+
 // --------------------------------------------------------------- report ---
 results.forEach(([status, name]) => console.log(`${status} ${name}`));
 if (failures) {

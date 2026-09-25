@@ -975,8 +975,10 @@
         asks for a username and password. This can only be done at the OmniSuite
         computer &mdash; nobody on the network can create the first account, and
         there is no default password to change.</li>
-        <li><strong>Choose the network.</strong> Pick the adapter other devices
-        will reach OmniSuite on. Only real network adapters are offered.</li>
+        <li><strong>Choose the network.</strong> Pick the network adapter
+        other devices will reach OmniSuite on. Each one is listed by its name
+        and its current address &mdash; <em>Ethernet 3 &mdash;
+        192.168.100.185</em> &mdash; so you can tell them apart.</li>
         <li><strong>Set up encryption.</strong> Remote Access uses
         <strong>HTTPS</strong>, which needs a certificate. Press
         <strong>Create certificate</strong> and OmniSuite makes one for the
@@ -1010,6 +1012,29 @@
         Access stays off and Settings says why. It does not start unencrypted
         instead.</li>
       </ul>
+
+      <h4 id="remote-adapter">If the computer&rsquo;s address changes</h4>
+      <p>Remote Access is assigned to a <strong>network adapter</strong>, not to
+      an address. OmniSuite shows that adapter&rsquo;s current address and uses
+      it for the Remote Access link.</p>
+      <p>So if the address changes &mdash; a new lease from the DHCP server, or
+      somebody sets a different static address &mdash; OmniSuite carries on
+      using the same adapter and the link simply shows the new address. You do
+      not have to set it up again.</p>
+      <div class="note"><strong>Moving the cable to a different adapter is a
+      different thing.</strong> If you unplug the network and plug it into
+      another port or a different card, that is another adapter as far as
+      Windows and OmniSuite are concerned &mdash; even when it ends up with the
+      same address. Remote Access stays off until you choose the new adapter
+      yourself, because OmniSuite will not decide on its own which piece of
+      equipment you meant.</div>
+      <p>If the adapter you chose is not present at all &mdash; a cable out, a
+      dock changed, a card removed &mdash; Settings says so by name:</p>
+      <p><em>Remote access is configured for Ethernet 3, but that network
+      adapter is not available on this computer right now.</em></p>
+      <p>OmniSuite keeps running normally on its own computer, and nothing is
+      reachable from the network until you either put that adapter back or pick
+      a different one.</p>
       <div class="note">A brand-new installation always starts with Remote
       Access <strong>off</strong>, and updating OmniSuite never turns it on.
       Only an administrator turning it on makes it persist; turning it off makes
@@ -1071,6 +1096,22 @@
       back to an unencrypted connection, because that would send passwords in
       the clear without anyone being told. Settings says what is wrong. OmniSuite
       keeps working normally on its own computer throughout.</div>
+
+      <h4 id="remote-cert-remove">Removing a certificate</h4>
+      <p><strong>Remove certificate</strong> appears once there is one. Use it
+      when you are replacing a certificate OmniSuite created with one your
+      organisation issued, or clearing one that was made for an address this
+      computer no longer has.</p>
+      <ul>
+        <li>A certificate <strong>OmniSuite created</strong> is deleted, along
+        with its private key.</li>
+        <li>A certificate <strong>you supplied</strong> is only unselected
+        &mdash; OmniSuite stops using it and your files are left alone.</li>
+      </ul>
+      <p>Turn Remote Access off first. OmniSuite will not remove a certificate
+      that is in use, because doing so would disconnect everyone without
+      warning. Afterwards, Remote Access will not start over HTTPS until you
+      create or supply another certificate.</p>
 
       <h4>Turning encryption off</h4>
       <p>There is a <strong>Not encrypted (HTTP)</strong> option for a closed
@@ -1314,10 +1355,19 @@
         restarted.</td></tr>
         <tr><td>A display is missing from a User's list</td><td>It is not
         assigned to that account, or discovery has not found it.</td></tr>
-        <tr><td>Settings says Remote Access is configured but the network is
-        unavailable</td><td>The adapter you chose is not present on this
-        computer right now. Check the cable and the network connection, or
-        choose a different network and turn Remote Access on again.</td></tr>
+        <tr><td>Settings names an adapter that is &ldquo;not
+        available&rdquo;</td><td>The adapter you chose is not present right
+        now. Check the cable and the network connection. If the network has
+        genuinely moved to a different adapter, choose that one in Settings and
+        turn Remote Access on again.</td></tr>
+        <tr><td>Settings says it cannot establish which adapter was
+        configured</td><td>Seen after an upgrade when the address that was
+        saved no longer belongs to any adapter on this computer. Choose the
+        network again; OmniSuite then remembers the adapter rather than the
+        address.</td></tr>
+        <tr><td>The Remote Access address is different from last time</td>
+        <td>Expected if the adapter&rsquo;s address changed. OmniSuite follows
+        the adapter you chose, so the link shows its current address.</td></tr>
         <tr><td>Everyone was signed out</td><td>OmniSuite restarted. Accounts and
         permissions are unaffected; people simply sign in again.</td></tr>
         <tr><td>A device still shows its hostname</td><td>No friendly name has

@@ -31,6 +31,7 @@ import omni_projection
 import omni_remote
 import omni_remote_api
 import omni_statecache
+import omni_adapters
 import omni_tls
 import omni_users
 
@@ -16605,7 +16606,8 @@ _remote_restore_error = ""
 
 
 def _remote_access_preference(enabled, address, port, transport=None,
-                              cert_path=None, key_path=None):
+                              cert_path=None, key_path=None,
+                              adapter_id=None, adapter_name=None):
     """Remember what the operator chose, including how to secure it.
 
     Its own file rather than config.json: that one carries the device
@@ -16620,6 +16622,13 @@ def _remote_access_preference(enabled, address, port, transport=None,
     previous = _remote_access_last_choice()
     omni_users._atomic_write_json(REMOTE_ACCESS_FILE, {
         "enabled": bool(enabled),
+        # The adapter is the choice. The address is what it had when the
+        # choice was made -- kept so the same address can be preferred if the
+        # adapter still has it, and so Settings can say what was configured.
+        "adapter_id": (adapter_id if adapter_id is not None
+                       else previous.get("adapter_id", "")),
+        "adapter_name": (adapter_name if adapter_name is not None
+                         else previous.get("adapter_name", "")),
         "address": address or "",
         "port": int(port) if port else None,
         "transport": transport or previous.get("transport") or "https",
@@ -16637,7 +16646,8 @@ def _remote_access_last_choice():
     of them: never configured, explicitly disabled, and configured but the
     selected network is not here today.
     """
-    saved = {"enabled": False, "address": "", "port": None,
+    saved = {"enabled": False, "adapter_id": "", "adapter_name": "",
+             "address": "", "port": None,
              "transport": "https", "cert_path": "", "key_path": ""}
     try:
         if REMOTE_ACCESS_FILE.exists():
@@ -16645,6 +16655,8 @@ def _remote_access_last_choice():
             if isinstance(stored, dict):
                 saved.update({
                     "enabled": bool(stored.get("enabled")),
+                    "adapter_id": str(stored.get("adapter_id") or ""),
+                    "adapter_name": str(stored.get("adapter_name") or ""),
                     "address": str(stored.get("address") or ""),
                     "port": stored.get("port"),
                     # An unreadable or absent transport reads as https: the
@@ -16662,6 +16674,72 @@ def _remote_access_last_choice():
                     type(exc).__name__)
     saved["restore_error"] = _remote_restore_error
     return saved
+
+
+def _remote_address_for(saved):
+    """Which address a saved configuration should bind now, or why it cannot.
+
+    Returns (address, reason). The operator chose an ADAPTER; this follows it
+    to whatever address it carries today, which is the whole point -- a DHCP
+    lease or a static change on the bench network must not leave remote access
+    permanently looking for an address nobody has.
+
+    A configuration saved before adapters had identities carries only an
+    address. It is migrated here, and only when exactly one adapter present on
+    this machine owns that address. Zero means the evidence is gone; more than
+    one means it cannot be established. Neither is guessed at, because
+    adopting the wrong adapter would move Remote Access to different hardware
+    without anybody asking -- the machine this was found on had one address on
+    a Wi-Fi adapter and a different one, same subnet, on an Ethernet adapter.
+    """
+    try:
+        adapters = omni_adapters.enumerate_adapters()
+    except Exception as exc:
+        log.info("[REMOTE] adapter enumeration failed: %s", type(exc).__name__)
+        adapters = []
+
+    adapter_id = (saved or {}).get("adapter_id") or ""
+    address = (saved or {}).get("address") or ""
+    named = (saved or {}).get("adapter_name") or adapter_id or "that network"
+
+    if not adapter_id:
+        adopted = omni_adapters.adopt_saved_address(address, adapters)
+        if adopted is None:
+            return "", (
+                f"Remote access is configured for {address}, but which network "
+                "adapter that was cannot be established on this computer. "
+                "Choose the network again to continue.")
+        # Record what was established, so this happens once.
+        log.info("[REMOTE] migrated saved address %s to adapter %s",
+                 address, adopted["id"])
+        _remote_access_preference(
+            True, adopted["address"], (saved or {}).get("port"),
+            transport=(saved or {}).get("transport"),
+            cert_path=(saved or {}).get("cert_path"),
+            key_path=(saved or {}).get("key_path"),
+            adapter_id=adopted["id"], adapter_name=adopted["name"])
+        return adopted["address"], ""
+
+    resolved, reason = omni_adapters.resolve_address(adapter_id, address,
+                                                     adapters)
+    if reason == "adapter missing":
+        return "", (f"Remote access is configured for {named}, but that "
+                    "network adapter is not available on this computer right "
+                    "now.")
+    if reason == "ambiguous":
+        return "", (f"{named} has more than one address and none of them is "
+                    f"the one that was chosen. Choose the network again.")
+    if resolved and resolved != address:
+        # The adapter moved. Remember where it is now, so Settings and the
+        # next restart agree with the listener.
+        log.info("[REMOTE] %s moved from %s to %s", named, address, resolved)
+        _remote_access_preference(
+            True, resolved, (saved or {}).get("port"),
+            transport=(saved or {}).get("transport"),
+            cert_path=(saved or {}).get("cert_path"),
+            key_path=(saved or {}).get("key_path"),
+            adapter_id=adapter_id, adapter_name=named)
+    return resolved, ""
 
 
 def _remote_tls_context(saved):
@@ -16725,28 +16803,15 @@ def restore_remote_access():
         log.warning("[REMOTE] not restoring: no administrator account")
         return {"restored": False, "reason": "no administrator"}
 
-    address = saved.get("address") or ""
+    address, adapter_error = _remote_address_for(saved)
+    if adapter_error:
+        _remote_restore_error = adapter_error
+        log.warning("[REMOTE] not restoring: %s", adapter_error)
+        return {"restored": False, "reason": "adapter unavailable"}
     if not omni_remote.is_usable_remote_address(address):
         _remote_restore_error = "The saved remote address is not usable."
         log.warning("[REMOTE] not restoring: saved address is unusable")
         return {"restored": False, "reason": "unusable address"}
-
-    try:
-        with app.test_request_context("/api/adapters"):
-            available = omni_remote.usable_bind_addresses(
-                _view_payload(api_adapters()).get("adapters") or [])
-    except Exception as exc:
-        available = []
-        log.info("[REMOTE] adapter enumeration failed during restore: %s",
-                 type(exc).__name__)
-
-    if not any(a.get("address") == address for a in available):
-        _remote_restore_error = (
-            f"Remote access is configured for {address}, but that network is "
-            "not available on this computer right now.")
-        log.warning("[REMOTE] not restoring: %s is not present on this host",
-                    address)
-        return {"restored": False, "reason": "address unavailable"}
 
     port = saved.get("port") or int(os.getenv("OMNI_PORT", PORT) or PORT)
 

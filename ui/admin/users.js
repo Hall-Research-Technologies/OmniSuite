@@ -639,6 +639,7 @@
     'remote_access.restored': 'Remote access restored',
     'certificate.generated': 'Certificate created',
     'certificate.configured': 'Certificate configured',
+    'certificate.removed': 'Certificate removed',
     'device.aliases_changed': 'Device names changed',
     'bootstrap.admin_created': 'First administrator created',
   };

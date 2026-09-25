@@ -167,6 +167,8 @@ const SETTINGS_MODAL_HTML = `
                 Create one for this network</button>
               <button id="cfg_cert_use" class="btn small secondary" type="button">
                 Use my own files</button>
+              <button id="cfg_cert_remove" class="btn small secondary" type="button" hidden>
+                Remove certificate</button>
             </div>
             <div id="cfg_cert_files" hidden style="margin-top:8px;">
               <input id="cfg_cert_path" type="text" style="width:100%;margin-bottom:6px;"
@@ -524,6 +526,12 @@ function initConfig() {
       return;
     }
 
+    // Fill the network list FIRST, before any of the branches below can
+    // return. The "configured but unavailable" branch used to return early,
+    // after telling the operator to choose another network -- leaving the
+    // dropdown it had just enabled completely empty.
+    fillAdapterList(adapter, remoteState);
+
     // Creating the first administrator is only reachable from this computer,
     // so the form is only offered when the server says one is needed.
     const needsAdmin = !remoteState.has_admin;
@@ -600,6 +608,16 @@ function initConfig() {
 
     if (certStatus) {
       const cert = remoteState.certificate || {};
+      // Offered only when a certificate exists, so the control never invites
+      // an action that would do nothing.
+      const remove = document.getElementById('cfg_cert_remove');
+      if (remove) {
+        remove.hidden = !(cert.present || cert.path_configured);
+        remove.disabled = !!(remoteState.enabled && remoteState.secure);
+        remove.title = remove.disabled
+          ? 'Turn remote access off first — it is using this certificate.'
+          : '';
+      }
       const generate = document.getElementById('cfg_cert_generate');
       if (generate) {
         generate.disabled = !cert.can_generate;
@@ -647,25 +665,49 @@ function initConfig() {
       }
     }
 
-    if (adapter && !adapter.dataset.filled) {
-      adapter.replaceChildren();
-      (remoteState.adapters || []).forEach((entry) => {
-        const option = document.createElement('option');
-        option.value = entry.address;
-        option.textContent = entry.name + ' — ' + entry.address;
-        adapter.appendChild(option);
-      });
-      if (!(remoteState.adapters || []).length) {
-        const option = document.createElement('option');
-        option.value = '';
-        option.textContent = 'No suitable network found';
-        adapter.appendChild(option);
-      }
-      adapter.dataset.filled = '1';
-      const preferred = remoteState.host || remoteState.configured_address;
-      if (preferred) adapter.value = preferred;
-    }
     if (adapter) adapter.disabled = !!remoteState.enabled;
+  }
+
+  // The network list, rebuilt every time state is read.
+  //
+  // It used to be built once and cached behind a dataset flag, so an adapter
+  // appearing -- or an address moving -- was never reflected. There is no
+  // reason to cache six options.
+  function fillAdapterList(adapter, state) {
+    if (!adapter) return;
+    const list = (state && state.adapters) || [];
+    const previous = adapter.value;
+    adapter.replaceChildren();
+
+    if (!list.length) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = 'No suitable network found';
+      adapter.appendChild(option);
+      return;
+    }
+
+    list.forEach((entry) => {
+      const option = document.createElement('option');
+      // The value is the ADAPTER. Selecting a network says which adapter, not
+      // which address -- the address is what changes.
+      option.value = entry.id || entry.address;
+      option.dataset.address = entry.address;
+      option.textContent = entry.label || (entry.name + ' — ' + entry.address);
+      adapter.appendChild(option);
+    });
+
+    // Keep what the operator had chosen if it is still offered; otherwise
+    // prefer what is configured, and only then fall back to the first entry.
+    const wanted = [previous, state.configured_adapter,
+                    state.host, state.configured_address]
+      .filter(Boolean);
+    for (const candidate of wanted) {
+      const match = [...adapter.options].find(
+        (o) => o.value === candidate || o.dataset.address === candidate);
+      if (match) { adapter.value = match.value; return; }
+    }
+    adapter.selectedIndex = 0;
   }
 
   async function loadRemoteAccess() {
@@ -738,10 +780,57 @@ function initConfig() {
     certUse.addEventListener('click', () => { certFiles.hidden = !certFiles.hidden; });
   }
 
+  const certRemove = document.getElementById('cfg_cert_remove');
+  if (certRemove) {
+    certRemove.addEventListener('click', async () => {
+      const cert = (remoteState && remoteState.certificate) || {};
+      const supplied = !!cert.path_configured;
+      // Removing one OmniSuite made deletes files; removing one the site
+      // supplied only stops using it. The confirmation says which.
+      const ok = !window.omniConfirm ? false : await window.omniConfirm({
+        title: 'Remove this certificate?',
+        message: supplied
+          ? 'OmniSuite will stop using the certificate you supplied. The '
+            + 'files themselves are left where they are. Remote access will '
+            + 'not start over HTTPS until another certificate is configured.'
+          : 'The certificate and its private key will be deleted from this '
+            + 'computer. Remote access will not start over HTTPS until you '
+            + 'create or supply another one.',
+        summary: [{label: 'Certificate',
+                   value: cert.subject || 'the configured certificate'}],
+        confirmText: 'Remove',
+        danger: true,
+      });
+      if (!ok) return;
+      certRemove.disabled = true;
+      try {
+        const res = await fetch('/api/admin/certificate', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          credentials: 'same-origin',
+          body: JSON.stringify({action: 'remove'}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok) {
+          window.toast && window.toast('Certificate removed', 'ok');
+        } else {
+          window.toast && window.toast(data.error || 'Could not remove it', 'error');
+        }
+      } catch (err) {
+        window.toast && window.toast('Could not reach OmniSuite', 'error');
+      }
+      certRemove.disabled = false;
+      await loadRemoteAccess();
+    });
+  }
+
   if (certGenerate) {
     certGenerate.addEventListener('click', async () => {
       const adapter = document.getElementById('cfg_remote_adapter');
-      const address = adapter ? adapter.value : '';
+      const chosen = adapter ? adapter.selectedOptions[0] : null;
+      // A certificate is made for an address, so this one wants the address
+      // the chosen adapter currently has.
+      const address = chosen ? (chosen.dataset.address || '') : '';
       if (!address) {
         window.toast && window.toast('Choose a network first', 'error');
         return;
@@ -805,8 +894,12 @@ function initConfig() {
     remoteToggle.addEventListener('click', async () => {
       const turningOn = !(remoteState && remoteState.enabled);
       const adapter = document.getElementById('cfg_remote_adapter');
-      const address = adapter ? adapter.value : '';
-      if (turningOn && !address) {
+      // The option's value is the adapter; its address rides along for
+      // display. The server resolves the adapter's current address itself.
+      const chosen = adapter ? adapter.selectedOptions[0] : null;
+      const adapterId = chosen ? chosen.value : '';
+      const address = chosen ? (chosen.dataset.address || '') : '';
+      if (turningOn && !adapterId) {
         window.toast && window.toast('Choose a network first', 'error');
         return;
       }
@@ -820,7 +913,8 @@ function initConfig() {
               + 'details can be read by anyone watching this network.'
             : 'Other devices on this network will be able to reach OmniSuite '
               + 'and sign in over an encrypted connection.',
-          summary: [{label: 'Address', value: address},
+          summary: [{label: 'Network',
+                     value: (chosen ? chosen.textContent : address)},
                     {label: 'Security',
                      value: transport === 'http' ? 'Not encrypted' : 'HTTPS'}],
           confirmText: 'Turn on',
@@ -837,6 +931,9 @@ function initConfig() {
           credentials: 'same-origin',
           body: JSON.stringify({
             enabled: turningOn, address, transport,
+            // Which adapter was chosen. The server resolves its current
+            // address from this, so a stale address here cannot misdirect it.
+            adapter_id: adapterId,
             // The server refuses plaintext without this, so it cannot be
             // reached by a request that simply omits a field.
             accept_insecure: transport === 'http',
