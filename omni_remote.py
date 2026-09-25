@@ -142,6 +142,27 @@ def is_wildcard_address(address: str) -> bool:
         return False
 
 
+def _why_bind_failed(host: str, port) -> str:
+    """The operating system's own reason, recovered after a failed bind.
+
+    Called only once a bind has already been declined. werkzeug prints the
+    reason to stderr and calls sys.exit(1), so the SystemExit that arrives
+    carries nothing an operator could act on -- and "not on this machine" and
+    "something else is using that port" need different remedies.
+    """
+    family = socket.AF_INET6 if ":" in str(host) else socket.AF_INET
+    probe = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        probe.bind((str(host), int(port)))
+    except OSError as exc:
+        return str(exc.strerror or exc)
+    except (TypeError, ValueError) as exc:
+        return str(exc)
+    finally:
+        probe.close()
+    return "the address or port was briefly unavailable"
+
+
 def is_usable_remote_address(address: str) -> bool:
     """Whether this is a concrete address an administrator may bind remotely.
 
@@ -253,7 +274,21 @@ class RemoteListener:
             return {"ok": False, "error": "invalid port"}
 
         with self._lock:
-            if self._server is not None:
+            # Make before break.
+            #
+            # Reconfiguring used to stop the running listener first and only
+            # then discover that the new address was not on this machine, or
+            # that the port was taken -- which left remote access off, with the
+            # failure arriving as a dropped connection rather than as a
+            # message. Building the new one first means a reconfiguration that
+            # cannot succeed changes nothing at all.
+            #
+            # Rebinding the very same address and port is the one case that
+            # cannot work that way, because the old listener is still holding
+            # it; there, stopping first is what was asked for.
+            rebinding_in_place = (self._server is not None
+                                  and self._bound == (host, port))
+            if rebinding_in_place:
                 self.stop()
             try:
                 from werkzeug.serving import make_server
@@ -266,9 +301,25 @@ class RemoteListener:
                             type(exc).__name__)
                 return {"ok": False,
                         "error": f"cannot bind {host}:{port} ({exc.strerror or exc})"}
+            except SystemExit:
+                # werkzeug answers a bind failure by printing to stderr and
+                # calling sys.exit(1). SystemExit is a BaseException, so it
+                # passes both clauses above and, left alone, kills the request
+                # thread instead of answering the operator.
+                #
+                # It also carries no reason, so the reason is recovered here --
+                # safely, because the listener that works is still running.
+                reason = _why_bind_failed(host, port)
+                log.warning("[REMOTE] cannot bind %s:%s: %s", host, port, reason)
+                return {"ok": False,
+                        "error": f"cannot bind {host}:{port} ({reason})"}
             except Exception as exc:
                 log.warning("[REMOTE] listener failed to start: %s", type(exc).__name__)
                 return {"ok": False, "error": f"listener failed: {type(exc).__name__}"}
+
+            # The new listener exists, so the old one can go now.
+            if self._server is not None:
+                self.stop()
 
             thread = threading.Thread(
                 target=server.serve_forever,

@@ -11,6 +11,8 @@ Nothing here contacts hardware; the package's fence is installed on import.
 from __future__ import annotations
 
 import os
+import socket
+import time
 import sys
 import unittest
 from pathlib import Path
@@ -612,6 +614,108 @@ class BindAddressIsAHostTests(unittest.TestCase):
             {"ip": "224.0.0.1"}, {"ip": "127.0.0.1"}, {"ip": "0.0.0.0"},
         ])
         self.assertEqual([a["address"] for a in offered], ["192.168.100.185"])
+
+
+class ReconfiguringDoesNotBreakAWorkingListenerTests(unittest.TestCase):
+    """Moving Remote Access to a bad address used to turn it off silently.
+
+    `start()` stopped the running listener and only then asked werkzeug to
+    bind. werkzeug answers a bind failure by printing to stderr and calling
+    `sys.exit(1)`, so the failure arrived as SystemExit -- a BaseException,
+    caught by neither `except OSError` nor `except Exception`. In the packaged
+    application that killed the request thread: a dropped connection instead of
+    a message, and remote access left off with nothing said.
+
+    Nothing here opens a socket. What is under test is the order of operations,
+    so `make_server` is stubbed and told when to fail; a test that bound a real
+    interface would be testing this machine.
+    """
+
+    GOOD = ("198.51.100.10", 8443)
+    BAD = ("198.51.100.99", 8443)
+
+    def setUp(self):
+        import werkzeug.serving
+
+        self.listener = omni_remote.RemoteListener(lambda e, s: [b""])
+        self.addCleanup(self.listener.stop)
+        self.built = []
+
+        class FakeServer:
+            def __init__(self, host, port):
+                self.host, self.port = host, port
+                self.stopped = False
+
+            def serve_forever(self):
+                while not self.stopped:
+                    time.sleep(0.01)
+
+            def shutdown(self):
+                self.stopped = True
+
+            def server_close(self):
+                self.stopped = True
+
+        def fake_make_server(host, port, app, **kwargs):
+            self.built.append((host, port))
+            if (host, port) == self.BAD:
+                # Exactly what werkzeug does with a bind it cannot perform.
+                raise SystemExit(1)
+            return FakeServer(host, port)
+
+        self.real_make_server = werkzeug.serving.make_server
+        werkzeug.serving.make_server = fake_make_server
+        self.addCleanup(setattr, werkzeug.serving, "make_server",
+                        self.real_make_server)
+
+    def test_a_bind_that_cannot_happen_is_an_answer_not_an_exit(self):
+        result = self.listener.start(*self.BAD)
+        self.assertFalse(result["ok"])
+        self.assertIn("cannot bind", result["error"])
+        self.assertFalse(self.listener.running)
+
+    def test_a_failed_reconfiguration_leaves_the_listener_running(self):
+        self.assertTrue(self.listener.start(*self.GOOD)["ok"])
+        self.assertTrue(self.listener.running)
+
+        refused = self.listener.start(*self.BAD)
+        self.assertFalse(refused["ok"])
+        self.assertTrue(self.listener.running,
+                        "a reconfiguration that cannot succeed must not take "
+                        "down the listener that works")
+        self.assertEqual(self.listener.bound, self.GOOD)
+
+    def test_a_successful_reconfiguration_does_move(self):
+        """The control: without it the test above passes by never moving."""
+        self.assertTrue(self.listener.start(*self.GOOD)["ok"])
+        moved = ("198.51.100.11", 8444)
+        self.assertTrue(self.listener.start(*moved)["ok"])
+        self.assertEqual(self.listener.bound, moved)
+
+    def test_rebinding_the_same_address_stops_first(self):
+        """The one case make-before-break cannot serve."""
+        self.assertTrue(self.listener.start(*self.GOOD)["ok"])
+        self.assertTrue(self.listener.start(*self.GOOD)["ok"])
+        self.assertEqual(self.listener.bound, self.GOOD)
+        self.assertEqual(self.built, [self.GOOD, self.GOOD])
+
+    def test_the_new_listener_is_built_before_the_old_one_is_stopped(self):
+        """Structural, so the ordering cannot be undone by a later edit."""
+        source = (ROOT / "omni_remote.py").read_text(encoding="utf-8")
+        body = source[source.index("def start("):]
+        body = body[:body.index(chr(10) + "    def ")]
+        code = chr(10).join(line.split("#", 1)[0] for line in body.splitlines())
+        self.assertIn("except SystemExit:", code)
+        built = code.index("server = make_server(")
+        stopped = code.index("self.stop()", built)
+        self.assertLess(built, stopped,
+                        "the new listener must exist before the old one goes")
+
+    def test_the_refusal_says_what_went_wrong(self):
+        """An operator needs the reason, not "it did not work"."""
+        result = self.listener.start(*self.BAD)
+        self.assertGreater(len(result["error"]), len("cannot bind"))
+        self.assertIn(str(self.BAD[1]), result["error"])
 
 
 if __name__ == "__main__":
