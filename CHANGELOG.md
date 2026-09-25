@@ -1,5 +1,32 @@
 # Changelog
 
+## V1.2.0 - unreleased
+
+Optional secure remote access, with administrator and user accounts and
+per-user routing permissions. See [RELEASE_NOTES_V1.2.0.md](RELEASE_NOTES_V1.2.0.md)
+for the user-facing summary.
+
+- Added Remote Access, off by default on new installations and on upgrades,
+  bound to an adapter an administrator chooses and restored safely across a
+  restart.
+- Added HTTPS with either a locally generated certificate or one supplied by
+  the site; a certificate that cannot be read stops remote access rather than
+  falling back to an unencrypted connection.
+- Added administrator and user accounts, created locally for the first
+  administrator, with no default credential.
+- Added per-user permissions for features, sources, displays and saved
+  Multiview layouts, enforced on the server at the moment each operation runs.
+- Added a restricted operating screen for A/V, USB and Multiview, built for a
+  phone or tablet.
+- Added friendly device names, kept by OmniSuite and never written to the
+  equipment, with duplicates distinguished by the Location an OmniStream unit
+  reports about itself.
+- Added an Activity history of sign-ins, refusals, routing and administrative
+  changes, visible to administrators only.
+- Added per-resource serialization so two operators changing one display
+  cannot interleave, and shared state observation so extra browsers do not
+  multiply device traffic.
+
 ## V1.1.0 - 2026-09-17
 
 Multiview: a decoder can show several encoders at once as a saved, editable

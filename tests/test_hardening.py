@@ -12,7 +12,9 @@ asks for HTTPS and cannot have it must not quietly serve plaintext.
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 import ssl
 import sys
 import tempfile
@@ -349,6 +351,145 @@ class ConcurrentOperationStressTests(unittest.TestCase):
         # bound: this asserts they are not serialised, not a specific speed.
         self.assertLess(elapsed, 2.0,
                         "unrelated rooms appear to be serialising")
+
+
+class LockStatisticsTests(unittest.TestCase):
+    """A counter that cannot count is worse than no counter.
+
+    `waited` was declared and never incremented, so it read zero after a
+    measurably contended acquisition -- which asserts there was no contention
+    rather than saying nothing. Somebody reading that would have drawn the
+    wrong conclusion about whether the locks were ever in the way.
+    """
+
+    def setUp(self):
+        self.locks = omni_locks.ResourceLocks()
+        self.resource = self.locks.decoder("0a:1b:2c:00:00:11")
+
+    def test_an_uncontended_acquisition_does_not_count_as_a_wait(self):
+        with self.locks.hold(self.resource):
+            pass
+        self.assertEqual(self.locks.stats()["waited"], 0)
+        self.assertEqual(self.locks.stats()["acquired"], 1)
+
+    def test_a_contended_acquisition_counts_as_a_wait(self):
+        holding = threading.Event()
+        release = threading.Event()
+
+        def squat():
+            with self.locks.hold(self.resource):
+                holding.set()
+                release.wait(10)
+
+        squatter = threading.Thread(target=squat)
+        squatter.start()
+        self.addCleanup(squatter.join, 10)
+        self.assertTrue(holding.wait(5))
+
+        outcome = []
+
+        def contend():
+            with self.locks.hold(self.resource):
+                outcome.append(True)
+
+        other = threading.Thread(target=contend)
+        other.start()
+        time.sleep(0.2)
+        release.set()
+        other.join(10)
+        squatter.join(10)
+        self.assertEqual(outcome, [True])
+        self.assertGreaterEqual(self.locks.stats()["waited"], 1)
+
+    def test_a_refusal_counts_as_a_timeout(self):
+        holding = threading.Event()
+        release = threading.Event()
+
+        def squat():
+            with self.locks.hold(self.resource):
+                holding.set()
+                release.wait(10)
+
+        squatter = threading.Thread(target=squat)
+        squatter.start()
+        self.addCleanup(squatter.join, 10)
+        self.assertTrue(holding.wait(5))
+        with self.assertRaises(omni_locks.ResourceBusy):
+            with self.locks.hold(self.resource, timeout=0.3):
+                pass
+        release.set()
+        squatter.join(10)
+        self.assertEqual(self.locks.stats()["timed_out"], 1)
+        self.assertEqual(self.locks.busy(), [])
+
+    def test_every_declared_statistic_can_actually_be_reached(self):
+        """The defect in one sentence: a key nothing increments."""
+        source = (ROOT / "omni_locks.py").read_text(encoding="utf-8")
+        declared = re.search(r'self\._stats = \{([^}]*)\}', source).group(1)
+        for name in re.findall(r'"(\w+)":', declared):
+            with self.subTest(statistic=name):
+                self.assertIn('_stats["%s"] +=' % name, source,
+                              "%s is reported and never counted" % name)
+
+
+class MutationHarnessSurvivesAKillTests(unittest.TestCase):
+    """`finally` covers an exception. It does not cover being killed.
+
+    An interrupted run left a deliberately defective source in the working
+    tree, one `git add -A` away from committing an inverted security
+    predicate. The harness writes down what it is about to change, before it
+    changes it, and repairs that on its next start.
+    """
+
+    def test_the_receipt_is_written_before_the_edit(self):
+        source = (ROOT / "tools" / "mutate_security.py").read_text(encoding="utf-8")
+        code = "\n".join(line.split("#", 1)[0] for line in source.splitlines())
+        receipt = code.index("IN_FLIGHT.write_text")
+        edit = code.index("handle.write(original.replace(anchor, replacement")
+        self.assertLess(receipt, edit,
+                        "a kill between the two must leave a record of a "
+                        "change that was never made, not the reverse")
+
+    def test_a_run_repairs_what_an_interrupted_one_left(self):
+        harness = _load_harness()
+        target = ROOT / "omni_access.py"
+        with open(target, "r", encoding="utf-8", newline="") as handle:
+            original = handle.read()
+        self.addCleanup(lambda: open(target, "w", encoding="utf-8",
+                                     newline="").write(original))
+        receipt = ROOT / ".mutation-in-flight"
+        self.addCleanup(lambda: receipt.unlink(missing_ok=True))
+
+        receipt.write_text(json.dumps(
+            {"id": "test", "file": "omni_access.py", "original": original}),
+            encoding="utf-8")
+        with open(target, "w", encoding="utf-8", newline="") as handle:
+            handle.write(original.replace("Access.LOCAL_ONLY", "Access.PUBLIC", 1))
+
+        harness.repair_interrupted_run()
+
+        with open(target, "r", encoding="utf-8", newline="") as handle:
+            self.assertEqual(handle.read(), original)
+        self.assertFalse(receipt.exists())
+
+    def test_repair_is_a_no_op_when_nothing_was_interrupted(self):
+        harness = _load_harness()
+        receipt = ROOT / ".mutation-in-flight"
+        self.assertFalse(receipt.exists())
+        harness.repair_interrupted_run()      # must not raise
+
+    def test_the_receipt_is_never_committed(self):
+        ignored = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn(".mutation-in-flight", ignored)
+
+
+def _load_harness():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_mutate_security", ROOT / "tools" / "mutate_security.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 if __name__ == "__main__":

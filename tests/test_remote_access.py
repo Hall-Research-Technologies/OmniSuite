@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("OMNI_SMOKE", "1")
 
 import omni_access                                   # noqa: E402
+import omni_remote                                   # noqa: E402
 from omni_access import Access                       # noqa: E402
 import OmniMatrix_upgrade_server_v7_6y as srv        # noqa: E402
 
@@ -569,6 +570,48 @@ class ListenerTagTests(unittest.TestCase):
                     {"address": "not-an-address", "name": "Broken"}]
         usable = self.omni_remote.usable_bind_addresses(adapters)
         self.assertEqual([a["address"] for a in usable], ["10.48.55.10"])
+
+
+class BindAddressIsAHostTests(unittest.TestCase):
+    """A broadcast or multicast address parses and cannot be bound to.
+
+    The guard refused loopback and the wildcard and accepted everything else
+    that parsed, so it called 255.255.255.255 usable. Nothing reaches it
+    through the product -- enabling also requires the address to be present on
+    this machine -- but a guard whose name is a lie gets worked around later.
+    """
+
+    NOT_A_HOST = ("255.255.255.255", "224.0.0.1", "239.70.132.254",
+                  "240.0.0.1", "0.0.0.0", "::", "127.0.0.1", "127.5.5.5",
+                  "not-an-address", "", "   ")
+
+    #: Anything an adapter on a real machine can actually have.
+    A_HOST = ("192.168.100.185", "10.0.4.12", "172.29.16.1", "169.254.1.1",
+              "198.51.100.7", "2001:db8::1")
+
+    def test_nothing_that_cannot_be_bound_is_called_usable(self):
+        for address in self.NOT_A_HOST:
+            with self.subTest(address=address):
+                self.assertFalse(omni_remote.is_usable_remote_address(address))
+
+    def test_every_real_adapter_address_stays_usable(self):
+        for address in self.A_HOST:
+            with self.subTest(address=address):
+                self.assertTrue(omni_remote.is_usable_remote_address(address))
+
+    def test_the_multicast_range_is_refused_as_a_category(self):
+        """Not as a list: the next reserved range must not need remembering."""
+        for third in range(0, 255, 37):
+            address = "239.70.%d.1" % third
+            with self.subTest(address=address):
+                self.assertFalse(omni_remote.is_usable_remote_address(address))
+
+    def test_bind_candidates_drop_them_too(self):
+        offered = omni_remote.usable_bind_addresses([
+            {"ip": "192.168.100.185"}, {"ip": "255.255.255.255"},
+            {"ip": "224.0.0.1"}, {"ip": "127.0.0.1"}, {"ip": "0.0.0.0"},
+        ])
+        self.assertEqual([a["address"] for a in offered], ["192.168.100.185"])
 
 
 if __name__ == "__main__":

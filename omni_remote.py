@@ -148,15 +148,29 @@ def is_usable_remote_address(address: str) -> bool:
     A remote listener is always a deliberate choice of one network. Loopback is
     already served, the wildcard is every network at once, and anything that is
     not an address at all cannot be one of them.
+
+    Nor can anything that is not a host: a broadcast or multicast address
+    parses perfectly well and cannot be bound to, and this guard used to call
+    both usable. Refused as a category rather than as a list of values, so the
+    next reserved range does not need remembering. Link-local is kept, because
+    a machine really can have one and an administrator on a directly attached
+    network may legitimately choose it.
     """
     text = str(address or "").strip()
     if not text:
         return False
     try:
-        ipaddress.ip_address(text)
+        parsed = ipaddress.ip_address(text)
     except ValueError:
         return False
-    return not (is_loopback_address(text) or is_wildcard_address(text))
+    if is_loopback_address(text) or is_wildcard_address(text):
+        return False
+    if parsed.is_multicast or parsed.is_reserved or parsed.is_unspecified:
+        return False
+    if parsed.version == 4 and int(parsed) == 0xFFFFFFFF:
+        # The limited broadcast address. `is_reserved` does not cover it.
+        return False
+    return True
 
 
 class RemoteListener:

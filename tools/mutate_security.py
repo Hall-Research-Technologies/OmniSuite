@@ -21,6 +21,7 @@ exactly like tests that do not work.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -240,6 +241,37 @@ MUTATIONS = [
 ]
 
 
+#: What is mutated right now, written before the edit and removed after it.
+#:
+#: `finally` covers an exception and does not cover the process being killed.
+#: An interrupted run used to leave a deliberately defective source in the
+#: working tree, one `git add -A` away from committing an inverted security
+#: predicate. This is the receipt that lets the next run put it back.
+IN_FLIGHT = ROOT / ".mutation-in-flight"
+
+
+def repair_interrupted_run() -> None:
+    """Undo whatever a killed run left behind, before doing anything else."""
+    if not IN_FLIGHT.exists():
+        return
+    try:
+        record = json.loads(IN_FLIGHT.read_text(encoding="utf-8"))
+    except ValueError:
+        print("  the in-flight record is unreadable; restore by hand")
+        raise SystemExit(2)
+    path = ROOT / record["file"]
+    with open(path, "r", encoding="utf-8", newline="") as handle:
+        current = handle.read()
+    if current != record["original"]:
+        with open(path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(record["original"])
+        print("  repaired %s, left mutated by an interrupted run (%s)"
+              % (record["file"], record["id"]))
+    else:
+        print("  %s was already intact" % record["file"])
+    IN_FLIGHT.unlink()
+
+
 def run(suites, env):
     """Run these suites and return (failed, full output)."""
     proc = subprocess.run(
@@ -256,6 +288,7 @@ def main(argv):
 
     env = dict(os.environ, OMNI_SMOKE="1", PYTHONDONTWRITEBYTECODE="1")
 
+    repair_interrupted_run()
     print("Baseline: the suites must pass before any of this means anything.")
     suites = sorted({s for m in selected for s in m[5]})
     failed, output = run(suites, env)
@@ -287,6 +320,12 @@ def main(argv):
             continue
 
         started = time.time()
+        # The receipt goes down BEFORE the edit, so a kill between the two
+        # leaves a record of a change that was never made -- which repairs to
+        # a no-op -- rather than a change with no record.
+        IN_FLIGHT.write_text(json.dumps(
+            {"id": mid, "file": filename, "original": original}),
+            encoding="utf-8")
         try:
             with open(path, "w", encoding="utf-8", newline="") as handle:
                 handle.write(original.replace(anchor, replacement, 1))
@@ -296,6 +335,7 @@ def main(argv):
             # deliberately defective file behind.
             with open(path, "w", encoding="utf-8", newline="") as handle:
                 handle.write(original)
+            IN_FLIGHT.unlink(missing_ok=True)
 
         elapsed = time.time() - started
         if failed:

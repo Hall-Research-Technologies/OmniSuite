@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: "Override version (example: V1.1.0)"
+        description: "Override version (example: V1.2.0)"
         required: false
         type: string
   push:
@@ -325,8 +325,30 @@ jobs:
           test "$missing" -eq 0
           ls -la
 
+      # The notes belong to the version being published. This was a
+      # hard-coded filename, so a release of any other version would have gone
+      # out with V1.1.0's notes attached to it.
+      - name: Resolve release notes
+        id: notes
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.release_version }}" ]; then
+            v="${{ github.event.inputs.release_version }}"
+          elif [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            v="${GITHUB_REF_NAME}"
+          else
+            v="$(cat VERSION)"
+          fi
+          path="RELEASE_NOTES_${v}.md"
+          if [ ! -f "$path" ]; then
+            echo "::error::no release notes for ${v} (expected ${path})"
+            exit 1
+          fi
+          echo "path=${path}" >> "$GITHUB_OUTPUT"
+          echo "Publishing with ${path}"
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          body_path: RELEASE_NOTES_V1.1.0.md
+          body_path: ${{ steps.notes.outputs.path }}
           files: release-assets/*

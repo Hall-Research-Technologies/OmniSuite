@@ -94,11 +94,18 @@ class ResourceLocks:
         try:
             for key in wanted:
                 lock = self._lock_for(key)
-                remaining = max(0.0, deadline - time.monotonic())
-                if not lock.acquire(timeout=remaining):
+                # Try without blocking first, purely so contention can be
+                # counted. `waited` existed and was never incremented, so it
+                # read zero after a measurably contended acquisition -- which
+                # states there was no contention rather than saying nothing.
+                if not lock.acquire(blocking=False):
                     with self._guard:
-                        self._stats["timed_out"] += 1
-                    raise ResourceBusy(key)
+                        self._stats["waited"] += 1
+                    remaining = max(0.0, deadline - time.monotonic())
+                    if not lock.acquire(timeout=remaining):
+                        with self._guard:
+                            self._stats["timed_out"] += 1
+                        raise ResourceBusy(key)
                 acquired.append((key, lock))
                 with self._guard:
                     self._stats["acquired"] += 1

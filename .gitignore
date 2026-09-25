@@ -70,3 +70,4 @@ omnisuite-smoke-*/
 .DS_Store
 Thumbs.db
 desktop.ini
+.mutation-in-flight

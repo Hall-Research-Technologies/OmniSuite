@@ -8,7 +8,7 @@ OmniSuite runs on the management PC, talks to each device directly, and presents
 one inventory: discovery, configuration, A/V routing, USB routing, firmware,
 diagnostics and reporting.
 
-**Version: V1.1.0**
+**Version: V1.2.0**
 
 ---
 
@@ -77,10 +77,10 @@ Get the archive for your machine from the
 
 | Platform | Artifact |
 |---|---|
-| Windows x86-64 | `OmniSuite-V1.1.0-Windows-x86_64.zip` |
-| macOS Apple Silicon | `OmniSuite-V1.1.0-macOS-arm64.zip` |
-| macOS Intel | `OmniSuite-V1.1.0-macOS-x86_64.zip` |
-| Ubuntu Linux x86-64 | `OmniSuite-V1.1.0-Ubuntu-x86_64.tar.gz` |
+| Windows x86-64 | `OmniSuite-V1.2.0-Windows-x86_64.zip` |
+| macOS Apple Silicon | `OmniSuite-V1.2.0-macOS-arm64.zip` |
+| macOS Intel | `OmniSuite-V1.2.0-macOS-x86_64.zip` |
+| Ubuntu Linux x86-64 | `OmniSuite-V1.2.0-Ubuntu-x86_64.tar.gz` |
 
 Each release also carries `SHA256SUMS.txt`. To check a download:
 
@@ -88,7 +88,7 @@ Each release also carries `SHA256SUMS.txt`. To check a download:
 sha256sum -c SHA256SUMS.txt          # Linux / macOS
 ```
 ```powershell
-Get-FileHash .\OmniSuite-V1.1.0-Windows-x86_64.zip -Algorithm SHA256
+Get-FileHash .\OmniSuite-V1.2.0-Windows-x86_64.zip -Algorithm SHA256
 ```
 
 See **[Supported platforms](#supported-platforms)** below for what has actually
@@ -238,7 +238,7 @@ devices. Treat those platforms as ready to try, not as field-proven.
 
 ## Version
 
-**V1.1.0.** `VERSION` in this repository is the single source of truth; Settings
+**V1.2.0.** `VERSION` in this repository is the single source of truth; Settings
 reports what the running build was made from, the User Guide states the version
 it describes, and the release artifacts take their names from it.
 
