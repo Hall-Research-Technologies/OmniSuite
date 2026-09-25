@@ -29,6 +29,7 @@ import omni_gate
 import omni_projection
 import omni_remote
 import omni_remote_api
+import omni_statecache
 import omni_users
 
 # Import matrix logic for unified scanning
@@ -16703,22 +16704,43 @@ def restore_remote_access():
     return {"restored": True, "address": address, "port": int(port)}
 
 
+#: Observation for the restricted surfaces. Reading USB state queries every
+#: endpoint, and reading a decoder's Multiview state reads three nodes from it,
+#: so without this a second browser is a second sweep of the equipment --
+#: measured at ten times the device calls for ten clients.
+_user_observation = omni_statecache.StateCache()
+
+
 def _usb_state_snapshot():
     """The administrative USB view, as /api/usb_state computes it.
 
     Called rather than recomputed so the user projection and the USB Matrix can
-    never disagree about what is paired, and so there is no second device read.
+    never disagree about what is paired, and briefly shared so that a room full
+    of phones is one read rather than one each.
     """
-    with app.test_request_context("/api/usb_state"):
-        import json as _json
-        return _json.loads(api_usb_state().get_data())
+    def read():
+        with app.test_request_context("/api/usb_state"):
+            import json as _json
+            return _json.loads(api_usb_state().get_data())
+    return _user_observation.get("usb", read)
 
 
 def _multiview_state_snapshot(ip):
     """One decoder's Multiview state, as /api/multiview/state computes it."""
-    with app.test_request_context("/api/multiview/state?ip=" + str(ip)):
-        import json as _json
-        return _json.loads(api_multiview_state().get_data())
+    def read():
+        with app.test_request_context("/api/multiview/state?ip=" + str(ip)):
+            import json as _json
+            return _json.loads(api_multiview_state().get_data())
+    return _user_observation.get("multiview:" + str(ip), read)
+
+
+def _forget_user_observation(key=None):
+    """Drop a shared answer after something changed it.
+
+    An operation that has just written to a device resets the cadence, so the
+    next read reports what happened rather than the picture from before it.
+    """
+    _user_observation.invalidate(key)
 
 
 def _matrix_state_snapshot():
@@ -16751,6 +16773,7 @@ omni_remote_api.register(
     multiview_state=_multiview_state_snapshot,
     multiview_show_view=api_multiview_show,
     multiview_switch_view=api_multiview_switch,
+    forget_observation=_forget_user_observation,
 )
 
 

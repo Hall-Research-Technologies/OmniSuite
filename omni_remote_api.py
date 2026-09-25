@@ -45,7 +45,8 @@ def _is_local():
 def register(app, *, store, listener, aliases, load_cache, matrix_state,
              route_view, remote_enabled, set_remote_state, remote_config,
              usb_state, usb_pair_view, usb_unpair_view,
-             multiview_state, multiview_show_view, multiview_switch_view):
+             multiview_state, multiview_show_view, multiview_switch_view,
+             forget_observation):
     """Attach the remote-access API.
 
     Everything the module needs is passed in rather than imported from the
@@ -481,10 +482,14 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                             "computer_label": _label(computer),
                             "peripherals_label": _label(peripherals)})
         view = usb_unpair_view if detach else usb_pair_view
-        with app.test_request_context(
-                "/api/usb_route", method="POST",
-                json={"lex_mac": computer, "rex_mac": peripherals}):
-            return view()
+        try:
+            with app.test_request_context(
+                    "/api/usb_route", method="POST",
+                    json={"lex_mac": computer, "rex_mac": peripherals}):
+                return view()
+        finally:
+            # This just changed what a USB read would report.
+            forget_observation("usb")
 
     def _usb_permitted_endpoints(account):
         """The USB endpoint identities this account may act on.
@@ -551,9 +556,13 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         store.audit("multiview.show", actor=account,
                     detail={"display": identity, "display_label": _label(identity),
                             "preset": name})
-        with app.test_request_context("/api/multiview/show", method="POST",
-                                      json={"decoder": address, "name": name}):
-            return multiview_show_view()
+        try:
+            with app.test_request_context("/api/multiview/show", method="POST",
+                                          json={"decoder": address,
+                                                "name": name}):
+                return multiview_show_view()
+        finally:
+            forget_observation("multiview:" + str(address))
 
     @app.route("/api/user/multiview_switch", methods=["POST"])
     def api_user_multiview_switch():
@@ -591,11 +600,14 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                     detail={"display": identity, "display_label": _label(identity),
                             "preset": name, "window": cell,
                             "source": source, "source_label": _label(source)})
-        with app.test_request_context(
-                "/api/multiview/switch", method="POST",
-                json={"decoder": display_address, "name": name,
-                      "cell": cell, "source": source_address}):
-            return multiview_switch_view()
+        try:
+            with app.test_request_context(
+                    "/api/multiview/switch", method="POST",
+                    json={"decoder": display_address, "name": name,
+                          "cell": cell, "source": source_address}):
+                return multiview_switch_view()
+        finally:
+            forget_observation("multiview:" + str(display_address))
 
     def _multiview_gate(account, identity, name, rule):
         """Capability, display and preset approval. None means proceed.
