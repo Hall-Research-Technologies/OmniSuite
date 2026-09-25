@@ -16703,6 +16703,24 @@ def restore_remote_access():
     return {"restored": True, "address": address, "port": int(port)}
 
 
+def _usb_state_snapshot():
+    """The administrative USB view, as /api/usb_state computes it.
+
+    Called rather than recomputed so the user projection and the USB Matrix can
+    never disagree about what is paired, and so there is no second device read.
+    """
+    with app.test_request_context("/api/usb_state"):
+        import json as _json
+        return _json.loads(api_usb_state().get_data())
+
+
+def _multiview_state_snapshot(ip):
+    """One decoder's Multiview state, as /api/multiview/state computes it."""
+    with app.test_request_context("/api/multiview/state?ip=" + str(ip)):
+        import json as _json
+        return _json.loads(api_multiview_state().get_data())
+
+
 def _matrix_state_snapshot():
     """The administrative view, as /api/state computes it.
 
@@ -16725,6 +16743,14 @@ omni_remote_api.register(
     remote_enabled=remote_access_enabled,
     set_remote_state=_remote_access_preference,
     remote_config=_remote_access_last_choice,
+    # The verified engines. The user endpoints authorise and delegate; they
+    # never reimplement routing, pairing or Multiview planning.
+    usb_state=_usb_state_snapshot,
+    usb_pair_view=api_usb_route_pair,
+    usb_unpair_view=api_usb_route_unpair,
+    multiview_state=_multiview_state_snapshot,
+    multiview_show_view=api_multiview_show,
+    multiview_switch_view=api_multiview_switch,
 )
 
 

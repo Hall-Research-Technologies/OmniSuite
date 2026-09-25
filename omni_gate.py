@@ -48,9 +48,25 @@ SOURCE_KEYS = ("encoder", "encoder_ip", "source", "source_ip", "src",
                "host_mac", "lex", "lex_mac", "encoder_mac", "source_mac")
 
 #: Body keys naming a destination device.
+#:
+#: `display` is the Multiview endpoints' word for the decoder, and it carries a
+#: device identity, so the gate checks it too. That is deliberate redundancy:
+#: the handler checks it as well, and the two are independent -- a mutation run
+#: showed the gate was not covering this key at all, leaving the handler as the
+#: only guard on which display a Multiview may be put on.
 DESTINATION_KEYS = ("decoder", "decoder_ip", "destination", "destination_ip",
                     "dst", "device_mac", "rex", "rex_mac", "decoder_mac",
-                    "ip", "target")
+                    "ip", "target", "display")
+
+#: Deliberately NOT here: the USB endpoints' `computer` and `peripherals`.
+#:
+#: Those carry USB endpoint MACs, which are distinct from the OmniStream device
+#: identities a permission is written against -- an endpoint integrated into an
+#: encoder has its own MAC. Checking them here would deny every legitimate USB
+#: request, because the endpoint MAC is never in the permitted device set. USB
+#: authorisation happens in the handler, against the same projection the
+#: browser was shown, and is tested there directly rather than through this
+#: gate.
 
 
 class Decision:

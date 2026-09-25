@@ -112,12 +112,23 @@ class AdministrativeStateIsClosedTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertIs(omni_access.classify("/api/route")[0], Access.ADMIN)
 
-    def test_the_user_surface_is_now_only_the_projected_endpoints(self):
+    def test_the_user_surface_is_only_endpoints_written_for_a_user(self):
+        """Six now, all under /api/user/, all projected.
+
+        Phases G, H and I added USB and Multiview operation the same way the
+        A/V route was added: a narrow endpoint that authorises by identity and
+        delegates to the verified engine, answering with named fields. The
+        administrative endpoints they delegate to stayed administrative.
+        """
         user_routes = {rule for rule, (access, _f) in omni_access.ROUTES.items()
                        if access is Access.USER}
-        self.assertEqual(user_routes, {"/api/user/route"},
-                         "only endpoints written for a restricted account, "
-                         "which answer with a projection, belong here")
+        self.assertEqual(user_routes, {
+            "/api/user/route",
+            "/api/user/usb_state", "/api/user/usb_route",
+            "/api/user/multiview_state", "/api/user/multiview_show",
+            "/api/user/multiview_switch",
+        }, "only endpoints written for a restricted account, which answer "
+           "with a projection, belong here")
 
     def test_no_user_reachable_route_returns_an_unprojected_object(self):
         """The rule, applied to whatever the table says today.
@@ -126,7 +137,10 @@ class AdministrativeStateIsClosedTests(unittest.TestCase):
         projection. A future route added to those classes has to be one or the
         other, and this fails if it is neither.
         """
-        projected = {"/api/user/state", "/api/user/route"}
+        projected = {"/api/user/state", "/api/user/route",
+                     "/api/user/usb_state", "/api/user/usb_route",
+                     "/api/user/multiview_state", "/api/user/multiview_show",
+                     "/api/user/multiview_switch"}
         pages = {"/user", "/help"}
         session_only = {"/api/auth/logout", "/api/auth/session",
                         "/api/ui_preferences", "/api/ui_preferences/reset",

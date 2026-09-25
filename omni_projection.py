@@ -228,3 +228,209 @@ def session_summary(account) -> dict:
         "features": (["av", "usb", "multiview"] if admin
                      else sorted(account.permissions.features)),
     }
+
+
+# ===========================================================================
+# USB
+# ===========================================================================
+#
+# USB extension is not source-to-destination in the A/V sense, and forcing that
+# language onto it would misdescribe the hardware. A LEX sits with the host
+# computer; a REX sits with the peripherals. A route means "the keyboard, mouse
+# and camera plugged into that REX are available to the computer at that LEX".
+#
+# So the operator-facing words are "computer" and "peripherals", and the
+# permission model maps onto grants an administrator has already made:
+#
+#     integrated LEX  -> lives on an encoder  -> governed by `sources`
+#     integrated REX  -> lives on a decoder   -> governed by `destinations`
+#     standalone      -> is its own device    -> governed by its own identity
+#
+# That is not a convenience. Whoever may show the teacher PC on the front
+# display is whoever may give that PC the front display's peripherals, and a
+# second parallel set of USB grants would be a second thing to keep in step.
+
+def _usb_endpoint_identity(row) -> str:
+    """The stable identity of a USB endpoint: its own MAC."""
+    return _normalise_identity(row.get("mac") or row.get("usb_mac"))
+
+
+def _usb_authorising_identity(row, parent_of_address) -> str:
+    """Which device's permission governs this endpoint.
+
+    An integrated endpoint is part of its parent OmniStream unit, so the
+    parent's grant governs it. A standalone extender is its own device and
+    stands on its own identity.
+    """
+    address = (row.get("ip") or "").strip()
+    parent = parent_of_address.get(address)
+    return parent or _usb_endpoint_identity(row)
+
+
+def project_usb_state(usb_state, units, account, aliases=None) -> dict:
+    """The USB endpoints an account may operate, and what they are joined to.
+
+    Built from named fields, like every other user projection. The
+    administrative payload carries firmware revisions, subnet masks, host port
+    numbers, filter settings, protocol revisions and discovery provenance for
+    every endpoint on the network. None of that helps somebody give a classroom
+    computer its peripherals, and none of it is here.
+    """
+    permissions = account.permissions
+    admin = bool(getattr(account, "is_admin", False))
+
+    identity_of = _identity_by_address(units)
+    unit_of = {(u.get("ip") or "").strip(): u for u in (units or [])}
+
+    def visible(row, permitted):
+        governing = _usb_authorising_identity(row, identity_of)
+        return admin or (governing and governing in permitted)
+
+    def describe(row):
+        identity = _usb_endpoint_identity(row)
+        governing = _usb_authorising_identity(row, identity_of)
+        address = (row.get("ip") or "").strip()
+        unit = unit_of.get(address)
+        # Named after the device an operator recognises -- the encoder or
+        # decoder it belongs to -- rather than the USB endpoint's own MAC.
+        fallback = (_device_name({"host": row.get("host")}, unit) if unit
+                    else (row.get("host") or "USB device"))
+        name = (aliases.display_name(governing, fallback) if aliases
+                else fallback)
+        return {
+            "id": identity,
+            "name": name,
+            "online": bool(row.get("usb_discovered", True)),
+        }
+
+    computers, peripherals = [], []
+    for row in (usb_state.get("matrix_lex") or usb_state.get("lex") or []):
+        if visible(row, permissions.sources):
+            computers.append(describe(row))
+    for row in (usb_state.get("matrix_rex") or usb_state.get("rex") or []):
+        if visible(row, permissions.destinations):
+            peripherals.append(describe(row))
+
+    # What is joined to what, expressed only between endpoints this account can
+    # already see. Peripherals attached to somebody else's computer say so
+    # without naming it, exactly as a display showing an unauthorised source
+    # does.
+    visible_computers = {c["id"]: c["name"] for c in computers}
+    joined = {}
+    for key, record in (usb_state.get("standalone_routes") or {}).items():
+        target = _normalise_identity(key)
+        if not target:
+            continue
+        active = _normalise_identity((record or {}).get("active"))
+        if not active:
+            joined[target] = {"mode": "none", "computer_id": None,
+                              "computer_name": None}
+        elif active in visible_computers:
+            joined[target] = {"mode": "computer", "computer_id": active,
+                              "computer_name": visible_computers[active]}
+        else:
+            joined[target] = {"mode": "other", "computer_id": None,
+                              "computer_name": None}
+
+    for peripheral in peripherals:
+        peripheral["attached_to"] = joined.get(
+            peripheral["id"], {"mode": "none", "computer_id": None,
+                               "computer_name": None})
+
+    computers.sort(key=lambda c: c["name"].lower())
+    peripherals.sort(key=lambda p: p["name"].lower())
+    return {"ok": True, "computers": computers, "peripherals": peripherals}
+
+
+# ===========================================================================
+# Multiview
+# ===========================================================================
+
+#: Window positions in words an operator can act on. The device's own cell
+#: names are geometry; these are what somebody looking at a screen would say.
+_WINDOW_LABELS = {
+    "main": "Main", "top_left": "Top left", "top_right": "Top right",
+    "bottom_left": "Bottom left", "bottom_right": "Bottom right",
+    "top_middle": "Top middle", "bottom_middle": "Bottom middle",
+    "left": "Left", "right": "Right", "top": "Top", "bottom": "Bottom",
+    "pip": "Inset",
+}
+
+
+def _window_label(cell) -> str:
+    key = str(cell or "").strip().lower()
+    if key in _WINDOW_LABELS:
+        return _WINDOW_LABELS[key]
+    return key.replace("_", " ").capitalize() or "Window"
+
+
+def project_multiview_state(decoder_identity, decoder_name, state, units,
+                            account, aliases=None) -> dict:
+    """The saved Multiviews an account may operate on one permitted display.
+
+    Two rules decide what appears, and both have to hold:
+
+      * the preset is approved for this account on this decoder, and
+      * every source the preset currently has assigned is one this account is
+        already permitted to use.
+
+    The second is what makes the first safe. A saved Multiview has no stable id
+    -- its identity is its name on a decoder -- so an administrator who deletes
+    one and creates a different preset under the same name would carry the
+    approval across. Re-validating the content at operation time means the
+    worst that can happen is a preset the account cannot show, rather than one
+    it can show containing equipment it was never granted.
+
+    A preset holding an unauthorised source is omitted entirely. Listing it as
+    unavailable would still confirm that this account's own display is wired to
+    something in another room.
+    """
+    permissions = account.permissions
+    admin = bool(getattr(account, "is_admin", False))
+    identity_of = _identity_by_address(units)
+    unit_of = {(u.get("ip") or "").strip(): u for u in (units or [])}
+
+    def source_view(subframe):
+        source = (subframe or {}).get("source") or {}
+        address = (source.get("ip") or "").strip()
+        identity = identity_of.get(address)
+        if not identity:
+            return None, {"id": None, "name": None}
+        unit = unit_of.get(address)
+        fallback = _device_name({"host": source.get("hostname")}, unit)
+        name = aliases.display_name(identity, fallback) if aliases else fallback
+        return identity, {"id": identity, "name": name}
+
+    presets = []
+    for entry in (state.get("multiviews") or []):
+        name = str(entry.get("name") or "")
+        if not (admin or permissions.may_operate_multiview(decoder_identity, name)):
+            continue
+
+        windows, permitted = [], True
+        for subframe in (entry.get("subframes") or []):
+            identity, described = source_view(subframe)
+            if identity and not (admin or permissions.may_use_source(identity)):
+                permitted = False
+                break
+            windows.append({
+                "cell": subframe.get("cell") or "",
+                "label": _window_label(subframe.get("cell") or ""),
+                "source": described if identity else {"id": None, "name": None},
+                "live": (subframe.get("health") or "") == "live",
+            })
+        if not permitted:
+            continue
+
+        presets.append({
+            "name": name,
+            "label": entry.get("layout_label") or name,
+            "showing": bool(entry.get("selected_on_output")),
+            "available": bool(entry.get("showable")),
+            "windows": windows,
+        })
+
+    presets.sort(key=lambda p: p["label"].lower())
+    return {"ok": True,
+            "display": {"id": decoder_identity, "name": decoder_name},
+            "presets": presets}

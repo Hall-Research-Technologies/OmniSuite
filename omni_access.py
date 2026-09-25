@@ -90,7 +90,20 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     # the route class to do it.
     "/user": (Access.AUTHENTICATED, None),
     "/api/user/state": (Access.AUTHENTICATED, None),
+
+    # A/V
     "/api/user/route": (Access.USER, FEATURE_AV),
+    # USB. The operator-facing words are computer and peripherals, because a
+    # LEX sits with the host and a REX with the peripherals; forcing
+    # source-and-destination onto that would misdescribe the hardware.
+    "/api/user/usb_state": (Access.USER, FEATURE_USB),
+    "/api/user/usb_route": (Access.USER, FEATURE_USB),
+    # Multiview operation. Showing an approved preset and switching a source
+    # within it; creating, editing, copying, deleting, installing layouts and
+    # group administration all stay administrative.
+    "/api/user/multiview_state": (Access.USER, FEATURE_MULTIVIEW),
+    "/api/user/multiview_show": (Access.USER, FEATURE_MULTIVIEW),
+    "/api/user/multiview_switch": (Access.USER, FEATURE_MULTIVIEW),
 
     # ---- administration of accounts -----------------------------------
     "/admin/users": (Access.ADMIN, None),
@@ -101,6 +114,8 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     # administrator's job, and because the response carries the hostname,
     # model and address a restricted account is deliberately never given.
     "/api/admin/aliases": (Access.ADMIN, None),
+    # Saved Multiviews on one display, for approving them to an account.
+    "/api/admin/multiviews": (Access.ADMIN, None),
     "/api/admin/audit": (Access.ADMIN, None),
     "/api/remote_access": (Access.ADMIN, None),
 
@@ -130,13 +145,9 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     # named fields. Everything else is administrative until a projected
     # equivalent exists for it.
     #
-    # This is a reduction from thirteen routes to two, and it matches what the
-    # shipped shell actually calls. Phases H and I add /api/user/usb_state and
-    # the Multiview operating endpoints the same way -- projected, not merely
-    # permitted. Until then a granted USB or Multiview capability opens a tab
-    # that says the controls are not built, which is true, rather than an
-    # endpoint that quietly returns the deployment.
-    "/api/user/route": (Access.USER, FEATURE_AV),
+    # Phases H and I added the USB and Multiview operating endpoints the same
+    # way -- projected, not merely permitted -- and they are declared with the
+    # rest of the user surface above rather than a second time here.
 
     # ---- Admin, and only from the loopback listener --------------------
     # These act on the host computer, not on AV devices.

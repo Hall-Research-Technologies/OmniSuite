@@ -43,7 +43,9 @@ def _is_local():
 
 
 def register(app, *, store, listener, aliases, load_cache, matrix_state,
-             route_view, remote_enabled, set_remote_state, remote_config):
+             route_view, remote_enabled, set_remote_state, remote_config,
+             usb_state, usb_pair_view, usb_unpair_view,
+             multiview_state, multiview_show_view, multiview_switch_view):
     """Attach the remote-access API.
 
     Everything the module needs is passed in rather than imported from the
@@ -299,6 +301,38 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                         "aliases": aliases.all(),
                         "duplicate_aliases": aliases.duplicates()})
 
+    @app.route("/api/admin/multiviews", methods=["GET"])
+    def api_admin_multiviews():
+        """The saved Multiviews on one display, for approving them to a user.
+
+        Read on demand for the display an administrator selected, not for every
+        decoder in the deployment: a preset list is a device read, and building
+        one for the whole site to populate a dropdown would be exactly the kind
+        of traffic the rest of this architecture avoids.
+        """
+        identity = omni_users._normalise_identity(request.args.get("display"))
+        if not identity:
+            return jsonify({"ok": False, "error": "display required"}), 400
+        address = None
+        for unit in load_cache() or []:
+            if omni_users._normalise_identity(unit.get("mac")) == identity:
+                address = unit.get("ip")
+                break
+        if not address:
+            return jsonify({"ok": False, "error": "that display is not known"}), 404
+        state = multiview_state(address)
+        if not state.get("ok"):
+            return jsonify({"ok": False,
+                            "error": "that display did not answer"}), 502
+        presets = [{
+            "name": entry.get("name") or "",
+            "label": entry.get("layout_label") or entry.get("name") or "",
+            "key": omni_users.multiview_key(identity, entry.get("name") or ""),
+            "showing": bool(entry.get("selected_on_output")),
+        } for entry in (state.get("multiviews") or []) if entry.get("name")]
+        presets.sort(key=lambda entry: entry["label"].lower())
+        return jsonify({"ok": True, "display": identity, "presets": presets})
+
     @app.route("/api/admin/audit", methods=["GET"])
     def api_admin_audit():
         return jsonify({"ok": True, "entries": store.audit_entries(200)})
@@ -365,13 +399,241 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                 json={"encoder": encoder_ip, "decoder": decoder_ip, "mode": mode}):
             return route_view()
 
-    def _denied(account, reason):
+    def _denied(account, reason, rule="/api/user/route"):
         store.audit("access.denied", actor=account,
-                    detail={"rule": "/api/user/route", "reason": reason})
+                    detail={"rule": rule, "reason": reason})
         return jsonify({"ok": False, "error": "not permitted"}), 403
 
-    return app
+    def _address_index():
+        """identity -> current address, from host-authoritative state."""
+        index = {}
+        for unit in load_cache() or []:
+            identity = omni_users._normalise_identity(unit.get("mac"))
+            if identity and unit.get("ip"):
+                index[identity] = unit["ip"]
+        return index
 
+    def _label(identity, fallback=""):
+        """A name safe to put in a message or an audit entry.
+
+        The alias if one is set, else the device's own hostname, and only as a
+        last resort the identity itself. Falling straight through to the
+        identity put a bare MAC on screen as a display name for any device
+        nobody had named -- correct, unique and useless to an operator.
+        """
+        if fallback:
+            return aliases.display_name(identity, fallback)
+        for unit in load_cache() or []:
+            if omni_users._normalise_identity(unit.get("mac")) == identity:
+                return aliases.display_name(
+                    identity, unit.get("hostname") or unit.get("name") or identity)
+        return aliases.display_name(identity, identity)
+
+    # ------------------------------------------------------------ USB ----
+    @app.route("/api/user/usb_state", methods=["GET"])
+    def api_user_usb_state():
+        """The USB endpoints this account may operate.
+
+        A projection, not the administrative payload: that one carries firmware
+        revisions, subnet masks, host ports, filters and protocol provenance
+        for every endpoint on the network.
+        """
+        account = _principal() or _LocalAdmin()
+        if not (account.is_admin
+                or account.permissions.has_feature(omni_access.FEATURE_USB)):
+            return _denied(account, "missing_feature:usb", "/api/user/usb_state")
+        return jsonify(omni_projection.project_usb_state(
+            usb_state(), load_cache() or [], account, aliases))
+
+    @app.route("/api/user/usb_route", methods=["POST"])
+    def api_user_usb_route():
+        """Give a permitted computer a permitted set of peripherals, or take
+        them away.
+
+        Adds no USB logic. It authorises both endpoints by stable identity,
+        then hands the same two MACs to the verified pair/unpair path, which
+        keeps its own eligibility, read-back and rollback behaviour.
+        """
+        data = request.get_json(silent=True) or {}
+        computer = omni_users._normalise_identity(data.get("computer"))
+        peripherals = omni_users._normalise_identity(data.get("peripherals"))
+        detach = bool(data.get("detach"))
+        if not computer or not peripherals:
+            return jsonify({"ok": False,
+                            "error": "computer and peripherals required"}), 400
+
+        account = _principal()
+        if account is not None and not account.is_admin:
+            if not account.permissions.has_feature(omni_access.FEATURE_USB):
+                return _denied(account, "missing_feature:usb", "/api/user/usb_route")
+            # Both ends, against the identity the projection authorised them
+            # under -- never the endpoint MAC a browser happened to send.
+            allowed = _usb_permitted_endpoints(account)
+            if computer not in allowed["computers"]:
+                return _denied(account, "computer_not_permitted",
+                               "/api/user/usb_route")
+            if peripherals not in allowed["peripherals"]:
+                return _denied(account, "peripherals_not_permitted",
+                               "/api/user/usb_route")
+
+        store.audit("usb.detach" if detach else "usb.attach", actor=account,
+                    detail={"computer": computer, "peripherals": peripherals,
+                            "computer_label": _label(computer),
+                            "peripherals_label": _label(peripherals)})
+        view = usb_unpair_view if detach else usb_pair_view
+        with app.test_request_context(
+                "/api/usb_route", method="POST",
+                json={"lex_mac": computer, "rex_mac": peripherals}):
+            return view()
+
+    def _usb_permitted_endpoints(account):
+        """The USB endpoint identities this account may act on.
+
+        Derived from the same projection the browser was shown, so a request
+        cannot name an endpoint the account was never offered.
+        """
+        projected = omni_projection.project_usb_state(
+            usb_state(), load_cache() or [], account, aliases)
+        return {"computers": {c["id"] for c in projected["computers"]},
+                "peripherals": {p["id"] for p in projected["peripherals"]}}
+
+    # ------------------------------------------------------ Multiview ----
+    @app.route("/api/user/multiview_state", methods=["GET"])
+    def api_user_multiview_state():
+        """Approved Multiviews on one permitted display."""
+        account = _principal() or _LocalAdmin()
+        if not (account.is_admin
+                or account.permissions.has_feature(omni_access.FEATURE_MULTIVIEW)):
+            return _denied(account, "missing_feature:multiview",
+                           "/api/user/multiview_state")
+        identity = omni_users._normalise_identity(request.args.get("display"))
+        if not identity:
+            return jsonify({"ok": False, "error": "display required"}), 400
+        if not (account.is_admin
+                or account.permissions.may_control_destination(identity)):
+            return _denied(account, "destination_not_permitted",
+                           "/api/user/multiview_state")
+
+        address = _address_index().get(identity)
+        if not address:
+            return jsonify({"ok": False,
+                            "error": "that display is not currently known"}), 404
+        state = multiview_state(address)
+        if not state.get("ok"):
+            # An unreachable decoder is an upstream condition, not a fault in
+            # this application, and the operator only needs to know the display
+            # is not answering.
+            return jsonify({"ok": False, "error": "that display is unavailable",
+                            "display": {"id": identity,
+                                        "name": _label(identity)}}), 502
+        return jsonify(omni_projection.project_multiview_state(
+            identity, _label(identity), state, load_cache() or [],
+            account, aliases))
+
+    @app.route("/api/user/multiview_show", methods=["POST"])
+    def api_user_multiview_show():
+        """Put an approved Multiview on a permitted display."""
+        data = request.get_json(silent=True) or {}
+        identity = omni_users._normalise_identity(data.get("display"))
+        name = str(data.get("preset") or "").strip()
+        account = _principal()
+
+        refusal = _multiview_gate(account, identity, name,
+                                  "/api/user/multiview_show")
+        if refusal:
+            return refusal
+
+        address = _address_index().get(identity)
+        if not address:
+            return jsonify({"ok": False,
+                            "error": "that display is not currently known"}), 404
+
+        store.audit("multiview.show", actor=account,
+                    detail={"display": identity, "display_label": _label(identity),
+                            "preset": name})
+        with app.test_request_context("/api/multiview/show", method="POST",
+                                      json={"decoder": address, "name": name}):
+            return multiview_show_view()
+
+    @app.route("/api/user/multiview_switch", methods=["POST"])
+    def api_user_multiview_switch():
+        """Change one window of the Multiview that is on a permitted display."""
+        data = request.get_json(silent=True) or {}
+        identity = omni_users._normalise_identity(data.get("display"))
+        name = str(data.get("preset") or "").strip()
+        cell = str(data.get("window") or "").strip()
+        source = omni_users._normalise_identity(data.get("source"))
+        account = _principal()
+
+        refusal = _multiview_gate(account, identity, name,
+                                  "/api/user/multiview_switch")
+        if refusal:
+            return refusal
+        if not cell or not source:
+            return jsonify({"ok": False,
+                            "error": "window and source required"}), 400
+        if account is not None and not account.is_admin:
+            if not account.permissions.may_use_source(source):
+                return _denied(account, "source_not_permitted",
+                               "/api/user/multiview_switch")
+
+        addresses = _address_index()
+        display_address = addresses.get(identity)
+        source_address = addresses.get(source)
+        if not display_address:
+            return jsonify({"ok": False,
+                            "error": "that display is not currently known"}), 404
+        if not source_address:
+            return jsonify({"ok": False,
+                            "error": "that source is not currently known"}), 404
+
+        store.audit("multiview.switch", actor=account,
+                    detail={"display": identity, "display_label": _label(identity),
+                            "preset": name, "window": cell,
+                            "source": source, "source_label": _label(source)})
+        with app.test_request_context(
+                "/api/multiview/switch", method="POST",
+                json={"decoder": display_address, "name": name,
+                      "cell": cell, "source": source_address}):
+            return multiview_switch_view()
+
+    def _multiview_gate(account, identity, name, rule):
+        """Capability, display and preset approval. None means proceed.
+
+        The preset check is not only "is it approved": the projection is asked
+        for it, so a preset whose current content includes a source this
+        account may not use is unreachable even when its name is approved. That
+        is what keeps a reused preset name from carrying an old approval onto
+        new content.
+        """
+        if not identity or not name:
+            return jsonify({"ok": False,
+                            "error": "display and preset required"}), 400
+        if account is None or account.is_admin:
+            return None
+        if not account.permissions.has_feature(omni_access.FEATURE_MULTIVIEW):
+            return _denied(account, "missing_feature:multiview", rule)
+        if not account.permissions.may_control_destination(identity):
+            return _denied(account, "destination_not_permitted", rule)
+        if not account.permissions.may_operate_multiview(identity, name):
+            return _denied(account, "multiview_not_approved", rule)
+
+        address = _address_index().get(identity)
+        if not address:
+            return jsonify({"ok": False,
+                            "error": "that display is not currently known"}), 404
+        state = multiview_state(address)
+        if not state.get("ok"):
+            return jsonify({"ok": False,
+                            "error": "that display is unavailable"}), 502
+        projected = omni_projection.project_multiview_state(
+            identity, _label(identity), state, load_cache() or [],
+            account, aliases)
+        if not any(p["name"] == name for p in projected["presets"]):
+            return _denied(account, "multiview_content_not_permitted", rule)
+        return None
+
+    return app
 
 class _LocalAdmin:
     """The local operator, as the projection expects an account to look.
@@ -401,7 +663,13 @@ def _permissions_from(raw) -> Permissions:
 
     return Permissions(features=_list("features"),
                        sources=_list("sources"),
-                       destinations=_list("destinations"))
+                       destinations=_list("destinations"),
+                       # Approved Multiviews. Omitting this quietly dropped
+                       # every approval an administrator made: the account was
+                       # saved, the UI showed the tick, and the preset was
+                       # never reachable. Unit tests built Permissions
+                       # directly and could not see it; a live run could.
+                       multiviews=_list("multiviews"))
 
 
 def _adapters(app):

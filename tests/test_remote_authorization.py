@@ -678,6 +678,32 @@ class MalformedPermissionTests(unittest.TestCase):
                 self.assertEqual(permissions.sources, frozenset())
                 self.assertEqual(permissions.destinations, frozenset())
 
+    def test_every_permission_field_survives_the_request_payload(self):
+        """The admin API must carry each grant, not most of them.
+
+        `multiviews` was missing from this builder, so every Multiview
+        approval an administrator made was silently discarded: the account
+        saved, the UI showed the tick, and the preset stayed unreachable.
+        Building Permissions directly in a test cannot see that -- only the
+        request path can.
+        """
+        import omni_users
+        payload = {"features": ["av", "usb", "multiview"],
+                   "sources": ["B8:98:B0:00:00:01"],
+                   "destinations": ["B8:98:B0:00:00:11"],
+                   "multiviews": ["B8:98:B0:00:00:11/RoomLayout"]}
+        permissions = self.build(payload)
+        self.assertEqual(permissions.features, frozenset({"av", "usb", "multiview"}))
+        self.assertEqual(permissions.sources, frozenset({"b8:98:b0:00:00:01"}))
+        self.assertEqual(permissions.destinations, frozenset({"b8:98:b0:00:00:11"}))
+        self.assertTrue(permissions.may_operate_multiview(
+            "B8:98:B0:00:00:11", "RoomLayout"),
+            "the approval did not survive the request payload")
+
+        # And what comes back out is what a later request would send in.
+        rebuilt = self.build(permissions.to_json())
+        self.assertEqual(rebuilt.to_json(), permissions.to_json())
+
     def test_an_unknown_feature_is_dropped_rather_than_stored(self):
         permissions = self.build({"features": ["av", "root", "*", "admin"]})
         self.assertEqual(permissions.features, frozenset({"av"}))

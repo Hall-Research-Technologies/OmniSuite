@@ -160,10 +160,25 @@ class RestrictedUserSurfaceTests(unittest.TestCase):
         """
         user_routes = {rule for rule, (access, _f) in omni_access.ROUTES.items()
                        if access is Access.USER}
-        self.assertEqual(user_routes, {"/api/user/route"},
-                         "widening what a restricted account may call is a "
-                         "deliberate security decision, not an implementation "
-                         "detail")
+        self.assertEqual(user_routes, {
+            "/api/user/route",
+            "/api/user/usb_state", "/api/user/usb_route",
+            "/api/user/multiview_state", "/api/user/multiview_show",
+            "/api/user/multiview_switch",
+        }, "widening what a restricted account may call is a deliberate "
+           "security decision, not an implementation detail")
+
+    def test_every_user_endpoint_lives_in_the_user_namespace(self):
+        """A restricted account only ever calls /api/user/.
+
+        Which makes the rule reviewable at a glance: anything outside that
+        prefix is administrative, and an endpoint that wants to serve a user
+        has to be written for one rather than merely opened to one.
+        """
+        for rule, (access, _f) in omni_access.ROUTES.items():
+            if access is Access.USER:
+                with self.subTest(rule=rule):
+                    self.assertTrue(rule.startswith("/api/user/"), rule)
 
     def test_the_user_shell_never_receives_the_administrative_state(self):
         """A user's state comes from the projection, not from /api/state.
@@ -210,21 +225,36 @@ class RestrictedUserSurfaceTests(unittest.TestCase):
                                  f"a restricted user must not reach {rule}")
                 self.assertIsNot(access, Access.PUBLIC)
 
-    def test_no_multiview_endpoint_is_reachable_by_a_restricted_account(self):
-        """The operating endpoints return administrative objects as they stand.
+    def test_the_administrative_multiview_endpoints_stay_administrative(self):
+        """Phase I gave Multiview a projection; it did not open the admin API.
 
-        The Phase A boundary is unchanged in intent -- a User will operate an
-        approved preset and never administer one -- but show and switch are
-        reached today through endpoints that also disclose decoder and source
-        inventories. They are administrative until Phase I gives them a
-        projection, which is the same rule applied to Multiview that closed
-        /api/state.
+        A user operates through /api/user/multiview_*, which authorise the
+        display, the preset approval and the preset's current content before
+        delegating. Everything under /api/multiview remains administrative --
+        including show and switch, whose administrative forms take addresses
+        and disclose the decoder's whole preset inventory.
         """
         multiview = [r for r in omni_access.ROUTES if r.startswith("/api/multiview")]
         self.assertTrue(multiview)
         for rule in multiview:
             with self.subTest(rule=rule):
                 self.assertIs(omni_access.classify(rule)[0], Access.ADMIN)
+
+    def test_multiview_administration_is_never_reachable_by_a_user(self):
+        """The operate-versus-administer boundary, stated as a list."""
+        administrative = ("/api/multiview/apply", "/api/multiview/copy",
+                          "/api/multiview/delete", "/api/multiview/plan",
+                          "/api/multiview/layouts", "/api/multiview/layouts/install",
+                          "/api/multiview/groups", "/api/multiview/groups/save",
+                          "/api/multiview/groups/delete",
+                          "/api/multiview/groups/copy",
+                          "/api/multiview/groups/show",
+                          "/api/multiview/groups/plan",
+                          "/api/multiview/groups/state")
+        for rule in administrative:
+            with self.subTest(rule=rule):
+                self.assertIs(omni_access.classify(rule)[0], Access.ADMIN,
+                              f"{rule} is administration, not operation")
 
 
 class PasswordHashingTests(unittest.TestCase):

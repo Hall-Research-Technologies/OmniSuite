@@ -129,24 +129,40 @@ class Permissions:
     whatever answers there next.
     """
 
-    __slots__ = ("features", "sources", "destinations")
+    __slots__ = ("features", "sources", "destinations", "multiviews")
 
-    def __init__(self, features=(), sources=(), destinations=()):
+    def __init__(self, features=(), sources=(), destinations=(), multiviews=()):
         self.features = frozenset(f for f in features if f in omni_access.FEATURES)
         self.sources = frozenset(_normalise_identity(s) for s in sources if s)
         self.destinations = frozenset(_normalise_identity(d) for d in destinations if d)
+        self.multiviews = frozenset(k for k in
+                                    (multiview_key(*_split_multiview(m)) for m in multiviews)
+                                    if k)
 
     def to_json(self) -> dict:
         return {"features": sorted(self.features),
                 "sources": sorted(self.sources),
-                "destinations": sorted(self.destinations)}
+                "destinations": sorted(self.destinations),
+                "multiviews": sorted(self.multiviews)}
 
     @classmethod
     def from_json(cls, raw) -> "Permissions":
         raw = raw or {}
         return cls(raw.get("features") or (),
                    raw.get("sources") or (),
-                   raw.get("destinations") or ())
+                   raw.get("destinations") or (),
+                   raw.get("multiviews") or ())
+
+    def may_operate_multiview(self, decoder_identity, name) -> bool:
+        """Whether this account may operate that saved Multiview on that decoder.
+
+        Approval is per decoder *and* per preset. Holding the multiview
+        capability grants nothing on its own -- a preset an administrator
+        creates later is not reachable until it is approved, which is what
+        section 13 of the brief asks for.
+        """
+        key = multiview_key(decoder_identity, name)
+        return bool(key) and key in self.multiviews
 
     def has_feature(self, feature: str) -> bool:
         return feature in self.features
@@ -156,6 +172,32 @@ class Permissions:
 
     def may_control_destination(self, identity) -> bool:
         return _normalise_identity(identity) in self.destinations
+
+
+#: A saved Multiview has no stable id -- its identity is its name, scoped to
+#: the decoder it lives on. So an approval is the pair, joined by a character
+#: that cannot occur in either half: an identity is hex and colons, and the
+#: device refuses a name with a space or a slash.
+MULTIVIEW_KEY_SEPARATOR = "/"
+
+
+def multiview_key(decoder_identity, name) -> str:
+    """The stored form of "this preset, on this decoder"."""
+    identity = _normalise_identity(decoder_identity)
+    label = str(name or "").strip()
+    if not identity or not label or MULTIVIEW_KEY_SEPARATOR in label:
+        return ""
+    return identity + MULTIVIEW_KEY_SEPARATOR + label
+
+
+def _split_multiview(value):
+    """Accept either the joined key or a {decoder, name} pair."""
+    if isinstance(value, dict):
+        return (value.get("decoder") or value.get("id") or "",
+                value.get("name") or "")
+    text = str(value or "")
+    identity, separator, name = text.partition(MULTIVIEW_KEY_SEPARATOR)
+    return (identity, name) if separator else ("", "")
 
 
 def _normalise_identity(identity) -> str:
