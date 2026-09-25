@@ -14,6 +14,10 @@
     devices: [],
     editing: null,        // the account being edited, or null when creating
     selected: {sources: new Set(), destinations: new Set()},
+    // Approved Multiviews, as "<display identity>/<preset name>" keys. The
+    // pair is the identity: a saved Multiview has no id of its own, only a
+    // name on a decoder.
+    approvedMultiviews: new Set(),
     // identity -> the alias currently typed, for names not yet saved.
     pendingAliases: new Map(),
     tab: 'accounts',
@@ -218,6 +222,9 @@
       (user && user.permissions && user.permissions.sources) || []);
     state.selected.destinations = new Set(
       (user && user.permissions && user.permissions.destinations) || []);
+    state.approvedMultiviews = new Set(
+      (user && user.permissions && user.permissions.multiviews) || []);
+    populateMultiviewDisplays();
 
     el('editor_title').textContent = user ? 'Edit ' + user.username : 'Add account';
     el('f_username').value = user ? user.username : '';
@@ -241,6 +248,93 @@
     el('editor_backdrop').style.display = 'flex';
     el('f_username').focus();
   }
+
+  // ------------------------------------------------- Multiview approvals
+  //
+  // Presets are read for the one display an administrator picks, not for every
+  // decoder in the deployment: a preset list is a device read, and building
+  // one for the whole site to fill a dropdown is exactly the traffic this
+  // architecture avoids everywhere else.
+  function populateMultiviewDisplays() {
+    const pick = el('mv_display_pick');
+    pick.replaceChildren();
+    const first = document.createElement('option');
+    first.value = '';
+    first.textContent = 'Choose a display…';
+    pick.appendChild(first);
+    state.devices.filter((d) => d.role === 'decoder').forEach((device) => {
+      const option = document.createElement('option');
+      option.value = device.id;
+      option.textContent = device.name;
+      pick.appendChild(option);
+    });
+    el('mv_preset_list').replaceChildren(emptyNote('Choose a display above.'));
+    updateApprovedCount();
+  }
+
+  function emptyNote(text) {
+    const note = document.createElement('div');
+    note.className = 'empty';
+    note.style.padding = '14px';
+    note.textContent = text;
+    return note;
+  }
+
+  function updateApprovedCount() {
+    const n = state.approvedMultiviews.size;
+    el('mv_approved_count').textContent = n + ' approved';
+  }
+
+  async function loadPresetsFor(displayId) {
+    const host = el('mv_preset_list');
+    if (!displayId) {
+      host.replaceChildren(emptyNote('Choose a display above.'));
+      return;
+    }
+    host.replaceChildren(emptyNote('Reading layouts from the display…'));
+    const {status, body} = await api('/api/admin/multiviews?display='
+                                     + encodeURIComponent(displayId));
+    if (status !== 200 || !body.ok) {
+      host.replaceChildren(emptyNote(
+        body.error || 'That display did not answer.'));
+      return;
+    }
+    const presets = body.presets || [];
+    if (!presets.length) {
+      host.replaceChildren(emptyNote('No Multiview layouts are saved on it.'));
+      return;
+    }
+    host.replaceChildren();
+    presets.forEach((preset) => {
+      const row = document.createElement('label');
+      row.className = 'assign-row';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.value = preset.key;
+      box.checked = state.approvedMultiviews.has(preset.key);
+      box.addEventListener('change', () => {
+        if (box.checked) state.approvedMultiviews.add(preset.key);
+        else state.approvedMultiviews.delete(preset.key);
+        updateApprovedCount();
+      });
+      const text = document.createElement('span');
+      const name = document.createElement('span');
+      name.className = 'a-name';
+      name.textContent = preset.label;
+      const meta = document.createElement('span');
+      meta.className = 'a-meta';
+      meta.textContent = ' · ' + preset.name
+        + (preset.showing ? ' · on the display now' : '');
+      text.append(name, meta);
+      row.append(box, text);
+      host.appendChild(row);
+    });
+    updateApprovedCount();
+  }
+
+  el('mv_display_pick').addEventListener('change', function () {
+    loadPresetsFor(this.value).catch(() => {});
+  });
 
   function applyRoleVisibility() {
     // An administrator has no per-device grants -- the role is the grant -- so
@@ -267,6 +361,7 @@
         .filter((b) => b.checked).map((b) => b.value),
       sources: Array.from(state.selected.sources),
       destinations: Array.from(state.selected.destinations),
+      multiviews: Array.from(state.approvedMultiviews),
     };
 
     if (!state.editing) {

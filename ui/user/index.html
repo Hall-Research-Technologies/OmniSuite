@@ -61,28 +61,69 @@
   </section>
 
   <!-- ------------------------------------------------------------ USB -->
+  <!-- USB extension is not source-to-destination, so it is not described that
+       way. A LEX sits with a computer and a REX with the peripherals; the
+       operation is "give this computer that keyboard, mouse and camera". -->
   <section id="panel_usb" hidden>
     <div class="panel">
-      <h2>USB</h2>
-      <div class="deferred">
-        USB routing is not available yet in this interface.<br>
-        Your account has permission for it; the operator controls are still
-        being built.
+      <h2>1 &middot; Choose a computer</h2>
+      <p class="hint">Which computer should the USB devices work with?</p>
+      <div class="pick-grid" id="usb_computers"></div>
+      <div class="empty" id="usb_computers_empty" hidden>
+        No computers have been assigned to your account.
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>2 &middot; Choose the USB devices</h2>
+      <p class="hint">Keyboards, mice, cameras and other USB devices.</p>
+      <div class="pick-grid" id="usb_peripherals"></div>
+      <div class="empty" id="usb_peripherals_empty" hidden>
+        No USB devices have been assigned to your account.
       </div>
     </div>
   </section>
 
   <!-- ------------------------------------------------------ Multiview -->
+  <!-- Operate, never administer. Choose a display, choose an approved layout,
+       show it; then tap a window to put a different permitted source in it. -->
   <section id="panel_multiview" hidden>
     <div class="panel">
-      <h2>Multiview</h2>
-      <div class="deferred">
-        Multiview operation is not available yet in this interface.<br>
-        Your account has permission to show and change approved Multiview
-        layouts; those controls are still being built.
+      <h2>1 &middot; Choose a display</h2>
+      <div class="pick-grid" id="mv_displays"></div>
+      <div class="empty" id="mv_displays_empty" hidden>
+        No displays have been assigned to your account.
       </div>
     </div>
+
+    <div class="panel" id="mv_presets_panel" hidden>
+      <h2>2 &middot; Choose a layout</h2>
+      <p class="hint" id="mv_presets_hint">&nbsp;</p>
+      <div class="pick-grid" id="mv_presets"></div>
+      <div class="empty" id="mv_presets_empty" hidden>
+        No Multiview layouts have been approved for you on this display.
+      </div>
+    </div>
+
+    <!-- The layout drawn as it is arranged on screen, so a window is chosen by
+         where it is rather than by a name like bottom_left. -->
+    <div class="panel" id="mv_windows_panel" hidden>
+      <h2>Windows</h2>
+      <p class="hint">Tap a window to put a different source in it.</p>
+      <div id="mv_layout" class="mv-layout"></div>
+    </div>
   </section>
+
+  <!-- Choosing a source for a tapped window. -->
+  <div class="sheet-backdrop" id="mv_sheet" hidden>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="mv_sheet_title">
+      <h3 id="mv_sheet_title">Choose a source</h3>
+      <div class="pick-grid" id="mv_sheet_sources"></div>
+      <div class="sheet-actions">
+        <button class="btn-quiet" id="mv_sheet_cancel" type="button">Cancel</button>
+      </div>
+    </div>
+  </div>
 </main>
 
 <!-- The action stays put rather than being withdrawn when the form is

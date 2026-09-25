@@ -171,12 +171,50 @@ check('the shell starts no repeating timer', () => {
     'times the device traffic');
 });
 
-// ------------------------------------------------------------- deferred ---
-check('deferred features say so rather than pretending', () => {
-  assert(/not available yet/i.test(SHELL_HTML),
-    'a granted feature whose controls are not built must say so');
-  assert(SHELL_HTML.includes('id="panel_usb"'));
-  assert(SHELL_HTML.includes('id="panel_multiview"'));
+// ---------------------------------------------------------- operational ---
+// Phases G, H and I made all three capabilities operational, so the "not
+// available yet" panels are gone. This is the inverse of the check that stood
+// here: nothing may claim a feature is unbuilt once it is built, and nothing
+// may present a control that does not work.
+check('every granted feature has an operating panel', () => {
+  assert(!/not available yet/i.test(SHELL_HTML),
+    'USB and Multiview are operational; nothing should say otherwise');
+  ['panel_av', 'panel_usb', 'panel_multiview'].forEach((id) => {
+    assert(SHELL_HTML.includes(`id="${id}"`), `#${id} is missing`);
+  });
+});
+
+check('USB is described as USB rather than as A/V', () => {
+  // A LEX sits with a computer and a REX with the peripherals. Forcing
+  // source-and-destination onto that would misdescribe the hardware.
+  const usb = SHELL_HTML.slice(SHELL_HTML.indexOf('id="panel_usb"'),
+                               SHELL_HTML.indexOf('id="panel_multiview"'));
+  assert(/computer/i.test(usb), 'the USB panel should talk about a computer');
+  assert(/USB devices|peripherals/i.test(usb),
+    'the USB panel should talk about the peripherals');
+  assert(!/destination/i.test(usb),
+    'USB is not source-to-destination and should not say it is');
+});
+
+check('the Multiview panel operates and never administers', () => {
+  const body = code(SHELL_JS);
+  assert(body.includes('/api/user/multiview_show'));
+  assert(body.includes('/api/user/multiview_switch'));
+  // Administrative Multiview vocabulary has no place in an operator shell.
+  ['/api/multiview/apply', '/api/multiview/delete', '/api/multiview/copy',
+   '/api/multiview/plan', '/api/multiview/layouts',
+   '/api/multiview/groups'].forEach((rule) => {
+    assert(!body.includes(rule), `the shell must not call ${rule}`);
+  });
+});
+
+check('no Multiview engineering vocabulary reaches the operator', () => {
+  const visible = SHELL_HTML + code(SHELL_JS);
+  ['ip_input', 'Encoder 2', 'Session 2', 'scaler', 'bitrate', 'multicast',
+   'SAP'].forEach((term) => {
+    assert(!visible.includes(term),
+      `${term} is OmniSuite's concern, not a teacher's`);
+  });
 });
 
 // --------------------------------------------------------------- mobile ---

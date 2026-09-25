@@ -499,3 +499,86 @@ body.remote {
 @media (prefers-reduced-motion: reduce) {
   .pick, .btn-primary-lg { transition: none; }
 }
+
+/* ------------------------------------------------------ Multiview windows --
+ * The layout drawn the way it appears on the display, so a window is chosen by
+ * pointing at where it is rather than by reading a name like bottom_left. A
+ * three-by-three grid covers every layout this release can show: a full-width
+ * main window spans two rows and two columns, a PiP occupies one cell.
+ */
+.mv-layout {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: 6px;
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  padding: 6px;
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  /* An off screen is darker than any panel, because that is what one looks
+     like; the windows sit on top of it. */
+  background: var(--screen-off, #0b0f14);
+}
+.mv-window {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--selected-edge);
+  border-radius: 6px;
+  background: var(--screen-window, rgba(30, 144, 255, .20));
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+.mv-window:hover {
+  background-image: linear-gradient(var(--control-hover-veil), var(--control-hover-veil));
+}
+.mv-window:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.mv-window-where {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.mv-window-what {
+  font-weight: 600;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------- sheet --
+ * Choosing a source for a tapped window. A sheet rather than a dialog because
+ * it is reached by tapping something on screen and dismissed by tapping away,
+ * which on a phone is what a list of choices should feel like.
+ */
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--backdrop-veil);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 30000;
+  padding: 16px;
+}
+.sheet {
+  width: min(100%, 560px);
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--surface-raised);
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  padding: 16px;
+}
+.sheet h3 { margin: 0 0 12px; font-size: 16px; font-weight: 600; }
+.sheet-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
+
+@media (min-width: 561px) {
+  .sheet-backdrop { align-items: center; }
+}
