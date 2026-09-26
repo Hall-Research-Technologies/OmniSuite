@@ -26,6 +26,35 @@ for the user-facing summary.
 - Added per-resource serialization so two operators changing one display
   cannot interleave, and shared state observation so extra browsers do not
   multiply device traffic.
+- Added optional per-user direct access links: a passwordless address that
+  opens one restricted account's controls, off by default, enabled per account
+  by an administrator, never available on an administrator account, and
+  carrying no permissions of its own.
+- Opening the remote address in a browser now presents the sign-in page.
+  Previously an unauthenticated page request was answered with the API's JSON
+  refusal, which a browser displayed as raw text. Page requests and API
+  requests are now answered differently and API responses are unchanged.
+- A generated certificate is now checked against the address it is about to
+  be served on. Remote access over HTTPS refuses to start on an address the
+  certificate does not name, rather than reporting normal secure operation
+  that no browser will accept. A supplied certificate is reported and never
+  altered.
+- Fixed the plaintext warning being shown in Settings while HTTPS was
+  selected: the class that styles it overrode the attribute that hid it.
+  Settings now states what protects the connection in either mode.
+- Added a favicon route, so a browser no longer makes a failed request on
+  every page load.
+- Added browser security headers (nosniff, frame denial, no referrer, and a
+  permissions policy naming only long-standing features).
+- Fixed every mutating action being refused for an administrator signed in
+  from another device. The matrix, USB, Multiview and Settings pages predate
+  remote access and did not present a CSRF token, so a remote administrator
+  could read everything and change nothing. One shared module now attaches
+  it, covering existing call sites and any added later.
+- The firmware file list is no longer requested from a remote browser. It
+  reads a folder on the OmniSuite computer, so it could only ever fail
+  there; the picker now says where firmware upgrades are started from.
+- Fixed a duplicated charset in the Content-Type of every served page.
 
 ## V1.1.0 - 2026-09-17
 

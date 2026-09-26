@@ -400,6 +400,11 @@
         <li>Click Upgrade Selected and confirm the custom upgrade dialog.</li>
         <li>Rows move through queued/uploading/upgrading/rebooting/idle based on feedback and version polling.</li>
       </ol>
+      <div class="note"><strong>Firmware upgrades are started at the OmniSuite
+      computer.</strong> The firmware files are in a folder on that machine's
+      own disk, so the file list is empty when you are signed in from a phone,
+      tablet or another PC, and the picker says so. Everything else an
+      administrator does works the same from anywhere.</div>
       <div class="warn">Some units can time out during upload and need a reboot before retry. The app avoids leaving the UI stuck in an old state, but the device is still the source of truth. Watch for the version to update after the unit returns.</div>
 
       <h3>Footer Actions</h3>
@@ -988,6 +993,10 @@
         address people type into their browser, such as
         <code>https://10.0.4.12:8080/</code>.</li>
       </ol>
+      <p>That address is the whole of it. Opening it in a browser brings up the
+      OmniSuite sign-in page &mdash; there is no separate link to remember and
+      nothing to type after the address. After signing in, an administrator gets
+      the full OmniSuite screens and a User gets their own simple screen.</p>
       <p>It takes effect immediately. OmniSuite keeps working on its own
       computer exactly as before, and turning Remote Access off stops network
       access at once and signs out everyone who was using it.</p>
@@ -1096,6 +1105,33 @@
       back to an unencrypted connection, because that would send passwords in
       the clear without anyone being told. Settings says what is wrong. OmniSuite
       keeps working normally on its own computer throughout.</div>
+
+      <h4 id="remote-cert-address">A certificate belongs to one address</h4>
+      <p>A certificate OmniSuite creates is made for the address of the network
+      you picked, and it is only valid for that address. If you later switch
+      Remote Access to a different network &mdash; from a wired connection to
+      Wi-Fi, say &mdash; the old certificate no longer matches, and browsers
+      will refuse the new address rather than merely warning about it.</p>
+      <p>OmniSuite checks this before it starts, so you will see it in Settings
+      rather than discovering it on somebody's phone:</p>
+      <p><em>This certificate is for a different address.</em></p>
+      <p>Press <strong>Create one for this network</strong> and the problem is
+      solved. Remote Access will not start over HTTPS until you do &mdash; it
+      does not carry on with a certificate that will not work, and it never
+      falls back to an unencrypted connection.</p>
+      <p>The same applies if the address of your chosen network changes. Remote
+      Access follows the adapter, so the link updates by itself, but a
+      certificate made for the old address has to be replaced.</p>
+      <div class="note"><strong>A certificate you supplied is never touched.</strong>
+      If it does not name the current address, OmniSuite says so and leaves it
+      exactly as it is &mdash; it may well be correct for a name your site
+      reaches OmniSuite by, which OmniSuite has no way of knowing. Replacing it
+      is your decision, not the software's.</div>
+      <p>Everybody will still see a browser warning the first time they connect
+      with a certificate OmniSuite created. That warning is about who is
+      answering, not about whether the connection is protected &mdash; the
+      traffic is encrypted either way. Settings shows a fingerprint you can
+      check against the one the browser displays.</p>
 
       <h4 id="remote-cert-remove">Removing a certificate</h4>
       <p><strong>Remove certificate</strong> appears once there is one. Use it
@@ -1219,6 +1255,71 @@
       last active administrator, so you cannot lock yourself out. Those buttons
       are greyed out when only one administrator is left.</div>
 
+      <h3 id="remote-direct">Direct access links</h3>
+      <p>A teacher who has to type a username and password before they can put
+      the document camera on the projector will, before long, stop bothering. A
+      <strong>direct access link</strong> is a web address that opens one
+      person&rsquo;s OmniSuite controls without asking for a password, so it can
+      be saved to a phone or tablet home screen or bookmarked on a classroom
+      PC.</p>
+      <div class="warn"><strong>Anyone who has the link can use the controls
+      assigned to that account.</strong> Treat it like a password. It is not a
+      harmless bookmark: somebody who is sent the link can do everything that
+      account can do, without knowing anything about it.</div>
+
+      <h4>Turning one on</h4>
+      <p>Direct access is <strong>off for every account</strong> until you turn
+      it on, one account at a time. In <strong>Manage users</strong>, open the
+      account and tick <strong>Allow passwordless direct link</strong>. The link
+      appears straight away, with <strong>Copy link</strong> beside it.</p>
+      <ul>
+        <li>It is available for <strong>Users only</strong>. An administrator
+        account cannot be given one, and making an account an administrator
+        removes any link it had.</li>
+        <li>Each account gets its own link. Two people never share one.</li>
+        <li>It reaches the same address as ordinary Remote Access. If Remote
+        Access is off, the link is kept but Settings says it cannot be reached
+        from another device yet.</li>
+      </ul>
+
+      <h4>What the link can and cannot do</h4>
+      <p>The link is a way of saying who is asking. It carries no permissions of
+      its own, so everything you have set for that account still applies, and
+      applies immediately:</p>
+      <ul>
+        <li>Take a feature away and the link loses it at once.</li>
+        <li>Remove a source or a display and the link can no longer use it.</li>
+        <li>Disable the account and the link stops working.</li>
+        <li>Delete the account and the link stops working.</li>
+        <li>Turn direct access off and the link stops working.</li>
+      </ul>
+      <p>A direct link never reaches Settings, Manage users, Activity, firmware,
+      diagnostics, scanning or any administrator screen. Editing the web address
+      by hand does not change that.</p>
+
+      <h4>Replacing a link</h4>
+      <p>If a link has been shared with somebody who should not have it, or you
+      simply want a new one, press <strong>Regenerate</strong>. The old address
+      stops working immediately, anyone using it is signed out, and a new link
+      takes its place. There is only ever one link per account &mdash; an old
+      one is never left quietly working.</p>
+      <p><strong>Allow passwordless direct link</strong> unticked removes the
+      link altogether. Ticking it again creates a new one; the previous address
+      does not come back.</p>
+
+      <h4>A User collecting their own link</h4>
+      <p>Once you have turned it on, the person can fetch the link themselves
+      rather than waiting for you to send it. They sign in normally and press
+      <strong>My link</strong> at the top of their screen. They can copy it;
+      they cannot turn the feature on, and they cannot replace the link. Both of
+      those stay with you.</p>
+      <p>If you have not turned it on, they are told so plainly and there is
+      nothing for them to press.</p>
+      <div class="note"><strong>Use HTTPS.</strong> The link is a credential
+      travelling in a web address, so it should not be crossing a network in
+      clear. Do not hand out direct access links on an installation running
+      without encryption.</div>
+
       <h3 id="remote-activity">Activity</h3>
       <p><strong>Settings &gt; Remote Access &gt; Manage users</strong>, then the
       <strong>Activity</strong> tab. It shows what has happened on this
@@ -1235,11 +1336,14 @@
         <li><strong>Routing</strong> &mdash; what was shown where, and by whom.</li>
         <li><strong>Administration</strong> &mdash; accounts created, changed,
         disabled or deleted, and Remote Access being turned on or off.</li>
+        <li><strong>Direct links</strong> &mdash; created, replaced, removed,
+        and each time one is used to open a session.</li>
       </ul>
       <div class="note"><strong>Passwords are never recorded.</strong> Neither
-      are session details, nor the passwords OmniSuite uses to talk to encoders
-      and decoders. A failed sign-in records that one happened and for which
-      username, never what was typed.</div>
+      are session details, direct access links, nor the passwords OmniSuite uses
+      to talk to encoders and decoders. A failed sign-in records that one
+      happened and for which username, never what was typed. A direct link
+      being used records the account and the time, never the address.</div>
       <p>The list keeps a fixed amount of recent history and discards the oldest
       as it fills, so it cannot grow without limit. It survives a restart. Only
       administrators can see it &mdash; Users have no access to it at all.</p>
@@ -1251,7 +1355,12 @@
       is in the top right.</p>
       <p>Sessions end on their own after a period of inactivity, and everyone is
       signed out if OmniSuite restarts. Repeated wrong passwords are slowed down
-      for a while.</p>
+      for a while. A session opened by a
+      <a href="#remote-direct">direct access link</a> ends sooner than one
+      opened with a password, and opening the link again simply starts a new
+      one.</p>
+      <p>If a session ends while somebody is using OmniSuite, the sign-in page
+      comes back by itself &mdash; they do not have to know where to go.</p>
       <p>Accounts you create here are OmniSuite sign-ins. They are not the
       <a href="#settings">device passwords</a> OmniSuite uses to talk to
       encoders and decoders; those are separate and unchanged.</p>
@@ -1365,6 +1474,18 @@
         saved no longer belongs to any adapter on this computer. Choose the
         network again; OmniSuite then remembers the adapter rather than the
         address.</td></tr>
+        <tr><td>A browser shows a certificate error rather than a
+        warning</td><td>The certificate does not name the address being used.
+        Settings says so under Certificate; press <strong>Create one for this
+        network</strong>.</td></tr>
+        <tr><td>A direct access link says it is no longer valid</td>
+        <td>It has been replaced, turned off, or the account has been disabled
+        or deleted. Ask an administrator for a new link.</td></tr>
+        <tr><td>A direct access link cannot be shown in Manage users</td>
+        <td>Links are protected using the Windows account OmniSuite runs as. If
+        OmniSuite has been moved to a different computer or is running as a
+        different user, the stored link cannot be read back. Press
+        <strong>Regenerate</strong> for one you can copy.</td></tr>
         <tr><td>The Remote Access address is different from last time</td>
         <td>Expected if the adapter&rsquo;s address changed. OmniSuite follows
         the adapter you chose, so the link shows its current address.</td></tr>

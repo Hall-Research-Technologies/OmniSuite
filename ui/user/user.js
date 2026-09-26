@@ -525,6 +525,7 @@
 
     el('who').textContent = body.username ? body.username : 'On this computer';
     el('signout').hidden = !body.username;
+    el('my_link_btn').hidden = !body.username;
 
     renderAv();
     if (!state.tab || state.features.indexOf(state.tab) === -1) {
@@ -536,8 +537,86 @@
     selectTab(state.tab);
   }
 
+  // The token this session was issued, adopted when the page did not get one
+  // from the sign-in form -- which is every session opened by a Direct Access
+  // link, because that path redirects straight here. Without it every action
+  // would be refused for a missing CSRF token.
+  //
+  // In memory for the life of the tab, exactly as the sign-in page keeps it.
+  // The link itself is never stored: it is a password.
+  async function adoptSessionToken() {
+    if (csrf()) return;
+    try {
+      const {body} = await api('/api/auth/session');
+      if (body && body.csrf_token) {
+        sessionStorage.setItem('omni_csrf', body.csrf_token);
+      }
+    } catch (err) { /* refresh() will report anything that matters */ }
+  }
+
+  // ------------------------------------------------------- my own link
+  function showLinkSheet(payload) {
+    const note = el('link_sheet_note');
+    const value = el('link_sheet_value');
+    const copy = el('link_sheet_copy');
+    const warning = el('link_sheet_warning');
+    const enabled = !!(payload && payload.direct_access
+                       && payload.direct_access.enabled);
+    const link = (payload && payload.link) || '';
+
+    warning.hidden = !enabled;
+    value.hidden = !link;
+    copy.hidden = !link;
+    value.value = link;
+    if (!enabled) {
+      note.textContent = 'Direct access is not enabled for this account. '
+        + 'An administrator can turn it on for you.';
+    } else if (!link) {
+      note.textContent = (payload && payload.note)
+        || 'Your link cannot be shown right now. Ask an administrator to '
+           + 'create a new one.';
+    } else {
+      note.textContent = 'Save this to your home screen to open your controls '
+        + 'without signing in.';
+    }
+    el('link_sheet').hidden = false;
+  }
+
+  el('my_link_btn').addEventListener('click', async () => {
+    showLinkSheet(null);
+    el('link_sheet_note').textContent = 'Loading\u2026';
+    try {
+      const {body} = await api('/api/user/direct_access');
+      showLinkSheet(body);
+    } catch (err) {
+      if (String(err.message) !== 'signed out') {
+        el('link_sheet_note').textContent = 'Could not reach OmniSuite.';
+      }
+    }
+  });
+  el('link_sheet_close').addEventListener('click', () => {
+    // Dropped, not merely hidden: there is no reason for a credential to sit
+    // in the page after the operator has finished with it.
+    el('link_sheet_value').value = '';
+    el('link_sheet').hidden = true;
+  });
+  el('link_sheet_copy').addEventListener('click', async () => {
+    const link = el('link_sheet_value').value;
+    if (!link) return;
+    try {
+      await navigator.clipboard.writeText(link);
+      if (window.omniToast) window.omniToast('Link copied.');
+    } catch (err) {
+      el('link_sheet_value').select();
+      if (window.omniToast) {
+        window.omniToast('Press and hold to copy.', 'warn');
+      }
+    }
+  });
+
   (async function start() {
     try {
+      await adoptSessionToken();
       await refresh();
       el('loading').hidden = true;
     } catch (err) {

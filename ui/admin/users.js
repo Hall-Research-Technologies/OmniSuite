@@ -246,6 +246,10 @@
     renderAssign('sources', 'src_list', 'src_count', 'src_filter');
     renderAssign('destinations', 'dst_list', 'dst_count', 'dst_filter');
     applyRoleVisibility();
+    // Read on its own, because it is the one thing in this dialog that is not
+    // part of the account record the table already holds.
+    renderDirect(null);
+    loadDirect().catch(() => {});
     el('editor_error').style.display = 'none';
     el('editor_backdrop').style.display = 'flex';
     el('f_username').focus();
@@ -338,6 +342,70 @@
     loadPresetsFor(this.value).catch(() => {});
   });
 
+  // ---------------------------------------------------- direct access
+  //
+  // This section does not take part in Save. Enabling it mints a credential on
+  // the server, and a checkbox that quietly creates a bearer token when
+  // somebody presses Save on an unrelated change would be the wrong shape
+  // entirely. Each control is one deliberate action with one server answer.
+  //
+  // The link itself is only ever held in the input it is shown in. Nothing
+  // writes it to storage -- it is a password, and a password does not belong
+  // in localStorage.
+  function renderDirect(payload) {
+    const section = el('direct_section');
+    const box = el('f_direct');
+    const detail = el('direct_detail');
+    const status = el('direct_status');
+    const user = state.editing;
+
+    // Nothing to attach a link to while an account is being created.
+    section.hidden = !user;
+    if (!user) return;
+
+    const info = (payload && payload.direct_access) || {};
+    box.checked = !!info.enabled;
+    detail.hidden = !info.enabled;
+    el('direct_link').value = (payload && payload.link) || '';
+
+    if (!info.enabled) {
+      status.textContent = 'No active direct link.';
+      return;
+    }
+    if (payload && payload.note) {
+      status.textContent = payload.note;
+    } else if (payload && !payload.recoverable) {
+      status.textContent = 'This link cannot be shown on this computer. '
+        + 'Regenerate it to get one you can copy.';
+    } else {
+      status.textContent = 'Direct access is on. Regenerating stops the old '
+        + 'link working immediately.';
+    }
+  }
+
+  async function loadDirect() {
+    const user = state.editing;
+    if (!user) { renderDirect(null); return; }
+    const res = await api('/api/admin/users/' + encodeURIComponent(user.id)
+                          + '/direct_access');
+    renderDirect(res.status === 200 ? res.body : null);
+  }
+
+  async function directAction(action) {
+    const user = state.editing;
+    if (!user) return;
+    const res = await api('/api/admin/users/' + encodeURIComponent(user.id)
+                          + '/direct_access',
+                          {method: 'POST', body: JSON.stringify({action})});
+    if (res.status !== 200 || !res.body.ok) {
+      showEditorError(res.body.error || 'That could not be changed.');
+      await loadDirect();
+      return;
+    }
+    renderDirect(res.body);
+    await load();
+  }
+
   function applyRoleVisibility() {
     // An administrator has no per-device grants -- the role is the grant -- so
     // showing empty assignment lists for one would be misleading.
@@ -419,6 +487,41 @@
     });
   });
   el('f_role').addEventListener('change', applyRoleVisibility);
+
+  // Each of these is one deliberate action against the server, not a field in
+  // a form that gets saved later.
+  el('f_direct').addEventListener('change', () => {
+    directAction(el('f_direct').checked ? 'enable' : 'disable')
+      .catch(() => showEditorError('Could not reach OmniSuite.'));
+  });
+  el('direct_regen').addEventListener('click', async () => {
+    const ok = !window.omniConfirm ? false : await window.omniConfirm({
+      title: 'Replace this direct link?',
+      message: 'The link that has already been handed out will stop working '
+             + 'immediately, and anyone using it now will be signed out. '
+             + 'A new link is created in its place.',
+      confirmText: 'Replace link',
+      danger: true,
+    });
+    if (!ok) return;
+    directAction('regenerate')
+      .catch(() => showEditorError('Could not reach OmniSuite.'));
+  });
+  el('direct_copy').addEventListener('click', async () => {
+    const link = el('direct_link').value;
+    if (!link) return;
+    try {
+      await navigator.clipboard.writeText(link);
+      if (window.omniToast) window.omniToast('Link copied.');
+    } catch (err) {
+      // No clipboard permission, or an insecure context. Selecting the text
+      // is something the operator can act on; a silent failure is not.
+      el('direct_link').select();
+      if (window.omniToast) {
+        window.omniToast('Press Ctrl+C or long-press to copy.', 'warn');
+      }
+    }
+  });
   el('editor_backdrop').addEventListener('click', (event) => {
     if (event.target === el('editor_backdrop')) closeEditor();
   });
@@ -637,6 +740,10 @@
     'remote_access.enabled': 'Remote access on',
     'remote_access.disabled': 'Remote access off',
     'remote_access.restored': 'Remote access restored',
+    'direct_access.enabled': 'Direct link created',
+    'direct_access.disabled': 'Direct link removed',
+    'direct_access.regenerated': 'Direct link replaced',
+    'direct_access.used': 'Direct link used',
     'certificate.generated': 'Certificate created',
     'certificate.configured': 'Certificate configured',
     'certificate.removed': 'Certificate removed',

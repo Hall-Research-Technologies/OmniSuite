@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import pathlib
 
-from flask import g, jsonify, request
+from flask import Response, g, jsonify, redirect, request
 
 import omni_adapters
 import omni_access
@@ -25,6 +25,45 @@ from omni_gate import CSRF_HEADER, SESSION_COOKIE
 from omni_users import Permissions
 
 log = logging.getLogger(__name__)
+
+
+#: The name refused Direct Access attempts are throttled under.
+#:
+#: Not a username, and deliberately one that cannot be created: throttling is
+#: per name and per source address, and a link refusal has no account to
+#: attribute itself to -- that is the whole point of answering the same way
+#: whatever the reason.
+_DIRECT_THROTTLE_KEY = "\x00direct-access-link"
+
+
+#: What somebody sees when a Direct Access link no longer works.
+#:
+#: One sentence, and deliberately the same sentence for every reason: an
+#: unknown token, a revoked one, a disabled account, a deleted account, an
+#: account promoted to administrator. Whoever is holding an old URL learns only
+#: that it does not work, which is all they are entitled to know.
+#:
+#: Self-contained, so it needs no stylesheet, no script and no image, and
+#: renders on a phone with nothing else available.
+_LINK_REFUSED = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Link not valid &mdash; OmniSuite</title>
+<style>
+ :root { color-scheme: dark light; }
+ body { font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+        margin: 0; min-height: 100vh; display: flex; align-items: center;
+        justify-content: center; background: #16181d; color: #e6e8ee; }
+ main { max-width: 28rem; padding: 2rem; text-align: center; }
+ h1 { font-size: 1.2rem; margin: 0 0 .6rem; }
+ p { margin: 0; color: #a9b0c0; }
+</style></head>
+<body><main>
+<h1>This OmniSuite access link is no longer valid</h1>
+<p>Ask whoever set up this device for a new link, or sign in with a username
+and password.</p>
+</main></body></html>
+"""
 
 
 def _client_address():
@@ -100,7 +139,22 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
             return jsonify({"ok": True, "local": True, "role": "admin",
                             "username": None,
                             "features": list(omni_access.FEATURES)})
-        return jsonify({**omni_projection.session_summary(account), "local": False})
+        # The CSRF token for the session this request arrived on.
+        #
+        # The sign-in page keeps the one it was handed, but a session opened by
+        # a Direct Access link never went through that page -- it was redirected
+        # straight to the shell -- so without this every action it tried would
+        # be refused for a missing token. Returning it is not a weakening: it is
+        # meant to be readable by the page, and it is useless without the
+        # HttpOnly cookie that is never readable at all.
+        _account, session = store.resolve_session(
+            request.cookies.get(SESSION_COOKIE))
+        return jsonify({**omni_projection.session_summary(account),
+                        "local": False,
+                        "csrf_token": session.csrf_token if session else "",
+                        # So a page can tell the operator how they got here, and
+                        # so a test can prove the two are distinguishable.
+                        "method": session.method if session else ""})
 
     # ----------------------------------------------------------- bootstrap
     @app.route("/api/bootstrap/state", methods=["GET"])
@@ -172,6 +226,32 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         certificate = certificate_state()
         transport = saved.get("transport") or "https"
         _context, tls_error = tls_context_for(saved)
+
+        # Does the certificate actually cover the address being served?
+        #
+        # A certificate made for one adapter and then used on another is a
+        # connection no browser will accept without an override, and Settings
+        # previously said "Self-signed certificate in place. For <the other
+        # address>" as though that were a satisfactory state of affairs.
+        # Decided from the SANs; see omni_tls.covers.
+        #
+        # The address the certificate has to cover is the one being served if
+        # the listener is up, and otherwise the one the chosen adapter carries
+        # now. Resolved here from the list already enumerated above rather than
+        # through the restore path, because reading a page must not be what
+        # re-persists a configuration.
+        effective = state.get("host") or ""
+        if not effective and chosen:
+            effective = omni_adapters.resolve_address(
+                chosen, saved.get("address") or "", adapters)[0]
+        elif not effective:
+            effective = saved.get("address") or ""
+        certificate = dict(certificate)
+        certificate["for_address"] = effective
+        certificate["matches_address"] = bool(
+            effective and certificate.get("readable")
+            and tls.covers(certificate, effective))
+        certificate["generated"] = not bool(saved.get("cert_path"))
         return jsonify({
             "ok": True,
             **state,
@@ -266,6 +346,41 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
             # Never start in the clear because TLS could not be arranged.
             return jsonify({"ok": False, "error": tls_error,
                             "certificate": certificate_state()}), 400
+
+        # A certificate for one address, about to be served on another.
+        #
+        # This is reachable in two ordinary ways: the administrator changes
+        # which adapter Remote Access uses, or the chosen adapter's own address
+        # changes and the listener correctly follows it. Either way a
+        # certificate generated for the old address is no longer valid for the
+        # new one, and starting anyway would advertise HTTPS at an address no
+        # browser will accept while Settings reported normal secure operation.
+        #
+        # OmniSuite's OWN certificate is refused rather than quietly reissued:
+        # regenerating changes the fingerprint, and the fingerprint is the one
+        # thing an administrator has to go on when their browser warns. So the
+        # action is theirs, it is one button, and this says which button.
+        #
+        # A SUPPLIED certificate is never touched and never blocks. It may
+        # legitimately carry a DNS name the site reaches OmniSuite by, which
+        # this has no way of knowing about; refusing would break a correct
+        # deployment. The mismatch is reported instead, and the status says so.
+        if transport == "https":
+            described = certificate_state()
+            supplied = bool(proposed["cert_path"])
+            if (not supplied and described.get("readable")
+                    and not tls.covers(described, address)):
+                return jsonify({
+                    "ok": False,
+                    "error": (
+                        "The certificate OmniSuite created is for "
+                        f"{described.get('subject') or 'another address'}, not "
+                        f"for {address}. Create one for this network, then "
+                        "turn remote access on."),
+                    "needs_certificate": True,
+                    "certificate": {**described, "for_address": address,
+                                    "matches_address": False,
+                                    "generated": True}}), 400
 
         result = listener.start(address, port, ssl_context=context)
         if not result.get("ok"):
@@ -422,6 +537,150 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         if not result.get("ok"):
             return jsonify(result), 400
         return jsonify(result)
+
+    # ------------------------------------------------- direct access links
+    #
+    # A passwordless URL for one restricted account. Off by default, turned on
+    # per account by an administrator, and never available on an
+    # administrator's own account.
+    #
+    # The token is a bearer credential, so it appears in exactly two places: in
+    # the link handed to whoever asked for it, and hashed in the account
+    # record. It is never logged, never audited, and never put in a response
+    # that was not a deliberate request for the link itself.
+
+    def _direct_link(token):
+        """The URL to hand out, built on the address remote access advertises.
+
+        Never a loopback URL: the whole point is that somebody opens it from a
+        phone. If remote access is not running there is no origin to build one
+        from, and that is reported rather than papered over with an address
+        that would not work.
+        """
+        state = listener.describe()
+        if not state.get("enabled") or not state.get("host"):
+            return "", ("Remote access is off, so this link cannot be reached "
+                        "from another device yet. It will work once remote "
+                        "access is turned on.")
+        return (f"{state.get('scheme') or 'https'}://{state['host']}:"
+                f"{state['port']}/access/{token}"), ""
+
+    def _direct_payload(account, token):
+        link, note = _direct_link(token) if token else ("", "")
+        body = {"ok": True,
+                "direct_access": account.direct_access.public(),
+                "username": account.username,
+                # Empty when the stored copy cannot be read on this machine.
+                # The page says "regenerate", which is the only thing that
+                # helps.
+                "link": link,
+                "recoverable": bool(token),
+                "note": note}
+        if token and not link:
+            body["note"] = note
+        return body
+
+    @app.route("/api/admin/users/<user_id>/direct_access",
+               methods=["GET", "POST"])
+    def api_admin_direct_access(user_id):
+        actor = _principal()
+        if request.method == "GET":
+            account = store.get(user_id)
+            if account is None:
+                return jsonify({"ok": False, "error": "no such user"}), 404
+            if not account.direct_access.active:
+                return jsonify({"ok": True, "username": account.username,
+                                "direct_access": account.direct_access.public(),
+                                "link": "", "recoverable": False, "note": ""})
+            return jsonify(_direct_payload(
+                account, store.direct_access_token(user_id)))
+
+        data = request.get_json(silent=True) or {}
+        action = str(data.get("action") or "").strip()
+        if action == "enable":
+            result = store.enable_direct_access(user_id, actor=actor)
+        elif action == "regenerate":
+            result = store.regenerate_direct_access(user_id, actor=actor)
+        elif action == "disable":
+            result = store.disable_direct_access(user_id, actor=actor)
+        else:
+            return jsonify({"ok": False, "error": "unknown action"}), 400
+        if not result.get("ok"):
+            return jsonify({"ok": False, "error": result["error"]}), 400
+
+        account = store.get(user_id)
+        if action == "disable":
+            return jsonify({"ok": True, "username": account.username,
+                            "direct_access": account.direct_access.public(),
+                            "link": "", "recoverable": False, "note": ""})
+        # The freshly minted token comes back from the store rather than being
+        # read again, so the one moment it exists in memory is this one.
+        return jsonify(_direct_payload(account, result["token"]))
+
+    @app.route("/api/user/direct_access", methods=["GET"])
+    def api_user_direct_access():
+        """The signed-in account's own link, and nobody else's.
+
+        Deliberately takes no user id. An endpoint that accepted one would be
+        an endpoint somebody could aim at another account, and the only correct
+        answer to "whose link is this" is "the caller's".
+        """
+        account = _principal()
+        if account is None:
+            # The local operator has no account, so there is no link to show.
+            return jsonify({"ok": True, "direct_access": {"enabled": False},
+                            "link": "", "recoverable": False,
+                            "note": "Direct access is not enabled for this "
+                                    "account."})
+        if not account.direct_access.active:
+            return jsonify({"ok": True,
+                            "direct_access": account.direct_access.public(),
+                            "link": "", "recoverable": False,
+                            "note": "Direct access is not enabled for this "
+                                    "account."})
+        return jsonify(_direct_payload(account,
+                                       store.direct_access_token(account.id)))
+
+    @app.route("/access/<token>", methods=["GET"])
+    def direct_access_entry(token):
+        """Open a restricted session from a bearer link, then get rid of the URL.
+
+        The token is exchanged for an ordinary server-side session and the
+        browser is redirected to /user, so the credential is not left sitting
+        in the address bar to be screenshotted, shoulder-read or copied out of
+        a history list by the next person to use the tablet.
+        """
+        source = _client_address()
+        # A refused link is throttled like a refused password, for two
+        # reasons. It bounds the cost of asking; and without it, requests for
+        # `/access/<anything>` would write an audit entry each, pushing the
+        # sign-ins and refusals an administrator needs out of a history that
+        # keeps a fixed amount and discards the oldest.
+        if store.locked_out(_DIRECT_THROTTLE_KEY, source):
+            return Response(_LINK_REFUSED, status=404, mimetype="text/html")
+
+        account = store.resolve_direct_token(token)
+        if account is None:
+            # One answer for every reason: unknown, revoked, disabled, deleted,
+            # promoted. Saying which would tell whoever has an old URL
+            # something about an account they have no business knowing.
+            store.record_failure(_DIRECT_THROTTLE_KEY, source)
+            store.audit("direct_access.used", actor=None,
+                        detail={"result": "refused"})
+            return Response(_LINK_REFUSED, status=404, mimetype="text/html")
+
+        session = store.open_session(account.id,
+                                     method=omni_users.BY_DIRECT_LINK)
+        store.audit("direct_access.used", actor=account,
+                    detail={"result": "accepted",
+                            "username": account.username,
+                            "method": omni_users.BY_DIRECT_LINK})
+        response = redirect("/user", code=302)
+        response.set_cookie(
+            SESSION_COOKIE, session.token,
+            httponly=True, samesite="Lax",
+            secure=request.is_secure, path="/")
+        return response
 
     @app.route("/api/admin/devices", methods=["GET"])
     def api_admin_devices():

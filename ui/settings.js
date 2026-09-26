@@ -189,9 +189,13 @@ const SETTINGS_MODAL_HTML = `
                style="text-decoration:none;margin-left:6px;">Manage users</a>
           </div>
         </div>
-        <!-- Not buried, and not so loud the page is unusable. Accurate: there
-             is no transport encryption at this checkpoint. -->
-        <div class="modal-row" style="align-items:flex-start;">
+        <!-- Not buried, and not so loud the page is unusable. This one belongs
+             to HTTP only: it used to be shown under HTTPS as well, because the
+             cfg-warning class sets display:flex, which defeats the hidden
+             attribute. The row is hidden as well as the callout, so no empty
+             label is left behind. -->
+        <div class="modal-row" style="align-items:flex-start;"
+             id="cfg_remote_warning_row">
           <label>&nbsp;</label>
           <div class="cfg-warning" style="flex:1 1 auto;margin:0;"
                id="cfg_remote_warning">
@@ -200,6 +204,17 @@ const SETTINGS_MODAL_HTML = `
               Anyone who can watch this network can read what is sent, including
               sign-in details. Use remote access only on a network you trust.
             </div>
+          </div>
+        </div>
+        <!-- And what is true under HTTPS. Stated rather than left silent: the
+             operator is entitled to know what protects the connection, and
+             "browsers will warn" is the question they will actually have. -->
+        <div class="modal-row" style="align-items:flex-start;"
+             id="cfg_remote_secure_row" hidden>
+          <label>&nbsp;</label>
+          <div class="cfg-note" style="flex:1 1 auto;margin:0;"
+               id="cfg_remote_secure">
+            <div id="cfg_remote_secure_text"></div>
           </div>
         </div>
       </div>
@@ -545,6 +560,11 @@ function initConfig() {
       return;
     }
 
+    // What the transport notice says, decided before any branch can return.
+    // The plaintext warning belongs to HTTP; an encrypted listener must never
+    // carry a notice saying it is not.
+    renderTransportNotice(remoteState);
+
     // Configured but unavailable is its own state. An installed system whose
     // network moved must not read as simply "off", or somebody re-enables it
     // on whatever adapter happens to be first in the list.
@@ -562,26 +582,27 @@ function initConfig() {
       return;
     }
 
-    // The warning belongs to plaintext, not to remote access as such. An
-    // encrypted listener must not carry a notice saying it is not.
-    const warning = document.getElementById('cfg_remote_warning');
-    const warningText = document.getElementById('cfg_remote_warning_text');
-    const insecure = (remoteState.transport === 'http');
-    if (warning) warning.hidden = !insecure;
-    if (warningText && insecure) {
-      warningText.replaceChildren();
-      const strong = document.createElement('strong');
-      strong.textContent = 'Connections are not encrypted. ';
-      warningText.append(strong,
-        'Anyone who can watch this network can read what is sent, including '
-        + 'sign-in details. Use remote access only on a network you trust.');
-    }
+    const cert = remoteState.certificate || {};
+    const mismatch = !!(remoteState.transport !== 'http' && cert.readable
+                        && cert.matches_address === false);
 
     if (remoteState.enabled) {
-      line.textContent = remoteState.secure
-        ? 'ON — other devices on this network can reach OmniSuite securely.'
-        : 'ON — other devices on this network can reach OmniSuite.';
-      line.className = 'update-status update-available';
+      // Status has to describe what is actually happening. "ON — securely"
+      // while the certificate names a different address is a claim the
+      // operator's browser will contradict the moment they try it.
+      if (remoteState.secure && mismatch) {
+        line.textContent = 'ON — encrypted, but the certificate does not match '
+          + 'this address.';
+        line.className = 'update-status remote-unavailable';
+      } else if (remoteState.secure) {
+        line.textContent =
+          'ON — other devices on this network can reach OmniSuite securely.';
+        line.className = 'update-status update-available';
+      } else {
+        line.textContent =
+          'ON — other devices on this network can reach OmniSuite.';
+        line.className = 'update-status update-available';
+      }
       if (url) {
         url.textContent = 'They use: ' + (remoteState.url || '') +
           (remoteState.sessions ? '  ·  ' + remoteState.sessions +
@@ -607,7 +628,6 @@ function initConfig() {
     if (certRow) certRow.hidden = (transport && transport.value === 'http');
 
     if (certStatus) {
-      const cert = remoteState.certificate || {};
       // Offered only when a certificate exists, so the control never invites
       // an action that would do nothing.
       const remove = document.getElementById('cfg_cert_remove');
@@ -642,6 +662,28 @@ function initConfig() {
         certStatus.textContent = 'The certificate has expired.';
         certStatus.className = 'update-status remote-unavailable';
         if (certDetail) certDetail.textContent = 'Expired ' + cert.not_after;
+      } else if (mismatch) {
+        // The certificate is fine; it is for somewhere else. Which of the two
+        // remedies applies depends on whose certificate it is, and OmniSuite
+        // never replaces one the site supplied.
+        certStatus.textContent = cert.generated
+          ? 'This certificate is for a different address.'
+          : 'The certificate you supplied does not name this address.';
+        certStatus.className = 'update-status remote-unavailable';
+        if (certDetail) {
+          const names = (cert.san || []).join(', ') || cert.subject || 'another address';
+          certDetail.textContent = cert.generated
+            ? 'It names ' + names + ', and this network is '
+              + (cert.for_address || 'a different address')
+              + '. Choose "Create one for this network" to make a certificate '
+              + 'that matches. Remote access will not start over HTTPS until '
+              + 'you do.'
+            : 'It names ' + names + ', and this network is '
+              + (cert.for_address || 'a different address')
+              + '. OmniSuite will not alter a certificate you supplied. '
+              + 'Browsers will refuse the address above unless they reach '
+              + 'OmniSuite by a name this certificate covers.';
+        }
       } else {
         certStatus.textContent = cert.self_signed
           ? 'Self-signed certificate in place.'
@@ -666,6 +708,62 @@ function initConfig() {
     }
 
     if (adapter) adapter.disabled = !!remoteState.enabled;
+  }
+
+  // What protects the connection, said once and said accurately.
+  //
+  // Two notices, exactly one of them on screen: the plaintext warning under
+  // HTTP, and the encrypted statement under HTTPS. Both the callout and the
+  // row it sits in are hidden, so nothing leaves an empty label behind. The
+  // previous version toggled only the callout's `hidden` attribute, which
+  // `.cfg-warning { display: flex }` overrode -- so the warning was shown
+  // permanently, including over an encrypted listener.
+  function renderTransportNotice(state) {
+    const warnRow = document.getElementById('cfg_remote_warning_row');
+    const warning = document.getElementById('cfg_remote_warning');
+    const warningText = document.getElementById('cfg_remote_warning_text');
+    const okRow = document.getElementById('cfg_remote_secure_row');
+    const ok = document.getElementById('cfg_remote_secure');
+    const okText = document.getElementById('cfg_remote_secure_text');
+    const insecure = (state.transport === 'http');
+
+    if (warnRow) warnRow.hidden = !insecure;
+    if (warning) warning.hidden = !insecure;
+    if (okRow) okRow.hidden = insecure;
+    if (ok) ok.hidden = insecure;
+
+    if (insecure && warningText) {
+      warningText.replaceChildren();
+      const strong = document.createElement('strong');
+      strong.textContent = 'Connections are not encrypted. ';
+      warningText.append(strong,
+        'Anyone who can watch this network can read what is sent, including '
+        + 'sign-in details. Use remote access only on a network you trust.');
+      return;
+    }
+    if (insecure || !okText) return;
+
+    const cert = state.certificate || {};
+    okText.replaceChildren();
+    const strong = document.createElement('strong');
+    strong.textContent = 'Traffic is encrypted. ';
+    let rest;
+    if (cert.readable && cert.matches_address === false) {
+      rest = 'The certificate in place is for a different address, so browsers '
+           + 'will refuse this one until it is put right. See Certificate '
+           + 'below.';
+    } else if (cert.self_signed) {
+      rest = 'The certificate is self-signed, so browsers will warn the first '
+           + 'time somebody connects. That warning is about who is answering, '
+           + 'not about whether the connection is protected.';
+    } else if (cert.present) {
+      rest = 'The certificate in place is issued rather than self-signed, so '
+           + 'browsers should connect without warning.';
+    } else {
+      rest = 'Remote access cannot start over HTTPS until a certificate is '
+           + 'configured.';
+    }
+    okText.append(strong, rest);
   }
 
   // The network list, rebuilt every time state is read.
@@ -771,8 +869,12 @@ function initConfig() {
     transportSelect.addEventListener('change', () => {
       const row = document.getElementById('cfg_cert_row');
       if (row) row.hidden = transportSelect.value === 'http';
-      const warning = document.getElementById('cfg_remote_warning');
-      if (warning) warning.hidden = transportSelect.value !== 'http';
+      // One place decides which notice is shown, so choosing a transport here
+      // and reading state from the server cannot disagree about it.
+      renderTransportNotice({
+        ...(remoteState || {}),
+        transport: transportSelect.value === 'http' ? 'http' : 'https',
+      });
     });
   }
 

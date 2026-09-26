@@ -230,7 +230,13 @@ class RemoteListener:
         connect, and the other way round would be worse.
         """
         with self._lock:
-            if not self._server:
+            # Both, not just the server. They are set together, but "there is
+            # a server and we do not know where it is bound" is a state this
+            # must answer rather than raise on -- a caller building an
+            # advertised URL got a TypeError out of it instead of "not
+            # running", and the fail-safe reading of not knowing is not
+            # running.
+            if not self._server or not self._bound:
                 return {"enabled": False, "host": None, "port": None,
                         "url": None, "scheme": None, "secure": False}
             host, port = self._bound

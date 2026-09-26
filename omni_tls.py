@@ -136,6 +136,15 @@ def describe(cert_path) -> dict:
         details = _ssl._ssl._test_decode_cert(str(cert))
         subject = dict(x[0] for x in details.get("subject", ()) if x)
         issuer = dict(x[0] for x in details.get("issuer", ()) if x)
+        # The names the certificate is actually valid for.
+        #
+        # Every browser in use decides this from the subjectAltName extension
+        # and ignores the common name entirely, so anything the application
+        # says about whether a certificate matches an address has to be decided
+        # from here too. Reporting the CN and comparing the CN would agree with
+        # itself and disagree with the browser, which is the worst of both.
+        described["san"] = [str(value) for _kind, value
+                            in details.get("subjectAltName", ()) if value]
         described.update({
             "subject": subject.get("commonName") or "",
             "issuer": issuer.get("commonName") or "",
@@ -156,6 +165,53 @@ def describe(cert_path) -> dict:
     except Exception as exc:
         log.info("[TLS] certificate details unavailable: %s", type(exc).__name__)
     return described
+
+
+def covers(described, address) -> bool:
+    """Whether a described certificate is valid for `address`.
+
+    Decided from the subject alternative names and from nothing else. A
+    certificate whose common name is the address but whose SAN is not will be
+    rejected by every browser released this decade, so believing the common
+    name here would produce an application that says "this is fine" about a
+    connection the operator cannot open.
+
+    A certificate whose SANs could not be read answers False. That is the fail-
+    closed direction: it produces a visible "this may not match" rather than a
+    silent claim that it does.
+    """
+    wanted = str(address or "").strip()
+    if not wanted:
+        return False
+    names = [str(n).strip() for n in (described or {}).get("san") or []]
+    if not names:
+        return False
+    try:
+        target = ipaddress.ip_address(wanted)
+    except ValueError:
+        target = None
+    for name in names:
+        if name.lower() == wanted.lower():
+            return True
+        if target is not None:
+            try:
+                if ipaddress.ip_address(name) == target:
+                    return True
+            except ValueError:
+                continue
+    return False
+
+
+def is_generated(described, cert_path, configured_cert_path="") -> bool:
+    """Whether this is the certificate OmniSuite made, rather than a supplied one.
+
+    A supplied certificate belongs to the site and is never touched. Only a
+    certificate at OmniSuite's own path, with no supplied path configured, may
+    be regenerated -- and even then only when an administrator asks.
+    """
+    if configured_cert_path:
+        return False
+    return bool((described or {}).get("present")) and bool(cert_path)
 
 
 # ------------------------------------------------------------- generating

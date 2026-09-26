@@ -58,28 +58,43 @@ class FinalInventoryTests(unittest.TestCase):
         counts = {}
         for _rule, (access, _feature) in omni_access.ROUTES.items():
             counts[access] = counts.get(access, 0) + 1
-        self.assertEqual(counts[Access.PUBLIC], 6,
+        # Two added in the remote-browser fix, both deliberate:
+        #   /favicon.ico      one file from the build at a fixed path, which
+        #                     every browser asks for before it has a session
+        #   /access/<token>   a Direct Access link. The token in the path IS
+        #                     the credential, so requiring a session to redeem
+        #                     it would defeat the feature; the handler refuses
+        #                     anything it cannot resolve to an enabled
+        #                     restricted account.
+        self.assertEqual(counts[Access.PUBLIC], 8,
                          "the anonymous surface changed")
         self.assertEqual(counts[Access.USER], 6,
                          "what a restricted account may call changed")
         # Three moved to ADMIN in the release-candidate audit: the update
         # alert, its acknowledgement and the appearance reset all write or
         # read state belonging to the installation rather than to an account.
-        self.assertEqual(counts[Access.AUTHENTICATED], 6,
+        # /api/user/direct_access added: the caller's own link and nobody
+        # else's. It takes no user id, so there is no account to aim it at.
+        self.assertEqual(counts[Access.AUTHENTICATED], 7,
                          "what any signed-in principal may call changed")
         self.assertEqual(counts[Access.LOCAL_ONLY], 11,
                          "the local-host-only surface changed")
-        self.assertEqual(counts[Access.ADMIN], 106,
+        # /api/admin/users/<user_id>/direct_access added: turning a Direct
+        # Access link on, off, or replacing it. Administrative in both
+        # directions -- a restricted account may read its own link and may
+        # never create one.
+        self.assertEqual(counts[Access.ADMIN], 107,
                          "the administrative surface changed")
         self.assertEqual(sum(counts.values()), len(registered_rules()))
-        self.assertEqual(sum(counts.values()), 135)
+        self.assertEqual(sum(counts.values()), 139)
 
     def test_the_public_surface_is_still_only_what_signing_in_needs(self):
         public = {rule for rule, (access, _f) in omni_access.ROUTES.items()
                   if access is Access.PUBLIC}
         self.assertEqual(public, {
             "/__health", "/license", "/login", "/api/auth/login",
-            "/static/<path:filename>", "/ui/<path:filename>"})
+            "/static/<path:filename>", "/ui/<path:filename>",
+            "/favicon.ico", "/access/<token>"})
 
     def test_every_user_route_is_projected_and_namespaced(self):
         for rule, (access, feature) in omni_access.ROUTES.items():

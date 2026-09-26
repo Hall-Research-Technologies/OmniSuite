@@ -46,6 +46,12 @@ META = ["tests.test_device_metadata", "tests.test_user_projection"]
 AUDIT = ["tests.test_account_audit"]
 PREFS = ["tests.test_security_review", "tests.test_remote_authorization"]
 
+#: The remote-browser fix and the Direct Access link.
+BROWSER = ["tests.test_remote_browser_flow", "tests.test_remote_access"]
+CERT = ["tests.test_certificate_address", "tests.test_remote_access"]
+DIRECT = ["tests.test_direct_access", "tests.test_remote_browser_flow",
+          "tests.test_security_review"]
+
 #: (id, file, anchor, replacement, what the defect would be, suites)
 MUTATIONS = [
     # ---- the listener trust model -----------------------------------
@@ -157,10 +163,27 @@ MUTATIONS = [
      "an active page would never have to sign in again", USERS),
 
     # ---- transport ---------------------------------------------------
+    # Two session cookies are set: one by the sign-in endpoint and one by a
+    # Direct Access link. Both must be Secure under TLS, so this takes the
+    # first and a second entry takes the other -- an anchor matching both at
+    # once would be refused by the harness, and rightly.
     ("tls.cookie-never-secure", "omni_remote_api.py",
-     'secure=request.is_secure, path="/")',
-     'secure=False, path="/")',
+     '            httponly=True, samesite="Lax",\n'
+     '            secure=request.is_secure, path="/")\n'
+     '        return response\n\n    @app.route("/api/auth/logout"',
+     '            httponly=True, samesite="Lax",\n'
+     '            secure=False, path="/")\n'
+     '        return response\n\n    @app.route("/api/auth/logout"',
      "the session cookie would be sent over plaintext", REMOTE),
+    ("tls.direct-cookie-never-secure", "omni_remote_api.py",
+     '            httponly=True, samesite="Lax",\n'
+     '            secure=request.is_secure, path="/")\n'
+     '        return response\n\n    @app.route("/api/admin/devices"',
+     '            httponly=True, samesite="Lax",\n'
+     '            secure=False, path="/")\n'
+     '        return response\n\n    @app.route("/api/admin/devices"',
+     "a Direct Access session cookie would be sent over plaintext",
+     REMOTE + ["tests.test_remote_browser_flow"]),
     ("tls.plaintext-without-asking", "omni_remote_api.py",
      'if transport == "http" and not data.get("accept_insecure"):',
      'if False:',
@@ -228,12 +251,12 @@ MUTATIONS = [
     ("audit.duplicate-returns", "omni_remote_api.py",
      '        if not result.get("ok"):\n'
      '            return jsonify(result), 400\n'
-     '        return jsonify(result)\n\n    @app.route("/api/admin/devices"',
+     '        return jsonify(result)\n\n    # ------------------------------------------------- direct access links',
      '        if not result.get("ok"):\n'
      '            return jsonify(result), 400\n'
      '        store.audit("user." + action, actor=actor,\n'
      '                    detail={"user_id": user_id})\n'
-     '        return jsonify(result)\n\n    @app.route("/api/admin/devices"',
+     '        return jsonify(result)\n\n    # ------------------------------------------------- direct access links',
      "one operator action would be recorded twice", AUDIT),
 
     # ---- installation settings are administrative ---------------------
@@ -245,6 +268,72 @@ MUTATIONS = [
      '    "/api/notices/ack": (Access.ADMIN, None),',
      '    "/api/notices/ack": (Access.AUTHENTICATED, None),',
      "a restricted User could dismiss the operator's update alert", PREFS),
+
+    # ---- a person gets a page, a program gets JSON --------------------
+    ("browser.api-gets-html", "omni_gate.py",
+     '    if str(rule or "").startswith("/api/"):\n        return False',
+     '    if False:\n        return False',
+     "an API caller would be handed a redirect to a sign-in page", BROWSER),
+    ("browser.no-login-redirect", "omni_gate.py",
+     '        if wants_a_page(rule, request.method, request.environ):\n'
+     '            if decision.status == 401:',
+     '        if False and wants_a_page(rule, request.method, request.environ):\n'
+     '            if decision.status == 401:',
+     "a browser opening the remote URL would see raw JSON again", BROWSER),
+    ("browser.disabled-shows-json", "omni_gate.py",
+     '            if wants_a_page(rule, request.method, request.environ):\n'
+     '                return refused_page(404)',
+     '            if False:\n'
+     '                return refused_page(404)',
+     "a saved link opened after remote access was turned off would show raw "
+     "JSON", BROWSER),
+    ("browser.writes-redirected", "omni_gate.py",
+     '    if str(method or "").upper() not in ("GET", "HEAD"):\n        return False',
+     '    if False:\n        return False',
+     "an unauthenticated POST would answer 302 instead of 401", BROWSER),
+
+    # ---- the certificate matches the address it is served on ----------
+    ("cert.matches-anything", "omni_tls.py",
+     '    names = [str(n).strip() for n in (described or {}).get("san") or []]',
+     '    return True\n    names = [str(n).strip() for n in (described or {}).get("san") or []]',
+     "HTTPS would start with a certificate for a different address", CERT),
+    ("cert.unknown-is-fine", "omni_tls.py",
+     '    if not names:\n        return False',
+     '    if not names:\n        return True',
+     "a certificate whose names could not be read would be called a match",
+     CERT),
+
+    # ---- the Direct Access link ---------------------------------------
+    ("direct.link-can-be-admin", "omni_gate.py",
+     '        if access is Access.ADMIN:\n            return Decision(False, 403, "direct_link_not_admin", account)',
+     '        if False:\n            return Decision(False, 403, "direct_link_not_admin", account)',
+     "a passwordless link on a promoted account would reach the "
+     "administrative surface", DIRECT),
+    ("direct.admin-may-be-issued-one", "omni_users.py",
+     '            if account.is_admin:\n'
+     '                # Stated as a refusal rather than a filter in the UI, because a',
+     '            if False:\n'
+     '                # Stated as a refusal rather than a filter in the UI, because a',
+     "a passwordless administrator URL could be created", DIRECT),
+    ("direct.disabled-account-still-opens", "omni_users.py",
+     '                if not account.enabled or account.is_admin:\n                    return None',
+     '                if False:\n                    return None',
+     "a disabled account's link would still open a session", DIRECT),
+    ("direct.regenerate-keeps-old-sessions", "omni_users.py",
+     '            self.revoke_direct_sessions(user_id, _locked=True)\n            self.audit(event, actor=actor,',
+     '            self.audit(event, actor=actor,',
+     "replacing a link would leave the sessions the old one opened running",
+     DIRECT),
+    ("direct.token-compared-loosely", "omni_users.py",
+     '                if not hmac.compare_digest(record.digest, digest):\n                    continue',
+     '                if False:\n                    continue',
+     "any token at all would resolve to the first account with a link",
+     DIRECT),
+    ("direct.session-method-ignored", "omni_users.py",
+     '        self.method = method if method in SESSION_METHODS else BY_PASSWORD',
+     '        self.method = BY_PASSWORD',
+     "a link session would be indistinguishable from a password one, and the "
+     "administrative bar would never apply", DIRECT),
 ]
 
 

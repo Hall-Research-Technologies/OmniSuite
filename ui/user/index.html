@@ -26,6 +26,7 @@
   </div>
   <div style="display:flex;align-items:center;gap:10px;">
     <span class="who" id="who"></span>
+    <button class="btn-quiet" id="my_link_btn" type="button" hidden>My link</button>
     <button class="btn-quiet" id="signout" type="button" hidden>Sign out</button>
   </div>
 </header>
@@ -126,6 +127,29 @@
   </div>
 </main>
 
+<!-- The operator's own direct link. Read on demand: it is a credential, so
+     it is fetched when somebody asks to see it rather than sitting in the page
+     from the moment it loads. -->
+<div class="sheet-backdrop" id="link_sheet" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="link_sheet_title">
+    <h3 id="link_sheet_title">Direct access link</h3>
+    <p class="hint" id="link_sheet_note">&nbsp;</p>
+    <div class="direct-note" id="link_sheet_warning" hidden>
+      <strong>This link opens your assigned controls without asking for your
+      password.</strong> Only share it with people who should control these
+      devices.
+    </div>
+    <input type="text" id="link_sheet_value" readonly hidden
+           aria-label="Your direct access link"
+           style="width:100%;margin-top:10px;">
+    <div class="sheet-actions">
+      <button class="btn-quiet" id="link_sheet_close" type="button">Close</button>
+      <button class="btn-primary-lg" id="link_sheet_copy" type="button" hidden>
+        Copy link</button>
+    </div>
+  </div>
+</div>
+
 <!-- The action stays put rather than being withdrawn when the form is
      incomplete: it says what is still missing. -->
 <div class="action-bar" id="action_bar" hidden>
@@ -133,6 +157,7 @@
   <button class="btn-primary-lg" id="route_btn" type="button" disabled>Show</button>
 </div>
 
+<script src="/ui/csrf.js"></script>
 <script src="/ui/toast.js"></script>
 <script src="/ui/user/user.js"></script>
 </body>

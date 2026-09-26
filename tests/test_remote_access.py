@@ -77,7 +77,16 @@ class PublicSurfaceTests(unittest.TestCase):
              # The sign-in page and the credential check behind it. Nothing
              # else was added: /api/login is the *device* login probe and is
              # administrator-only (see below).
-             "/login", "/api/auth/login"},
+             "/login", "/api/auth/login",
+             # Every browser requests this before it has a session. It serves
+             # one file from the build at a fixed path and takes no parameter,
+             # so there is nothing here to reach anything else with.
+             "/favicon.ico",
+             # A Direct Access link. The token in the path is the credential,
+             # so there is nothing a session could add; the handler refuses
+             # anything it cannot resolve to an enabled restricted account, and
+             # the session it opens is barred from the administrative surface.
+             "/access/<token>"},
             "adding a route to the public surface is a security decision and "
             "has to be made deliberately here")
 

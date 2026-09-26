@@ -144,7 +144,13 @@ class AdministrativeStateIsClosedTests(unittest.TestCase):
         pages = {"/user", "/help"}
         session_only = {"/api/auth/logout", "/api/auth/session",
                         "/api/ui_preferences", "/api/ui_preferences/reset",
-                        "/api/notices", "/api/notices/ack"}
+                        "/api/notices", "/api/notices/ack",
+                        # The caller's own Direct Access link. It is about the
+                        # account asking rather than about the deployment, it
+                        # takes no user id, and it returns named fields only --
+                        # whether a link exists, the link itself, and a
+                        # sentence. No device state passes through it.
+                        "/api/user/direct_access"}
         allowed = projected | pages | session_only
         for rule, (access, _f) in omni_access.ROUTES.items():
             if access in (Access.USER, Access.AUTHENTICATED):

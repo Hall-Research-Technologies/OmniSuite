@@ -77,12 +77,24 @@
   const errorLine = document.getElementById('error');
   const submit = document.getElementById('submit');
 
-  // Where to go afterwards. Taken from the query string but validated as a
-  // same-site path, because an open redirect on a login page is how somebody
-  // gets sent to a convincing copy of it.
-  function destination() {
+  // Where to go afterwards.
+  //
+  // Taken from the query string but validated as a same-site path, because an
+  // open redirect on a login page is how somebody gets sent to a convincing
+  // copy of it. A single leading slash, no scheme, no host, no backslash, and
+  // only characters a path or an ordinary query can contain -- `//evil.test`
+  // is a protocol-relative URL and is refused by the same rule that refuses
+  // `https://evil.test`.
+  //
+  // With nothing asked for, the landing page depends on the role. A restricted
+  // account gets its routing shell; an administrator gets the application. The
+  // old default sent everybody to /user, so an administrator signing in
+  // remotely landed on the restricted screen.
+  function destination(role) {
     const wanted = new URLSearchParams(location.search).get('next') || '';
-    return /^\/[A-Za-z0-9/_-]*$/.test(wanted) ? wanted : '/user';
+    const safe = /^\/(?!\/)[A-Za-z0-9/_.-]*(\?[A-Za-z0-9/_.=&%-]*)?$/;
+    if (wanted && safe.test(wanted) && wanted !== '/login') return wanted;
+    return role === 'admin' ? '/' : '/user';
   }
 
   form.addEventListener('submit', async function (event) {
@@ -108,7 +120,7 @@
         // the life of the tab. It is useless without the cookie, and putting
         // it in storage would outlive the session it belongs to.
         sessionStorage.setItem('omni_csrf', data.csrf_token || '');
-        location.replace(destination());
+        location.replace(destination((data.user || {}).role));
         return;
       }
       errorLine.textContent = data.error || 'Sign in failed.';

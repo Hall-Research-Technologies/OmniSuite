@@ -201,6 +201,37 @@
         </div>
       </div>
 
+      <!-- Acts immediately rather than on Save, because enabling it mints a
+           credential on the server. Offered only for an account that already
+           exists: there is nothing to attach a link to while one is being
+           created. -->
+      <div class="settings-section" id="direct_section">
+        <h4>Direct access</h4>
+        <p class="hint" style="margin:0 0 8px;">
+          A link that opens this person&rsquo;s controls without asking for a
+          password &mdash; for a tablet on a lectern or a phone in a classroom.
+          Off unless you turn it on.
+        </p>
+        <label class="feature-choice" style="display:block;margin-bottom:8px;">
+          <input type="checkbox" id="f_direct"> Allow passwordless direct link
+        </label>
+        <div id="direct_detail" hidden>
+          <div class="cfg-warning" style="margin:0 0 10px;">
+            <div><strong>Anyone with this link can use the controls assigned to
+            this account.</strong> Treat the link like a password.</div>
+          </div>
+          <div class="assign-toolbar">
+            <input type="text" id="direct_link" readonly
+                   aria-label="Direct access link"
+                   style="flex:1 1 240px;min-width:0;">
+            <button class="btn small" type="button" id="direct_copy">Copy link</button>
+            <button class="btn small secondary" type="button" id="direct_regen">
+              Regenerate</button>
+          </div>
+        </div>
+        <div id="direct_status" class="hint" style="margin-top:8px;"></div>
+      </div>
+
       <div class="settings-section">
         <h4>Displays they may control</h4>
         <div class="assign-toolbar">
@@ -222,6 +253,7 @@
   </div>
 </div>
 
+<script src="/ui/csrf.js"></script>
 <script src="/ui/toast.js"></script>
 <script src="/ui/confirm.js"></script>
 <script src="/ui/admin/users.js"></script>

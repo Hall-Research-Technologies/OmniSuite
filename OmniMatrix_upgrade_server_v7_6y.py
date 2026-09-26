@@ -2426,8 +2426,128 @@ def _send_ui_page(*parts):
     """Serve a UI page, or say plainly that the build is missing it."""
     page = ASSET_DIR.joinpath("ui", *parts)
     if page.exists():
-        return send_file(str(page), mimetype="text/html; charset=utf-8")
+        return send_file(str(page), mimetype="text/html")
     return f"<h1>{parts[-1]} not found</h1>", 404
+
+
+class _RedactDirectAccessToken(logging.Filter):
+    """Rewrite a Direct Access token out of anything about to be logged.
+
+    The token is a bearer credential in a URL path, so the request log would
+    otherwise hold a working passwordless link to somebody's account -- in a
+    file, on the operator's disk, for as long as the log is kept.
+
+    A filter rather than a log level: the request line is genuinely useful and
+    the token is the only part of it that must not be there. Installed on the
+    logger at import, so it holds however the application was started rather
+    than only when a particular entry point remembers to set a level.
+
+    A short prefix is left in place. It cannot be redeemed and it is enough to
+    tell two attempts apart in a log, which is the only reason anybody would
+    read these lines.
+    """
+
+    #: Matches the path wherever it appears -- werkzeug writes a request line,
+    #: an error line and a few others, and they do not share a format.
+    PATTERN = re.compile(r"(/access/)([A-Za-z0-9_\-]{4})[A-Za-z0-9_\-]+")
+
+    def filter(self, record):
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        if "/access/" not in message:
+            return True
+        # Collapse args into the already-formatted message: rewriting the
+        # format string alone would leave the token in record.args.
+        record.msg = self.PATTERN.sub(r"\1\2...redacted", message)
+        record.args = ()
+        return True
+
+
+def _install_token_redaction():
+    """On the werkzeug logger and the root, so nothing routes around it."""
+    redactor = _RedactDirectAccessToken()
+    for name in ("werkzeug", ""):
+        logger = logging.getLogger(name)
+        if not any(isinstance(f, _RedactDirectAccessToken)
+                   for f in logger.filters):
+            logger.addFilter(redactor)
+        # A filter on a logger is not consulted for records that arrive from a
+        # child logger, so it goes on the handlers as well.
+        for handler in logger.handlers:
+            if not any(isinstance(f, _RedactDirectAccessToken)
+                       for f in handler.filters):
+                handler.addFilter(redactor)
+
+
+_install_token_redaction()
+
+
+#: Browser security headers, on every response, decided in one place.
+#:
+#: OmniSuite sent none of these before. That was raised by a console full of
+#: `Unrecognized feature: 'attribution-reporting'` and three more like it --
+#: which, measured against the running server, OmniSuite was not sending: the
+#: response carried no Permissions-Policy header at all. Those directives are
+#: Chrome's Privacy Sandbox features and the errors come from something else in
+#: that browser injecting a header, an extension or an enterprise policy.
+#:
+#: So the fix is not to remove a directive OmniSuite never had. It is to say
+#: deliberately what OmniSuite's policy IS, naming only features that have been
+#: in the specification for years, so the header is correct, the intent is
+#: reviewable, and any remaining console error is demonstrably not ours.
+#:
+#: Content-Security-Policy is deliberately absent. The pages carry inline
+#: scripts and styles throughout, so a policy strict enough to be worth having
+#: would break them and one loose enough to pass would be decoration. That is a
+#: piece of work with its own testing, not a line to add here.
+SECURITY_HEADERS = {
+    # Do not guess at a content type. The one header of these that has
+    # prevented a real class of attack for twenty years.
+    "X-Content-Type-Options": "nosniff",
+    # Nothing frames OmniSuite, and a routing control surface inside somebody
+    # else's page is only ever clickjacking.
+    "X-Frame-Options": "DENY",
+    # A Direct Access link is a bearer credential in a path. Without this, a
+    # click from that page to anywhere external would put it in a Referer
+    # header. `strict-origin-when-cross-origin` would still send the origin;
+    # there is nothing here that needs a referrer at all.
+    "Referrer-Policy": "no-referrer",
+    # Three features, all long-standing, none of which any OmniSuite page uses.
+    # Deliberately short: a directive a browser does not recognise is a console
+    # error, which is the thing that started this.
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+}
+
+
+@app.after_request
+def _security_headers(response):
+    for header, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(header, value)
+    return response
+
+
+@app.route("/favicon.ico")
+def favicon():
+    """The icon every browser asks for, whether or not a page links to one.
+
+    Without this, opening OmniSuite in a browser produced a failed request on
+    every page load -- visible in the console of a customer's machine and
+    exactly the kind of thing that makes a product look unfinished. The asset
+    already existed; nothing was serving it at the path browsers actually ask
+    for.
+
+    Public by classification, because an unauthenticated sign-in page needs it
+    and an icon carries nothing.
+    """
+    icon = ASSET_DIR / "ui" / "favicon.ico"
+    if icon.exists():
+        resp = send_file(str(icon), mimetype="image/x-icon")
+        # It never changes within a build, and it is requested constantly.
+        resp.headers["Cache-Control"] = "public, max-age=86400"
+        return resp
+    return "", 404
 
 
 @app.route("/login")
@@ -2453,28 +2573,28 @@ def admin_users_page():
 def matrix_index():
     idx = ASSET_DIR / "ui" / "matrix" / "index.html"
     if idx.exists():
-        return send_file(str(idx), mimetype="text/html; charset=utf-8")
+        return send_file(str(idx), mimetype="text/html")
     return "<h1>Matrix UI not found</h1>", 404
 
 @app.route("/matrix/configure")
 def matrix_configure():
     idx = ASSET_DIR / "ui" / "matrix" / "configure.html"
     if idx.exists():
-        return send_file(str(idx), mimetype="text/html; charset=utf-8")
+        return send_file(str(idx), mimetype="text/html")
     return "<h1>Configure UI not found</h1>", 404
 
 @app.route("/matrix/usb")
 def usb_matrix_index():
     idx = ASSET_DIR / "ui" / "matrix" / "usb.html"
     if idx.exists():
-        return send_file(str(idx), mimetype="text/html; charset=utf-8")
+        return send_file(str(idx), mimetype="text/html")
     return "<h1>USB Matrix UI not found</h1>", 404
 
 @app.route("/matrix/multiview")
 def multiview_index():
     idx = ASSET_DIR / "ui" / "matrix" / "multiview.html"
     if idx.exists():
-        return send_file(str(idx), mimetype="text/html; charset=utf-8")
+        return send_file(str(idx), mimetype="text/html")
     return "<h1>Multiview UI not found</h1>", 404
 
 @app.route("/license")
@@ -2514,7 +2634,7 @@ def user_guide():
     except Exception:
         # A guide that renders with the token still in it is better than no
         # guide at all.
-        resp = send_file(str(idx), mimetype="text/html; charset=utf-8")
+        resp = send_file(str(idx), mimetype="text/html")
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         return resp
     resp = Response(body, mimetype="text/html")
@@ -2525,7 +2645,7 @@ def user_guide():
 def index():
     idx = ASSET_DIR / "ui" / "index.html"
     if idx.exists():
-        resp = send_file(str(idx), mimetype="text/html; charset=utf-8")
+        resp = send_file(str(idx), mimetype="text/html")
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         return resp
     return "<h1>Omni Upgrade Server</h1><p>UI not found (ui/index.html). Backend API available.</p>"
@@ -16825,6 +16945,25 @@ def restore_remote_access():
             f"certificate could not be used: {tls_error}")
         log.warning("[REMOTE] not restoring: %s", tls_error)
         return {"restored": False, "reason": "tls unavailable"}
+
+    # The adapter may have moved since this was configured, and a certificate
+    # OmniSuite generated for the old address does not cover the new one.
+    # Starting anyway would advertise HTTPS at an address no browser accepts,
+    # so the listener stays down and Settings says which button fixes it.
+    # A supplied certificate is the site's own and is never judged this way --
+    # it may carry a name OmniSuite has no way of knowing about.
+    if saved.get("transport") != "http" and not saved.get("cert_path"):
+        described = omni_tls.describe(str(REMOTE_CERT_FILE))
+        if described.get("readable") and not omni_tls.covers(described, address):
+            _remote_restore_error = (
+                f"Remote access is configured for {address}, but the "
+                f"certificate OmniSuite created is for "
+                f"{described.get('subject') or 'another address'}. Create a "
+                "certificate for this network in Settings, then turn remote "
+                "access on again.")
+            log.warning("[REMOTE] not restoring: certificate is for %s, not %s",
+                        described.get("subject"), address)
+            return {"restored": False, "reason": "certificate address mismatch"}
 
     result = _remote_listener.start(address, port, ssl_context=context)
     if not result.get("ok"):

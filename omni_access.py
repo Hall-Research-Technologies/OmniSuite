@@ -66,9 +66,21 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     "/license": (Access.PUBLIC, None),
     "/static/<path:filename>": (Access.PUBLIC, None),
     "/ui/<path:filename>": (Access.PUBLIC, None),
+    # Every browser asks for this before it has a session, and an icon says
+    # nothing about the installation. Public so the sign-in page loads without
+    # a failed request, and it serves one file from the build by a fixed path
+    # -- there is no parameter here for anything to be smuggled through.
+    "/favicon.ico": (Access.PUBLIC, None),
     # The remote login page and the credential check behind it.
     "/login": (Access.PUBLIC, None),
     "/api/auth/login": (Access.PUBLIC, None),
+    # A Direct Access link. Public because the token in the path IS the
+    # credential -- there is nothing else to present, and requiring a session
+    # to redeem it would defeat the feature entirely. The handler refuses every
+    # token it cannot resolve to an enabled, non-administrator account, and the
+    # session it opens is marked as link-established and barred from the
+    # administrative surface by the gate.
+    "/access/<token>": (Access.PUBLIC, None),
 
     # ---- authentication state -----------------------------------------
     "/api/auth/logout": (Access.AUTHENTICATED, None),
@@ -97,6 +109,11 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     # the route class to do it.
     "/user": (Access.AUTHENTICATED, None),
     "/api/user/state": (Access.AUTHENTICATED, None),
+    # The caller's own Direct Access link, and nobody else's. It takes no user
+    # id, so there is no account to aim it at; AUTHENTICATED because an
+    # administrator opening the same page gets the same answer about
+    # themselves, which is that they have none.
+    "/api/user/direct_access": (Access.AUTHENTICATED, None),
 
     # A/V
     "/api/user/route": (Access.USER, FEATURE_AV),
@@ -116,6 +133,11 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     "/admin/users": (Access.ADMIN, None),
     "/api/admin/users": (Access.ADMIN, None),
     "/api/admin/users/<user_id>": (Access.ADMIN, None),
+    # Turning a Direct Access link on, off, or replacing it, and reading the
+    # current one to hand to somebody. Administrative in both directions: a
+    # restricted account may read its own link at /api/user/direct_access and
+    # may never create one.
+    "/api/admin/users/<user_id>/direct_access": (Access.ADMIN, None),
     "/api/admin/devices": (Access.ADMIN, None),
     # Friendly device names. Administrative because naming equipment is an
     # administrator's job, and because the response carries the hostname,

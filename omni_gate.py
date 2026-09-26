@@ -13,6 +13,8 @@ So the gate runs for every request, consults the exhaustive table in
     public route?                          -> allowed
     valid session?                         -> else 401
     CSRF valid for a state-changing verb?  -> else 403
+    established by a Direct Access link,
+    and this an administrative route?      -> else 403
     role permitted for this route?         -> else 403
     role=user: every device named in the
     request permitted to this account?     -> else 403
@@ -26,7 +28,7 @@ from __future__ import annotations
 
 import logging
 
-from flask import g, jsonify, request
+from flask import Response, g, jsonify, redirect, request
 
 import omni_access
 import omni_remote
@@ -67,6 +69,105 @@ DESTINATION_KEYS = ("decoder", "decoder_ip", "destination", "destination_ip",
 #: authorisation happens in the handler, against the same projection the
 #: browser was shown, and is tested there directly rather than through this
 #: gate.
+
+
+#: Where an unauthenticated browser is sent.
+LOGIN_PATH = "/login"
+
+
+def wants_a_page(rule, method, environ) -> bool:
+    """Whether this request is a browser navigating, rather than a program calling.
+
+    A person who opens the remote URL in Chrome must be given the sign-in page.
+    A program calling an endpoint must be given a status code and JSON it can
+    act on. Both were previously answered with `{"error": "authentication
+    required"}`, which is correct for the second and useless for the first --
+    it is what the operator saw when they opened the advertised address.
+
+    Three conditions, all required, so this can never hand HTML to an API
+    caller:
+
+      * a GET or HEAD, because a navigation is never a POST here
+      * a rule outside `/api/`, so every endpoint keeps its JSON contract
+        whatever headers happen to arrive
+      * the client asks for HTML, and asks for it in preference to JSON
+
+    `Sec-Fetch-Mode: navigate` settles it outright where the browser sends it,
+    which is every browser this would be opened in. The Accept test is the
+    fallback for anything that does not.
+    """
+    if str(method or "").upper() not in ("GET", "HEAD"):
+        return False
+    if str(rule or "").startswith("/api/"):
+        return False
+    mode = (environ.get("HTTP_SEC_FETCH_MODE") or "").lower()
+    if mode:
+        # An explicit statement from the browser about what this request is.
+        # `cors`, `no-cors` and `same-origin` are fetch/XHR; only a navigation
+        # puts a page on the screen.
+        return mode == "navigate"
+    accept = (environ.get("HTTP_ACCEPT") or "").lower()
+    if "text/html" not in accept:
+        return False
+    # An `Accept` naming both is a fetch that would rather have JSON.
+    if "application/json" in accept:
+        return accept.index("text/html") < accept.index("application/json")
+    return True
+
+
+def login_redirect(environ):
+    """Send a browser to the sign-in page, remembering where it was going."""
+    wanted = environ.get("PATH_INFO") or "/"
+    query = environ.get("QUERY_STRING") or ""
+    if query:
+        wanted = wanted + "?" + query
+    # Only a same-site path, and only characters a path can contain. The login
+    # page validates this again before using it -- an open redirect on a sign-in
+    # page is how somebody is sent to a convincing copy of it.
+    from urllib.parse import quote
+    return redirect(LOGIN_PATH + "?next=" + quote(wanted, safe="/"), code=302)
+
+
+#: A refusal a person can read. Deliberately self-contained: it needs no
+#: stylesheet, no script and no image, so it renders whatever else is
+#: unreachable, and it cannot become a way to fetch an asset without a session.
+_REFUSED_PAGE = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Not available &mdash; OmniSuite</title>
+<style>
+ :root {{ color-scheme: dark light; }}
+ body {{ font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+        margin: 0; min-height: 100vh; display: flex; align-items: center;
+        justify-content: center; background: #16181d; color: #e6e8ee; }}
+ main {{ max-width: 30rem; padding: 2rem; }}
+ h1 {{ font-size: 1.25rem; margin: 0 0 .5rem; }}
+ p {{ margin: 0 0 1rem; color: #a9b0c0; }}
+ a {{ color: #8ab4ff; }}
+</style></head>
+<body><main>
+<h1>{heading}</h1>
+<p>{detail}</p>
+<p><a href="{back}">{back_label}</a></p>
+</main></body></html>
+"""
+
+
+def refused_page(status, account=None):
+    """The human answer to a refusal that is not "sign in"."""
+    if status == 404:
+        heading = "Not available here"
+        detail = ("This part of OmniSuite works only on the computer it is "
+                  "running on.")
+    else:
+        heading = "You do not have access to this"
+        detail = ("Your account is not permitted to open this page. If you "
+                  "think it should be, ask an administrator.")
+    back = "/user" if (account is not None and not account.is_admin) else "/"
+    body = _REFUSED_PAGE.format(
+        heading=heading, detail=detail, back=back,
+        back_label="Back to OmniSuite")
+    return Response(body, status=status, mimetype="text/html")
 
 
 class Decision:
@@ -143,7 +244,20 @@ def evaluate(rule, method, environ, payload, store) -> Decision:
         if not presented or presented != session.csrf_token:
             return Decision(False, 403, "csrf", account)
 
-    # 6. Role.
+    # 6. How the holder proved who they were.
+    #
+    # A Direct Access link is a URL somebody may have saved on a shared tablet.
+    # It is issued only to a restricted account, but an account's role can
+    # change after a link is made, and an administrator's session must not be
+    # obtainable by opening a bookmark. So a link-established session is barred
+    # from the administrative surface here, independently of the account's role
+    # -- two controls rather than one, because this is the outcome the whole
+    # feature must never produce.
+    if session is not None and getattr(session, "from_direct_link", False):
+        if access is Access.ADMIN:
+            return Decision(False, 403, "direct_link_not_admin", account)
+
+    # 7. Role.
     if access is Access.AUTHENTICATED:
         return Decision(True, 200, "authenticated", account)
     if access is Access.ADMIN:
@@ -151,11 +265,17 @@ def evaluate(rule, method, environ, payload, store) -> Decision:
             return Decision(False, 403, "not_admin", account)
         return Decision(True, 200, "admin", account)
     if access is Access.USER:
-        if account.is_admin:
+        # An administrator reviewing a user surface is not held to that user's
+        # device grants. A link-established session never takes this path, even
+        # on an account that has since been promoted: it would skip the
+        # per-device check below, which is the substance of the restriction.
+        if account.is_admin and not (
+                session is not None
+                and getattr(session, "from_direct_link", False)):
             return Decision(True, 200, "admin", account)
         if not feature or not account.permissions.has_feature(feature):
             return Decision(False, 403, f"missing_feature:{feature}", account)
-        # 7. Per-device authorization. A capability is not a device grant.
+        # 8. Per-device authorization. A capability is not a device grant.
         return _check_devices(payload, account)
 
     # Unreachable by construction -- classify() never returns anything else --
@@ -209,6 +329,14 @@ def install(app, store_getter, enabled_getter):
         if not enabled_getter():
             # Nothing should be able to reach the application remotely while
             # remote access is disabled; if something did, refuse it.
+            #
+            # A person can reach this: a Direct Access link saved to a home
+            # screen and opened after remote access was turned off is exactly
+            # it. So it is said the same two ways as every other refusal --
+            # 404 rather than a redirect, because there is no sign-in page to
+            # send them to either.
+            if wants_a_page(rule, request.method, request.environ):
+                return refused_page(404)
             return jsonify({"ok": False, "error": "remote access is disabled"}), 404
 
         payload = {}
@@ -232,6 +360,15 @@ def install(app, store_getter, enabled_getter):
                         actor=decision.principal,
                         detail={"rule": rule, "method": request.method,
                                 "reason": decision.reason})
+
+        # A person gets a page; a program gets a status code and JSON. The
+        # refusal itself is identical either way -- this decides only how it is
+        # said, and never what is allowed.
+        if wants_a_page(rule, request.method, request.environ):
+            if decision.status == 401:
+                return login_redirect(request.environ)
+            return refused_page(decision.status, decision.principal)
+
         message = {401: "authentication required",
                    403: "not permitted",
                    404: "not found"}.get(decision.status, "denied")

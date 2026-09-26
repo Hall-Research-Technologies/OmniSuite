@@ -656,3 +656,43 @@ Four things, and collapsing any two of them is how a saved layout comes to chang
 - **"A bench address" is not "any private address".** Flagging all of RFC 1918 reports the fixtures as contraband, and noise is how a real finding gets scrolled past. Derive the actual bench from the machine's own cache and flag only that; report synthetic private addresses as fine.
 - **Read the artifact's own table of contents, not the archive around it.** A onefile package contains one file, so looking for a shipped page in the zip reports every one of them missing.
 - **A public CA bundle is not key material.** A `.pem` suffix alone is not evidence of a secret.
+
+### A refusal is one decision said two ways
+
+- **A person gets a page and a program gets a status code.** The gate had one answer for both, so opening the advertised Remote Access URL in Chrome displayed `{"error":"authentication required"}` as text on a white page. The fix is not to redirect every refusal -- an API caller handed HTML has nothing it can act on. Discriminate on three things together: a GET or HEAD, a rule outside `/api/`, and a client that asked for HTML in preference to JSON, with `Sec-Fetch-Mode: navigate` settling it where the browser sends it.
+- **The redirect is where the credential leaks if it leaks.** Validate `next` as a single-leading-slash same-site path on the way out and again on the way in; `//host` is a protocol-relative URL and is the one that gets missed.
+- **Where a sign-in lands depends on the role.** Sending everyone to the restricted shell put administrators on the User screen; the landing is decided from the role in the sign-in response, and only when nothing was asked for.
+
+### A certificate is valid for the names it carries
+
+- **Decide it from the subject alternative names and from nothing else.** Every browser in use ignores the common name, so believing the common name produces an application that says a connection is fine while the browser refuses it. A certificate whose SANs could not be read answers "no match" -- unknown is not the same as fine.
+- **A certificate made for one adapter is not valid on another.** Changing which network Remote Access uses, or an adapter changing address, leaves a generated certificate naming somewhere else; starting anyway advertises HTTPS that nothing will accept while Settings reports normal secure operation.
+- **Refuse rather than silently reissue.** The fingerprint is the only thing an administrator can check when their browser warns, and regenerating changes it behind their back. Refuse with the two addresses named and the one button that fixes it -- and never apply any of this to a supplied certificate, which may legitimately carry a name the application has no way of knowing about.
+
+### `hidden` loses to any class that sets `display`
+
+- **`.cfg-warning { display: flex }` defeated `element.hidden = true`**, so the plaintext warning stayed on screen over an encrypted listener, telling the operator their HTTPS connection was not encrypted. Every assertion about the property passed. Restate `[hidden] { display: none }` beside the rule that caused it, and hide the row as well as the callout so no empty label is left behind.
+- **Lift the function out and run it.** A source-text assertion proves the text; a twenty-line DOM stub makes "the warning is not shown under HTTPS" a measurement.
+
+### Measure the header before removing a directive from it
+
+- **A console full of `Unrecognized feature: 'attribution-reporting'` was not ours.** The running server sent no Permissions-Policy header at all; those are Privacy Sandbox features and the header came from something else in that browser. Ask the server what it actually sends before changing code to remove something from it. The work that was worth doing was stating the policy deliberately, naming only long-standing features, so the header is correct and any remaining error is demonstrably not ours.
+- **`mimetype="text/html; charset=utf-8"` produces `charset=utf-8; charset=utf-8`**, because the framework appends its own. Seven routes were doing it.
+
+### A bearer link is a password in a URL
+
+- **Off by default, per account, and never on an administrator.** Two controls, not one: the account type is refused at creation, and a session established by a link is barred from the administrative surface independently of the account's role -- because a role can change after a link is made.
+- **The token names an account and carries no permissions.** Every request is authorised against that account as it is at that moment, so removing a capability or a device takes it from the link in the same instant. Nothing about the permission set lives in the token.
+- **Exactly one is live.** Regenerating replaces the token and ends the sessions the previous one opened, in the same critical section that replaced it -- a replacement that leaves the old sessions running has replaced nothing. It does not touch a password session: replacing a link is not a reason to sign somebody out of their browser.
+- **Recoverable storage needs a platform facility, not an invention.** The operator has to be able to copy the same link a month later, so a one-way hash is not enough on its own. DPAPI on Windows, with a digest beside it for lookup; where no such facility exists, say so in the record and in the report rather than implying protection that was not applied. A blob that disagrees with its digest hands out nothing.
+- **Exchange the token for a session and redirect.** Leaving it in the address bar leaves it in a history, a screenshot and a shoulder-read on a shared tablet. A session opened that way never ran the sign-in page, so nothing gave the shell a CSRF token -- read it from the session endpoint, or every action the link can reach is refused.
+- **One answer for every refusal.** Unknown, revoked, disabled, deleted, promoted: whoever holds an old URL learns only that it does not work.
+
+### A page written for the local operator is not a page that works remotely
+
+- **Fifty-seven `fetch` call sites across nine files predated remote access**, and none presented a CSRF token. The gate trusts the socket a local request arrives on and never looks for one, so nothing was wrong until the same pages were opened from another device -- at which point an administrator could read everything and change nothing, with no message saying why.
+- **Measure it rather than infer it.** The same POST answered 403 "not permitted" without the header and 400 "IP address required" with it -- the handler's own answer -- which is what turned "something is broken" into a one-line diagnosis.
+- **The fix is one wrapper around `fetch`, not fifty-seven edits.** A sweep through the files fixes today and not tomorrow; a wrapper covers the call site somebody writes next. It attaches only on a same-origin state-changing request that does not already carry one, because the matrix fetches thumbnails straight from devices and a session token must never leave for a third party. It is not a security control -- the gate still decides -- it only makes the browser present what the gate asks for.
+- **Load it before everything else.** A script that ran first would hold the unwrapped `fetch`, and the test asserts each page's *first* script tag rather than merely that the tag is present.
+- **Ask for something only the local operator can have, and you get a console error on every page load.** `/api/files` reads the host's own disk and is local-only by design, so a remote administrator's session opened with a guaranteed 404 and an empty firmware picker saying nothing. Let the page ask who it is -- from the session answer the wrapper already has, not a second request -- and say why the control is empty.
+- **One single-flight, not two.** A mutation of the token's own guard changed nothing measurable, because the session request it delegates to already collapsed concurrent callers. A redundant guard that can never be reached is untested by construction; remove it rather than keeping it and hoping.

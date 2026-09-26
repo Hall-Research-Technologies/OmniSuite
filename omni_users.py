@@ -19,6 +19,8 @@ policy and the gate joins them.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -30,6 +32,7 @@ from pathlib import Path
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import omni_access
+import omni_secret
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +45,24 @@ ROLES = (ROLE_ADMIN, ROLE_USER)
 #: Idle timeout and absolute cap. Both enforced server-side on every request.
 IDLE_TIMEOUT_SECONDS = 8 * 60 * 60
 ABSOLUTE_TIMEOUT_SECONDS = 24 * 60 * 60
+
+#: How a session was established. Not decoration: the gate refuses
+#: administrative routes to a link-established session, and the audit says
+#: which of the two happened.
+BY_PASSWORD = "password"
+BY_DIRECT_LINK = "direct_link"
+SESSION_METHODS = (BY_PASSWORD, BY_DIRECT_LINK)
+
+#: A link-established session is shorter than a password one. Opening the link
+#: again makes a new one, so there is nothing to be gained by keeping a stale
+#: one alive -- and the credential is a URL somebody may have saved on a shared
+#: tablet.
+DIRECT_IDLE_TIMEOUT_SECONDS = 2 * 60 * 60
+DIRECT_ABSOLUTE_TIMEOUT_SECONDS = 12 * 60 * 60
+
+#: How many characters of a token may appear in a log line or an audit record.
+#: Enough to correlate two entries, far too few to be a credential.
+TOKEN_HINT_CHARS = 6
 
 #: Login throttling. Counted per username and per source address, so neither a
 #: password spray across accounts nor a dictionary attack on one is free.
@@ -237,12 +258,81 @@ def _normalise_identity(identity) -> str:
     return text
 
 
+class DirectAccess:
+    """A per-account passwordless link, off unless an administrator turns it on.
+
+    Possession of the link is the credential, so this is deliberately narrow:
+
+      * it exists only on a restricted account. An administrator's account may
+        never carry one, and a session created from a link is refused
+        administrative routes even if the account is promoted afterwards.
+      * it carries no permissions of its own. It names an account, and every
+        request is authorised against that account as it is at that moment, so
+        an administrator taking a capability or a device away takes it away
+        from the link in the same instant.
+      * exactly one token is live at a time. Regenerating replaces it; there is
+        no history of previously valid links.
+
+    Stored as a digest for lookup and comparison, plus a protected copy so the
+    operator can be shown the same link again later. `omni_secret` says what
+    that protection actually is on this platform -- it is DPAPI on Windows and
+    the record says so, rather than the product implying more than it did.
+    """
+
+    __slots__ = ("enabled", "digest", "blob", "protection", "created_at")
+
+    def __init__(self, enabled=False, digest="", blob="", protection="",
+                 created_at=None):
+        self.enabled = bool(enabled)
+        self.digest = str(digest or "")
+        self.blob = str(blob or "")
+        self.protection = str(protection or "")
+        self.created_at = created_at or 0
+
+    @property
+    def active(self) -> bool:
+        return bool(self.enabled and self.digest)
+
+    def to_json(self) -> dict:
+        return {"enabled": self.enabled, "digest": self.digest,
+                "blob": self.blob, "protection": self.protection,
+                "created_at": self.created_at}
+
+    @classmethod
+    def from_json(cls, raw) -> "DirectAccess":
+        raw = raw if isinstance(raw, dict) else {}
+        return cls(enabled=raw.get("enabled"), digest=raw.get("digest"),
+                   blob=raw.get("blob"), protection=raw.get("protection"),
+                   created_at=raw.get("created_at"))
+
+    def public(self) -> dict:
+        """What an API may return about it. Never the token, never the blob."""
+        return {"enabled": self.active,
+                "protection": self.protection or "",
+                "created_at": self.created_at or 0}
+
+
+def direct_token_digest(token) -> str:
+    """The lookup key for a link token.
+
+    SHA-256 rather than a password hash: the token is 256 bits of output from
+    the system random source, so there is nothing to brute force and a
+    deliberately slow hash would only make every request slower.
+    """
+    text = str(token or "")
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 class Account:
     __slots__ = ("id", "username", "password_hash", "role", "enabled",
-                 "permissions", "created_at", "password_changed_at")
+                 "permissions", "created_at", "password_changed_at",
+                 "direct_access")
 
     def __init__(self, id, username, password_hash, role, enabled=True,
-                 permissions=None, created_at=None, password_changed_at=None):
+                 permissions=None, created_at=None, password_changed_at=None,
+                 direct_access=None):
         self.id = id
         self.username = username
         self.password_hash = password_hash
@@ -251,6 +341,7 @@ class Account:
         self.permissions = permissions or Permissions()
         self.created_at = created_at or _now()
         self.password_changed_at = password_changed_at or self.created_at
+        self.direct_access = direct_access or DirectAccess()
 
     @property
     def is_admin(self) -> bool:
@@ -262,14 +353,19 @@ class Account:
                 "enabled": self.enabled,
                 "permissions": self.permissions.to_json(),
                 "created_at": self.created_at,
-                "password_changed_at": self.password_changed_at}
+                "password_changed_at": self.password_changed_at,
+                "direct_access": self.direct_access.to_json()}
 
     def public(self) -> dict:
         """What an API may return. Never the hash, never anything derived from it."""
         return {"id": self.id, "username": self.username, "role": self.role,
                 "enabled": self.enabled,
                 "permissions": self.permissions.to_json(),
-                "created_at": self.created_at}
+                "created_at": self.created_at,
+                # Whether a link exists, and nothing that would let anybody
+                # reconstruct one. Retrieving the link itself is a separate,
+                # deliberate request.
+                "direct_access": self.direct_access.public()}
 
     @classmethod
     def from_json(cls, raw) -> "Account":
@@ -278,21 +374,40 @@ class Account:
                    role=raw.get("role"), enabled=raw.get("enabled", True),
                    permissions=Permissions.from_json(raw.get("permissions")),
                    created_at=raw.get("created_at"),
-                   password_changed_at=raw.get("password_changed_at"))
+                   password_changed_at=raw.get("password_changed_at"),
+                   direct_access=DirectAccess.from_json(
+                       raw.get("direct_access")))
 
 
 class Session:
-    __slots__ = ("token", "user_id", "created_at", "last_seen", "csrf_token")
+    __slots__ = ("token", "user_id", "created_at", "last_seen", "csrf_token",
+                 "method")
 
-    def __init__(self, token, user_id, csrf_token):
+    def __init__(self, token, user_id, csrf_token, method=BY_PASSWORD):
         self.token = token
         self.user_id = user_id
         self.csrf_token = csrf_token
+        # How the holder proved who they were. Recorded because the two are
+        # not equivalent: a password was typed by somebody who knew it, and a
+        # link was opened by whoever has the link. The gate refuses
+        # administrative routes to the second whatever the account's role has
+        # since become.
+        self.method = method if method in SESSION_METHODS else BY_PASSWORD
         self.created_at = _now()
         self.last_seen = self.created_at
 
+    @property
+    def from_direct_link(self) -> bool:
+        return self.method == BY_DIRECT_LINK
+
     def expired(self, now=None) -> bool:
         now = now or _now()
+        if self.from_direct_link:
+            # Shorter on purpose. The bearer URL can make a new one whenever
+            # it is opened, so nothing is lost by not keeping this one alive
+            # for a day -- and a phone left on a lectern is the ordinary case.
+            return (now - self.last_seen > DIRECT_IDLE_TIMEOUT_SECONDS
+                    or now - self.created_at > DIRECT_ABSOLUTE_TIMEOUT_SECONDS)
         return (now - self.last_seen > IDLE_TIMEOUT_SECONDS
                 or now - self.created_at > ABSOLUTE_TIMEOUT_SECONDS)
 
@@ -455,6 +570,11 @@ class UserStore:
             if account.is_admin and role != ROLE_ADMIN and self._last_enabled_admin(account):
                 return {"ok": False, "error": "this is the only enabled administrator"}
             account.role = role
+            if role == ROLE_ADMIN:
+                # An administrator never carries a passwordless link. Cleared
+                # here as well as refused at validation, so the record agrees
+                # with the rule rather than merely being overruled by it.
+                account.direct_access = DirectAccess()
             self._persist()
             self.revoke_all_for_user(user_id, _locked=True)
             self.audit("user.role_changed", actor=actor,
@@ -507,6 +627,16 @@ class UserStore:
         with self._lock:
             self._failures.setdefault(key, []).append(_now())
 
+    def record_failure(self, name, source) -> None:
+        """Count a refusal that is not a password attempt against the throttle.
+
+        A Direct Access link has no username to attribute a refusal to -- by
+        design, since every refusal answers identically -- so it is counted
+        under a fixed name that no account can have. Same counter, same
+        lockout, same per-source scoping.
+        """
+        self._record_failure(name, source)
+
     def authenticate(self, username, password, source=None) -> dict:
         """Verify a credential. Never says which half was wrong."""
         if self.locked_out(username, source):
@@ -539,13 +669,144 @@ class UserStore:
                 "token": session.token, "csrf_token": session.csrf_token}
 
     # ---- sessions ----------------------------------------------------
-    def open_session(self, user_id) -> Session:
+    def open_session(self, user_id, method=BY_PASSWORD) -> Session:
         """A fresh token every time: logging in never reuses an existing id."""
         session = Session(token=secrets.token_urlsafe(32), user_id=user_id,
-                          csrf_token=secrets.token_urlsafe(32))
+                          csrf_token=secrets.token_urlsafe(32), method=method)
         with self._lock:
             self._sessions[session.token] = session
         return session
+
+    # ---- direct access links -----------------------------------------
+    #
+    # An administrator may give one restricted account a URL that works without
+    # a password, for a tablet on a lectern or a phone in a classroom. Four
+    # things keep that from being a hole:
+    #
+    #   * it is off by default and per account, and an administrator turns it
+    #     on deliberately,
+    #   * it can never exist on an administrator's account,
+    #   * the token names an account and carries no permissions, so everything
+    #     is still authorised against that account as it is now,
+    #   * and every way of changing the account -- disabling it, deleting it,
+    #     changing its role, password or permissions -- already revokes its
+    #     sessions, so a change takes effect on the next request rather than
+    #     whenever a session happens to lapse.
+
+    def enable_direct_access(self, user_id, *, actor=None) -> dict:
+        """Turn the feature on and mint the first token."""
+        return self._mint_direct_token(user_id, actor=actor,
+                                       event="direct_access.enabled")
+
+    def regenerate_direct_access(self, user_id, *, actor=None) -> dict:
+        """Replace the token. Every URL handed out before this stops working."""
+        with self._lock:
+            account = self._accounts.get(user_id)
+            if account is None or not account.direct_access.active:
+                return {"ok": False, "error": "direct access is not enabled"}
+        return self._mint_direct_token(user_id, actor=actor,
+                                       event="direct_access.regenerated")
+
+    def _mint_direct_token(self, user_id, *, actor, event) -> dict:
+        token = secrets.token_urlsafe(32)
+        blob, protection = omni_secret.protect(token)
+        with self._lock:
+            account = self._accounts.get(user_id)
+            if account is None:
+                return {"ok": False, "error": "no such user"}
+            if account.is_admin:
+                # Stated as a refusal rather than a filter in the UI, because a
+                # passwordless administrator URL is the one outcome this whole
+                # feature must not be able to produce.
+                return {"ok": False,
+                        "error": "direct access links are for restricted users "
+                                 "only"}
+            account.direct_access = DirectAccess(
+                enabled=True, digest=direct_token_digest(token),
+                blob=blob, protection=protection, created_at=_now())
+            self._persist()
+            # The previous token's sessions end here, in the same critical
+            # section that replaced it. Regenerating a link that left the old
+            # one's sessions running would not have replaced anything.
+            self.revoke_direct_sessions(user_id, _locked=True)
+            self.audit(event, actor=actor,
+                       detail={"username": account.username,
+                               "protection": protection})
+            return {"ok": True, "token": token, "user": account.public()}
+
+    def disable_direct_access(self, user_id, *, actor=None) -> dict:
+        with self._lock:
+            account = self._accounts.get(user_id)
+            if account is None:
+                return {"ok": False, "error": "no such user"}
+            account.direct_access = DirectAccess()
+            self._persist()
+            self.revoke_direct_sessions(user_id, _locked=True)
+            self.audit("direct_access.disabled", actor=actor,
+                       detail={"username": account.username})
+            return {"ok": True, "user": account.public()}
+
+    def direct_access_token(self, user_id):
+        """The live token for an account, or None.
+
+        Returns None both when there is no link and when the stored copy cannot
+        be read on this machine -- a blob protected for another Windows account
+        or another computer. The caller says "regenerate the link", which is
+        true and is the only thing that would help.
+        """
+        with self._lock:
+            account = self._accounts.get(user_id)
+            if account is None or not account.direct_access.active:
+                return None
+            record = account.direct_access
+        recovered = omni_secret.unprotect(record.blob, record.protection)
+        if not recovered:
+            return None
+        # The blob and the digest are written together; if they disagree the
+        # record is damaged and showing the link would hand out one that does
+        # not work.
+        if not hmac.compare_digest(direct_token_digest(recovered),
+                                   record.digest):
+            log.warning("[DIRECT] stored link for %s does not match its "
+                        "digest; treating as unreadable", account.username)
+            return None
+        return recovered
+
+    def resolve_direct_token(self, token):
+        """The account a link token names, or None. Never says why not.
+
+        Deliberately one answer for every failure: an unknown token, a token
+        whose account was deleted, disabled, promoted to administrator, or had
+        its link turned off. Distinguishing them would let somebody holding an
+        old URL learn things about an account they have no business knowing.
+        """
+        digest = direct_token_digest(token)
+        if not digest:
+            return None
+        with self._lock:
+            for account in self._accounts.values():
+                record = account.direct_access
+                if not record.active:
+                    continue
+                if not hmac.compare_digest(record.digest, digest):
+                    continue
+                if not account.enabled or account.is_admin:
+                    return None
+                return account
+        return None
+
+    def revoke_direct_sessions(self, user_id, _locked=False) -> int:
+        """End link-established sessions only, leaving a password one alone."""
+        def _do():
+            doomed = [t for t, s in self._sessions.items()
+                      if s.user_id == user_id and s.from_direct_link]
+            for token in doomed:
+                self._sessions.pop(token, None)
+            return len(doomed)
+        if _locked:
+            return _do()
+        with self._lock:
+            return _do()
 
     def resolve_session(self, token) -> tuple:
         """(account, session) for a live session, or (None, None).

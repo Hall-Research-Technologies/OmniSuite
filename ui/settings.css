@@ -125,6 +125,31 @@ border-radius:6px;background:var(--panel-2);color:var(--fg);cursor:pointer;font-
   .cfg-warning { background: var(--panel-2); }
 }
 .cfg-warning strong { color: var(--text, var(--fg)); }
+/* `display: flex` above beats the user agent's rule for the `hidden`
+   attribute, so setting `hidden` on this element did nothing at all: the
+   plaintext warning stayed on screen while HTTPS was active and the operator
+   was told their encrypted connection was not encrypted. Any class that sets
+   `display` has to restate this, and it is restated beside the rule that
+   caused it rather than somewhere general. */
+.cfg-warning[hidden] { display: none; }
+
+/* The same thing said about a connection that IS encrypted. Informational
+   rather than advisory: HTTPS working is not a condition to warn about. */
+.cfg-note {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--state-ok, var(--accent));
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text, var(--fg));
+  font-size: 12px;
+  line-height: 1.45;
+}
+.cfg-note[hidden] { display: none; }
+.cfg-note strong { color: var(--text, var(--fg)); }
 
 /* Remote access is configured but the network it names is not here. Neither
    on nor off, and an installed system has to be able to tell. */

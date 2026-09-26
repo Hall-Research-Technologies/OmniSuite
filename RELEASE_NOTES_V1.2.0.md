@@ -34,6 +34,24 @@ You have two ways to get the certificate HTTPS needs:
 
 Settings shows who the certificate is for, who issued it, and when it expires.
 
+### Direct access links
+
+A teacher who has to type a password before putting the document camera on the
+projector will, before long, stop bothering. A **direct access link** is a web
+address that opens one person's OmniSuite controls without a password, so it
+can live on a tablet home screen or a classroom PC bookmark.
+
+It is off for every account until an administrator turns it on, one account at
+a time, and it is never available on an administrator account. The link carries
+no permissions of its own: everything set for that account still applies, and
+applies immediately. Take a feature away, remove a display, disable the account
+or replace the link, and the address stops doing that thing at once. A direct
+link cannot reach Settings, account management, Activity, firmware,
+diagnostics or scanning, however the address is edited.
+
+Anyone who has the link can use the controls assigned to that account, so both
+the administrator's screen and the user's own say so in those words.
+
 ### Accounts and roles
 
 Two kinds of account:

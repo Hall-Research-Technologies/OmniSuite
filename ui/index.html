@@ -45,6 +45,7 @@
     td.alternate-switch .switch-note{display:block;font-size:11px;color:var(--alternate-switch-fg);
       margin-top:2px;overflow-wrap:anywhere}
   </style>
+  <script src="/ui/csrf.js"></script>
   <script src="/ui/diagnostics.js?v=20260911-diag"></script>
 <link rel="stylesheet" href="/ui/templates.css?v=20260910-templates">
 <link rel="stylesheet" href="/ui/settings.css?v=20260911-settings">
@@ -1526,6 +1527,23 @@ async function saveScanAdapter() {
 
 async function loadFiles() {
   try {
+    // The firmware folder is on the OmniSuite computer's own disk, so this is
+    // reachable from that computer and nowhere else. Asking anyway from a
+    // remote browser produced a 404 and a console error on every page load,
+    // and left the picker empty with nothing saying why.
+    if (window.omniIsLocal && !(await window.omniIsLocal())) {
+      const sel = $('#files');
+      if (sel) {
+        sel.innerHTML = '';
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'Firmware files are only available on the OmniSuite computer';
+        opt.disabled = true;
+        sel.appendChild(opt);
+        sel.disabled = true;
+      }
+      return;
+    }
     const res = await fetch('/api/files');
     const data = await res.json();
     const sel = $('#files');

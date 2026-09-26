@@ -602,3 +602,21 @@ body.remote {
 @media (min-width: 561px) {
   .sheet-backdrop { align-items: center; }
 }
+
+/* The operator's own Direct Access link.
+   Possession of that URL is the credential, so the sheet that shows it says so
+   plainly. Advisory treatment rather than danger: having a link is a supported
+   thing, and what needs stating is what it does, not that something is wrong.
+   Semantic tokens only, so it follows every preset and both palettes. */
+.direct-note {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--state-warning, var(--accent));
+  border-left: 3px solid var(--state-warning, var(--accent));
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text, var(--fg));
+  font-size: 12px;
+  line-height: 1.45;
+}
+.direct-note strong { color: var(--text, var(--fg)); }
