@@ -68,6 +68,13 @@ REQUIRED_PATHS = [
     ("/user", "text/html"),
     ("/ui/user/user.js", None),
     ("/ui/remote.css", None),
+    # Attaches the CSRF token to every state-changing request. Left out of
+    # the package, an administrator signed in from another device can read
+    # everything and change nothing, with nothing on screen saying why.
+    ("/ui/csrf.js", None),
+    # Every browser asks for this before it has a session. Missing, it is a
+    # failed request in the console of a customer's machine on every page.
+    ("/favicon.ico", None),
 ]
 
 
