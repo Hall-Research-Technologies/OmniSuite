@@ -67,6 +67,10 @@ REQUIRED_PATHS = [
     ("/ui/admin/users.js", None),
     ("/user", "text/html"),
     ("/ui/user/user.js", None),
+    # Added this build. The shell delegates every browser-storage read and
+    # write to it, so a package that omitted it would serve a user page that
+    # forgets the chosen display -- and would build perfectly cleanly.
+    ("/ui/user/remember.js", None),
     ("/ui/remote.css", None),
     # Attaches the CSRF token to every state-changing request. Left out of
     # the package, an administrator signed in from another device can read
