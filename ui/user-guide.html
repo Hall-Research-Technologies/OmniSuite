@@ -1348,6 +1348,26 @@
       as it fills, so it cannot grow without limit. It survives a restart. Only
       administrators can see it &mdash; Users have no access to it at all.</p>
 
+      <h3 id="remote-signing-out">Signing out</h3>
+      <p><strong>Sign out</strong> is at the top right, beside the account name,
+      on every screen anybody reaches through Remote Access &mdash; the User
+      screen and the full OmniSuite application alike. It ends that browser's
+      sign-in and returns to the sign-in page.</p>
+      <ul>
+        <li>It signs out <strong>that browser only</strong>. A phone and a
+        laptop signed in to the same account are independent, and signing out
+        of one leaves the other working.</li>
+        <li>Going back or refreshing afterwards returns to the sign-in page
+        rather than showing what was on screen before.</li>
+        <li>Signing out of a session opened by a
+        <a href="#remote-direct">direct access link</a> ends that session and
+        leaves the link itself working &mdash; opening it again starts a new
+        one. Only an administrator can withdraw a link.</li>
+      </ul>
+      <div class="note">There is no <strong>Sign out</strong> on the OmniSuite
+      computer itself, and that is deliberate: nobody signs in there, so there
+      would be nothing to sign out of.</div>
+
       <h3 id="remote-signing-in">Signing in and out</h3>
       <p>People open the address shown in Settings and sign in with the username
       and password you gave them. Signing in on a second device is fine &mdash; a
@@ -1379,6 +1399,56 @@
       <p>Each display also says what is on it now. A display showing something
       the account is not allowed to use is reported as showing another source,
       without naming it.</p>
+
+      <h4 id="user-previews">Source pictures</h4>
+      <p>Where a source is set up to produce a picture, its card shows one, so
+      somebody can pick <em>the camera pointing at the workbench</em> rather
+      than read a list of names. Tapping anywhere on the card chooses it &mdash;
+      the picture is part of the card, not a separate button.</p>
+      <p>The picture is a still, refreshed when the screen is opened rather than
+      continuously. It is there to tell one source from another, not to monitor
+      what is on them.</p>
+      <div class="note"><strong>A source with no picture works exactly the
+      same.</strong> Some encoders are not set up to produce one, and the card
+      then says <em>Preview disabled</em> and can still be chosen and shown. If
+      you want pictures for a source, turn its thumbnail on in
+      <strong>Configure</strong>; nothing in OmniSuite turns it on by itself.</div>
+      <p>People only ever see pictures of the sources you assigned to them.
+      Asking for any other source's picture is refused by OmniSuite, not merely
+      left off the screen.</p>
+
+      <h4 id="user-routing-states">While a display is changing</h4>
+      <p>After <strong>Show</strong>, the display's card reads
+      <strong>Routing&hellip;</strong> until the change is confirmed, and will
+      not take another selection until it finishes. When it is done a short
+      <strong>Routed</strong> message appears. Waiting a moment is normal; a
+      route usually takes a second or two.</p>
+      <p>Messages that can appear instead:</p>
+      <table>
+        <tr><th>Message</th><th>What it means</th></tr>
+        <tr><td>That display is busy with another routing operation</td>
+        <td>Somebody else is changing the same display at this moment. Wait a
+        few seconds and press Show again.</td></tr>
+        <tr><td>That display is showing a Multiview</td>
+        <td>OmniSuite asks first, because showing one source will stop the
+        Multiview. See below.</td></tr>
+        <tr><td>Your permission for that has changed</td>
+        <td>An administrator changed what this account may use while the screen
+        was open. Sign in again to see the current list.</td></tr>
+        <tr><td>That equipment did not respond</td>
+        <td>The source or the display is not answering. It is a network or
+        equipment problem rather than a permission one.</td></tr>
+      </table>
+
+      <h4 id="user-multiview-exit">Showing a source on a display that has a Multiview</h4>
+      <p>If the display is showing a Multiview, putting a single source on it
+      will stop that Multiview, so OmniSuite asks before doing anything:</p>
+      <p><em>Completing this route will exit Multiview on that display and
+      replace it with the selected source.</em></p>
+      <p><strong>Continue</strong> makes the change; <strong>Cancel</strong>
+      leaves the display exactly as it was &mdash; nothing at all is sent to the
+      equipment. The saved Multiview is kept either way and an administrator can
+      show it again later.</p>
 
       <h4>USB</h4>
       <p>USB extension moves a keyboard, mouse, camera or other USB device from

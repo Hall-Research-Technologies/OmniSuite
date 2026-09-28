@@ -68,7 +68,10 @@ class FinalInventoryTests(unittest.TestCase):
         #                     restricted account.
         self.assertEqual(counts[Access.PUBLIC], 8,
                          "the anonymous surface changed")
-        self.assertEqual(counts[Access.USER], 6,
+        # /api/user/source_preview added: a still picture of a permitted
+        # source, addressed by stable identity so no device address reaches a
+        # restricted client, and refused for a source the account may not use.
+        self.assertEqual(counts[Access.USER], 7,
                          "what a restricted account may call changed")
         # Three moved to ADMIN in the release-candidate audit: the update
         # alert, its acknowledgement and the appearance reset all write or
@@ -86,7 +89,7 @@ class FinalInventoryTests(unittest.TestCase):
         self.assertEqual(counts[Access.ADMIN], 107,
                          "the administrative surface changed")
         self.assertEqual(sum(counts.values()), len(registered_rules()))
-        self.assertEqual(sum(counts.values()), 139)
+        self.assertEqual(sum(counts.values()), 140)
 
     def test_the_public_surface_is_still_only_what_signing_in_needs(self):
         public = {rule for rule, (access, _f) in omni_access.ROUTES.items()
@@ -113,7 +116,17 @@ class HandlerAgreementTests(unittest.TestCase):
     """
 
     TRANSLATING = ("api_user_route", "api_user_usb_route",
-                   "api_user_multiview_show", "api_user_multiview_switch")
+                   "api_user_multiview_show", "api_user_multiview_switch",
+                   )
+
+    #: Handlers that translate an identity into an address for a READ.
+    #:
+    #: They re-check authorisation for the same reason the operations do --
+    #: the check has to be on the value the translation will use -- but they
+    #: must NOT take a resource lock. Locks serialise operations against
+    #: equipment; a read that queued behind a route would make looking at a
+    #: source card wait on somebody else's routing.
+    TRANSLATING_READS = ("api_user_source_preview",)
 
     def setUp(self):
         self.tree = ast.parse(
@@ -140,6 +153,25 @@ class HandlerAgreementTests(unittest.TestCase):
                 body = ast.dump(self.functions[name])
                 self.assertIn("locks", body,
                               f"{name} writes to equipment without serialising")
+
+    def test_every_translating_read_re_checks_too(self):
+        """A read reaches a device, so it is authorised at the same boundary."""
+        for name in self.TRANSLATING_READS:
+            with self.subTest(handler=name):
+                self.assertIn(name, self.functions)
+                body = ast.dump(self.functions[name])
+                self.assertIn("_revalidate", body,
+                              f"{name} trusts the account the gate resolved")
+                self.assertIn("may_use_source", body,
+                              f"{name} does not check the grant it translates")
+
+    def test_a_translating_read_takes_no_lock(self):
+        """Observation takes nothing. A preview must never wait on a route."""
+        for name in self.TRANSLATING_READS:
+            with self.subTest(handler=name):
+                body = ast.dump(self.functions[name])
+                self.assertNotIn("locks", body,
+                                 f"{name} serialises a read against equipment")
 
     def test_the_usb_handler_authorises_against_the_projection(self):
         """USB endpoint MACs are not device identities, so the gate cannot."""

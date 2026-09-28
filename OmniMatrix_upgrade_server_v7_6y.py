@@ -5,6 +5,7 @@
 import os, sys, threading, urllib.request, webbrowser, logging, time, json, re, subprocess, socket, ssl, csv, tempfile, traceback, platform, io, zipfile, uuid
 import copy
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, send_from_directory, Response
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -16982,6 +16983,90 @@ def restore_remote_access():
             "transport": saved.get("transport")}
 
 
+#: How long a source preview picture is reused.
+#:
+#: Short, because it is a picture of a live input; long enough that a class
+#: full of tablets is one fetch rather than thirty. This is source
+#: identification, not surveillance.
+PREVIEW_IMAGE_TTL_SECONDS = 5.0
+
+#: How long "does this encoder generate thumbnails" is reused. It changes only
+#: when an administrator changes it, and reading it costs a WebSocket round
+#: trip, so it is held far longer than the picture.
+PREVIEW_ENABLE_TTL_SECONDS = 300.0
+
+#: Bounded, because an encoder that has stopped answering must not hold a
+#: request open. A thumbnail is roughly 320x180 JPEG.
+PREVIEW_TIMEOUT_SECONDS = 4.0
+PREVIEW_MAX_BYTES = 2 * 1024 * 1024
+
+_preview_images = omni_statecache.StateCache(ttl=PREVIEW_IMAGE_TTL_SECONDS)
+_preview_enabled = omni_statecache.StateCache(ttl=PREVIEW_ENABLE_TTL_SECONDS)
+
+
+def _thumbnail_enabled(address):
+    """Whether this encoder is generating thumbnails.
+
+    Reuses the existing endpoint rather than repeating its WebSocket read and
+    its password-candidate handling, so there is one implementation of "ask an
+    encoder about its thumbnail".
+    """
+    def read():
+        with app.test_request_context("/api/get_thumbnail_status",
+                                      method="POST", json={"ip": address}):
+            body = _view_payload(api_get_thumbnail_status())
+        if body.get("error") and not body.get("ok"):
+            return None            # unknown, not disabled: do not cache a guess
+        return bool(body.get("enable"))
+
+    return _preview_enabled.get("thumb-enable:" + str(address), read)
+
+
+def source_preview(address):
+    """(image_bytes, content_type, reason) for one encoder.
+
+    `reason` is empty on success and otherwise names why there is no picture:
+    `preview_disabled` where the encoder is not generating one, and
+    `preview_unavailable` where it did not answer. The caller turns those into
+    card states; neither is a routing failure, because a source whose preview
+    is off is still a perfectly good source.
+    """
+    address = str(address or "").strip()
+    if not address:
+        return None, "", "preview_unavailable"
+
+    enabled = _thumbnail_enabled(address)
+    if enabled is False:
+        return None, "", "preview_disabled"
+
+    def fetch():
+        # Built from the address the application already trusts plus a fixed
+        # path. Nothing the device said contributes to this URL.
+        url = "http://%s/thumbnail/thumbnail1.jpg" % address
+        try:
+            with urllib.request.urlopen(url, timeout=PREVIEW_TIMEOUT_SECONDS) as reply:
+                if reply.status != 200:
+                    return None, ""
+                body = reply.read(PREVIEW_MAX_BYTES + 1)
+                if not body or len(body) > PREVIEW_MAX_BYTES:
+                    return None, ""
+                kind = reply.headers.get("Content-Type") or "image/jpeg"
+                if not kind.startswith("image/"):
+                    # A device that answered with something that is not a
+                    # picture is not a picture. Never passed through.
+                    return None, ""
+                return body, kind
+        except Exception as exc:
+            log.info("[PREVIEW] %s did not serve a thumbnail: %s",
+                     address, type(exc).__name__)
+            return None, ""
+
+    body, kind = _preview_images.get("thumb:" + address, fetch)
+    if not body:
+        return None, "", "preview_unavailable"
+    return body, kind, ""
+
+
 #: Observation for the restricted surfaces. Reading USB state queries every
 #: endpoint, and reading a decoder's Multiview state reads three nodes from it,
 #: so without this a second browser is a second sweep of the equipment --
@@ -17081,6 +17166,10 @@ omni_remote_api.register(
     cert_paths=(REMOTE_CERT_FILE, REMOTE_KEY_FILE),
     tls_context_for=_remote_tls_context,
     certificate_state=remote_certificate_state,
+    # The device half of source previews. Authorisation and HTTP shape
+    # stay in the API module, which has no opinion about how devices
+    # are read and must not gain one.
+    source_preview=source_preview,
 )
 
 

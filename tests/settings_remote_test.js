@@ -239,6 +239,21 @@ check('a restricted user lands on the restricted shell', () => {
 check('where the browser was going is honoured', () => {
   assert(destination()('?next=%2Fmatrix%2Fusb')('admin') === '/matrix/usb');
   assert(destination()('?next=%2Fuser')('user') === '/user');
+  assert(destination()('?next=%2Fhelp')('user') === '/help',
+    'the User Guide is reachable by anybody signed in');
+});
+
+check('a restricted account is not sent where it will be refused', () => {
+  // Found live: opening the advertised address sends a User to
+  // /login?next=/ and, without this, straight back to / after signing in --
+  // the administrator's application, which the gate refuses. Landing on a
+  // refusal having just typed a correct password reads as a wrong password.
+  ['%2F', '%2Fmatrix', '%2Fmatrix%2Fusb', '%2Fadmin%2Fusers'].forEach((next) => {
+    const landed = destination()(`?next=${next}`)('user');
+    assert(landed === '/user', `a User was sent to ${landed}`);
+  });
+  // An administrator is unaffected.
+  assert(destination()('?next=%2Fmatrix')('admin') === '/matrix');
 });
 
 check('an off-site destination is refused', () => {

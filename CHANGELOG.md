@@ -54,6 +54,28 @@ for the user-facing summary.
 - The firmware file list is no longer requested from a remote browser. It
   reads a folder on the OmniSuite computer, so it could only ever fail
   there; the picker now says where firmware upgrades are started from.
+- Fixed restricted-user routing failing on any display that was showing a
+  Multiview. The A/V engine refuses to take a display off a composition unless
+  the caller says so, and the user endpoint never passed that answer through,
+  so routing looked intermittent while actually being deterministic per
+  display. The operator is now asked, through the same confirmation the A/V
+  Matrix uses, and their answer travels with the request.
+- Every refusal a restricted user can meet now carries a machine-readable
+  reason, so a display that is busy and a display that is compositing are no
+  longer both "409".
+- Added source pictures to the restricted user's source cards, from the
+  encoder thumbnail the A/V Matrix has always used. Served through an
+  authorised endpoint addressed by hardware identity, so no device address
+  reaches a restricted browser, and refused for a source the account may not
+  use. A source with no picture is still fully routable.
+- Added Sign out to every screen reached through Remote Access, including the
+  full application. It was previously only on the restricted user screen, so
+  an administrator signing in remotely had no way out but to clear cookies.
+- Fixed the shared confirmation dialog rendering unstyled on pages that do not
+  load the A/V Matrix stylesheet -- including account management, where a
+  passwordless link is replaced. It now carries its own presentation.
+- Fixed the copy-link confirmations never appearing: they called a toast
+  helper that does not exist.
 - Fixed a duplicated charset in the Content-Type of every served page.
 
 ## V1.1.0 - 2026-09-17

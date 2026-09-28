@@ -127,6 +127,12 @@ class AdministrativeStateIsClosedTests(unittest.TestCase):
             "/api/user/usb_state", "/api/user/usb_route",
             "/api/user/multiview_state", "/api/user/multiview_show",
             "/api/user/multiview_switch",
+            # A still picture of one permitted source. It answers with an
+            # image or a reason and never with device state -- no address, no
+            # MAC, no serial, no configuration -- and the account's own source
+            # grant is checked at the operation boundary, so a source this
+            # account may not use has no preview whatever its card said.
+            "/api/user/source_preview",
         }, "only endpoints written for a restricted account, which answer "
            "with a projection, belong here")
 
@@ -140,7 +146,10 @@ class AdministrativeStateIsClosedTests(unittest.TestCase):
         projected = {"/api/user/state", "/api/user/route",
                      "/api/user/usb_state", "/api/user/usb_route",
                      "/api/user/multiview_state", "/api/user/multiview_show",
-                     "/api/user/multiview_switch"}
+                     "/api/user/multiview_switch",
+                     # Answers with an image or a reason. There is no object to
+                     # project, and nothing about the device in either answer.
+                     "/api/user/source_preview"}
         pages = {"/user", "/help"}
         session_only = {"/api/auth/logout", "/api/auth/session",
                         "/api/ui_preferences", "/api/ui_preferences/reset",

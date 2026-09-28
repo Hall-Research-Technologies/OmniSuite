@@ -117,6 +117,11 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
 
     # A/V
     "/api/user/route": (Access.USER, FEATURE_AV),
+    # A still picture of one permitted source, addressed by stable identity.
+    # USER rather than AUTHENTICATED because it reaches a device, and the
+    # handler checks the account's own source grant on top of the capability --
+    # a source this account may not use has no preview, whatever its card said.
+    "/api/user/source_preview": (Access.USER, FEATURE_AV),
     # USB. The operator-facing words are computer and peripherals, because a
     # LEX sits with the host and a REX with the peripherals; forcing
     # source-and-destination onto that would misdescribe the hardware.

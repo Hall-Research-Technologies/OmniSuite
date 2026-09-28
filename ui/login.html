@@ -93,8 +93,22 @@
   function destination(role) {
     const wanted = new URLSearchParams(location.search).get('next') || '';
     const safe = /^\/(?!\/)[A-Za-z0-9/_.-]*(\?[A-Za-z0-9/_.=&%-]*)?$/;
-    if (wanted && safe.test(wanted) && wanted !== '/login') return wanted;
-    return role === 'admin' ? '/' : '/user';
+    const home = role === 'admin' ? '/' : '/user';
+    if (!wanted || !safe.test(wanted) || wanted === '/login') return home;
+    // Somewhere they can actually open.
+    //
+    // A restricted account that opens the advertised address is sent to
+    // /login?next=/ and, without this, straight back to / after signing in --
+    // the administrator's application, which the gate then refuses. Landing on
+    // a refusal having just entered correct credentials reads as the password
+    // being wrong.
+    //
+    // This is not authorisation, which is entirely the server's. It only
+    // avoids sending somebody somewhere that is certain to refuse them.
+    if (role !== 'admin' && !/^\/(user|help|license)(\/|\?|$)/.test(wanted)) {
+      return home;
+    }
+    return wanted;
   }
 
   form.addEventListener('submit', async function (event) {

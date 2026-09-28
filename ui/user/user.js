@@ -68,10 +68,31 @@
 
   // Messages an operator can act on. The server already refuses to say more
   // than it should; this turns what it does say into plain words.
+  // What went wrong, in words an operator can act on.
+  //
+  // A bare "409 CONFLICT" is not a message, and neither is "That did not
+  // work" -- the two 409s this endpoint can return have completely different
+  // remedies. The server names which one it is; this turns that into a
+  // sentence.
   function failureText(body, status) {
-    if (status === 403) return body.error || 'You do not have permission for that.';
+    const reason = body && body.reason;
+    if (reason === 'resource_busy') {
+      return 'That display is busy with another routing operation. '
+           + 'Try again in a moment.';
+    }
+    if (reason === 'multiview_active') {
+      return 'That display is showing a Multiview.';
+    }
+    if (status === 403) {
+      // The most likely 403 during ordinary use is an administrator changing
+      // something while the page was open, and "you do not have permission"
+      // reads as though the operator did something wrong.
+      return body.error || 'Your permission for that has changed. '
+                         + 'Ask an administrator.';
+    }
     if (status === 404) return 'That equipment is not available right now.';
     if (status === 502) return body.error || 'That equipment did not respond.';
+    if (status === 503) return body.error || 'That equipment did not answer.';
     return body.error || 'That did not work.';
   }
 
@@ -92,6 +113,23 @@
     sub.className = 'pick-state';
     sub.textContent = subtitle;
 
+    // A source card carries the picture, and the whole card stays the target.
+    // Nothing is requested here: the image is fetched when the card is
+    // actually on screen, so a long list costs nothing until it is scrolled
+    // to, and an idle page makes no preview traffic at all.
+    if (kind === 'source' && item.online !== false) {
+      const shot = document.createElement('span');
+      shot.className = 'pick-shot empty';
+      shot.dataset.note = '';
+      const text = document.createElement('span');
+      text.className = 'pick-text';
+      text.append(name, sub);
+      button.classList.add('has-preview');
+      button.append(shot, text);
+      watchForPreview(button, item.id, shot);
+      return button;
+    }
+
     button.append(name, sub);
     // A permitted device that is not answering stays visible and cannot be
     // acted on: hiding it would suggest the assignment had been taken away.
@@ -99,8 +137,81 @@
     return button;
   }
 
+  // One observer for the page, watching which source cards are on screen.
+  //
+  // Re-armed by replacing the observer's targets, never by constructing a new
+  // one per render: an observer re-created on every delivery multiplies, and
+  // each callback forces a layout.
+  const previewSeen = new Set();
+  let previewObserver = null;
+
+  function watchForPreview(button, sourceId, shot) {
+    if (!('IntersectionObserver' in window)) {
+      loadPreview(sourceId, shot);
+      return;
+    }
+    if (previewObserver === null) {
+      previewObserver = new IntersectionObserver((entries, observer) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          observer.unobserve(entry.target);
+          const node = entry.target;
+          loadPreview(node.dataset.id, node.querySelector('.pick-shot'));
+        });
+      }, {rootMargin: '150px'});
+    }
+    previewObserver.observe(button);
+  }
+
+  // One request per source, and the answer is a picture or a reason -- never a
+  // broken image, because the endpoint answers 200 with a reason rather than
+  // an error status when there is simply nothing to show.
+  async function loadPreview(sourceId, shot) {
+    if (!shot || !sourceId) return;
+    const bust = previewSeen.has(sourceId) ? '&t=' + Date.now() : '';
+    previewSeen.add(sourceId);
+    try {
+      const res = await fetch(
+        '/api/user/source_preview?source=' + encodeURIComponent(sourceId) + bust,
+        {credentials: 'same-origin'});
+      if (!res.ok) { noPreview(shot, ''); return; }
+      const kind = res.headers.get('Content-Type') || '';
+      if (kind.indexOf('image/') !== 0) {
+        const body = await res.json().catch(() => ({}));
+        noPreview(shot, body.reason === 'preview_disabled'
+          ? 'Preview disabled' : '');
+        return;
+      }
+      const blob = await res.blob();
+      const image = new Image();
+      image.alt = '';
+      image.onload = () => {
+        // Dropped, not merely replaced: the object URL is released as soon as
+        // the browser has the picture.
+        URL.revokeObjectURL(image.src);
+      };
+      image.onerror = () => noPreview(shot, '');
+      image.src = URL.createObjectURL(blob);
+      shot.replaceChildren(image);
+      shot.classList.remove('empty');
+      shot.dataset.note = '';
+    } catch (err) {
+      noPreview(shot, '');
+    }
+  }
+
+  function noPreview(shot, note) {
+    if (!shot) return;
+    shot.replaceChildren();
+    shot.classList.add('empty');
+    shot.dataset.note = note || '';
+  }
+
   function renderList(hostId, emptyId, items, kind, subtitleFor) {
     const host = el(hostId);
+    // The cards about to be discarded are the observer's targets. Disconnect
+    // before rebuilding rather than leaving it watching detached nodes.
+    if (previewObserver && hostId === 'sources') previewObserver.disconnect();
     host.replaceChildren();
     items.forEach((item) => host.appendChild(
       card(item, kind, item.online === false ? 'Offline' : subtitleFor(item))));
@@ -385,12 +496,21 @@
   }
 
   // ------------------------------------------------------------- events
+  // A display that is mid-route does not accept another selection. Stated on
+  // the card rather than relying on the operator not to tap twice.
+  function busyWith(node) {
+    return !!state.routingTo && node.dataset.kind === 'destination'
+           && node.dataset.id === state.routingTo;
+  }
+
   document.addEventListener('click', (event) => {
     const tile = event.target.closest('.mv-window');
     if (tile) { openSourceSheet(tile.dataset.cell); return; }
 
     const button = event.target.closest('.pick');
     if (!button || button.disabled) return;
+    // A display already mid-route does not take another selection.
+    if (busyWith(button)) return;
     const kind = button.dataset.kind;
     const id = button.dataset.id;
 
@@ -427,15 +547,16 @@
     if (!av && (!state.computer || !state.peripheral)) return;
 
     state.busy = true;
+    // The display this route targets is marked in flight, so a second tap on
+    // the same display is refused by the page rather than queued behind a
+    // lock on the server.
+    state.routingTo = av ? state.destination : null;
     renderAction();
+    renderRoutingState();
     try {
       let result;
       if (av) {
-        result = await api('/api/user/route', {
-          method: 'POST',
-          body: JSON.stringify({source: state.source,
-                                destination: state.destination, mode: 'av'}),
-        });
+        result = await routeAv(false);
       } else {
         const peripheral = state.peripherals.find((p) => p.id === state.peripheral);
         const attached = peripheral && peripheral.attached_to
@@ -447,8 +568,12 @@
                                 detach: !!attached}),
         });
       }
+      if (result === null) {
+        // The operator was asked and said no. Nothing was sent to any device.
+        return;
+      }
       if (result.status === 200 && result.body.ok) {
-        window.toast && window.toast('Done', 'ok');
+        window.toast && window.toast('Routed', 'ok');
       } else {
         window.toast && window.toast(
           failureText(result.body, result.status), 'error');
@@ -459,14 +584,76 @@
         window.toast && window.toast('Could not reach OmniSuite', 'error');
       }
     } finally {
+      // Always, on every path: a failed route must leave the page usable
+      // without a reload.
       state.busy = false;
+      state.routingTo = null;
       renderAction();
+      renderRoutingState();
     }
   });
+
+  // One A/V route. Returns the result, or null if the operator declined.
+  //
+  // `answered` is the second pass: the display was compositing, the operator
+  // was asked, and this carries their answer. It is never set by anything
+  // other than a person saying yes, and it is never set twice -- a refusal
+  // that arrives with the answer already attached is reported, not retried.
+  async function routeAv(answered) {
+    const body = {source: state.source, destination: state.destination,
+                  mode: 'av'};
+    if (answered) body.exit_multiview = true;
+    const result = await api('/api/user/route', {
+      method: 'POST', body: JSON.stringify(body),
+    });
+    if (answered || result.status !== 409
+        || (result.body || {}).reason !== 'multiview_active') {
+      return result;
+    }
+    // The one refusal an operator can answer. Asked through the shared
+    // helper, so the wording and the "do not show again" preference are the
+    // same ones the A/V Matrix uses.
+    const display = named(state.destinations, state.destination) || 'that display';
+    const ask = window.omniMultiviewExit && window.omniMultiviewExit.ask;
+    if (!ask) {
+      // The dialog is the point: it says what will happen to a display
+      // somebody may be watching. Without it the action is refused rather
+      // than taken silently.
+      return result;
+    }
+    const proceed = await ask({
+      decoder: display,
+      multiview: (result.body || {}).multiview,
+      after: named(state.sources, state.source) || 'the source you selected',
+    });
+    if (!proceed) return null;
+    return routeAv(true);
+  }
+
+  // Which display is mid-route, said on the display's own card.
+  function renderRoutingState() {
+    document.querySelectorAll('.pick[data-kind="destination"]').forEach((node) => {
+      const routing = !!state.routingTo && node.dataset.id === state.routingTo;
+      node.classList.toggle('routing', routing);
+      const line = node.querySelector('.pick-state');
+      if (routing) {
+        node.dataset.was = line ? line.textContent : '';
+        if (line) line.textContent = 'Routing\u2026';
+      } else if (node.dataset.was !== undefined) {
+        if (line && node.dataset.was) line.textContent = node.dataset.was;
+        delete node.dataset.was;
+      }
+    });
+  }
 
   el('signout').addEventListener('click', async () => {
     try { await api('/api/auth/logout', {method: 'POST'}); }
     catch (err) { /* going anyway */ }
+    // The token this tab held belongs to a session that no longer exists.
+    // A Direct Access session signs out the same way, and its bearer link is
+    // untouched: signing out ends this session, it does not withdraw the link.
+    if (window.omniForgetCsrf) window.omniForgetCsrf();
+    try { sessionStorage.removeItem('omni_csrf'); } catch (err) { /* none */ }
     toLogin();
   });
 
@@ -605,11 +792,11 @@
     if (!link) return;
     try {
       await navigator.clipboard.writeText(link);
-      if (window.omniToast) window.omniToast('Link copied.');
+      if (window.toast) window.toast('Link copied.');
     } catch (err) {
       el('link_sheet_value').select();
-      if (window.omniToast) {
-        window.omniToast('Press and hold to copy.', 'warn');
+      if (window.toast) {
+        window.toast('Press and hold to copy.', 'warn');
       }
     }
   });

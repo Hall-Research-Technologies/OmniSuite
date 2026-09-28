@@ -512,13 +512,13 @@
     if (!link) return;
     try {
       await navigator.clipboard.writeText(link);
-      if (window.omniToast) window.omniToast('Link copied.');
+      if (window.toast) window.toast('Link copied.');
     } catch (err) {
       // No clipboard permission, or an insecure context. Selecting the text
       // is something the operator can act on; a silent failure is not.
       el('direct_link').select();
-      if (window.omniToast) {
-        window.omniToast('Press Ctrl+C or long-press to copy.', 'warn');
+      if (window.toast) {
+        window.toast('Press Ctrl+C or long-press to copy.', 'warn');
       }
     }
   });

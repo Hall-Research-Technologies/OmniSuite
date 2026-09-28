@@ -620,3 +620,82 @@ body.remote {
   line-height: 1.45;
 }
 .direct-note strong { color: var(--text, var(--fg)); }
+
+/* ----------------------------------------------------- source previews --
+   The card IS the preview. An operator picking a source on a tablet should
+   recognise it from the picture, not read a hostname and hope -- and the whole
+   card stays the target, so there is no small control to aim at.
+
+   Preview is an identification aid and never a routing gate: a source whose
+   encoder is not generating thumbnails keeps an ordinary card and says so
+   quietly. The picture is decoration over a button that works either way. */
+.pick.has-preview {
+  padding: 0;
+  overflow: hidden;
+  gap: 0;
+}
+.pick .pick-shot {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--surface-sunken, #10141a);
+  display: block;
+  overflow: hidden;
+}
+.pick .pick-shot img {
+  width: 100%;
+  height: 100%;
+  /* Contain, not cover: a cropped preview can hide the very corner of the
+     screen somebody is using to tell two inputs apart. */
+  object-fit: contain;
+  display: block;
+}
+/* The text sits on a scrim so it survives a bright desktop and a dark camera
+   feed alike, rather than being legible over half the sources. */
+.pick.has-preview .pick-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px 10px;
+  background: var(--surface-elevated);
+}
+.pick.has-preview .pick-name { font-weight: 600; }
+/* Selection has to read at a glance over an arbitrary picture.
+   The footer tint measured deltaE 12.9 against the unselected footer, which is
+   a difference somebody can act on -- but the tint is 16% alpha, and 16% alpha
+   over a bright source is nothing at all. So the edge is drawn at FULL
+   strength from the accent the presets set, not from the selection tint: the
+   distinction survives a palette where the two hues sit close, and it survives
+   a white picture behind it. */
+.pick.has-preview[aria-pressed="true"] .pick-text {
+  background: var(--selected-fill);
+}
+.pick.has-preview[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 3px var(--action-primary);
+  border-color: var(--action-primary);
+}
+/* A quiet label where there is no picture to show. Never a broken image. */
+.pick .pick-shot.empty::after {
+  content: attr(data-note);
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+/* While a route is in flight, the display it targets says so. */
+.pick.routing { cursor: progress; }
+.pick.routing .pick-state { color: var(--state-info, var(--accent)); }
+
+@media (max-width: 560px) {
+  /* One column on a phone, so the preview is big enough to recognise. */
+  .pick.has-preview .pick-text { padding: 8px 12px 10px; }
+}
+@media (min-width: 1200px) {
+  /* Wide screens get more cards rather than absurdly large pictures. */
+  .pick-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+}

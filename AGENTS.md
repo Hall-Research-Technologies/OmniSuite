@@ -696,3 +696,31 @@ Four things, and collapsing any two of them is how a saved layout comes to chang
 - **Load it before everything else.** A script that ran first would hold the unwrapped `fetch`, and the test asserts each page's *first* script tag rather than merely that the tag is present.
 - **Ask for something only the local operator can have, and you get a console error on every page load.** `/api/files` reads the host's own disk and is local-only by design, so a remote administrator's session opened with a guaranteed 404 and an empty firmware picker saying nothing. Let the page ask who it is -- from the session answer the wrapper already has, not a second request -- and say why the control is empty.
 - **One single-flight, not two.** A mutation of the token's own guard changed nothing measurable, because the session request it delegates to already collapsed concurrent callers. A redundant guard that can never be reached is untested by construction; remove it rather than keeping it and hoping.
+
+### Classify a status code before believing what everybody assumes it means
+
+- **"User routing is hit or miss, the console says 409" was diagnosed as lock contention by everybody who read it, including the brief.** It was not. Measured, the refusal came back in **0.37 s** carrying `status: MULTIVIEW ACTIVE`, where a `ResourceBusy` costs the full 45-second bounded wait. The duration alone falsified the assumption before any code was read.
+- **The cause was a missing passthrough.** `/api/user/route` called the verified A/V engine without `exit_multiview`, so the engine refused to take a display off a composition — correctly, because that answer must come from a person. Any display that happened to be compositing refused every route and every other display worked, which is exactly what intermittent looks like from outside.
+- **Two conditions sharing three digits is not diagnostic information.** Each now carries a machine-readable `reason`, so neither the page nor the next reader has to infer which one it was from how long it took. The operator-facing sentence stays a sentence.
+- **"Hit or miss" is a claim about reliability, so the answer is a count.** Twenty sequential routes: zero 409s, zero busy, median 1.76 s, max 4.00 s — and five deterministic failures from one encoder whose session multicast was the unconfigured default, which failed identically for an administrator and was therefore never a user-path defect at all.
+
+### A picture of a source belongs to the server, not to the browser
+
+- **The A/V Matrix builds `http://<device-ip>/thumbnail/thumbnail1.jpg` in the page.** Handing that to a restricted client would publish a device address the projection has never carried, and would put authorisation in the browser. The restricted endpoint is addressed by **stable identity** and resolves the address server-side; no response, success or refusal, contains one.
+- **A disabled thumbnail cannot be detected from the image** — the device answers HTTP 200 with a placeholder either way — so the enable flag is read and cached for minutes, and the picture for seconds. Twenty-five clients then cost one device fetch, which is the measurement that matters, not the intent.
+- **Preview availability is never a routing gate.** A source whose encoder produces no picture keeps an ordinary card, says so, and routes perfectly well.
+- **Observation takes no lock.** A preview that queued behind somebody else's route would make looking at a card wait on unrelated equipment. The structural fence distinguishes translating *operations*, which must lock, from translating *reads*, which must not.
+
+### A survivor is a question, and there are three answers
+
+Three mutations survived the first pass on this work, and each one meant something different:
+
+- **A badly aimed mutation.** Adding the device address to a refusal that only fires when no address was found leaks an empty string. The test was right; the mutation proved nothing. Re-aim it at a path that actually holds the value.
+- **A second line of defence the first line never lets you reach.** The gate inspects `source` on that route and refuses before the handler's own grant check runs, so mutating the handler changed no observable behaviour. That check is not redundant — it is untested. Reach it deliberately by taking the first line out of the way for the span of one test, and assert the precondition so the test says which of the two it is measuring.
+- **A genuine gap.** The endpoint tests stubbed the device producer out entirely, so the rule that a disabled thumbnail is never passed off as a picture had no test at all.
+
+### An isolated evaluation world reports reassuring zeros
+
+- **`typeof window.omniConfirm` answered `undefined` for a module that had loaded perfectly well**, because the automation evaluates in an isolated world. Zero console errors, zero failed requests and the script tag present in the DOM — and a conclusion that was entirely wrong. Read page globals through an injected `<script>` that writes its answer into the DOM, which both worlds share.
+- The same measurement then found the real defect: the shared confirmation dialog was `position: static`, transparent, unpadded and full width on every page that did not load the A/V Matrix stylesheet. **Styling shared markup is part of sharing it** — the module now carries its own, and there is one definition rather than one per stylesheet.
+- **A guarded call to a helper that does not exist fails silently.** `window.omniToast` has never existed; the export is `window.toast`. `if (window.omniToast) window.omniToast(...)` is indistinguishable from working code until somebody looks for the message.

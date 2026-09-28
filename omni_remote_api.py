@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import time
 
 from flask import Response, g, jsonify, redirect, request
 
@@ -89,7 +90,7 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
              usb_state, usb_pair_view, usb_unpair_view,
              multiview_state, multiview_show_view, multiview_switch_view,
              forget_observation, locks, tls, cert_paths, tls_context_for,
-             certificate_state):
+             certificate_state, source_preview):
     """Attach the remote-access API.
 
     Everything the module needs is passed in rather than imported from the
@@ -878,8 +879,17 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         # destination held so two operators cannot interleave inside one
         # transaction. Last successful operation wins; the loser waits for the
         # winner to finish rather than corrupting it.
+        # Taking a display off a Multiview is allowed, and it is never
+        # implicit. The operator's answer travels with the request exactly as
+        # it does from the A/V Matrix; without it the engine refuses, which is
+        # what made this endpoint unreliable on any display that happened to be
+        # compositing.
+        leave_multiview = bool(data.get("exit_multiview"))
+
+        began = time.monotonic()
         try:
             with locks.hold(locks.decoder(destination_id)):
+                waited = time.monotonic() - began
                 # Again, now that the wait is over and the next statement
                 # writes to hardware.
                 refusal = _revalidate(_check, "/api/user/route")
@@ -891,12 +901,114 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                 with app.test_request_context(
                         "/api/route", method="POST",
                         json={"encoder": encoder_ip, "decoder": decoder_ip,
-                              "mode": mode}):
-                    return route_view()
-        except omni_locks.ResourceBusy:
-            return jsonify({"ok": False,
-                            "error": "That display is busy with another "
-                                     "change. Try again in a moment."}), 409
+                              "mode": mode,
+                              "exit_multiview": leave_multiview}):
+                    result = route_view()
+                routed = time.monotonic() - began
+                log.info("[USER-ROUTE] %s -> %s waited %.2fs total %.2fs",
+                         source_id, destination_id, waited, routed)
+                return _classify_route_result(result, destination_id)
+        except omni_locks.ResourceBusy as busy:
+            # The other 409, and the one everybody assumes. Named so the two
+            # can never again be told apart only by how long they took.
+            log.warning("[USER-ROUTE] %s is busy; waited %.1fs for %s",
+                        destination_id, time.monotonic() - began, busy.resource)
+            return jsonify({
+                "ok": False,
+                "reason": "resource_busy",
+                "error": "That display is busy with another change. "
+                         "Try again in a moment."}), 409
+
+    @app.route("/api/user/source_preview", methods=["GET"])
+    def api_user_source_preview():
+        """A still picture of one permitted source, by identity.
+
+        Optional, lazy and read-only. Preview availability never decides
+        whether a source may be routed: a source whose encoder is not
+        generating thumbnails is still a perfectly good source, and says so on
+        its card rather than disappearing from the list.
+        """
+        source_id = omni_users._normalise_identity(
+            request.args.get("source") or "")
+        if not source_id:
+            return jsonify({"ok": False, "error": "source required"}), 400
+
+        def _check(account):
+            if not account.permissions.has_feature(omni_access.FEATURE_AV):
+                return "missing_feature:av"
+            if not account.permissions.may_use_source(source_id):
+                return "source_not_permitted"
+            return None
+
+        refusal = _revalidate(_check, "/api/user/source_preview")
+        if refusal is not None:
+            return refusal
+
+        # Identity to address, here and never in a response. This is the whole
+        # reason the endpoint is addressed by identity.
+        address = ""
+        for unit in load_cache() or []:
+            if omni_users._normalise_identity(unit.get("mac")) == source_id:
+                address = (unit.get("ip") or "").strip()
+                break
+        if not address:
+            return jsonify({"ok": False, "reason": "preview_unavailable",
+                            "error": "That source is not available."}), 404
+
+        body, kind, reason = source_preview(address)
+        if reason:
+            # 200 rather than an error status: there is nothing wrong, the card
+            # simply has no picture, and a failed request in the console for
+            # every source without a thumbnail is noise an operator would have
+            # to learn to ignore.
+            return jsonify({"ok": False, "reason": reason}), 200
+
+        response = app.response_class(body, mimetype=kind)
+        # A picture of a live input, and one that a permission change must not
+        # leave cached in a browser.
+        response.headers["Cache-Control"] = "no-store, private"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    def _classify_route_result(result, destination_id):
+        """Give the A/V engine's answer a reason the restricted shell can use.
+
+        The engine speaks to the A/V Matrix, which knows what `MULTIVIEW
+        ACTIVE` means. The restricted shell is a different audience: it needs
+        to know that this particular refusal is one the operator can answer,
+        rather than a fault. Everything else is passed through untouched --
+        this endpoint does not reimplement routing and must not reinterpret a
+        result it does not recognise.
+        """
+        body = _payload_of(result)
+        status = result[1] if isinstance(result, tuple) and len(result) > 1 else 200
+        if status == 409 and body.get("status") == "MULTIVIEW ACTIVE":
+            log.info("[USER-ROUTE] %s is showing Multiview %s; asking",
+                     destination_id, body.get("multiview"))
+            return jsonify({
+                "ok": False,
+                "reason": "multiview_active",
+                "multiview": body.get("multiview"),
+                "error": body.get("error") or
+                         "That display is showing a Multiview."}), 409
+        return result
+
+    def _payload_of(result):
+        """The JSON body of whatever a view returned, without raising.
+
+        A view hands back a Response, or (Response, status). Reading
+        `.get_data()` off the tuple raises, and inside a request that surfaces
+        as a 500 claiming the application is broken.
+        """
+        import json as _json
+        response = result[0] if isinstance(result, tuple) and result else result
+        getter = getattr(response, "get_data", None)
+        if getter is None:
+            return response if isinstance(response, dict) else {}
+        try:
+            return _json.loads(getter() or b"{}")
+        except ValueError:
+            return {}
 
     def _current_account():
         """The account as it stands right now, not as the gate found it.
@@ -1041,8 +1153,10 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                 finally:
                     # This just changed what a USB read would report.
                     forget_observation("usb")
-        except omni_locks.ResourceBusy:
+        except omni_locks.ResourceBusy as busy:
+            log.warning("[USER-USB] busy: %s", busy.resource)
             return jsonify({"ok": False,
+                            "reason": "resource_busy",
                             "error": "That equipment is busy with another "
                                      "change. Try again in a moment."}), 409
 
@@ -1129,8 +1243,10 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                         return multiview_show_view()
                 finally:
                     forget_observation("multiview:" + str(address))
-        except omni_locks.ResourceBusy:
+        except omni_locks.ResourceBusy as busy:
+            log.warning("[USER-MV] busy: %s", busy.resource)
             return jsonify({"ok": False,
+                            "reason": "resource_busy",
                             "error": "That display is busy with another "
                                      "change. Try again in a moment."}), 409
 
@@ -1190,8 +1306,10 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                         return multiview_switch_view()
                 finally:
                     forget_observation("multiview:" + str(display_address))
-        except omni_locks.ResourceBusy:
+        except omni_locks.ResourceBusy as busy:
+            log.warning("[USER-MV] busy: %s", busy.resource)
             return jsonify({"ok": False,
+                            "reason": "resource_busy",
                             "error": "That display is busy with another "
                                      "change. Try again in a moment."}), 409
 

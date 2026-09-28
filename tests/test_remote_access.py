@@ -177,6 +177,12 @@ class RestrictedUserSurfaceTests(unittest.TestCase):
             "/api/user/usb_state", "/api/user/usb_route",
             "/api/user/multiview_state", "/api/user/multiview_show",
             "/api/user/multiview_switch",
+            # A still picture of one permitted source. It answers with an
+            # image or a reason and never with device state -- no address, no
+            # MAC, no serial, no configuration -- and the account's own source
+            # grant is checked at the operation boundary, so a source this
+            # account may not use has no preview whatever its card said.
+            "/api/user/source_preview",
         }, "widening what a restricted account may call is a deliberate "
            "security decision, not an implementation detail")
 

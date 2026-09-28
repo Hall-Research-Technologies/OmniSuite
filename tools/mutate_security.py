@@ -52,6 +52,9 @@ CERT = ["tests.test_certificate_address", "tests.test_remote_access"]
 DIRECT = ["tests.test_direct_access", "tests.test_remote_browser_flow",
           "tests.test_security_review"]
 
+#: Restricted-user routing and source previews.
+ROUTING = ["tests.test_user_routing", "tests.test_security_review"]
+
 #: (id, file, anchor, replacement, what the defect would be, suites)
 MUTATIONS = [
     # ---- the listener trust model -----------------------------------
@@ -329,6 +332,62 @@ MUTATIONS = [
      '                if False:\n                    continue',
      "any token at all would resolve to the first account with a link",
      DIRECT),
+    # ---- restricted-user routing --------------------------------------
+    #
+    # The reported defect: routing was "hit or miss" because the engine
+    # refuses to take a display off a Multiview unless the caller says so, and
+    # the answer was never passed through.
+    ("route.answer-not-passed-through", "omni_remote_api.py",
+     '        leave_multiview = bool(data.get("exit_multiview"))',
+     '        leave_multiview = False',
+     "a display showing a Multiview would refuse every User route", ROUTING),
+    ("route.409s-indistinguishable", "omni_remote_api.py",
+     '                "reason": "multiview_active",',
+     '                "reason": "resource_busy",',
+     "a composition and a busy display would be the same answer again",
+     ROUTING),
+    ("route.busy-mislabelled", "omni_remote_api.py",
+     '                "reason": "resource_busy",\n'
+     '                "error": "That display is busy with another change. "',
+     '                "reason": "multiview_active",\n'
+     '                "error": "That display is busy with another change. "',
+     "a busy display would be reported as a composition", ROUTING),
+    ("route.display-not-serialised", "omni_remote_api.py",
+     "            with locks.hold(locks.decoder(destination_id)):",
+     "            with locks.hold():",
+     "two operators could interleave inside one route transaction", ROUTING),
+
+    # ---- source previews ----------------------------------------------
+    #
+    # This one survived when it was first written, because the gate refuses an
+    # unpermitted `source` before the handler's own check runs. The handler
+    # check is a second line of defence, and tests/test_user_routing.py
+    # reaches it deliberately by taking the gate's device check out of the way.
+    ("preview.not-authorised", "omni_remote_api.py",
+     '            if not account.permissions.may_use_source(source_id):\n'
+     '                return "source_not_permitted"\n'
+     '            return None\n\n'
+     '        refusal = _revalidate(_check, "/api/user/source_preview")',
+     '            return None\n\n'
+     '        refusal = _revalidate(_check, "/api/user/source_preview")',
+     "a restricted account could preview any source", ROUTING),
+    # Aimed at the path that HAS an address. The first version mutated the
+    # branch that fires only when none was found, where the leak was an empty
+    # string -- a mutation that proved nothing.
+    ("preview.leaks-the-address", "omni_remote_api.py",
+     '            return jsonify({"ok": False, "reason": reason}), 200',
+     '            return jsonify({"ok": False, "reason": reason, "address": address}), 200',
+     "a device address would reach a restricted browser", ROUTING),
+    ("preview.disabled-shown-as-a-picture", "OmniMatrix_upgrade_server_v7_6y.py",
+     '    if enabled is False:\n        return None, "", "preview_disabled"',
+     '    if False:\n        return None, "", "preview_disabled"',
+     "the device's placeholder would be passed off as a source picture",
+     ROUTING),
+    ("preview.cache-removed", "OmniMatrix_upgrade_server_v7_6y.py",
+     '    body, kind = _preview_images.get("thumb:" + address, fetch)',
+     '    body, kind = fetch()',
+     "every browser would fetch from every encoder for itself", ROUTING),
+
     ("direct.session-method-ignored", "omni_users.py",
      '        self.method = method if method in SESSION_METHODS else BY_PASSWORD',
      '        self.method = BY_PASSWORD',

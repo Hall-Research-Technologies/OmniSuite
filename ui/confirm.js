@@ -15,7 +15,69 @@
   'use strict';
   if (typeof window.omniConfirm === 'function') return;
 
+  // Styling shared markup is part of sharing it.
+  //
+  // These rules lived in ui/matrix/matrix.css, so the dialog was a dialog only
+  // on pages that happened to load that stylesheet. Measured on /admin/users
+  // -- the page where a passwordless bearer link is replaced -- the backdrop
+  // was `position: static`, the card transparent with no radius, no padding,
+  // no shadow and the full width of the window: bare text at the bottom of the
+  // page rather than a modal.
+  //
+  // So the module carries them. Any page that loads the script gets a working
+  // dialog, and there is one definition rather than one per stylesheet.
+  // Semantic tokens with literal fallbacks, so it follows every preset and
+  // still renders on a page that defines none of them.
+  function style() {
+    if (document.getElementById('omni_confirm_style')) return;
+    const sheet = document.createElement('style');
+    sheet.id = 'omni_confirm_style';
+    sheet.textContent = [
+      '.confirm-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.5);',
+      'display:flex;align-items:center;justify-content:center;z-index:60000;',
+      // Taller than the window must still be reachable: the backdrop scrolls
+      // and the card centres with auto margins, so a short one is unaffected.
+      'overflow:auto;padding:20px}',
+      '.confirm-backdrop.hidden{display:none!important}',
+      '.confirm-card{width:min(95vw,520px);margin:auto;',
+      'background:var(--card,#222a33);border:1px solid var(--border,#39424e);',
+      'border-radius:10px;padding:18px;color:var(--text,var(--fg,#e6e8ee));',
+      'box-shadow:0 18px 50px rgba(0,0,0,.38);',
+      'font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}',
+      '.confirm-card h3{margin:0 0 8px;font-size:17px}',
+      '.confirm-message{color:var(--muted,#a9b0c0);line-height:1.45;',
+      'margin-bottom:12px}',
+      '.confirm-summary{border:1px solid var(--border,#39424e);',
+      'border-radius:8px;background:var(--panel-2,#1b222a);padding:10px;',
+      'margin:10px 0}',
+      '.confirm-summary-row{display:flex;justify-content:space-between;',
+      'gap:16px;padding:3px 0;font-size:13px}',
+      '.confirm-summary-row span:first-child{color:var(--muted,#a9b0c0)}',
+      '.confirm-suppress{display:flex;align-items:center;gap:8px;',
+      'margin-top:10px;font-size:12px;color:var(--muted,#a9b0c0)}',
+      '.confirm-actions{display:flex;justify-content:flex-end;gap:8px;',
+      'margin-top:14px}',
+      // The dialog's own buttons, so it does not depend on a page stylesheet
+      // for the controls that answer it.
+      '.confirm-actions button{font:inherit;padding:7px 14px;border-radius:8px;',
+      'border:1px solid var(--border,#39424e);cursor:pointer;',
+      'background:var(--accent,#3b82f6);color:var(--accent-ink,#fff)}',
+      '.confirm-actions button:focus-visible{outline:2px solid ',
+      'var(--accent,#3b82f6);outline-offset:2px}',
+      // Quiet, but a real surface with a real border -- not a ghost outline.
+      '.confirm-cancel{background:var(--panel-2,#1b222a)!important;',
+      'color:var(--text,var(--fg,#e6e8ee))!important}',
+      // A destructive action is distinguished by hue AND by form, because a
+      // preset can bring accent and critical close together.
+      '.confirm-danger{background:var(--state-error,#e5534b)!important;',
+      'color:#fff!important;border-color:var(--state-error,#e5534b)!important;',
+      'font-weight:600}',
+    ].join('');
+    (document.head || document.documentElement).appendChild(sheet);
+  }
+
   function build() {
+    style();
     let backdrop = document.getElementById('omni_confirm_backdrop');
     if (backdrop) return backdrop;
     backdrop = document.createElement('div');
