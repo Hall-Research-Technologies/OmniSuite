@@ -1324,6 +1324,22 @@
       diagnostics, scanning or any administrator screen. Editing the web address
       by hand does not change that.</p>
 
+      <h4>What it looks like to the person using it</h4>
+      <p>A direct link opens a <strong>dedicated control panel</strong> rather
+      than somebody&rsquo;s signed-in account. There is no name at the top, no
+      <strong>My link</strong> and no <strong>Sign out</strong> &mdash; there is
+      no password behind the link to sign back in with, so signing out would
+      only strand whoever is holding the tablet. What it shows is the features
+      you granted that account and nothing else.</p>
+      <p>The browser stays on the link&rsquo;s own address, so it can be
+      bookmarked, saved to a home screen and refreshed like any other page.</p>
+      <div class="warn"><strong>The address bar holds the credential.</strong>
+      That is what makes the bookmark work, and it means the address deserves
+      the same care as a password. Anyone who reads it off the screen, a
+      screenshot or a browser history can use it. On a shared machine, prefer a
+      password account. If a link may have been seen, press
+      <strong>Regenerate</strong>.</div>
+
       <h4>Replacing a link</h4>
       <p>If a link has been shared with somebody who should not have it, or you
       simply want a new one, press <strong>Regenerate</strong>. The old address
@@ -1426,6 +1442,31 @@
       <p>Each display also says what is on it now. A display showing something
       the account is not allowed to use is reported as showing another source,
       without naming it.</p>
+      <p>The display chosen last is remembered, so coming back to the screen or
+      refreshing it does not mean choosing it again. Nothing is ever chosen
+      automatically &mdash; a person with one display still picks it &mdash; and
+      if that display is later unassigned or removed, the selection is simply
+      cleared rather than moved to another one.</p>
+
+      <h4 id="user-display-pictures">Pictures on the display cards</h4>
+      <p>A display that is showing one of the account's own sources shows that
+      source's picture on its card, so it is possible to see at a glance what is
+      on each screen. A display showing something else keeps its ordinary card
+      and says so without naming it, and a display showing a Multiview says
+      <em>Multiview</em>. A display showing nothing says <em>Unrouted</em>.</p>
+
+      <h4 id="user-unroute">Stopping a display</h4>
+      <p>Choosing a display puts an <strong>Unroute</strong> button beside
+      <strong>Show</strong>. It stops that display showing anything: the picture
+      goes, the sound goes, and the card then reads <em>Unrouted</em>.</p>
+      <p>OmniSuite asks before doing it, because unlike choosing a different
+      source there is nothing left on screen afterwards. If the display was
+      showing a Multiview, unrouting takes it out of the Multiview first and
+      then stops it; the saved Multiview itself is not deleted and can be shown
+      again later.</p>
+      <p>The button is greyed out when the display is already showing nothing,
+      and OmniSuite confirms with the display that it really has stopped before
+      reporting success.</p>
 
       <h4 id="user-previews">Source pictures</h4>
       <p>Where a source is set up to produce a picture, its card shows one, so
@@ -1440,6 +1481,13 @@
       then says <em>Preview disabled</em> and can still be chosen and shown. If
       you want pictures for a source, turn its thumbnail on in
       <strong>Configure</strong>; nothing in OmniSuite turns it on by itself.</div>
+      <p>Turning a thumbnail on takes effect the next time the User screen is
+      opened or refreshed &mdash; the assignment does not need changing, and the
+      source does not need removing and adding back. The same is true of a
+      device's friendly name, its location and description, whether it is
+      online, and what it is currently showing: an assignment grants access to a
+      piece of equipment, and what the screen says about that equipment always
+      comes from the equipment as it is now.</p>
       <p>People only ever see pictures of the sources you assigned to them.
       Asking for any other source's picture is refused by OmniSuite, not merely
       left off the screen.</p>
@@ -1466,7 +1514,33 @@
         <tr><td>That equipment did not respond</td>
         <td>The source or the display is not answering. It is a network or
         equipment problem rather than a permission one.</td></tr>
+        <tr><td>The display did not confirm the video (or audio) subscription
+        after it was set</td>
+        <td>The change was sent but the display did not report it back.
+        OmniSuite names the part that did not confirm rather than reporting the
+        whole route as failed.</td></tr>
+        <tr><td>That source does not send audio</td>
+        <td>Not a failure. Some sources carry picture only; the picture is
+        showing. Any sound the display was carrying from a previous source is
+        cleared, so it cannot be left playing underneath the new picture.</td></tr>
+        <tr><td>Your account does not have A/V routing</td>
+        <td>The feature itself has not been granted, as opposed to a particular
+        source or display.</td></tr>
+        <tr><td>You do not have access to that source (or that display)</td>
+        <td>The feature is granted but that particular piece of equipment is
+        not assigned to this account.</td></tr>
+        <tr><td>That preset now uses a source you do not have access to</td>
+        <td>A Multiview preset was approved for this account, but one of the
+        windows in it is fed by a source the account was not given. Assign that
+        source to the account, or approve a preset that only uses sources it
+        already has.</td></tr>
+        <tr><td>That page has been open a while. Reload it and try again</td>
+        <td>The screen has been open long enough that its security token is
+        stale. Reloading fixes it.</td></tr>
       </table>
+      <p>Each message says which of these it is, so a refusal can be acted on
+      without guessing. A refusal about permission and a display that simply did
+      not answer are never reported the same way.</p>
 
       <h4 id="user-multiview-exit">Showing a source on a display that has a Multiview</h4>
       <p>Nothing special is needed. Choosing a source and pressing

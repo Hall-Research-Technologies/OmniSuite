@@ -71,7 +71,10 @@ class FinalInventoryTests(unittest.TestCase):
         # /api/user/source_preview added: a still picture of a permitted
         # source, addressed by stable identity so no device address reaches a
         # restricted client, and refused for a source the account may not use.
-        self.assertEqual(counts[Access.USER], 7,
+        # /api/user/unroute added: putting a permitted display into the
+        # verified unrouted state. Same feature and the same destination check
+        # as routing to it; it names no source because it subscribes to none.
+        self.assertEqual(counts[Access.USER], 8,
                          "what a restricted account may call changed")
         # Three moved to ADMIN in the release-candidate audit: the update
         # alert, its acknowledgement and the appearance reset all write or
@@ -86,10 +89,14 @@ class FinalInventoryTests(unittest.TestCase):
         # Access link on, off, or replacing it. Administrative in both
         # directions -- a restricted account may read its own link and may
         # never create one.
-        self.assertEqual(counts[Access.ADMIN], 107,
+        # /api/unroute added: the engine endpoint behind both the A/V Matrix's
+        # and the restricted shell's unroute, so there is one implementation.
+        # /api/admin/credentials added: which credential each device is
+        # actually answering to, by name -- never a value.
+        self.assertEqual(counts[Access.ADMIN], 109,
                          "the administrative surface changed")
         self.assertEqual(sum(counts.values()), len(registered_rules()))
-        self.assertEqual(sum(counts.values()), 140)
+        self.assertEqual(sum(counts.values()), 143)
 
     def test_the_public_surface_is_still_only_what_signing_in_needs(self):
         public = {rule for rule, (access, _f) in omni_access.ROUTES.items()

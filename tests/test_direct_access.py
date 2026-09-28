@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -486,8 +487,12 @@ class SourceFenceTests(unittest.TestCase):
                     self.assertNotIn("token", line.lower(),
                                      "a bearer credential must never be logged")
 
+    #: Files that can see a Direct Access link. `users.js` creates and displays
+    #: one; `user.js` has the account's own "My link" sheet.
+    LINK_BEARING = ("ui/admin/users.js", "ui/user/user.js")
+
     def test_the_link_is_never_written_to_browser_storage(self):
-        for name in ("ui/admin/users.js", "ui/user/user.js"):
+        for name in self.LINK_BEARING:
             text = (ROOT / name).read_text(encoding="utf-8")
             code = "\n".join(l.split("//")[0] for l in text.split("\n"))
             for marker in ("localStorage.setItem('direct",
@@ -498,6 +503,29 @@ class SourceFenceTests(unittest.TestCase):
             # Nothing writes the link element's value into storage at all.
             self.assertNotIn("localStorage.setItem", code,
                              f"{name} must not put anything in localStorage")
+
+    def test_the_only_module_that_writes_storage_cannot_see_a_link(self):
+        """The shell remembers a selection, and still writes no storage itself.
+
+        The blanket ban above is worth keeping rather than relaxing, so the one
+        thing that does need storing -- which display the operator last chose --
+        lives in a module of its own. This is what makes that separation real
+        rather than cosmetic: the module must not mention a link, a token or a
+        session, so there is nothing for it to write even by mistake.
+        """
+        text = (ROOT / "ui/user/remember.js").read_text(encoding="utf-8")
+        # Block comments as well as line comments. The header of that module
+        # explains, in prose, that it must never see a token or a link -- and
+        # an assertion that reads the explanation instead of the code passes
+        # for exactly the wrong reason.
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+        code = "\n".join(l.split("//")[0] for l in text.split("\n"))
+        for forbidden in ("token", "direct_access", "directAccess", "link",
+                          "csrf", "password", "fetch(", "XMLHttpRequest"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden.lower(), code.lower(),
+                                 "the storage module must not be able to "
+                                 "reach a credential")
 
     def test_a_token_in_a_request_path_is_redacted_before_it_is_logged(self):
         """The request log would otherwise hold a working passwordless link.

@@ -283,6 +283,29 @@ def evaluate(rule, method, environ, payload, store) -> Decision:
     return Decision(False, 403, "unclassified", account)
 
 
+#: What a refusal means, in a sentence an operator can act on.
+#:
+#: One map, because a refusal can be produced either here or in the handler
+#: depending on which check reaches it first, and the two must not read
+#: differently for the same cause. The internal name travels beside it as
+#: `reason`, for a log or a test; it is never what the operator is shown.
+DENIAL_SENTENCES = {
+    "csrf": "That page has been open a while. Reload it and try again.",
+    "not_admin": "That area is for administrators.",
+    "direct_link_not_admin":
+        "A direct access link cannot reach the administrative area.",
+    "missing_feature:av": "Your account does not have A/V routing.",
+    "missing_feature:multiview": "Your account does not have Multiview.",
+    "missing_feature:usb": "Your account does not have USB switching.",
+    "source_not_permitted": "You do not have access to that source.",
+    "destination_not_permitted": "You do not have access to that display.",
+    "multiview_not_approved":
+        "That Multiview preset has not been approved for your account.",
+    "multiview_content_not_permitted":
+        "That preset now uses a source you do not have access to.",
+}
+
+
 def _check_devices(payload, account) -> Decision:
     sources = _identities_in(payload, SOURCE_KEYS)
     destinations = _identities_in(payload, DESTINATION_KEYS)
@@ -372,6 +395,25 @@ def install(app, store_getter, enabled_getter):
         message = {401: "authentication required",
                    403: "not permitted",
                    404: "not found"}.get(decision.status, "denied")
-        return jsonify({"ok": False, "error": message}), decision.status
+        # The same sentence the handler would have given for the same reason.
+        # The gate refuses some of these before the handler is ever reached, so
+        # without this one refusal reads as a sentence and an identical one as
+        # "not permitted", purely by which layer happened to catch it.
+        message = DENIAL_SENTENCES.get(decision.reason, message)
+        # The reason as well as the status. A 403 can come from the CSRF
+        # check, the session, the role, a missing feature, a source or a
+        # destination, and a caller that is told only FORBIDDEN cannot tell
+        # which -- which is how "the operator has Multiview but it returns
+        # 403" became a question nobody could answer from the response.
+        # `unclassified` is deliberately not disclosed: it is an internal
+        # condition about the route table rather than about this account, and
+        # it is logged loudly instead.
+        reason = decision.reason or "denied"
+        if reason == "unclassified":
+            log.error("[GATE] %s %s is not classified in the route table",
+                      request.method, rule)
+            reason = "not_permitted"
+        return jsonify({"ok": False, "error": message,
+                        "reason": reason}), decision.status
 
     return app

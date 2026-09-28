@@ -124,6 +124,10 @@ class AdministrativeStateIsClosedTests(unittest.TestCase):
                        if access is Access.USER}
         self.assertEqual(user_routes, {
             "/api/user/route",
+            # Putting a permitted display into the verified unrouted state --
+            # the same feature and the same destination check as routing to
+            # it, delegating to the same engine and projected the same way.
+            "/api/user/unroute",
             "/api/user/usb_state", "/api/user/usb_route",
             "/api/user/multiview_state", "/api/user/multiview_show",
             "/api/user/multiview_switch",
@@ -149,7 +153,11 @@ class AdministrativeStateIsClosedTests(unittest.TestCase):
                      "/api/user/multiview_switch",
                      # Answers with an image or a reason. There is no object to
                      # project, and nothing about the device in either answer.
-                     "/api/user/source_preview"}
+                     "/api/user/source_preview",
+                     # Hands over to the same verified engine as /api/user/route
+                     # and projects its answer through the same reducer, so no
+                     # device address reaches a restricted client.
+                     "/api/user/unroute"}
         pages = {"/user", "/help"}
         session_only = {"/api/auth/logout", "/api/auth/session",
                         "/api/ui_preferences", "/api/ui_preferences/reset",

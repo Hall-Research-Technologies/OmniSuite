@@ -36,7 +36,51 @@
     mvPresets: [],
     mvPreset: null,
     mvWindow: null,
+
+    // True when this browser got here through a Direct Access link. The page
+    // then presents itself as a dedicated control panel rather than as
+    // somebody's signed-in account.
+    directLink: false,
   };
+
+  // ------------------------------------------------- remembered selection
+  //
+  // The display the operator last chose, by stable identity, so a refresh or
+  // a completed route does not drop them back to an empty form. Two rules
+  // make it safe:
+  //
+  //   * it is a bookmark, never an authorisation. It is honoured only if the
+  //     identity is in the list the server just sent, so a display that has
+  //     been unassigned, taken away or has gone is dropped rather than
+  //     presented as a working selection.
+  //   * nothing is ever selected on the operator's behalf. A single assigned
+  //     display is still chosen by them; a list of one is not consent.
+  //
+  // Presentation only: no device configuration and no credential is stored.
+  // Storage is reached only through remember.js. This file can see a Direct
+  // Access link, so it writes to browser storage nowhere at all; that module
+  // cannot see one, and takes a device identity the page is already showing.
+  const REMEMBERED_DESTINATION = 'destination';
+  const REMEMBERED_MV_DISPLAY = 'mv_display';
+
+  function remember(key, value) {
+    if (window.omniRemember) window.omniRemember.set(key, value);
+  }
+
+  function recall(key) {
+    return window.omniRemember ? window.omniRemember.get(key) : null;
+  }
+
+  // Honour a remembered identity only when it is still on offer.
+  function restoreSelection(list, current, key) {
+    if (current && list.some((item) => item.id === current)) return current;
+    const saved = recall(key);
+    if (saved && list.some((item) => item.id === saved)) return saved;
+    // Gone, or never set. Clear the record rather than leaving a name that
+    // will never match again.
+    if (saved) remember(key, null);
+    return null;
+  }
 
   const el = (id) => document.getElementById(id);
 
@@ -114,16 +158,31 @@
     // Nothing is requested here: the image is fetched when the card is
     // actually on screen, so a long list costs nothing until it is scrolled
     // to, and an idle page makes no preview traffic at all.
-    if (kind === 'source' && item.online !== false) {
+    // A display carries the picture of whatever it is currently showing, and
+    // only when that source is one this account is already permitted to see.
+    // `showing.source_id` is null for anything else -- a Multiview, an
+    // unrouted display, or a source outside this account's world -- so a
+    // thumbnail the operator is not entitled to cannot be reached from here
+    // by construction rather than by a check that could be forgotten.
+    const showing = item.showing || {};
+    const previewId = kind === 'source' ? item.id
+      : (kind === 'destination' ? showing.source_id || null : null);
+    const previewNote = kind === 'destination' ? {
+      none: 'Unrouted',
+      multiview: 'Multiview',
+      other: 'Another source',
+    }[showing.mode] || '' : '';
+
+    if ((previewId || previewNote) && item.online !== false) {
       const shot = document.createElement('span');
       shot.className = 'pick-shot empty';
-      shot.dataset.note = '';
+      shot.dataset.note = previewNote;
       const text = document.createElement('span');
       text.className = 'pick-text';
       text.append(name, sub);
       button.classList.add('has-preview');
       button.append(shot, text);
-      watchForPreview(button, item.id, shot);
+      if (previewId) watchForPreview(button, previewId, shot);
       return button;
     }
 
@@ -143,6 +202,11 @@
   let previewObserver = null;
 
   function watchForPreview(button, sourceId, shot) {
+    // The identity whose picture this card shows. For a source that is the
+    // card's own device; for a display it is whatever the display is showing,
+    // which is a different thing from the card's id and must not be read from
+    // it.
+    button.dataset.previewId = sourceId;
     if (!('IntersectionObserver' in window)) {
       loadPreview(sourceId, shot);
       return;
@@ -153,7 +217,8 @@
           if (!entry.isIntersecting) return;
           observer.unobserve(entry.target);
           const node = entry.target;
-          loadPreview(node.dataset.id, node.querySelector('.pick-shot'));
+          loadPreview(node.dataset.previewId,
+                      node.querySelector('.pick-shot'));
         });
       }, {rootMargin: '150px'});
     }
@@ -165,11 +230,17 @@
   // an error status when there is simply nothing to show.
   async function loadPreview(sourceId, shot) {
     if (!shot || !sourceId) return;
-    const bust = previewSeen.has(sourceId) ? '&t=' + Date.now() : '';
+    // The first request for a source in this page's life asks the server to
+    // re-read the encoder rather than answer from its minutes-long cache, so
+    // a thumbnail switched on at the device appears on a reload instead of
+    // whenever that cache happens to lapse. Later requests in the same page
+    // are ordinary cache-busted reads and cost the device nothing.
+    const first = !previewSeen.has(sourceId);
+    const extra = first ? '&fresh=1' : '&t=' + Date.now();
     previewSeen.add(sourceId);
     try {
       const res = await fetch(
-        '/api/user/source_preview?source=' + encodeURIComponent(sourceId) + bust,
+        '/api/user/source_preview?source=' + encodeURIComponent(sourceId) + extra,
         {credentials: 'same-origin'});
       if (!res.ok) { noPreview(shot, ''); return; }
       const kind = res.headers.get('Content-Type') || '';
@@ -206,9 +277,9 @@
 
   function renderList(hostId, emptyId, items, kind, subtitleFor) {
     const host = el(hostId);
-    // The cards about to be discarded are the observer's targets. Disconnect
-    // before rebuilding rather than leaving it watching detached nodes.
-    if (previewObserver && hostId === 'sources') previewObserver.disconnect();
+    // The observer's targets are torn down by renderAv before either list is
+    // rebuilt -- both lists carry previews now, so disconnecting here would
+    // drop the observers the other list had just registered.
     host.replaceChildren();
     items.forEach((item) => host.appendChild(
       card(item, kind, item.online === false ? 'Offline' : subtitleFor(item))));
@@ -235,8 +306,21 @@
   function renderAction() {
     const summary = el('summary');
     const action = el('route_btn');
+    const stop = el('unroute_btn');
     el('action_bar').hidden = state.tab === 'multiview';
     if (state.tab === 'multiview') return;
+
+    // Unroute belongs to A/V and needs a chosen display to act on. It is
+    // hidden rather than disabled when there is nothing selected, because
+    // until then it is not an action that exists.
+    const target = state.tab === 'av'
+      ? state.destinations.find((d) => d.id === state.destination) : null;
+    stop.hidden = !target;
+    if (target) {
+      const showing = target.showing || {};
+      // Nothing to stop if it is already showing nothing.
+      stop.disabled = state.busy || showing.mode === 'none';
+    }
 
     if (state.busy) {
       summary.textContent = 'Working…';
@@ -293,6 +377,10 @@
   }
 
   function renderAv() {
+    // Every card about to be discarded is one of the observer's targets, and
+    // both lists carry previews. Disconnect once, here, before either is
+    // rebuilt; each card then re-registers itself as it is created.
+    if (previewObserver) previewObserver.disconnect();
     renderList('sources', 'sources_empty', state.sources, 'source',
                () => 'Ready');
     renderList('destinations', 'destinations_empty', state.destinations,
@@ -516,6 +604,7 @@
     if (kind === 'mvDisplay') {
       state.mvDisplay = state.mvDisplay === id ? null : id;
       state.mvPreset = null;
+      remember(REMEMBERED_MV_DISPLAY, state.mvDisplay);
       markSelected();
       loadMultiviewPresets();
       return;
@@ -525,6 +614,9 @@
                    computer: 'computer', peripheral: 'peripheral'}[kind];
     if (!field) return;
     state[field] = state[field] === id ? null : id;
+    if (field === 'destination') {
+      remember(REMEMBERED_DESTINATION, state.destination);
+    }
     markSelected();
     renderAction();
   });
@@ -583,6 +675,61 @@
     } finally {
       // Always, on every path: a failed route must leave the page usable
       // without a reload.
+      state.busy = false;
+      state.routingTo = null;
+      renderAction();
+      renderRoutingState();
+    }
+  });
+
+  // ------------------------------------------------------------- unroute
+  //
+  // Stopping a display is its own action with its own confirmation: it is
+  // destructive in the only sense that matters to somebody watching, and
+  // unlike a route it cannot be undone by choosing something else.
+  el('unroute_btn').addEventListener('click', async () => {
+    if (state.busy || !state.destination) return;
+    const name = named(state.destinations, state.destination) || 'that display';
+    const chosen = state.destination;
+
+    const ask = window.omniConfirm;
+    if (typeof ask !== 'function') {
+      // The notice is the point of the dialog. Without it, refuse rather
+      // than falling back to a browser string box that cannot carry it.
+      window.toast && window.toast(
+        'Cannot confirm that action on this page.', 'error');
+      return;
+    }
+    const go = await ask({
+      title: 'Stop this display?',
+      message: name + ' will stop showing anything until a source is chosen '
+               + 'for it again.',
+      confirmText: 'Unroute',
+      danger: true,
+    });
+    if (!go) return;
+
+    state.busy = true;
+    state.routingTo = chosen;
+    renderAction();
+    renderRoutingState();
+    try {
+      const result = await api('/api/user/unroute', {
+        method: 'POST',
+        body: JSON.stringify({destination: chosen}),
+      });
+      if (result.status === 200 && result.body.ok) {
+        window.toast && window.toast('Unrouted', 'ok');
+      } else {
+        window.toast && window.toast(
+          failureText(result.body, result.status), 'error');
+      }
+      await refresh();
+    } catch (err) {
+      if (String(err.message) !== 'signed out') {
+        window.toast && window.toast('Could not reach OmniSuite', 'error');
+      }
+    } finally {
       state.busy = false;
       state.routingTo = null;
       renderAction();
@@ -666,13 +813,28 @@
     state.destinations = body.destinations || [];
 
     if (!state.sources.some((s) => s.id === state.source)) state.source = null;
-    if (!state.destinations.some((d) => d.id === state.destination)) {
-      state.destination = null;
-    }
+    // The display survives a refresh and a completed route, but only if the
+    // server still lists it for this account. Nothing is selected merely
+    // because the list happens to hold one.
+    state.destination = restoreSelection(
+      state.destinations, state.destination, REMEMBERED_DESTINATION);
+    state.mvDisplay = restoreSelection(
+      state.mvDisplays.length ? state.mvDisplays : state.destinations,
+      state.mvDisplay, REMEMBERED_MV_DISPLAY);
 
-    el('who').textContent = body.username ? body.username : 'On this computer';
-    el('signout').hidden = !body.username;
-    el('my_link_btn').hidden = !body.username;
+    // A Direct Access session is a dedicated control panel, not somebody's
+    // account. It carries no name, no link to copy and no way to sign out --
+    // there is no password behind it to sign back in with, so a sign-out
+    // would strand whoever is holding the tablet. The account controls are
+    // removed rather than hidden, so nothing is one CSS rule away from being
+    // back.
+    const panel = state.directLink;
+    el('who').textContent = panel ? ''
+      : (body.username ? body.username : 'On this computer');
+    el('who').hidden = panel;
+    el('signout').hidden = panel || !body.username;
+    el('my_link_btn').hidden = panel || !body.username;
+    document.body.classList.toggle('direct-panel', panel);
 
     renderAv();
     if (!state.tab || state.features.indexOf(state.tab) === -1) {
@@ -692,12 +854,16 @@
   // In memory for the life of the tab, exactly as the sign-in page keeps it.
   // The link itself is never stored: it is a password.
   async function adoptSessionToken() {
-    if (csrf()) return;
+    // Always asked, even when a CSRF token is already held. A Direct Access
+    // session that reloads still has its token in sessionStorage, so an early
+    // return here would leave the page not knowing it is a panel and it would
+    // draw the account controls again on every refresh.
     try {
       const {body} = await api('/api/auth/session');
-      if (body && body.csrf_token) {
+      if (body && body.csrf_token && !csrf()) {
         sessionStorage.setItem('omni_csrf', body.csrf_token);
       }
+      state.directLink = !!(body && body.method === 'direct_link');
     } catch (err) { /* refresh() will report anything that matters */ }
   }
 

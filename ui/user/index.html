@@ -154,12 +154,18 @@
      incomplete: it says what is still missing. -->
 <div class="action-bar" id="action_bar" hidden>
   <div class="summary" id="summary">Choose a source and a display.</div>
+  <!-- Stopping a display is a separate, deliberate action, and it is kept
+       away from the primary one so the two cannot be hit for each other. It
+       appears only once a display is chosen, because it has nothing to act
+       on until then. -->
+  <button class="btn-secondary-lg" id="unroute_btn" type="button" hidden>Unroute</button>
   <button class="btn-primary-lg" id="route_btn" type="button" disabled>Show</button>
 </div>
 
 <script src="/ui/csrf.js"></script>
 <script src="/ui/toast.js"></script>
 <script src="/ui/confirm.js"></script>
+<script src="/ui/user/remember.js"></script>
 <script src="/ui/user/user.js"></script>
 </body>
 </html>

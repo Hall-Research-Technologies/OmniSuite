@@ -360,21 +360,35 @@ class DirectAccessOverHttpTests(RemoteBrowserTestBase):
                           **NAVIGATION})
 
     def test_a_valid_link_opens_the_restricted_shell_with_no_password(self):
+        """The panel is served at the link's own URL, not redirected to.
+
+        The link has to stay bookmarkable and survive a refresh, so the shell
+        is returned in place. The session cookie is what authorises everything
+        afterwards; the token is never sent again.
+        """
         response = self.open_link(self.token)
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.headers["Location"], "/user")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/html", response.headers.get("Content-Type", ""))
         self.assertIn(omni_gate.SESSION_COOKIE,
                       response.headers.get("Set-Cookie", ""))
-        # And the shell it was sent to opens on that cookie.
+        # And the same URL works again, which is what "bookmarkable" means.
+        self.assertEqual(self.open_link(self.token).status_code, 200)
+        # The shell also opens on that cookie at its ordinary address.
         self.assertEqual(self.client.get(
             "/user", environ_base={omni_remote.LISTENER_KEY: omni_remote.REMOTE,
                                    **NAVIGATION}).status_code, 200)
 
-    def test_the_token_is_gone_from_the_address_the_browser_ends_on(self):
-        """It is a credential; it must not sit in an address bar or a history."""
+    def test_the_page_a_link_serves_does_not_repeat_the_token_in_its_body(self):
+        """The URL is the credential and stays in the address bar by design.
+
+        What must not happen is the token being copied anywhere a script or
+        another page could read it, so the served HTML must not contain it,
+        and the response must not be cached by anything shared.
+        """
         response = self.open_link(self.token)
-        self.assertNotIn(self.token, response.headers["Location"])
         self.assertNotIn(self.token, response.get_data(as_text=True))
+        self.assertIn("no-store",
+                      response.headers.get("Cache-Control", ""))
 
     def test_the_session_it_opens_knows_how_it_was_established(self):
         self.open_link(self.token)
@@ -408,7 +422,7 @@ class DirectAccessOverHttpTests(RemoteBrowserTestBase):
         replacement = self.store.regenerate_direct_access(
             self.user_account.id, actor=self.admin_account)["token"]
         self.assertEqual(self.open_link(self.token).status_code, 404)
-        self.assertEqual(self.open_link(replacement).status_code, 302)
+        self.assertEqual(self.open_link(replacement).status_code, 200)
 
     def test_a_direct_session_cannot_reach_an_administrative_endpoint(self):
         self.open_link(self.token)
@@ -482,7 +496,7 @@ class DirectAccessOverHttpTests(RemoteBrowserTestBase):
             "/access/" + self.token, base_url=scheme + "://omnisuite.invalid/",
             environ_base={omni_remote.LISTENER_KEY: omni_remote.REMOTE,
                           **NAVIGATION})
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 200)
         return " ".join(response.headers.get_all("Set-Cookie"))
 
     def test_the_cookie_a_link_sets_is_secure_over_tls(self):
@@ -536,7 +550,7 @@ class DirectAccessOverHttpTests(RemoteBrowserTestBase):
             "/access/" + self.token,
             environ_base={omni_remote.LISTENER_KEY: omni_remote.REMOTE,
                           "REMOTE_ADDR": "198.51.100.42", **NAVIGATION})
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 200)
 
     def test_with_remote_access_off_the_link_reaches_nothing(self):
         """Turning remote access off must not leave a passwordless door open."""

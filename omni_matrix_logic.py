@@ -375,7 +375,7 @@ def set_route(decoder_ip: str, encoder_ip: str, mode: str = "av", decoder_user: 
             video_input_name=_args["video_input_name"], audio_input_name=_args["audio_input_name"],
             interface=_args["interface"],
         )
-        print(f"[DEBUG set_route] set_decoder_av returned: {ok}")
+        print(f"[DEBUG set_route] set_decoder_av returned: {ok!r}")
     except Exception as ex:
         print(f"[DEBUG set_route] set_decoder_av failed: {ex}")
         import traceback
@@ -399,7 +399,10 @@ def set_route(decoder_ip: str, encoder_ip: str, mode: str = "av", decoder_user: 
     
     # Save updated decoder state to cache for persistence across restarts
     _save_cache()
-    return bool(ok)
+    # The per-plane outcome, not a bare bool: it is truthy exactly when nothing
+    # actually failed, so an existing `if ok:` keeps working, and it carries
+    # enough detail for the caller to say what happened to each plane.
+    return ok
 
 def set_poll(enabled: bool, interval: int) -> None:
     with _state_lock:

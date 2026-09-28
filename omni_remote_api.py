@@ -18,6 +18,7 @@ from flask import Response, g, jsonify, redirect, request
 
 import omni_adapters
 import omni_access
+import omni_gate
 import omni_locks
 import omni_projection
 import omni_remote
@@ -90,7 +91,8 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
              usb_state, usb_pair_view, usb_unpair_view,
              multiview_state, multiview_show_view, multiview_switch_view,
              forget_observation, locks, tls, cert_paths, tls_context_for,
-             certificate_state, source_preview):
+             certificate_state, source_preview, credential_report,
+             unroute_view, user_shell):
     """Attach the remote-access API.
 
     Everything the module needs is passed in rather than imported from the
@@ -644,12 +646,21 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
 
     @app.route("/access/<token>", methods=["GET"])
     def direct_access_entry(token):
-        """Open a restricted session from a bearer link, then get rid of the URL.
+        """Open a restricted session from a bearer link and serve the panel.
 
-        The token is exchanged for an ordinary server-side session and the
-        browser is redirected to /user, so the credential is not left sitting
-        in the address bar to be screenshotted, shoulder-read or copied out of
-        a history list by the next person to use the tablet.
+        The token is exchanged for an ordinary server-side session, and that
+        session is what authorises everything afterwards: the token is never
+        sent again, never put in an API payload, and never stored by the page.
+
+        The shell is served *at this URL* rather than redirected to /user, so
+        the link stays bookmarkable and a refresh works. That is a deliberate
+        trade: the credential remains in the address bar, and therefore in a
+        history and in anything that screenshots the screen. It is accepted
+        because the URL is the credential by design -- there is nothing else
+        to present -- and it is bounded by `Referrer-Policy: no-referrer`, by
+        the link being revocable and replaceable in one action, and by the
+        session it opens being barred from the administrative surface however
+        the account's role later changes.
         """
         source = _client_address()
         # A refused link is throttled like a refused password, for two
@@ -676,11 +687,18 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                     detail={"result": "accepted",
                             "username": account.username,
                             "method": omni_users.BY_DIRECT_LINK})
-        response = redirect("/user", code=302)
+        # The shell itself, at this URL. Served through the same helper the
+        # /user route uses, so there is one copy of the page rather than a
+        # second one that could drift.
+        response = app.make_response(user_shell())
         response.set_cookie(
             SESSION_COOKIE, session.token,
             httponly=True, samesite="Lax",
             secure=request.is_secure, path="/")
+        # Belt and braces over the global policy: this response's own URL is a
+        # credential, and it must not be cached by a shared proxy or restored
+        # into somebody else's tab from a back-forward cache.
+        response.headers["Cache-Control"] = "no-store, private"
         return response
 
     @app.route("/api/admin/devices", methods=["GET"])
@@ -767,6 +785,54 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         return jsonify({"ok": True, "applied": result.get("applied", 0),
                         "aliases": aliases.all(),
                         "duplicate_aliases": aliases.duplicates()})
+
+    @app.route("/api/admin/credentials", methods=["GET"])
+    def api_admin_credentials():
+        """Which credential each device is actually answering to, by name.
+
+        The question this answers is "is that unit still on the vendor
+        default?", and it has to be answerable without anybody printing,
+        logging or transporting a password. So every value here is one of
+        `device`, `configured`, `fallback` or `unknown` -- a name for where the
+        working credential came from, never the credential.
+
+        A device appears only once something has successfully talked to it;
+        one that has not been reached yet is reported as `unknown` rather than
+        assumed good.
+        """
+        provenance = credential_report() or {}
+        rows = []
+        for unit in load_cache() or []:
+            address = (unit.get("ip") or "").strip()
+            if not address:
+                continue
+            identity = omni_users._normalise_identity(unit.get("mac"))
+            source = provenance.get(address, "unknown")
+            rows.append({
+                "id": identity,
+                "name": _label(identity, unit.get("hostname")
+                               or unit.get("host") or address),
+                "address": address,
+                "model": unit.get("model") or "",
+                "credential": source,
+                # The one that wants attention: a unit answering to the
+                # vendor default is a site condition, not a preference.
+                "on_fallback": source == "fallback",
+            })
+        # Numerically, so .9 sorts before .10 rather than after it.
+        def _key(row):
+            parts = row["address"].split(".")
+            try:
+                return (0, tuple(int(p) for p in parts))
+            except ValueError:
+                return (1, row["address"])
+        rows.sort(key=_key)
+        return jsonify({
+            "ok": True,
+            "devices": rows,
+            "on_fallback": sum(1 for r in rows if r["on_fallback"]),
+            "unknown": sum(1 for r in rows if r["credential"] == "unknown"),
+        })
 
     @app.route("/api/admin/multiviews", methods=["GET"])
     def api_admin_multiviews():
@@ -927,6 +993,70 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                 "error": "That display is busy with another change. "
                          "Try again in a moment."}), 409
 
+    @app.route("/api/user/unroute", methods=["POST"])
+    def api_user_unroute():
+        """Stop a permitted display from showing anything.
+
+        Adds no teardown logic: it resolves the identity to an address and
+        hands over to the same verified engine the A/V Matrix uses, which
+        leaves a Multiview through the established path first and reads the
+        device back afterwards.
+        """
+        data = request.get_json(silent=True) or {}
+        destination_id = omni_users._normalise_identity(data.get("destination"))
+        if not destination_id:
+            return jsonify({"ok": False, "error": "destination required"}), 400
+
+        def _check(account):
+            if not account.permissions.has_feature(omni_access.FEATURE_AV):
+                return "missing_feature:av"
+            if not account.permissions.may_control_destination(destination_id):
+                return "destination_not_permitted"
+            return None
+
+        # Before the wait, so a request that was never going to be allowed
+        # does not queue for a lock.
+        refusal = _revalidate(_check, "/api/user/unroute")
+        if refusal is not None:
+            return refusal
+
+        decoder_ip = _address_index().get(destination_id)
+        if not decoder_ip:
+            return jsonify({"ok": False,
+                            "error": "that device is not currently known"}), 404
+
+        began = time.monotonic()
+        try:
+            with locks.hold(locks.decoder(destination_id)):
+                # Again, now that the wait is over and the next statement
+                # writes to hardware.
+                refusal = _revalidate(_check, "/api/user/unroute")
+                if refusal is not None:
+                    return refusal
+                store.audit("unroute", actor=_current_account(),
+                            detail={"destination": destination_id,
+                                    "destination_label": _label(destination_id)})
+                with app.test_request_context(
+                        "/api/unroute", method="POST",
+                        json={"decoder": decoder_ip}):
+                    result = unroute_view()
+                forget_observation("multiview:" + str(decoder_ip))
+                log.info("[USER-UNROUTE] %s took %.2fs",
+                         destination_id, time.monotonic() - began)
+                # Named fields only: the engine answers with the decoder's own
+                # record, and a restricted client never receives an address.
+                status = (result[1] if isinstance(result, tuple)
+                          and len(result) > 1 else 200)
+                return _project_engine_result(_payload_of(result), status)
+        except omni_locks.ResourceBusy as busy:
+            log.warning("[USER-UNROUTE] %s is busy; waited %.1fs for %s",
+                        destination_id, time.monotonic() - began, busy.resource)
+            return jsonify({
+                "ok": False,
+                "reason": "resource_busy",
+                "error": "That display is busy with another change. "
+                         "Try again in a moment."}), 409
+
     @app.route("/api/user/source_preview", methods=["GET"])
     def api_user_source_preview():
         """A still picture of one permitted source, by identity.
@@ -963,7 +1093,12 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
             return jsonify({"ok": False, "reason": "preview_unavailable",
                             "error": "That source is not available."}), 404
 
-        body, kind, reason = source_preview(address)
+        # A page that has just been opened asks for a fresh read, so a
+        # thumbnail switched on at the encoder shows up on reload rather than
+        # whenever a five-minute cache happens to lapse. Hover and scroll do
+        # not set it, so an idle page still makes no device request.
+        fresh = request.args.get("fresh") == "1"
+        body, kind, reason = source_preview(address, fresh=fresh)
         if reason:
             # 200 rather than an error status: there is nothing wrong, the card
             # simply has no picture, and a failed request in the console for
@@ -999,7 +1134,40 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
             log.error("[USER-ROUTE] %s refused the route because it is showing "
                       "Multiview %s. A normal route is supposed to leave it.",
                       destination_id, body.get("multiview"))
-        return result
+        return _project_engine_result(body, status)
+
+    #: The only keys an engine result may carry out to a restricted client.
+    #: Everything else the A/V engine returns describes the device -- its
+    #: address, its multicast groups, its input names -- and none of it belongs
+    #: in a projection whose whole purpose is that no device address reaches
+    #: the browser.
+    _ENGINE_RESULT_KEYS = ("ok", "status", "reason", "error", "note", "planes",
+                           "cleared", "failed")
+
+    def _project_engine_result(body, status):
+        """The A/V engine's answer, reduced to named fields.
+
+        The engine is written for the administrative surface and answers with
+        the decoder's own record -- `decoder.ip`, `ip1_addr`, the multicast
+        addresses it just wrote. Handing that to a restricted client would put
+        a device address in a browser that the projection exists to keep them
+        out of, so the result is rebuilt from a fixed list rather than filtered
+        by removing the fields anybody remembered.
+
+        `multiview_exit` is summarised rather than forwarded: whether the
+        display left a Multiview, and whether a rollback was verified, are
+        facts about the operation; the released input numbers are not.
+        """
+        out = {key: body[key] for key in _ENGINE_RESULT_KEYS if key in body}
+        out.setdefault("ok", False)
+        exit_detail = body.get("multiview_exit") or body.get("multiview")
+        if isinstance(exit_detail, dict):
+            summary = {"left": bool(exit_detail.get("ok"))}
+            rollback = exit_detail.get("rollback")
+            if isinstance(rollback, dict):
+                summary["restored"] = bool(rollback.get("restored"))
+            out["multiview_exit"] = summary
+        return jsonify(out), status
 
     def _payload_of(result):
         """The JSON body of whatever a view returned, without raising.
@@ -1060,9 +1228,21 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         return None
 
     def _denied(account, reason, rule="/api/user/route"):
+        """A refusal that says which refusal it is.
+
+        The sentence comes from the gate's map rather than a second copy here:
+        the same cause is caught in one layer or the other depending on which
+        check reaches it first, and two maps would eventually disagree about
+        what the same refusal means.
+        """
         store.audit("access.denied", actor=account,
                     detail={"rule": rule, "reason": reason})
-        return jsonify({"ok": False, "error": "not permitted"}), 403
+        sentence = omni_gate.DENIAL_SENTENCES.get(reason)
+        if sentence is None and reason.startswith("missing_feature:"):
+            sentence = "Your account does not have that feature."
+        return jsonify({"ok": False,
+                        "error": sentence or "not permitted",
+                        "reason": reason}), 403
 
     def _address_index():
         """identity -> current address, from host-authoritative state."""

@@ -297,6 +297,156 @@ suite.push(() => check('signing out does not withdraw a direct access link', () 
     'signing out reaches for the Direct Access link');
 }));
 
+// ---------------------------------------------------------------- this pass
+
+suite.push(() => check('a remembered display is honoured only if still offered', () => {
+  // The rule that makes a bookmark safe: it is matched against the list the
+  // server has just sent, so a display that was unassigned is dropped rather
+  // than presented as a working selection -- and nothing is ever selected on
+  // the operator's behalf.
+  const stored = {};
+  const restore = lift('function restoreSelection(', {
+    // The two helpers it closes over, standing in for the storage module.
+    recall: (k) => (k in stored ? stored[k] : null),
+    remember: (k, v) => { if (v) stored[k] = v; else delete stored[k]; },
+  });
+
+  const list = [{id: 'b8:98:b0:00:00:11'}, {id: 'b8:98:b0:00:00:12'}];
+
+  // Nothing remembered, nothing selected: a list of one is not consent.
+  assert(restore([{id: 'b8:98:b0:00:00:11'}], null, 'destination') === null,
+    'a single assigned display was selected without being chosen');
+
+  // Remembered and still offered.
+  stored.destination = 'b8:98:b0:00:00:12';
+  assert(restore(list, null, 'destination') === 'b8:98:b0:00:00:12',
+    'a remembered display that is still offered was not restored');
+
+  // Remembered but no longer offered: cleared, not swapped for another.
+  stored.destination = 'b8:98:b0:00:00:99';
+  assert(restore(list, null, 'destination') === null,
+    'a display that is no longer assigned was not cleared');
+  assert(!('destination' in stored),
+    'the stale record was left behind to fail again next time');
+
+  // A current selection that is still valid wins without consulting storage.
+  stored.destination = 'b8:98:b0:00:00:12';
+  assert(restore(list, 'b8:98:b0:00:00:11', 'destination')
+         === 'b8:98:b0:00:00:11');
+}));
+
+suite.push(() => check('the shell itself writes no browser storage', () => {
+  // It can see a Direct Access link, so the fence is that it writes nothing at
+  // all; the one thing worth remembering lives in a module that cannot see a
+  // link. This is the browser-side half of the Python fence.
+  const shell = code(SHELL_JS);
+  assert(!/localStorage/.test(shell),
+    'the shell touches localStorage directly');
+  assert(!/sessionStorage\.setItem\(\s*['"]omni_user/.test(shell));
+  assert(/omniRemember/.test(shell),
+    'the shell does not go through the storage module');
+  const store = code(read('ui', 'user', 'remember.js'));
+  assert(/localStorage/.test(store), 'the storage module stores nothing');
+  assert(!/token|link|csrf/i.test(store),
+    'the storage module can reach a credential');
+}));
+
+suite.push(() => check('unroute asks first and sends nothing when refused', async () => {
+  // A display left showing nothing cannot be undone by choosing something
+  // else, so it is confirmed. Driven rather than asserted about: Cancel making
+  // no request is the measurement.
+  const requests = [];
+  let answer = false;
+  const sandbox = {
+    fetch: (url, opts) => {
+      requests.push({url, opts});
+      return Promise.resolve({
+        status: 200, ok: true,
+        json: () => Promise.resolve({ok: true, status: 'UNROUTED'}),
+      });
+    },
+    window: {
+      omniConfirm: () => Promise.resolve(answer),
+      toast: () => {},
+    },
+  };
+
+  // The listener, not the line in renderAction that also names the button.
+  const body = SHELL_JS.slice(
+    SHELL_JS.indexOf("el('unroute_btn').addEventListener"));
+  const handler = body.slice(0, body.indexOf('\n  });\n') + 6);
+
+  // The dialog is consulted before anything is sent.
+  assert(/omniConfirm/.test(handler), 'unroute does not confirm');
+  assert(handler.indexOf('omniConfirm') < handler.indexOf('/api/user/unroute'),
+    'the request is built before the operator is asked');
+  assert(/if \(!go\) return;/.test(handler),
+    'a refusal does not stop the request');
+
+  // And it refuses rather than degrading to a browser dialog, because the
+  // sentence is the point of the dialog.
+  assert(/typeof ask !== 'function'/.test(handler),
+    'unroute does not check that the shared dialog is there');
+  assert(!/\bconfirm\(/.test(code(handler)),
+    'unroute can fall back to a native dialog');
+  assert(requests.length === 0);
+}));
+
+suite.push(() => check('a display card previews only a permitted source', () => {
+  // `showing.source_id` is null for a Multiview, an unrouted display and a
+  // source outside this account's world, so an unauthorised thumbnail cannot
+  // be reached from a card by construction.
+  const body = SHELL_JS.slice(SHELL_JS.indexOf('const showing = item.showing'));
+  const card = body.slice(0, body.indexOf('\n    button.append(name, sub);'));
+  assert(/showing\.source_id \|\| null/.test(card),
+    'a display card takes its preview from something other than what the '
+    + 'server said it is showing');
+  assert(!/item\.id/.test(card.slice(card.indexOf('previewId'),
+                                     card.indexOf('previewNote'))
+                         .replace(/kind === 'source' \? item\.id/, '')),
+    'a display card previews itself rather than its source');
+  assert(/none: 'Unrouted'/.test(card), 'an unrouted display says nothing');
+  assert(/multiview: 'Multiview'/.test(card));
+  assert(/other: 'Another source'/.test(card),
+    'a display showing an unpermitted source is named rather than described');
+}));
+
+suite.push(() => check('the first preview of a page asks for a fresh read', () => {
+  // Enabling a thumbnail must show up on a refresh rather than whenever a
+  // minutes-long cache happens to lapse -- and an idle page must still make no
+  // device request, so only the first request per source sets it.
+  const body = SHELL_JS.slice(SHELL_JS.indexOf('async function loadPreview'));
+  const fn = body.slice(0, body.indexOf('\n  function noPreview'));
+  assert(/const first = !previewSeen\.has\(sourceId\)/.test(fn));
+  assert(/first \? '&fresh=1'/.test(fn), 'a page load does not re-read');
+  assert(/: '&t=' \+ Date\.now\(\)/.test(fn),
+    'later reads are not cache-busted');
+}));
+
+suite.push(() => check('a direct access session is a panel, not an account', () => {
+  const body = SHELL_JS.slice(SHELL_JS.indexOf("const panel = state.directLink"));
+  const block = body.slice(0, body.indexOf('\n    renderAv()'));
+  for (const control of ['signout', 'my_link_btn', 'who']) {
+    assert(new RegExp(`el\\('${control}'\\)[\\s\\S]{0,80}panel`).test(block),
+      `${control} is still offered to a direct access session`);
+  }
+  // And the page learns which it is from the session rather than guessing.
+  const adopt = SHELL_JS.slice(SHELL_JS.indexOf('async function adoptSessionToken'));
+  assert(/body\.method === 'direct_link'/.test(adopt));
+  assert(!/if \(csrf\(\)\) return;/.test(
+    adopt.slice(0, adopt.indexOf('\n  }'))),
+    'a reload short-circuits before the page learns it is a panel');
+}));
+
+suite.push(() => check('the unroute button is loaded and styled', () => {
+  assert(/id="unroute_btn"/.test(SHELL_HTML), 'no unroute control on the page');
+  assert(/remember\.js/.test(SHELL_HTML), 'the storage module is not loaded');
+  assert(SHELL_HTML.indexOf('remember.js') < SHELL_HTML.indexOf('user/user.js'),
+    'the storage module loads after the shell that needs it');
+  assert(/btn-secondary-lg/.test(REMOTE_CSS),
+    'the unroute button has no style of its own');
+}));
+
 
 (async function run() {
   for (const scenario of suite) await scenario();

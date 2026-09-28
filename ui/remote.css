@@ -236,6 +236,40 @@ body.remote {
   cursor: not-allowed;
   filter: saturate(.4);
 }
+/* Unroute sits beside Show and must not read as the action the surface
+   exists for. A filled surface with a real border rather than a ghost
+   outline -- quiet is not the same as disabled-looking -- and it keeps its
+   own hover, press and focus. It is not painted with the critical colour
+   either: stopping a display is deliberate, not destructive, and the
+   confirmation carries the weight. */
+.btn-secondary-lg {
+  min-height: var(--touch-target);
+  padding: 0 18px;
+  border-radius: 9px;
+  border: 1px solid var(--edge-strong, var(--edge));
+  background: var(--surface-raised, var(--surface));
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-right: 10px;
+}
+.btn-secondary-lg:hover:not(:disabled) {
+  /* A translucent veil of the text colour, so one rule reads as hover in a
+     light palette and a dark one alike. */
+  background: color-mix(in srgb, var(--text) 8%, var(--surface-raised, var(--surface)) 92%);
+}
+.btn-secondary-lg:active:not(:disabled) {
+  background: color-mix(in srgb, var(--text) 14%, var(--surface-raised, var(--surface)) 86%);
+}
+.btn-secondary-lg:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.btn-secondary-lg:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
+}
 .btn-quiet {
   min-height: var(--touch-target);
   padding: 0 14px;

@@ -174,6 +174,11 @@ class RestrictedUserSurfaceTests(unittest.TestCase):
                        if access is Access.USER}
         self.assertEqual(user_routes, {
             "/api/user/route",
+            # Stopping a permitted display. Same feature and same destination
+            # check as routing to it; it names no source because it subscribes
+            # to none, and its answer goes through the same reducer, so the
+            # engine's decoder record never reaches the browser.
+            "/api/user/unroute",
             "/api/user/usb_state", "/api/user/usb_route",
             "/api/user/multiview_state", "/api/user/multiview_show",
             "/api/user/multiview_switch",

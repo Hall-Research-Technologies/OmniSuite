@@ -325,6 +325,14 @@ except Exception as e:
     HAS_MATRIX = False
     omni_matrix_logic = None
 
+# The route primitives, for the per-plane outcome names. Imported beside the
+# logic module rather than reached through its private alias, so the names the
+# route response reports cannot drift away from the ones that produce them.
+try:
+    import omni_matrix
+except Exception:
+    omni_matrix = None
+
 # Endpoint to reload encoders/decoders from cache file (must be after app is created)
 @app.route("/api/reload_cache", methods=["POST"])
 def api_reload_cache():
@@ -4666,48 +4674,90 @@ def _ws_send_recv(url: str, payload: dict, timeout: float):
         except Exception:
             pass
 
+#: How a device's working credential was arrived at. Names only, never
+#: values: this is what makes "is that unit on the vendor default?" a question
+#: the application can answer without anybody printing a password.
+CRED_DEVICE = "device"          # a credential recorded for this device
+CRED_CONFIGURED = "configured"  # config.json / OMNI_PASS
+CRED_FALLBACK = "fallback"      # config.json fallback / OMNI_FALLBACK_PASS
+CRED_UNKNOWN = "unknown"
+
+#: identity of the last credential proven to work, per address. Names only.
+_credential_source: dict = {}
+
+
+def _classify_credential(pwd: str, device_pwd: str = None) -> str:
+    """Which credential is this, by name? Never returns or logs the value."""
+    if not pwd:
+        return CRED_UNKNOWN
+    if device_pwd and pwd == device_pwd:
+        return CRED_DEVICE
+    if pwd == app.config.get('PASSWORD', ''):
+        return CRED_CONFIGURED
+    if pwd == app.config.get('FALLBACK_PASSWORD', ''):
+        return CRED_FALLBACK
+    return CRED_UNKNOWN
+
+
+def _remember_credential_source(ip: str, pwd: str, device_pwd: str = None):
+    source = _classify_credential(pwd, device_pwd)
+    previous = _credential_source.get(ip)
+    _credential_source[ip] = source
+    if source == CRED_FALLBACK and previous != CRED_FALLBACK:
+        # Worth a line at WARNING exactly once per transition: a unit that
+        # only answers to the vendor default is a site condition somebody has
+        # to fix, and it is invisible otherwise.
+        log.warning("[CRED] %s is answering to the fallback (vendor default) "
+                    "credential, not the configured one", ip)
+    return source
+
+
+def credential_report():
+    """Per-address credential provenance, by name. No values, ever."""
+    return dict(_credential_source)
+
+
 def _ws_send_recv_with_fallback(ip: str, payload: dict, timeout: float, ws_port: int, ws_path: str, primary_pwd: str = None):
-    """Try sending WebSocket payload with primary password, fall back to fallback password if auth fails"""
-    primary_pwd = primary_pwd or app.config['PASSWORD']
-    fallback_pwd = app.config['FALLBACK_PASSWORD']
-    
-    # Try with primary password first
+    """Send a WebSocket request, trying this device's credentials in order.
+
+    One resolver decides the order for every caller: the credential recorded
+    for this device, then the configured one, then the fallback. The old code
+    started from `app.config['PASSWORD']` and so could never reach a
+    per-device credential at all -- a device with its own password was tried
+    with the configured one and then the vendor default, and never with its
+    own.
+
+    The device reports some refusals that have nothing to do with
+    authentication as "Invalid username/password", so the error text is not
+    evidence of an auth problem and is no longer read as any. Every candidate
+    is tried in order and the first that the device answers cleanly wins.
+    """
+    user, device_pref, device = _device_credentials(ip)
+    device_pwd = (device or {}).get("password")
+    candidates = _password_candidates(primary_pwd or device_pref)
+
     url = _ws_url(ip, ws_port, ws_path)
     payload_with_pwd = payload.copy()
-    payload_with_pwd['password'] = primary_pwd
-    
-    try:
-        resp = _ws_send_recv(url, payload_with_pwd, timeout)
-        # Check if response indicates auth failure
-        if resp and not resp.get("error"):
-            return resp
-        # If there's an error that looks like auth failure, try fallback
-        error_msg = (resp.get("error") or "").lower()
-        if "auth" not in error_msg and "password" not in error_msg and "unauthorized" not in error_msg and "forbidden" not in error_msg:
-            # Not an auth error, return the error response
-            return resp
-    except Exception as e:
-        # Connection/timeout errors, try fallback
-        log.debug(f"[FALLBACK] Primary password failed on {ip}: {e}, trying fallback...")
-    
-    # If primary password failed or errored, try fallback password
-    if fallback_pwd != primary_pwd:
-        log.info(f"[FALLBACK] Trying fallback password on {ip}...")
-        payload_with_pwd['password'] = fallback_pwd
+    last = None
+    for index, pwd in enumerate(candidates):
+        payload_with_pwd['password'] = pwd
         try:
             resp = _ws_send_recv(url, payload_with_pwd, timeout)
-            if resp and not resp.get("error"):
-                log.info(f"[FALLBACK] Fallback password succeeded on {ip}")
-                return resp
-            # Document that fallback also failed
-            log.warning(f"[FALLBACK] Both primary and fallback passwords failed on {ip}: {resp}")
-            return resp
         except Exception as e:
-            log.error(f"[FALLBACK] Fallback password also failed on {ip}: {e}")
-            return {"error": f"Authentication failed with both primary and fallback passwords: {e}"}
+            log.debug("[CRED] %s did not answer on candidate %d/%d: %s",
+                      ip, index + 1, len(candidates), e)
+            last = {"error": f"{type(e).__name__}: {e}"}
+            continue
+        if resp and not resp.get("error"):
+            _remember_credential_source(ip, pwd, device_pwd)
+            return resp
+        last = resp
 
-    # Primary password worked, return original response
-    return resp
+    if last is not None and isinstance(last, dict) and last.get("error"):
+        log.warning("[CRED] %s refused every credential candidate (%d tried)",
+                    ip, len(candidates))
+    return last if last is not None else {
+        "error": "the device did not answer"}
 
 # ---------------- login (WS) ----------------
 @app.route("/api/login", methods=["POST"])
@@ -8195,6 +8245,165 @@ def api_state_matrix():
 
     return jsonify({"ok": True, "encoders": enc_mapped, "decoders": dec_mapped, "routes": routes, "poll": {}})
 
+@app.route("/api/unroute", methods=["POST"])
+def api_unroute_matrix():
+    """Put a display into the verified unrouted state.
+
+    The unrouted state was measured on the hardware rather than assumed. The
+    decoder REFUSES a multicast address of `0.0.0.0`, and refuses an empty
+    address while the input is still enabled; it accepts the address being
+    cleared and the input disabled in one write, after which the input reports
+    zero packets. That pair is what "subscribed to nothing" is on this
+    hardware, and it is what this writes and reads back.
+
+    A display that is compositing is taken out of Multiview first, through the
+    same verified teardown a normal route uses, so "unroute" on a Multiview
+    display means exit Multiview, return to single view, then subscribe to
+    nothing. The saved Multiview object is never deleted.
+    """
+    if not HAS_MATRIX:
+        return jsonify({"ok": False, "error": "matrix logic unavailable"}), 500
+    data = request.get_json(silent=True) or {}
+    decoder = data.get("decoder")
+    log.info("[UNROUTE] request decoder=%s", decoder)
+    if not decoder:
+        return jsonify({"ok": False, "error": "decoder required"}), 400
+
+    cache_devices = _load_cache() or []
+    cache_map = {d.get("ip"): d for d in cache_devices if d.get("ip")}
+    try:
+        omni_matrix_logic._load_cache()
+    except Exception as e:
+        log.warning("[UNROUTE] matrix_logic cache reload failed: %s", e)
+    decoder_user, decoder_pwd, _ = _device_credentials(decoder, cache_map)
+
+    route_decoder = (omni_matrix_logic._decoders.get(decoder)
+                     or cache_map.get(decoder))
+    if not route_decoder:
+        return jsonify({"ok": False,
+                        "error": f"Decoder {decoder} not found in current state"}), 200
+
+    # ---- leave a composition first, through the verified teardown --------
+    multiview_exit = None
+    try:
+        mv_state, _mv_error = _decoder_state(decoder)
+    except Exception:
+        mv_state, _mv_error = None, None
+    active_multiview = None
+    if mv_state:
+        try:
+            active_multiview = omni_multiview.active_multiview_name(
+                (mv_state or {}).get("video_input"))
+        except Exception:
+            active_multiview = None
+    if active_multiview:
+        log.info("[UNROUTE] %s is showing Multiview %s; leaving it first",
+                 decoder, active_multiview)
+        ok, steps, released, message = _exit_active_multiview(
+            decoder, active_multiview, mv_state)
+        multiview_exit = {"multiview": active_multiview, "steps": steps,
+                          "released": released, "ok": ok}
+        if not ok:
+            log.warning("[UNROUTE] could not leave Multiview %s on %s: %s",
+                        active_multiview, decoder, message)
+            return jsonify({"ok": False,
+                            "status": "FAILED — MULTIVIEW NOT EXITED",
+                            "error": message,
+                            "multiview": multiview_exit}), 200
+
+    # ---- clear the subscriptions, then read the device back --------------
+    # The same input names and interface the route path uses, read from the
+    # one place that holds them, so unroute cannot clear a different input
+    # from the one route subscribed.
+    _mx = omni_matrix_logic._args
+    video_name = _mx.get("video_input_name", "ip_input1")
+    audio_name = _mx.get("audio_input_name", "ip_input3")
+    interface = _mx.get("interface", "eth1")
+    cleared, failed = [], []
+    try:
+        rpc = omni_matrix_logic.user.WSClient(
+            username=decoder_user,
+            password=decoder_pwd,
+            timeout=float(app.config.get('TIMEOUT', 4.0)),
+            ws_port=int(app.config.get('WS_PORT', 80)),
+            ws_path=app.config.get('WS_PATH', '/wsapp/'),
+        )
+        current = rpc.config_get(decoder, "ip_input") or []
+        current_list = (current if isinstance(current, list)
+                        else current.get("ip_input", []))
+        by_name = {e.get("name"): e for e in current_list
+                   if isinstance(e, dict) and e.get("name")}
+        for name, number in ((video_name, 1), (audio_name, 3)):
+            entry = by_name.get(name)
+            if entry is not None and omni_matrix._entry_is_cleared(entry):
+                continue
+            rpc.config_set(decoder, "ip_input", [
+                omni_matrix.clear_ip_input_entry(name, number, interface, entry)])
+        verify = rpc.config_get(decoder, "ip_input") or []
+        verify_list = (verify if isinstance(verify, list)
+                       else verify.get("ip_input", []))
+        verified = {e.get("name"): e for e in verify_list
+                    if isinstance(e, dict) and e.get("name")}
+        for name in (video_name, audio_name):
+            if omni_matrix._entry_is_cleared(verified.get(name)):
+                cleared.append(name)
+            else:
+                failed.append(name)
+    except Exception as e:
+        log.error("[UNROUTE] %s did not complete: %s", decoder, e)
+        body = {"ok": False, "status": "FAILED", "reason": "device_unreachable",
+                "error": "The display could not be reached to clear its route."}
+        if multiview_exit:
+            restored, detail = _restore_multiview_after_failed_route(
+                decoder, multiview_exit["multiview"])
+            multiview_exit["rollback"] = {"restored": restored, "detail": detail}
+            body["multiview_exit"] = multiview_exit
+            body["status"] = ("FAILED — ROLLED BACK" if restored
+                              else "FAILED — ROLLBACK INCOMPLETE")
+        return jsonify(body), 200
+
+    if failed:
+        # The display still holds a subscription. Say which, and put a
+        # Multiview back if leaving one is what made room for this.
+        body = {"ok": False, "status": "FAILED", "reason": "plane_not_cleared",
+                "error": "The display did not confirm that it stopped "
+                         "subscribing.", "cleared": cleared, "failed": failed}
+        if multiview_exit:
+            restored, detail = _restore_multiview_after_failed_route(
+                decoder, multiview_exit["multiview"])
+            multiview_exit["rollback"] = {"restored": restored, "detail": detail}
+            body["multiview_exit"] = multiview_exit
+            body["status"] = ("FAILED — ROLLED BACK" if restored
+                              else "FAILED — ROLLBACK INCOMPLETE")
+        return jsonify(body), 200
+
+    # The decoder's own record, so the matrix does not go on showing a route
+    # this just removed.
+    fields = {"ip1_addr": "", "ip3_addr": "",
+              "multiview_name": "", "multiview_active": False}
+    try:
+        if decoder in omni_matrix_logic._decoders:
+            omni_matrix_logic._decoders[decoder].update(fields)
+        units = _load_cache() or []
+        for unit in units:
+            if unit.get("ip") == decoder:
+                unit.update(fields)
+                break
+        _save_cache(units)
+        omni_matrix_logic._save_cache()
+    except Exception as e:
+        log.info("[UNROUTE] post-unroute refresh failed for %s: %s", decoder, e)
+
+    log.info("[UNROUTE] %s is now subscribed to nothing (%s)",
+             decoder, ", ".join(cleared))
+    body = {"ok": True, "status": "UNROUTED", "cleared": cleared,
+            "decoder": {"ip": decoder, "ip1_addr": "", "ip3_addr": "",
+                        "multiview_active": False}}
+    if multiview_exit:
+        body["multiview_exit"] = multiview_exit
+    return jsonify(body)
+
+
 @app.route("/api/route", methods=["POST"])
 def api_route_matrix():
     if not HAS_MATRIX:
@@ -8283,6 +8492,7 @@ def api_route_matrix():
     encoder_candidates = _password_candidates(encoder_pref_pwd)
 
     ok = False
+    outcome = None
     used_decoder_pwd = None
     used_encoder_pwd = None
     route_errors = []
@@ -8293,16 +8503,34 @@ def api_route_matrix():
                 pwd_try_start = time.time()
                 ok = omni_matrix_logic.set_route(decoder, encoder, mode, decoder_user, d_pwd, encoder_user, e_pwd)
                 pwd_try_time = time.time() - pwd_try_start
-                log.info(f"[ROUTE] set_route attempt took {pwd_try_time:.2f}s: ok={ok}")
+                log.info(f"[ROUTE] set_route attempt took {pwd_try_time:.2f}s: ok={ok!r}")
                 if ok:
+                    # Only a real per-plane outcome is kept. `set_route` is
+                    # stubbed to a plain True in places, and a bool has no
+                    # planes to report.
+                    outcome = ok if hasattr(ok, "as_dict") else None
                     used_decoder_pwd = d_pwd
                     used_encoder_pwd = e_pwd
+                    break
+                # A per-plane outcome means the device answered, which means it
+                # authenticated: the route was refused on its merits, not on the
+                # credential. Trying the remaining passwords would re-apply the
+                # same writes and produce the same answer more slowly, so the
+                # credential matrix stops here.
+                if hasattr(ok, "failed_planes"):
+                    outcome = ok
+                    used_decoder_pwd = d_pwd
+                    used_encoder_pwd = e_pwd
+                    log.warning(
+                        "[ROUTE] %s -> %s refused on its merits (%s); not "
+                        "trying further credentials",
+                        encoder, decoder, ok)
                     break
             except Exception as e:
                 route_errors.append(str(e))
                 log.error(f"[ROUTE] set_route exception: {e}")
                 continue
-        if ok:
+        if ok or outcome is not None:
             break
 
     elapsed = time.time() - start_time
@@ -8339,13 +8567,32 @@ def api_route_matrix():
         if not dec:
             return jsonify({"ok": False, "error": f"Decoder {decoder} not found in current state"}), 200
         detail = route_errors[-1] if route_errors else ""
-        message = "Route command failed (device may be offline, unreachable, password mismatch, or unsupported AV route)"
+        # Say which plane failed when the device told us. The old sentence
+        # named four causes, none of which applied to the commonest failure,
+        # and an operator reading "password mismatch" about a route that had
+        # in fact been applied had nowhere to go.
+        planes = getattr(outcome, "failed_planes", None) if outcome else None
+        if planes:
+            message = ("The display did not confirm the "
+                       + " and ".join(planes)
+                       + " subscription after it was set.")
+            route_reason = "plane_not_verified"
+        elif route_errors:
+            message = ("The display could not be reached to set the route. "
+                       "It may be offline or unreachable.")
+            route_reason = "device_unreachable"
+        else:
+            message = "Route command failed (device may be offline, unreachable, password mismatch, or unsupported AV route)"
+            route_reason = "route_failed"
         if detail:
             message = f"{message}: {detail}"
         # If the decoder was taken out of Multiview to make room for this route,
         # the route failing is not the end of the operation: put the Multiview
         # back rather than leave the display on nothing.
-        body = {"ok": False, "error": message, "status": "FAILED"}
+        body = {"ok": False, "error": message, "status": "FAILED",
+                "reason": route_reason}
+        if outcome is not None:
+            body["planes"] = outcome.as_dict()
         if multiview_exit:
             restored, restore_detail = _restore_multiview_after_failed_route(
                 decoder, multiview_exit["multiview"])
@@ -8390,6 +8637,16 @@ def api_route_matrix():
         log.info("[ROUTE] post-route decoder refresh failed for %s: %s", decoder, e)
     # Reaching here means the route succeeded; a failure returned above.
     body = {"ok": bool(ok), "decoder": dec_payload, "status": "VERIFIED"}
+    if outcome is not None:
+        # What each plane actually achieved. A source that publishes no audio
+        # session is reported here rather than as a failed route, and the stale
+        # subscription it replaced is reported as cleared.
+        body["planes"] = outcome.as_dict()
+        if outcome.audio == omni_matrix.PLANE_NO_SOURCE_STREAM:
+            body["note"] = "That source does not send audio."
+        elif outcome.audio == omni_matrix.PLANE_CLEARED:
+            body["note"] = ("That source does not send audio; the display's "
+                            "previous audio was cleared.")
     if multiview_exit:
         body["multiview_exit"] = multiview_exit
     return jsonify(body)
@@ -17098,7 +17355,7 @@ def _thumbnail_enabled(address):
     return _preview_enabled.get("thumb-enable:" + str(address), read)
 
 
-def source_preview(address):
+def source_preview(address, fresh=False):
     """(image_bytes, content_type, reason) for one encoder.
 
     `reason` is empty on success and otherwise names why there is no picture:
@@ -17106,10 +17363,21 @@ def source_preview(address):
     `preview_unavailable` where it did not answer. The caller turns those into
     card states; neither is a routing failure, because a source whose preview
     is off is still a perfectly good source.
+
+    `fresh` drops this encoder's cached answers before reading. The enable flag
+    is otherwise held for minutes, which is right for idle pages and wrong the
+    moment somebody turns thumbnails on and reloads to see them: the cached
+    "disabled" outlived the change and made the page look as though the
+    assignment itself had to be redone. An explicit page load re-reads; hover
+    and scroll still come from the cache, so an idle page costs nothing.
     """
     address = str(address or "").strip()
     if not address:
         return None, "", "preview_unavailable"
+
+    if fresh:
+        _preview_enabled.invalidate("thumb-enable:" + address)
+        _preview_images.invalidate("thumb:" + address)
 
     enabled = _thumbnail_enabled(address)
     if enabled is False:
@@ -17237,6 +17505,9 @@ omni_remote_api.register(
     multiview_show_view=api_multiview_show,
     multiview_switch_view=api_multiview_switch,
     forget_observation=_forget_user_observation,
+    credential_report=credential_report,
+    unroute_view=api_unroute_matrix,
+    user_shell=user_page,
     locks=_resource_locks,
     tls=omni_tls,
     cert_paths=(REMOTE_CERT_FILE, REMOTE_KEY_FILE),

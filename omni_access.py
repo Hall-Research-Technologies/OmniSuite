@@ -117,6 +117,9 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
 
     # A/V
     "/api/user/route": (Access.USER, FEATURE_AV),
+    # Putting a permitted display into the verified unrouted state. Same
+    # feature and same destination check as routing to it.
+    "/api/user/unroute": (Access.USER, FEATURE_AV),
     # A still picture of one permitted source, addressed by stable identity.
     # USER rather than AUTHENTICATED because it reaches a device, and the
     # handler checks the account's own source grant on top of the capability --
@@ -144,6 +147,9 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     # may never create one.
     "/api/admin/users/<user_id>/direct_access": (Access.ADMIN, None),
     "/api/admin/devices": (Access.ADMIN, None),
+    # Credential provenance by name -- which of the configured, per-device or
+    # fallback credential each unit is actually answering to. Never values.
+    "/api/admin/credentials": (Access.ADMIN, None),
     # Friendly device names. Administrative because naming equipment is an
     # administrator's job, and because the response carries the hostname,
     # model and address a restricted account is deliberately never given.
@@ -215,6 +221,7 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     # equivalents instead; see the note on the User surface above.
     "/api/state": (Access.ADMIN, None),
     "/api/route": (Access.ADMIN, None),
+    "/api/unroute": (Access.ADMIN, None),
     "/api/usb_state": (Access.ADMIN, None),
     "/api/usb_route/resolve": (Access.ADMIN, None),
     "/api/usb_route/pair": (Access.ADMIN, None),

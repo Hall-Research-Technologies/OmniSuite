@@ -62,6 +62,55 @@ CLEAR = ["tests.test_clear_protection"]
 
 #: (id, file, anchor, replacement, what the defect would be, suites)
 MUTATIONS = [
+    # ---- this pass: the engine result never carries a device address ----
+    #
+    # The A/V engine answers with the decoder's own record. Forwarding it put
+    # an address into a restricted browser on the SUCCESS path, which is the
+    # path nobody reads. These break the reducer in the two ways it can be
+    # broken: passing the engine's answer straight through, and rebuilding it
+    # by removing known fields rather than from a fixed list.
+    ("project.engine-answer-forwarded", "omni_remote_api.py",
+     '        return _project_engine_result(body, status)',
+     '        return result',
+     "the engine's decoder record would reach a restricted client", ROUTING),
+    ("project.reducer-is-a-denylist", "omni_remote_api.py",
+     '        out = {key: body[key] for key in _ENGINE_RESULT_KEYS if key in body}',
+     '        out = {k: v for k, v in body.items() if k != "decoder"}',
+     "a new engine field would reach a restricted client by default",
+     ROUTING),
+    ("project.unroute-answer-forwarded", "omni_remote_api.py",
+     '                return _project_engine_result(_payload_of(result), status)',
+     '                return result',
+     "the unroute engine's decoder record would reach a client", ROUTING),
+
+    # ---- this pass: unroute is authorised like a route ------------------
+    ("unroute.no-destination-check", "omni_remote_api.py",
+     '            if not account.permissions.may_control_destination(destination_id):\n'
+     '                return "destination_not_permitted"\n'
+     '            return None\n'
+     '\n'
+     '        # Before the wait, so a request that was never going to be allowed\n'
+     '        # does not queue for a lock.\n'
+     '        refusal = _revalidate(_check, "/api/user/unroute")',
+     '            return None\n'
+     '\n'
+     '        # Before the wait, so a request that was never going to be allowed\n'
+     '        # does not queue for a lock.\n'
+     '        refusal = _revalidate(_check, "/api/user/unroute")',
+     "any display could be stopped by any account with A/V", ROUTING),
+
+    # ---- this pass: a preset's unknown source fails closed --------------
+    ("multiview.unknown-source-passes", "omni_projection.py",
+     '            if address.strip() and not identity:',
+     '            if False:',
+     "a preset window whose source cannot be identified would be "
+     "treated as authorised", ROUTING),
+
+    # ---- this pass: a refusal names itself ------------------------------
+    ("denial.reason-withheld", "omni_remote_api.py",
+     '                        "reason": reason}), 403',
+     '                        "reason": "denied"}), 403',
+     "a 403 would not say which refusal it is", ROUTING),
     # ---- the listener trust model -----------------------------------
     ("listener.unknown-is-remote", "omni_remote.py",
      'return REMOTE if value == REMOTE else LOCAL',
@@ -183,13 +232,16 @@ MUTATIONS = [
      '            secure=False, path="/")\n'
      '        return response\n\n    @app.route("/api/auth/logout"',
      "the session cookie would be sent over plaintext", REMOTE),
+    # Anchored on the cookie itself plus the comment that follows only the
+    # Direct Access one. The previous anchor ran on to the next @app.route,
+    # so inserting a header between them made it match nothing -- and an
+    # anchor that can never match reads as a gap rather than as a stale
+    # harness.
     ("tls.direct-cookie-never-secure", "omni_remote_api.py",
-     '            httponly=True, samesite="Lax",\n'
      '            secure=request.is_secure, path="/")\n'
-     '        return response\n\n    @app.route("/api/admin/devices"',
-     '            httponly=True, samesite="Lax",\n'
+     '        # Belt and braces over the global policy',
      '            secure=False, path="/")\n'
-     '        return response\n\n    @app.route("/api/admin/devices"',
+     '        # Belt and braces over the global policy',
      "a Direct Access session cookie would be sent over plaintext",
      REMOTE + ["tests.test_remote_browser_flow"]),
     ("tls.plaintext-without-asking", "omni_remote_api.py",
@@ -337,16 +389,51 @@ MUTATIONS = [
      '                if False:\n                    continue',
      "any token at all would resolve to the first account with a link",
      DIRECT),
+    # Both of these now name the ROUTE path explicitly. Unroute takes the same
+    # lock and reports busy the same way -- deliberately, it is the same
+    # contract -- which made the old anchors match twice and report as stale.
     ("route.busy-mislabelled", "omni_remote_api.py",
-     '                "reason": "resource_busy",\n'
-     '                "error": "That display is busy with another change. "',
-     '                "reason": "multiview_active",\n'
-     '                "error": "That display is busy with another change. "',
+     '            log.warning("[USER-ROUTE] %s is busy; waited %.1fs for %s",\n'
+     '                        destination_id, time.monotonic() - began, busy.resource)\n'
+     '            return jsonify({\n'
+     '                "ok": False,\n'
+     '                "reason": "resource_busy",',
+     '            log.warning("[USER-ROUTE] %s is busy; waited %.1fs for %s",\n'
+     '                        destination_id, time.monotonic() - began, busy.resource)\n'
+     '            return jsonify({\n'
+     '                "ok": False,\n'
+     '                "reason": "multiview_active",',
      "a busy display would be reported as a composition", ROUTING),
+    ("unroute.busy-mislabelled", "omni_remote_api.py",
+     '            log.warning("[USER-UNROUTE] %s is busy; waited %.1fs for %s",\n'
+     '                        destination_id, time.monotonic() - began, busy.resource)\n'
+     '            return jsonify({\n'
+     '                "ok": False,\n'
+     '                "reason": "resource_busy",',
+     '            log.warning("[USER-UNROUTE] %s is busy; waited %.1fs for %s",\n'
+     '                        destination_id, time.monotonic() - began, busy.resource)\n'
+     '            return jsonify({\n'
+     '                "ok": False,\n'
+     '                "reason": "multiview_active",',
+     "a busy display would be reported as a composition when unrouting",
+     ROUTING),
     ("route.display-not-serialised", "omni_remote_api.py",
-     "            with locks.hold(locks.decoder(destination_id)):",
-     "            with locks.hold():",
+     "            with locks.hold(locks.decoder(destination_id)):\n"
+     "                waited = time.monotonic() - began",
+     "            with locks.hold():\n"
+     "                waited = time.monotonic() - began",
      "two operators could interleave inside one route transaction", ROUTING),
+    ("unroute.display-not-serialised", "omni_remote_api.py",
+     "            with locks.hold(locks.decoder(destination_id)):\n"
+     "                # Again, now that the wait is over and the next statement\n"
+     "                # writes to hardware.\n"
+     '                refusal = _revalidate(_check, "/api/user/unroute")',
+     "            with locks.hold():\n"
+     "                # Again, now that the wait is over and the next statement\n"
+     "                # writes to hardware.\n"
+     '                refusal = _revalidate(_check, "/api/user/unroute")',
+     "two operators could interleave inside one unroute transaction",
+     ROUTING),
 
     # ---- source previews ----------------------------------------------
     #
@@ -386,12 +473,34 @@ MUTATIONS = [
      '        return jsonify({"ok": False, "status": "MULTIVIEW ACTIVE",\n'
      '                        "multiview": active_multiview}), 409',
      "a normal route would be refused over a Multiview again", EXIT),
+    # Anchored through each caller's own log line. Unroute leaves a Multiview
+    # through the same verified teardown -- that is the point of it -- so the
+    # call alone no longer identifies which path is being broken.
     ("route.deletes-the-composition", "OmniMatrix_upgrade_server_v7_6y.py",
+     '        log.info("[ROUTE] %s is showing Multiview %s; leaving it for a normal "\n'
+     '                 "route", decoder, active_multiview)\n'
      "        ok, steps, released, message = _exit_active_multiview(\n"
      "            decoder, active_multiview, mv_state)",
+     '        log.info("[ROUTE] %s is showing Multiview %s; leaving it for a normal "\n'
+     '                 "route", decoder, active_multiview)\n'
      "        ok, steps, released, message = (True, [], [], '')",
      "the verified teardown would be skipped, leaving the display on a "
      "Multiview it is no longer showing", EXIT),
+    ("unroute.deletes-the-composition", "OmniMatrix_upgrade_server_v7_6y.py",
+     '        log.info("[UNROUTE] %s is showing Multiview %s; leaving it first",\n'
+     "                 decoder, active_multiview)\n"
+     "        ok, steps, released, message = _exit_active_multiview(\n"
+     "            decoder, active_multiview, mv_state)",
+     '        log.info("[UNROUTE] %s is showing Multiview %s; leaving it first",\n'
+     "                 decoder, active_multiview)\n"
+     "        ok, steps, released, message = (True, [], [], '')",
+     "unrouting would skip the verified teardown and leave the display on a "
+     # The teardown itself is covered by test_multiview; that unroute goes
+     # THROUGH it rather than around it is covered beside the rest of the
+     # unroute contract. A suite list that names only the first reports this
+     # as uncaught, which reads as a missing control rather than a misdirected
+     # harness.
+     "Multiview it is no longer showing", EXIT + ["tests.test_user_routing"]),
     # Aimed at the rollback that actually runs. The first version pointed at a
     # second one further down that `if not ok:` above had already made
     # unreachable -- mutating it changed nothing, which is how the dead code

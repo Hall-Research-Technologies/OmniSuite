@@ -1191,6 +1191,7 @@
     'user.permissions_changed': 'Permissions changed',
     'user.password_changed': 'Password changed',
     'route': 'Routed',
+    'unroute': 'Display cleared',
     'usb.attach': 'USB connected',
     'usb.detach': 'USB disconnected',
     'multiview.show': 'Multiview shown',

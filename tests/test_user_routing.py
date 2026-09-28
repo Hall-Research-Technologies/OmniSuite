@@ -125,10 +125,28 @@ class UserRoutingTestBase(unittest.TestCase):
             payload, status = answer if isinstance(answer, tuple) else (answer, 200)
             return jsonify(payload), status
 
+        # The unroute engine, stubbed the same way. It is the same shape of
+        # dependency as the route engine -- authorise here, delegate there --
+        # so it is fenced here too, and a refusal that still reached it is a
+        # test failure rather than a write to a decoder.
+        self.unroutes = []
+        self.unroute_answer = ({"ok": True, "status": "UNROUTED",
+                                "cleared": ["ip_input1", "ip_input3"]}, 200)
+
+        def fake_unroute():
+            from flask import request as flask_request, jsonify
+            body = flask_request.get_json(silent=True) or {}
+            self.unroutes.append(dict(body))
+            answer = self.unroute_answer
+            payload, status = answer if isinstance(answer, tuple) else (answer, 200)
+            return jsonify(payload), status
+
         self._patch_registered("load_cache", lambda: [dict(u) for u in UNITS])
         self._patch_registered("route_view", fake_route)
+        self._patch_registered("unroute_view", fake_unroute)
 
         self.previews = []
+        self.preview_freshness = []
         self.preview_answer = (PIXEL, "image/png", "")
         self._patch_registered("source_preview", self._fake_preview)
 
@@ -141,8 +159,12 @@ class UserRoutingTestBase(unittest.TestCase):
         self.admin = self.store.find_by_username("principal")
         self.teacher = self.store.find_by_username("teacher")
 
-    def _fake_preview(self, address):
+    def _fake_preview(self, address, fresh=False):
+        # `fresh` is recorded as well as accepted: a page that has just opened
+        # asks the encoder to be re-read rather than answered from the cache,
+        # and that is behaviour worth being able to assert.
         self.previews.append(address)
+        self.preview_freshness.append(bool(fresh))
         return self.preview_answer
 
     def _patch_registered(self, name, replacement):
@@ -547,8 +569,12 @@ class SignOutTests(UserRoutingTestBase):
             environ_base={omni_remote.LISTENER_KEY: omni_remote.REMOTE,
                           "HTTP_SEC_FETCH_MODE": "navigate",
                           "HTTP_ACCEPT": "text/html"})
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.headers["Location"], "/user")
+        # The panel is served at the link's own URL rather than redirected to,
+        # so the link stays bookmarkable; a fresh session cookie is what the
+        # new session runs on.
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(omni_gate.SESSION_COOKIE,
+                      response.headers.get("Set-Cookie", ""))
 
     def test_the_session_endpoint_says_who_is_signed_in(self):
         """What the injected Sign out control decides from."""
@@ -767,3 +793,455 @@ class ThePreviewChecksItselfTests(UserRoutingTestBase):
             "/api/user/source_preview?source=" + TEACHER_PC,
             self.session_for(self.teacher))
         self.assertEqual(response.status_code, 200)
+
+
+class TheEngineAnswerIsProjectedTests(UserRoutingTestBase):
+    """The A/V engine answers with the decoder's own record; a user must not.
+
+    The engine is written for the administrative surface, so a successful route
+    comes back carrying `decoder.ip`, the multicast groups it just wrote and the
+    input names it wrote them to. Forwarding that put a device address into a
+    restricted browser -- the one thing the projection exists to prevent -- and
+    it did so on the success path, which is the path nobody looks at.
+    """
+
+    ENGINE_BODY = {
+        "ok": True,
+        "status": "VERIFIED",
+        "planes": {"video": "verified", "audio": "verified", "ok": True},
+        "decoder": {
+            "ip": "192.0.2.21",
+            "ip1_addr": "239.70.1.2", "ip1_port": 1000,
+            "ip3_addr": "239.80.1.2", "ip3_port": 1000,
+            "video_input": "ip_input1",
+            "multiview_active": False,
+        },
+        "multiview_exit": {"multiview": "multiview2x2", "ok": True,
+                           "released": ["ip_input2", "ip_input4"],
+                           "steps": ["moved output", "released inputs"]},
+    }
+
+    def test_no_device_address_survives_into_a_route_answer(self):
+        self.route_answer = (dict(self.ENGINE_BODY), 200)
+        response = self.route(self.session_for(self.teacher))
+        self.assertEqual(response.status_code, 200)
+        raw = response.get_data(as_text=True)
+        for leaked in ("192.0.2", "239.70", "239.80", "ip_input",
+                       "video_input"):
+            with self.subTest(leaked=leaked):
+                self.assertNotIn(leaked, raw,
+                                 "the engine's device record reached a "
+                                 "restricted client")
+
+    def test_the_operator_facing_result_is_still_there(self):
+        """Reducing the answer must not reduce what the page can say."""
+        self.route_answer = (dict(self.ENGINE_BODY), 200)
+        body = self.route(self.session_for(self.teacher)).get_json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["status"], "VERIFIED")
+        self.assertEqual(body["planes"]["audio"], "verified")
+        # Summarised, not forwarded: that it left a Multiview is a fact about
+        # the operation; which inputs were released is not.
+        self.assertEqual(body["multiview_exit"], {"left": True})
+
+    def test_a_failure_keeps_its_reason_and_loses_its_addresses(self):
+        self.route_answer = ({
+            "ok": False, "status": "FAILED", "reason": "plane_not_verified",
+            "error": "The display did not confirm the audio subscription "
+                     "after it was set.",
+            "planes": {"video": "verified", "audio": "failed", "ok": False},
+            "decoder": {"ip": "192.0.2.21", "ip1_addr": "239.70.1.2"},
+        }, 200)
+        response = self.route(self.session_for(self.teacher))
+        body = response.get_json()
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["reason"], "plane_not_verified")
+        self.assertIn("audio", body["error"])
+        self.assertNotIn("192.0.2", response.get_data(as_text=True))
+
+    def test_an_unknown_engine_field_is_dropped_rather_than_forwarded(self):
+        """Built from a fixed list, not filtered by removing known fields.
+
+        A reducer that strips what somebody remembered lets the next field the
+        engine gains through by default. This one has to be widened on purpose.
+        """
+        self.route_answer = ({"ok": True, "status": "VERIFIED",
+                              "something_new": {"ip": "192.0.2.21"}}, 200)
+        body = self.route(self.session_for(self.teacher)).get_json()
+        self.assertNotIn("something_new", body)
+
+
+class UnrouteTests(UserRoutingTestBase):
+    """Stopping a display: authorised like a route, and projected like one."""
+
+    def unroute(self, destination, session=None):
+        return self.post("/api/user/unroute", {"destination": destination},
+                         session)
+
+    def test_a_permitted_display_is_handed_to_the_verified_engine(self):
+        response = self.unroute(FRONT_DISPLAY, self.session_for(self.teacher))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self.unroutes), 1,
+                         "the engine was not reached exactly once")
+        self.assertEqual(self.unroutes[0]["decoder"], "192.0.2.21",
+                         "the identity was not resolved to its address")
+
+    def test_a_display_this_account_does_not_hold_is_refused(self):
+        response = self.unroute(UNSEEN_DISPLAY, self.session_for(self.teacher))
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["reason"],
+                         "destination_not_permitted")
+        self.assertEqual(self.unroutes, [],
+                         "a refused request still reached the hardware")
+
+    def test_the_answer_carries_no_device_address(self):
+        self.unroute_answer = ({"ok": True, "status": "UNROUTED",
+                                "cleared": ["ip_input1", "ip_input3"],
+                                "decoder": {"ip": "192.0.2.21",
+                                            "ip1_addr": ""}}, 200)
+        response = self.unroute(FRONT_DISPLAY, self.session_for(self.teacher))
+        body = response.get_json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["status"], "UNROUTED")
+        self.assertNotIn("192.0.2", response.get_data(as_text=True))
+
+    def test_an_account_without_av_cannot_stop_a_display(self):
+        self.store.set_permissions(
+            self.teacher.id,
+            Permissions(features=("usb",), sources=[TEACHER_PC],
+                        destinations=[FRONT_DISPLAY]),
+            actor=self.admin)
+        response = self.unroute(FRONT_DISPLAY, self.session_for(self.teacher))
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["reason"], "missing_feature:av")
+        self.assertEqual(self.unroutes, [])
+
+    def test_a_display_that_is_not_known_is_a_404_not_a_400(self):
+        """Well-formed, and about a device this host cannot currently place."""
+        self.store.set_permissions(
+            self.teacher.id,
+            Permissions(features=("av",), sources=[TEACHER_PC],
+                        destinations=[FRONT_DISPLAY, "b8:98:b0:00:00:99"]),
+            actor=self.admin)
+        response = self.unroute("b8:98:b0:00:00:99",
+                                self.session_for(self.teacher))
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(self.unroutes, [])
+
+    def test_a_missing_destination_is_a_400(self):
+        response = self.post("/api/user/unroute", {},
+                             self.session_for(self.teacher))
+        self.assertEqual(response.status_code, 400)
+
+
+class ARefusalSaysWhichRefusalItIsTests(UserRoutingTestBase):
+    """403 had eight origins and one message, so it diagnosed nothing.
+
+    "A User granted Multiview gets 403" was unanswerable from the response: the
+    reason went to the audit log, which the person holding the tablet cannot
+    read. Each refusal now names itself in a stable token, with a sentence
+    beside it for the operator.
+    """
+
+    def test_a_source_refusal_and_a_destination_refusal_differ(self):
+        session = self.session_for(self.teacher)
+        source = self.route(session, source=UNSEEN_SOURCE)
+        destination = self.route(session, destination=UNSEEN_DISPLAY)
+        self.assertEqual(source.status_code, 403)
+        self.assertEqual(destination.status_code, 403)
+        self.assertEqual(source.get_json()["reason"], "source_not_permitted")
+        self.assertEqual(destination.get_json()["reason"],
+                         "destination_not_permitted")
+
+    def test_every_reason_carries_a_sentence_rather_than_a_token(self):
+        response = self.route(self.session_for(self.teacher), source=UNSEEN_SOURCE)
+        error = response.get_json()["error"]
+        self.assertNotEqual(error, response.get_json()["reason"],
+                            "the internal name reached the operator")
+        self.assertIn("access", error.lower())
+
+    def test_a_missing_feature_is_distinguishable_from_a_missing_grant(self):
+        self.store.set_permissions(
+            self.teacher.id,
+            Permissions(features=(), sources=[TEACHER_PC],
+                        destinations=[FRONT_DISPLAY]),
+            actor=self.admin)
+        response = self.route(self.session_for(self.teacher))
+        self.assertEqual(response.get_json()["reason"], "missing_feature:av")
+
+
+class TheHandlerChecksAgainBehindTheGateTests(UserRoutingTestBase):
+    """The endpoint's own authorisation, reached on purpose.
+
+    The gate inspects `destination` in the request body and refuses before the
+    handler runs, so the handler's identical check is never reached by the
+    ordinary path. That does not make it redundant -- it makes it untested,
+    which is worse, because it is the check that still applies if the body ever
+    stops carrying a key the gate recognises.
+
+    So the first line is taken out of the way for the span of one test, and the
+    precondition is asserted: if emptying the gate's key list stopped working,
+    this test would say so rather than quietly measuring the gate again.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.gate_keys = omni_gate.DESTINATION_KEYS
+        self.addCleanup(
+            lambda: setattr(omni_gate, "DESTINATION_KEYS", self.gate_keys))
+
+    def blind_the_gate(self):
+        """Make the gate unable to see the destination in the body."""
+        omni_gate.DESTINATION_KEYS = ()
+
+    def test_the_gate_really_is_what_refuses_first(self):
+        """The precondition, asserted rather than assumed."""
+        response = self.post("/api/user/unroute",
+                             {"destination": UNSEEN_DISPLAY},
+                             self.session_for(self.teacher))
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["reason"],
+                         "destination_not_permitted")
+
+    def test_unroute_refuses_an_unheld_display_on_its_own(self):
+        self.blind_the_gate()
+        response = self.post("/api/user/unroute",
+                             {"destination": UNSEEN_DISPLAY},
+                             self.session_for(self.teacher))
+        self.assertEqual(response.status_code, 403,
+                         "the handler let a display through that the gate "
+                         "could no longer see")
+        self.assertEqual(response.get_json()["reason"],
+                         "destination_not_permitted")
+        self.assertEqual(self.unroutes, [],
+                         "a refused unroute still reached the hardware")
+
+    def test_route_refuses_an_unheld_display_on_its_own(self):
+        self.blind_the_gate()
+        response = self.route(self.session_for(self.teacher),
+                              destination=UNSEEN_DISPLAY)
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["reason"],
+                         "destination_not_permitted")
+        self.assertEqual(self.routes, [])
+
+
+class AMultiviewRefusalNamesItselfTests(UserRoutingTestBase):
+    """The 403 that started this, and the only one the gate cannot make.
+
+    Preset approval is not visible in the request body, so these refusals come
+    from the endpoint rather than the gate -- which makes them the ones whose
+    reason the ordinary path actually observes. "A User granted Multiview gets
+    403" was unanswerable precisely because this was the generic message.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.store.set_permissions(
+            self.teacher.id,
+            Permissions(features=("av", "multiview"),
+                        sources=[TEACHER_PC, DOC_CAMERA],
+                        destinations=[FRONT_DISPLAY],
+                        multiviews=[FRONT_DISPLAY + "/approved"]),
+            actor=self.admin)
+        self.teacher = self.store.find_by_username("teacher")
+
+        self.mv_state = {
+            "ok": True,
+            "multiviews": [
+                {"name": "approved", "layout_label": "2x2",
+                 "subframes": [{"cell": "top_left",
+                                "source": {"ip": "192.0.2.11"}}]},
+                {"name": "unapproved", "layout_label": "2x2",
+                 "subframes": [{"cell": "top_left",
+                                "source": {"ip": "192.0.2.11"}}]},
+            ],
+        }
+        self._patch_registered("multiview_state", lambda _ip: self.mv_state)
+
+    def show(self, preset):
+        return self.post("/api/user/multiview_show",
+                         {"display": FRONT_DISPLAY, "preset": preset},
+                         self.session_for(self.teacher))
+
+    def test_an_unapproved_preset_says_so(self):
+        response = self.show("unapproved")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["reason"],
+                         "multiview_not_approved")
+
+    def test_a_preset_holding_an_unpermitted_source_says_which_problem_it_is(self):
+        """The bench reproduction, in a test.
+
+        The account holds the display and the preset; one of the preset's
+        windows is fed by a source it was never given. That is a different
+        problem from the preset not being approved, and the operator can only
+        act on it if the two are told apart.
+        """
+        self.mv_state["multiviews"][0]["subframes"] = [
+            {"cell": "top_left", "source": {"ip": "192.0.2.19"}},
+        ]
+        response = self.show("approved")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["reason"],
+                         "multiview_content_not_permitted")
+        self.assertIn("source", response.get_json()["error"].lower())
+
+    def test_an_approved_preset_of_permitted_sources_is_not_refused(self):
+        """The other half: the refusals must not be refusing everything."""
+        response = self.show("approved")
+        self.assertNotEqual(response.status_code, 403,
+                            "a fully permitted preset was refused")
+
+    def test_a_source_that_cannot_be_identified_fails_closed(self):
+        """An address this host cannot place is not 'no source'.
+
+        An empty window is ordinary and carries no source at all. A window that
+        names an address resolving to no known device is a different thing, and
+        treating it as nothing to authorise let an undiscovered or re-addressed
+        encoder through unchecked.
+        """
+        self.mv_state["multiviews"][0]["subframes"] = [
+            {"cell": "top_left", "source": {"ip": "198.18.0.7"}},
+        ]
+        response = self.show("approved")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["reason"],
+                         "multiview_content_not_permitted")
+
+    def test_an_empty_window_is_not_treated_as_an_unknown_source(self):
+        """The decoder represents an unassigned window as `input: ""`.
+
+        Failing closed on an unidentifiable source must not fail closed on a
+        window that legitimately has none, or half the saved layouts on a
+        decoder become unreachable.
+        """
+        self.mv_state["multiviews"][0]["subframes"] = [
+            {"cell": "top_left", "source": {"ip": ""}},
+            {"cell": "top_right", "source": {}},
+        ]
+        response = self.show("approved")
+        self.assertNotEqual(response.status_code, 403,
+                            "an empty window was read as an unknown source")
+
+
+class UnrouteIsHeldToTheSameContractAsRouteTests(UserRoutingTestBase):
+    """Unroute takes the same lock and reports the same refusals as a route.
+
+    It reaches the same hardware in the same way, so "somebody else is
+    changing this display" has to mean the same thing and be told apart from a
+    composition in the same way. Written out rather than assumed from the two
+    handlers looking alike: they are separate code and can drift.
+    """
+
+    def unroute(self, session=None, destination=FRONT_DISPLAY):
+        return self.post("/api/user/unroute", {"destination": destination},
+                         session or self.session_for(self.teacher))
+
+    def test_a_busy_display_says_it_is_busy_rather_than_compositing(self):
+        self._patch_registered("locks", _BusyLocks())
+        busy = self.unroute()
+        self.assertEqual(busy.status_code, 409)
+        self.assertEqual(busy.get_json()["reason"], "resource_busy",
+                         "a contended lock was reported as something else")
+
+    def test_a_busy_refusal_reaches_no_device(self):
+        self._patch_registered("locks", _BusyLocks())
+        self.unroute()
+        self.assertEqual(self.unroutes, [],
+                         "a request refused for the lock still reached the "
+                         "unroute engine")
+
+    def test_the_display_is_the_resource_that_is_held(self):
+        """The lock is per display, so two displays do not queue on each other.
+
+        Asserted by holding the display's own lock and watching the request
+        refuse: a handler that locked nothing, or locked something else, would
+        sail through.
+        """
+        held = []
+
+        class _Recording:
+            @staticmethod
+            def decoder(identity):
+                return "decoder:" + str(identity or "").lower()
+
+            @staticmethod
+            def usb_pair(a, b):
+                return ("usb:" + str(a), "usb:" + str(b))
+
+            def hold(self, *resources, timeout=None):
+                held.extend(resources)
+                raise omni_locks.ResourceBusy(
+                    resources[0] if resources else "resource")
+
+        self._patch_registered("locks", _Recording())
+        self.unroute()
+        self.assertEqual(held, ["decoder:" + FRONT_DISPLAY],
+                         "unroute did not serialise on the display it changes")
+
+
+class UnrouteLeavesAMultiviewProperlyTests(unittest.TestCase):
+    """Unroute goes through the verified teardown, not around it.
+
+    A display showing a Multiview has to be taken out of it before it can be
+    told to subscribe to nothing, and that teardown is the one that moves the
+    output first and releases only the inputs OmniSuite owns. Skipping it would
+    leave the output pointed at an object nothing is feeding.
+
+    This drives the engine endpoint itself rather than the restricted wrapper,
+    because the teardown is the engine's job.
+    """
+
+    def setUp(self):
+        import OmniMatrix_upgrade_server_v7_6y as srv
+        self.srv = srv
+        self.calls = []
+
+        self.saved = {name: getattr(srv, name) for name in
+                      ("_exit_active_multiview", "_decoder_state",
+                       "_load_cache", "_save_cache")}
+
+        def restore():
+            for name, value in self.saved.items():
+                setattr(srv, name, value)
+
+        self.addCleanup(restore)
+
+        srv._decoder_state = lambda ip: (
+            {"video_input": "multiview2x2"}, None)
+        srv._load_cache = lambda: [
+            {"ip": "192.0.2.21", "mac": "b8:98:b0:00:00:11",
+             "role": "decoder", "model": "hw-omni-d4511"}]
+        srv._save_cache = lambda units: None
+
+        def fake_exit(decoder, name, state):
+            self.calls.append((decoder, name))
+            return True, ["moved output"], ["ip_input2"], ""
+
+        srv._exit_active_multiview = fake_exit
+        self.client = srv.app.test_client()
+
+    def test_unrouting_a_compositing_display_uses_the_verified_teardown(self):
+        self.client.post("/api/unroute", json={"decoder": "192.0.2.21"})
+        self.assertEqual(self.calls, [("192.0.2.21", "multiview2x2")],
+                         "unroute did not take the display out of its "
+                         "Multiview through the verified teardown")
+
+    def test_a_teardown_that_fails_stops_the_unroute(self):
+        """Nothing is cleared while the output still points at the Multiview."""
+        self.srv._exit_active_multiview = (
+            lambda d, n, s: (False, [], [], "the output would not move"))
+        response = self.client.post("/api/unroute",
+                                    json={"decoder": "192.0.2.21"})
+        body = response.get_json()
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["status"], "FAILED — MULTIVIEW NOT EXITED")
+
+    def test_a_display_showing_nothing_needs_no_teardown(self):
+        self.srv._decoder_state = lambda ip: ({"video_input": "ip_input1"},
+                                              None)
+        self.client.post("/api/unroute", json={"decoder": "192.0.2.21"})
+        self.assertEqual(self.calls, [],
+                         "a display that was not compositing was put through "
+                         "a Multiview teardown anyway")

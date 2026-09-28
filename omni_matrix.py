@@ -137,10 +137,20 @@ def discover_encoder_session1(
             a.get("destination_address"), a.get("destination_port"))
 
 def need_update_ip_input(cur: Dict[str, Any], want_addr: str, want_port: int) -> bool:
+    """Does this input need writing to carry want_addr:want_port?
+
+    An input that already names the right address but is DISABLED is not
+    carrying the stream, so it needs writing too. Comparing only address and
+    port meant a subscription that had been switched off -- by an unroute, by
+    a Multiview releasing a pool input, or in the device's own web UI -- was
+    judged already correct and silently left off.
+    """
     if not cur:
         return True
     cur_addr = ((cur.get("multicast") or {}).get("address")) or ""
     cur_port = cur.get("port")
+    if not cur.get("enabled"):
+        return True
     return (cur_addr != (want_addr or "")) or (cur_port != want_port)
 
 def build_ip_input_entry(
@@ -337,6 +347,78 @@ def render_device_info(encoders: List[Dict[str, Any]], decoders: List[Dict[str, 
 
 # -------------------- Routing --------------------
 
+# What one plane of a route achieved. A route is satisfied unless a plane
+# that was asked for, and that the source can actually supply, failed to read
+# back -- which is the distinction the old boolean could not make.
+PLANE_NOT_REQUESTED = "not_requested"
+PLANE_VERIFIED = "verified"
+PLANE_FAILED = "failed"
+PLANE_NO_SOURCE_STREAM = "no_source_stream"
+PLANE_CLEARED = "cleared"
+
+#: Planes that do not make a route a failure.
+_PLANE_OK = (PLANE_NOT_REQUESTED, PLANE_VERIFIED,
+             PLANE_NO_SOURCE_STREAM, PLANE_CLEARED)
+
+
+class AVRouteOutcome:
+    """Per-plane result of a route, truthy when nothing actually failed.
+
+    It is truthy/falsy so that `bool(...)` at an existing call site keeps
+    working, and carries the detail so a caller can say which plane did what
+    rather than reporting "Route command failed" for a route that is live.
+    """
+
+    __slots__ = ("video", "audio")
+
+    def __init__(self, video: str, audio: str):
+        self.video = video
+        self.audio = audio
+
+    def __bool__(self) -> bool:
+        return self.video in _PLANE_OK and self.audio in _PLANE_OK
+
+    @property
+    def failed_planes(self):
+        return [n for n in ("video", "audio")
+                if getattr(self, n) == PLANE_FAILED]
+
+    def as_dict(self):
+        return {"video": self.video, "audio": self.audio,
+                "ok": bool(self)}
+
+    def __repr__(self):
+        return (f"AVRouteOutcome(video={self.video!r}, audio={self.audio!r}, "
+                f"ok={bool(self)})")
+
+
+def clear_ip_input_entry(name: str, number: int, interface: str,
+                         cur: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The entry that leaves an input subscribed to nothing.
+
+    Measured on the bench rather than assumed: the decoder REFUSES an address
+    of `0.0.0.0`, and refuses an empty address while the input is still
+    enabled. It accepts the address being cleared and the input disabled in a
+    single write, after which the input reports zero packets. That pair is
+    what "unrouted" actually is on this hardware.
+    """
+    port = 0
+    if cur:
+        try:
+            port = int(cur.get("port") or 0)
+        except (TypeError, ValueError):
+            port = 0
+    entry = build_ip_input_entry(name, number, interface, "", port, False)
+    return entry
+
+
+def _entry_is_cleared(entry: Optional[Dict[str, Any]]) -> bool:
+    if not entry:
+        return False
+    addr = ((entry.get("multicast") or {}).get("address")) or ""
+    return not addr and not entry.get("enabled")
+
+
 def set_decoder_av(
     rpc: WSClient,
     dec_ip: str,
@@ -349,30 +431,77 @@ def set_decoder_av(
     video_input_name: str = "ip_input1",
     audio_input_name: str = "ip_input3",
     interface: str = "eth1",
-) -> bool:
+) -> "AVRouteOutcome":
+    """Subscribe a decoder to a source, and report what each plane achieved.
+
+    A source that publishes no multicast for a plane is not a route failure.
+    The old code skipped the write in that case -- correctly, there is nothing
+    to subscribe to -- but then demanded the subscription in verification, so
+    an encoder with no audio session reported the whole route as failed while
+    its video was live on the display.
+
+    When a requested plane has no stream at the source, the decoder's existing
+    subscription for that plane is cleared instead, so the display does not go
+    on carrying the previous source's audio underneath the new source's
+    picture.
+    """
     ip_cfg = rpc.config_get(dec_ip, "ip_input") or []
     ip_list = ip_cfg if isinstance(ip_cfg, list) else ip_cfg.get("ip_input", [])
-    lookup = {e.get("name"): e for e in ip_list}
+    lookup = {e.get("name"): e for e in ip_list if isinstance(e, dict)}
 
-    if do_video and v_addr and v_port:
-        if need_update_ip_input(lookup.get(video_input_name), v_addr, v_port):
-            entry_v = build_ip_input_entry(video_input_name, 1, interface, v_addr, int(v_port), True)
-            rpc.config_set(dec_ip, "ip_input", [entry_v])
+    cleared = set()
 
-    if do_audio and a_addr and a_port:
-        if need_update_ip_input(lookup.get(audio_input_name), a_addr, a_port):
-            entry_a = build_ip_input_entry(audio_input_name, 3, interface, a_addr, int(a_port), True)
-            rpc.config_set(dec_ip, "ip_input", [entry_a])
+    def _plan(requested, name, number, addr, port):
+        """Write what this plane needs; say what was intended for it."""
+        if not requested:
+            return PLANE_NOT_REQUESTED
+        if addr and port:
+            if need_update_ip_input(lookup.get(name), addr, port):
+                entry = build_ip_input_entry(
+                    name, number, interface, addr, int(port), True)
+                rpc.config_set(dec_ip, "ip_input", [entry])
+            return PLANE_VERIFIED
+        # The source has nothing to offer on this plane. Leave no stale
+        # subscription from whatever was routed here before.
+        current = lookup.get(name)
+        if current is not None and not _entry_is_cleared(current):
+            rpc.config_set(dec_ip, "ip_input",
+                           [clear_ip_input_entry(name, number, interface,
+                                                 current)])
+            cleared.add(name)
+        return PLANE_NO_SOURCE_STREAM
+
+    v_intent = _plan(do_video, video_input_name, 1, v_addr, v_port)
+    a_intent = _plan(do_audio, audio_input_name, 3, a_addr, a_port)
 
     verify = rpc.config_get(dec_ip, "ip_input") or []
+    verify_list = (verify if isinstance(verify, list)
+                   else verify.get("ip_input", []))
+    verified = {e.get("name"): e for e in verify_list if isinstance(e, dict)}
+
     def has(name, addr, port):
-        return any(
-            e.get("name") == name and (e.get("multicast") or {}).get("address") == addr and e.get("port") == port
-            for e in (verify if isinstance(verify, list) else verify.get("ip_input", []))
-        )
-    v_ok = (not do_video) or has(video_input_name, v_addr, v_port)
-    a_ok = (not do_audio) or has(audio_input_name, a_addr, a_port)
-    return v_ok and a_ok
+        entry = verified.get(name)
+        return bool(entry
+                    and (entry.get("multicast") or {}).get("address") == addr
+                    and entry.get("port") == port)
+
+    def _settle(intent, name, addr, port, number):
+        if intent in (PLANE_NOT_REQUESTED, ):
+            return intent
+        if intent == PLANE_VERIFIED:
+            return PLANE_VERIFIED if has(name, addr, port) else PLANE_FAILED
+        # PLANE_NO_SOURCE_STREAM: there was nothing to subscribe to. It is a
+        # failure only if we tried to clear a stale subscription and it is
+        # still there.
+        if name in cleared:
+            return (PLANE_CLEARED if _entry_is_cleared(verified.get(name))
+                    else PLANE_FAILED)
+        return PLANE_NO_SOURCE_STREAM
+
+    return AVRouteOutcome(
+        _settle(v_intent, video_input_name, v_addr, v_port, 1),
+        _settle(a_intent, audio_input_name, a_addr, a_port, 3),
+    )
 
 # -------------------- Web UI --------------------
 

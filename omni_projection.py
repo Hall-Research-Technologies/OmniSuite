@@ -532,6 +532,16 @@ def project_multiview_state(decoder_identity, decoder_name, state, units,
         windows, permitted = [], True
         for subframe in (entry.get("subframes") or []):
             identity, described = source_view(subframe)
+            address = ((subframe or {}).get("source") or {}).get("ip") or ""
+            if address.strip() and not identity:
+                # A window carrying a source this host cannot identify. An
+                # empty window is fine and common; a populated one whose
+                # address resolves to no known device is not, and treating it
+                # as "no source, therefore nothing to authorise" let an
+                # undiscovered or re-addressed encoder through unchecked.
+                # Classification fails closed.
+                permitted = False
+                break
             if identity and not (admin or permissions.may_use_source(identity)):
                 permitted = False
                 break
