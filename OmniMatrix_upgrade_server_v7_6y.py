@@ -8241,10 +8241,20 @@ def api_route_matrix():
 
     # ---- a decoder that is currently compositing a Multiview --------------
     #
-    # Routing a conventional source to it is allowed, but it has to stop
-    # compositing first, and the caller has to have said so. Without
-    # `exit_multiview` the request is refused rather than silently changing
-    # what is on screen in a way the matrix did not describe.
+    # A normal A/V route means "show this source on this display in single
+    # view". If the display is compositing, that is what has to stop, so the
+    # route leaves the Multiview itself rather than refusing and asking.
+    #
+    # This is deliberately not "the check was removed". The engine still reads
+    # the decoder, still recognises the composition by name, and still leaves
+    # it through `_exit_active_multiview` -- the verified teardown that moves
+    # the output first and releases only the pool inputs OmniSuite owns. A
+    # route that then fails still restores the Multiview and still says whether
+    # the restoration was verified, and the saved object is never deleted by
+    # any of this. Only the question is gone.
+    #
+    # `exit_multiview` in the body is accepted and ignored. Nothing needs to
+    # send it any more, and a page cached from an earlier build still works.
     multiview_exit = None
     try:
         mv_state, _mv_error = _decoder_state(decoder)
@@ -8255,15 +8265,8 @@ def api_route_matrix():
         active_multiview = omni_multiview.active_multiview_name(
             ((mv_state.get("hdmi_output") or {}).get("video") or {}).get("input"))
     if active_multiview:
-        if not data.get("exit_multiview"):
-            return jsonify({
-                "ok": False,
-                "status": "MULTIVIEW ACTIVE",
-                "multiview": active_multiview,
-                "error": ("%s is currently showing the Multiview %s. Routing a "
-                          "source here will exit Multiview."
-                          % (decoder, active_multiview)),
-            }), 409
+        log.info("[ROUTE] %s is showing Multiview %s; leaving it for a normal "
+                 "route", decoder, active_multiview)
         ok, steps, released, message = _exit_active_multiview(
             decoder, active_multiview, mv_state)
         multiview_exit = {"multiview": active_multiview, "steps": steps,
@@ -8359,18 +8362,10 @@ def api_route_matrix():
     # Note: Decoder inputs will be fetched by the polling system (every 5 seconds)
     # No need to fetch them here - route response returns immediately
 
-    # ---- the route failed after the Multiview had been left ---------------
-    #
-    # Leaving Multiview and routing are one operation for the operator, so a
-    # half-completed one is put back rather than left as a blank display.
-    if multiview_exit and not ok:
-        restored, message = _restore_multiview_after_failed_route(
-            decoder, multiview_exit["multiview"])
-        multiview_exit["rollback"] = {"restored": restored, "detail": message}
-        log.warning("[ROUTE] route to %s failed after leaving Multiview %s; "
-                    "restore %s", decoder, multiview_exit["multiview"],
-                    "verified" if restored else "INCOMPLETE: %s" % message)
-
+    # A route that failed after the Multiview was left has already been dealt
+    # with above: `if not ok:` returns on every branch, including the one that
+    # restores the Multiview and reports whether the restoration was verified.
+    # There is one rollback, and it is there.
     dec_payload = {"ip": decoder}
     try:
         fields = _ws_get_decoder_inputs(decoder, decoder_user, used_decoder_pwd or decoder_pref_pwd, app.config['WS_PORT'], app.config['WS_PATH'], timeout=4, attempts=1, delay=0)
@@ -8393,12 +8388,8 @@ def api_route_matrix():
             _save_cache(units)
     except Exception as e:
         log.info("[ROUTE] post-route decoder refresh failed for %s: %s", decoder, e)
-    status = "VERIFIED" if ok else "FAILED"
-    if multiview_exit and not ok:
-        status = ("FAILED — ROLLED BACK"
-                  if (multiview_exit.get("rollback") or {}).get("restored")
-                  else "FAILED — ROLLBACK INCOMPLETE")
-    body = {"ok": bool(ok), "decoder": dec_payload, "status": status}
+    # Reaching here means the route succeeded; a failure returned above.
+    body = {"ok": bool(ok), "decoder": dec_payload, "status": "VERIFIED"}
     if multiview_exit:
         body["multiview_exit"] = multiview_exit
     return jsonify(body)
@@ -9090,14 +9081,84 @@ def api_cache_dup():
                     "topology_warning_acknowledged": bool(ack_state.get("acknowledged")),
                     "daisy_warning_acknowledged": _daisy_warning_acknowledged(topology, ack_state)})
 
+def _protected_assignments():
+    """identity -> usernames, or {} when nothing needs protecting.
+
+    Only while Remote Access is on: with it off there is nobody whose
+    configuration could be surprised by a clear, and a standalone installation
+    must not be made to argue with dormant records.
+
+    Returning {} means "take the ordinary path", and the ordinary path is
+    deliberately left untouched -- including not reading the cache, which
+    merges scan results as a side effect.
+    """
+    if not remote_access_enabled():
+        return {}
+    try:
+        return _user_store.assigned_devices()
+    except Exception as exc:
+        # Fail closed. If what is assigned cannot be established, the safe
+        # answer is to protect rather than to clear, so this raises rather
+        # than quietly reporting that nothing is assigned.
+        log.warning("[CLEAR] could not read user assignments: %s",
+                    type(exc).__name__)
+        raise
+
+
+def _split_assigned(units, assigned):
+    """(retained, cleared, who) for an inventory and a set of assignments."""
+    retained, cleared, who = [], [], {}
+    for unit in units:
+        identity = omni_users._normalise_identity(unit.get("mac"))
+        names = assigned.get(identity) if identity else None
+        if names:
+            retained.append(unit)
+            who[identity] = names
+        else:
+            cleared.append(unit)
+    return retained, cleared, who
+
+
 @app.route("/api/clear_units", methods=["POST"])
 def api_clear_units_dup():
-    try:
-        if CACHE.exists(): CACHE.unlink()
-        # Also clear unified scan results so UI cache empties
-        if SCAN_RESULTS.exists(): SCAN_RESULTS.unlink()
-        if CSV_VIEW.exists(): CSV_VIEW.unlink()
-    except Exception: pass
+    data = request.get_json(silent=True) or {}
+    # The explicit administrator override. Never sent by Clear Units on Device
+    # Info: removing a device somebody was assigned is a decision about their
+    # permissions and is made where permissions are.
+    override = bool(data.get("override"))
+
+    # The cache is read only when protection could actually change the
+    # outcome. `_load_cache` merges scan results as a side effect, and the
+    # ordinary clear -- Remote Access off, or nothing assigned -- must behave
+    # exactly as it always has.
+    retained, cleared, who = [], [], {}
+    assigned = {} if override else _protected_assignments()
+    if assigned:
+        retained, cleared, who = _split_assigned(_load_cache() or [], assigned)
+
+    # Each file separately, and none of them silently.
+    #
+    # These used to share one `except Exception: pass`, so a file that could
+    # not be removed -- open elsewhere, or locked -- took the rest of the
+    # clear down with it AND said nothing. That matters more now: scan_results
+    # is merged back in by the next read, so a failed unlink means devices the
+    # operator was told had been cleared reappear immediately.
+    unremoved = []
+    for path in (CACHE, SCAN_RESULTS, CSV_VIEW):
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError as exc:
+            unremoved.append(path.name)
+            log.warning("[CLEAR] could not remove %s: %s", path.name,
+                        exc.strerror or exc)
+
+    if retained:
+        # Written back as the whole inventory, so the retained devices are the
+        # inventory rather than survivors of a deletion.
+        _save_cache(retained)
+        log.info("[CLEAR] kept %d device(s) assigned to users, cleared %d",
+                 len(retained), len(cleared))
     # This is the one operation that ends the inventory's life, so it is the one
     # operation that resets the multi-switch acknowledgement. Scanning again,
     # scanning another network, finding more devices or refreshing LLDP all leave
@@ -9113,7 +9174,22 @@ def api_clear_units_dup():
         usb_cleared = _usb_extenders.clear_devices()
     except Exception as exc:
         log.warning("USB extender inventory clear failed: %s", type(exc).__name__)
-    return jsonify({"ok": True, "usb_cleared": usb_cleared})
+    return jsonify({
+        "ok": True,
+        "usb_cleared": usb_cleared,
+        # `cleared` is a count only where the operation counted -- the
+        # ordinary path removes the files wholesale and never enumerated.
+        "cleared": (len(cleared) if assigned else None),
+        "retained": len(retained),
+        # Which accounts, so the administrator can act on it rather than
+        # wonder. Usernames only -- no address, no identity.
+        "retained_for": sorted({name for names in who.values() for name in names}),
+        "protection": ("override" if override
+                       else ("on" if remote_access_enabled() else "off")),
+        # Empty on an ordinary clear. Named rather than swallowed, because a
+        # file that survived means devices come back on the next read.
+        "unremoved": unremoved,
+    })
 
 @app.route("/api/remove_units", methods=["POST"])
 def api_remove_units():

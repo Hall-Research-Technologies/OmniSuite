@@ -80,9 +80,6 @@
       return 'That display is busy with another routing operation. '
            + 'Try again in a moment.';
     }
-    if (reason === 'multiview_active') {
-      return 'That display is showing a Multiview.';
-    }
     if (status === 403) {
       // The most likely 403 during ordinary use is an administrator changing
       // something while the page was open, and "you do not have permission"
@@ -556,7 +553,11 @@
     try {
       let result;
       if (av) {
-        result = await routeAv(false);
+        result = await api('/api/user/route', {
+          method: 'POST',
+          body: JSON.stringify({source: state.source,
+                                destination: state.destination, mode: 'av'}),
+        });
       } else {
         const peripheral = state.peripherals.find((p) => p.id === state.peripheral);
         const attached = peripheral && peripheral.attached_to
@@ -567,10 +568,6 @@
                                 peripherals: state.peripheral,
                                 detach: !!attached}),
         });
-      }
-      if (result === null) {
-        // The operator was asked and said no. Nothing was sent to any device.
-        return;
       }
       if (result.status === 200 && result.body.ok) {
         window.toast && window.toast('Routed', 'ok');
@@ -592,43 +589,6 @@
       renderRoutingState();
     }
   });
-
-  // One A/V route. Returns the result, or null if the operator declined.
-  //
-  // `answered` is the second pass: the display was compositing, the operator
-  // was asked, and this carries their answer. It is never set by anything
-  // other than a person saying yes, and it is never set twice -- a refusal
-  // that arrives with the answer already attached is reported, not retried.
-  async function routeAv(answered) {
-    const body = {source: state.source, destination: state.destination,
-                  mode: 'av'};
-    if (answered) body.exit_multiview = true;
-    const result = await api('/api/user/route', {
-      method: 'POST', body: JSON.stringify(body),
-    });
-    if (answered || result.status !== 409
-        || (result.body || {}).reason !== 'multiview_active') {
-      return result;
-    }
-    // The one refusal an operator can answer. Asked through the shared
-    // helper, so the wording and the "do not show again" preference are the
-    // same ones the A/V Matrix uses.
-    const display = named(state.destinations, state.destination) || 'that display';
-    const ask = window.omniMultiviewExit && window.omniMultiviewExit.ask;
-    if (!ask) {
-      // The dialog is the point: it says what will happen to a display
-      // somebody may be watching. Without it the action is refused rather
-      // than taken silently.
-      return result;
-    }
-    const proceed = await ask({
-      decoder: display,
-      multiview: (result.body || {}).multiview,
-      after: named(state.sources, state.source) || 'the source you selected',
-    });
-    if (!proceed) return null;
-    return routeAv(true);
-  }
 
   // Which display is mid-route, said on the display's own card.
   function renderRoutingState() {

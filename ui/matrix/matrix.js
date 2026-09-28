@@ -640,14 +640,12 @@ function enqueueRouteWrite(decoderIp, encoderIp, mode) {
   const prior = routeQueues.get(decoderIp) || Promise.resolve();
   const run = prior.catch(()=>{}).then(async () => {
     if(routeLatest.get(decoderIp) !== token) return {ok: true, skipped: true, decoderIp};
-    // `exit_multiview` is the operator's answer travelling with the request.
-    // Without it the server refuses to take a decoder out of Multiview, so a
-    // route can never silently change what is on a display.
-    const target = (lastState?._rawDecoders || lastState?.decoders || [])
-      .find(d => d.ip === decoderIp);
+    // A normal route means single view. If the decoder is compositing, the
+    // server leaves the Multiview as part of the same verified transaction,
+    // so nothing here has to know or ask -- which also removes a way for this
+    // page's idea of the decoder to be stale and produce a refusal.
     const res = await postJSON('/api/route', {
       decoder: decoderIp, encoder: encoderIp, mode,
-      exit_multiview: !!decoderMultiview(target),
     });
     if(routeLatest.get(decoderIp) !== token) return {ok: true, skipped: true, decoderIp};
     routeLatest.delete(decoderIp);

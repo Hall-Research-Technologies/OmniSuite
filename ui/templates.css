@@ -35,8 +35,15 @@
 
   /* States */
   --state-success: #4ade80;
+  --on-success: #0d1117;
   --state-warning: #eab308;
+  /* What goes ON the warning surface. Defined per palette rather than
+     left to a fallback: the warning colour is a bright amber here and a
+     dark one in light mode, so a single dark fallback measured 3.77:1
+     against the light palette -- unreadable, and silently so. */
+  --on-warning: #1a1205;
   --state-error: var(--danger, #e5534b);
+  --on-error: #0d1117;
   --state-selection: rgba(30, 144, 255, .16);
   --state-pending: rgba(148, 163, 184, .22);
 
@@ -124,8 +131,11 @@ body.light {
   --action-primary-text: #ffffff;
   --action-secondary-text: var(--text);
   --state-success: #15803d;
+  --on-success: #ffffff;
   --state-warning: #a16207;
+  --on-warning: #ffffff;
   --state-error: #b91c1c;
+  --on-error: #ffffff;
   --state-info: #0369a1;
   --state-selection: rgba(30, 144, 255, .12);
   --state-pending: rgba(100, 116, 139, .18);
@@ -881,6 +891,15 @@ button.secondary:focus-visible {
   background-color: var(--state-error);
   color: var(--on-error, #ffffff);
   border-color: var(--danger-ring);
+}
+/* Advisory, not a fault. "3 devices were kept because they are assigned to a
+   User" is the operator being told something, not something going wrong, so
+   it has its own semantic state rather than borrowing the danger treatment.
+   Without this rule the kind fell back to the plain toast and said nothing. */
+.toast.warn {
+  background-color: var(--state-warning);
+  color: var(--on-warning, #1a1205);
+  border-color: color-mix(in srgb, var(--state-warning) 60%, #000000 40%);
 }
 
 @media (prefers-reduced-motion: reduce) {

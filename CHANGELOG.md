@@ -76,6 +76,26 @@ for the user-facing summary.
   passwordless link is replaced. It now carries its own presentation.
 - Fixed the copy-link confirmations never appearing: they called a toast
   helper that does not exist.
+- Routing a source to a display that is showing a Multiview now simply does
+  it. A normal A/V route means single view, so the display stops compositing
+  as part of the same verified transaction -- no question, from the A/V
+  Matrix, the Display Output drop, a password User or a Direct Access User
+  alike. The saved Multiview is kept, and a route that fails still puts it
+  back and still says whether the restoration was verified.
+- Clear Units now keeps devices assigned to User accounts while Remote Access
+  is on, and says how many it kept and for whom. Clearing one of those is done
+  from Manage users, where the accounts are, rather than being what the
+  ordinary Clear button silently does. With Remote Access off, Clear behaves
+  exactly as it always has.
+- Clear Units no longer hides a file it could not remove. They were removed
+  under one shared `except: pass`, so a locked file stopped the rest of the
+  clear and said nothing -- and because scan results are merged back in by the
+  next read, devices reported as cleared would reappear.
+- Removed a second Multiview rollback in the route path that could never run:
+  the failure branch above it returns on every path. A rollback that looks
+  like a safety net and is not is worse than none.
+- Manage users can now reach the rest of the application, and every
+  administrative page is guaranteed a way back to OmniSuite.
 - Fixed a duplicated charset in the Content-Type of every served page.
 
 ## V1.1.0 - 2026-09-17

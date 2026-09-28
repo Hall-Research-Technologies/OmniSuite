@@ -374,6 +374,49 @@ check('remove is offered only when there is a certificate', () => {
 });
 
 // --------------------------------------------------------------- report ---
+
+// ---- a state surface needs a readable foreground in EVERY palette ---------
+//
+// `--on-warning` was never defined, so both consumers fell back to a dark
+// colour. That reads well on the dark palette's bright amber and measured
+// 3.77:1 on the light palette's dark one -- unreadable, and silently so,
+// because a fallback never fails loudly.
+check('an on-colour that falls back to a literal must be defined', () => {
+  // `--on-selection` falls back to `--action-primary-text`, which the palettes
+  // define -- that is an override hook and it resolves correctly everywhere.
+  // The failure is a fallback to a LITERAL: a literal cannot differ between
+  // palettes, and the surface under it does. `--on-warning` fell back to a
+  // dark colour, which measured 9.67:1 on the dark palette's bright amber and
+  // 3.77:1 on the light palette's dark one.
+  const TEMPLATES = fs.readFileSync(
+    path.join(ROOT, 'ui', 'templates.css'), 'utf8');
+  const css = code(TEMPLATES);
+  const literal = /^#|^rgb|^hsl|^white$|^black$/i;
+  const offenders = [];
+  for (const m of css.matchAll(/var\(\s*(--on-[a-z-]+)\s*,\s*([^)]+)\)/g)) {
+    const [, token, fallback] = m;
+    if (!literal.test(fallback.trim())) continue;      // falls back to a token
+    if (css.includes(token + ':')) continue;           // and it is defined
+    offenders.push(`${token} (falls back to ${fallback.trim()})`);
+  }
+  assert(offenders.length === 0,
+    `used with a literal fallback and never defined: ${offenders.join(', ')}`);
+});
+
+check('the warning on-colour differs between the two palettes', () => {
+  // The warning surface is a bright amber in dark mode and a dark one in
+  // light mode. One foreground cannot serve both.
+  const TEMPLATES = fs.readFileSync(
+    path.join(ROOT, 'ui', 'templates.css'), 'utf8');
+  const values = [...code(TEMPLATES).matchAll(/--on-warning:\s*([^;]+);/g)]
+    .map((m) => m[1].trim());
+  assert(values.length >= 2,
+    `--on-warning is defined ${values.length} time(s); each palette needs its own`);
+  assert(new Set(values).size >= 2,
+    `both palettes define --on-warning as ${values[0]}, which cannot suit both`);
+});
+
+
 results.forEach(([status, name]) => console.log(`${status} ${name}`));
 if (failures) {
   console.log(`\nuser shell test: ${failures} failure(s)`);

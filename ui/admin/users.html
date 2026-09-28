@@ -30,8 +30,11 @@
     <img src="/ui/companylogo.png" alt="Hall Research" class="logo">
     <h1>Accounts &amp; Devices</h1>
   </div>
-  <div style="display:flex;align-items:center;gap:10px;">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
     <a class="btn-quiet" href="/">Back to OmniSuite</a>
+    <a class="btn-quiet" href="/matrix">A/V Matrix</a>
+    <a class="btn-quiet" href="/matrix/usb">USB Matrix</a>
+    <a class="btn-quiet" href="/matrix/multiview">Multiview</a>
   </div>
 </header>
 
@@ -103,6 +106,26 @@
       <div style="margin-top:12px;display:flex;gap:8px;align-items:center;">
         <button class="btn-primary-lg" id="alias_save" type="button">Save names</button>
         <span class="assign-count" id="alias_dirty"></span>
+      </div>
+
+      <!-- Clearing a device somebody was assigned is a decision about their
+           permissions, so it is made here rather than by the Clear Units
+           button on Device Info, which keeps assigned devices. -->
+      <div class="settings-section" id="assigned_clear_section" hidden>
+        <h4>Devices kept when the inventory is cleared</h4>
+        <p class="hint" style="margin:0 0 8px;">
+          <strong>Clear Units</strong> on Device Info removes discovered devices
+          but keeps any that are assigned to a User, so nobody's controls
+          quietly stop working. These are the ones it keeps.
+        </p>
+        <div id="assigned_list" class="assign-list" style="margin-bottom:10px;"></div>
+        <p class="hint" style="margin:0 0 8px;">
+          To clear one of these, take it away from the accounts that have it
+          &mdash; that is the ordinary way, and it leaves their other equipment
+          alone. The button below is for clearing the whole inventory anyway.
+        </p>
+        <button class="btn small secondary" id="assigned_clear" type="button">
+          Clear everything, including assigned devices</button>
       </div>
     </div>
   </section>
@@ -254,7 +277,7 @@
 </div>
 
 <script src="/ui/csrf.js"></script>
-<script src="/ui/signout.js"></script>
+<script src="/ui/adminnav.js"></script>
 <script src="/ui/toast.js"></script>
 <script src="/ui/confirm.js"></script>
 <script src="/ui/admin/users.js"></script>

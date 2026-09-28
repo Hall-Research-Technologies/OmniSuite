@@ -39,7 +39,7 @@ JS_SUITES = ("usb_render_smoke.js", "usb_filter_test.js", "lldp_topology_test.js
              "appearance_theme_test.js", "multiview_ui_test.js",
              "matrix_multiview_test.js", "user_shell_test.js",
              "settings_remote_test.js", "csrf_test.js",
-             "user_routing_test.js")
+             "user_routing_test.js", "adminnav_test.js")
 
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(TESTS))

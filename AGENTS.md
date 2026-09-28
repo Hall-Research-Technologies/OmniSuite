@@ -412,8 +412,8 @@
 - The **audio** crosspoint on that row stays. Multiview sound comes from one source over its ordinary audio path, so it is true, and hiding it would be the lie.
 - Whether a decoder is compositing is decided **only from what its display is currently selecting**. Saved Multiview objects, a remembered page selection and OmniSuite's own metadata are not evidence: none of them says what is on screen now.
 - This is derived from a field the ordinary scan already collects. **Do not add Multiview discovery or configuration reads to the scan hot path** to answer it.
-- **Normal routing to such a decoder stays available.** It warns first, once per browser session, with a "do not show this again" option; the acknowledgement is session-scoped so a refresh or a trip to another page does not ask again. Cancel performs **zero** device mutations.
-- The operator's answer **travels with the route request**. A request that does not carry it is refused, so no caller can take a display off a composition silently.
+- **Normal routing to such a decoder happens, and asks nothing.** *(Superseded the warn-and-consent rule: a normal A/V route MEANS single view, so the display simply stops compositing. Putting a source on a display is the instruction; nobody choosing a camera is thinking about what the display was doing first, and the question was one too many.)* The engine still recognises the composition, still leaves it through `_exit_active_multiview`, still restores it if the route then fails, and still never deletes the saved object. Only the question is gone, on every surface -- A/V Matrix, Display Output drop, password User and Direct Access User alike.
+- **Nothing carries an answer, because nothing is asked.** `exit_multiview` is accepted and ignored so a cached page still works, and no surface sends it. The decision belongs to the server, which has just read the decoder, rather than to a page's idea of what it was doing a moment ago.
 - Leaving Multiview is one transaction — move the display, release the pool inputs that Multiview owned, then route — and each step is verified. If the route fails, restore the Multiview and say whether the restoration was verified.
 - **Exiting a Multiview never deletes it.** The saved object stays and can be shown again.
 - The matrix redraws from the route response, and showing a Multiview records the decoder's new display state. **Do not add polling** to keep the matrix honest, and never show the intended state in place of the verified one.
@@ -724,3 +724,28 @@ Three mutations survived the first pass on this work, and each one meant somethi
 - **`typeof window.omniConfirm` answered `undefined` for a module that had loaded perfectly well**, because the automation evaluates in an isolated world. Zero console errors, zero failed requests and the script tag present in the DOM — and a conclusion that was entirely wrong. Read page globals through an injected `<script>` that writes its answer into the DOM, which both worlds share.
 - The same measurement then found the real defect: the shared confirmation dialog was `position: static`, transparent, unpadded and full width on every page that did not load the A/V Matrix stylesheet. **Styling shared markup is part of sharing it** — the module now carries its own, and there is one definition rather than one per stylesheet.
 - **A guarded call to a helper that does not exist fails silently.** `window.omniToast` has never existed; the export is `window.toast`. `if (window.omniToast) window.omniToast(...)` is indistinguishable from working code until somebody looks for the message.
+
+### A deliberate action is the answer; do not ask it again
+
+- **Putting a source on a display IS the instruction.** Asking "this display is showing a Multiview, continue?" adds a decision the operator has already made, and nobody choosing a camera is thinking about what the display happened to be doing first. The question is gone from every surface -- A/V Matrix, Display Output drop, password User, Direct Access User.
+- **Remove the question, not the protection.** The engine still reads the decoder, still recognises the composition by name, still leaves it through the one verified teardown, still restores it when the route then fails, and still never deletes the saved object. The diff that deletes the check instead is one line shorter and loses all of that.
+- **The decision belongs where the facts are.** The A/V Matrix used to compute `exit_multiview` from its own idea of the decoder, so a page whose state was a few seconds stale sent the wrong answer and got a refusal. The server has just read the device; it decides. Nothing is sent, and a stale field from a cached page is accepted and ignored so an old tab still works.
+
+### Clearing an inventory must not quietly take somebody's equipment away
+
+- **A User's controls are built from the devices they were assigned.** Clearing one leaves a person with a control that has nothing behind it, and nothing on screen said so. While Remote Access is on, an assigned device is kept and the administrator is told how many and for whom.
+- **The protection is scoped to when it matters.** With Remote Access off there is nobody to protect, and a standalone installation must not be made to argue with dormant records -- so the ordinary path is left *byte for byte* as it was. That is not tidiness: `_load_cache()` merges scan results as a side effect, and simply calling it first made a suite intermittent.
+- **The override is not the ordinary button.** Clearing a device somebody was given is a decision about their permissions, so it is made where permissions are, it names the accounts affected, and it goes through the same endpoint -- one implementation of clearing, two ways in.
+- **Fail closed.** If what is assigned cannot be established, nothing is cleared. An operator can look and try again; they cannot un-clear.
+- **Assignments survive a clear, because identity is not an address.** A device that comes back is the same device, and a different unit that happens to take the same address is never silently adopted.
+
+### A mutation that changes nothing is telling you something
+
+- **`route.no-rollback` survived, and the rollback was real** -- just not the one it pointed at. `if not ok:` above returns on every branch, so a second rollback further down could never run. It had sat there reading as a safety net, with two places to keep in step and one of them a lie.
+- **A mutation whose anchor can never match is noise that reads as a gap.** Two mutations targeted the confirmation flow this build removed; they were deleted rather than repointed, because there is nothing left for them to break.
+- **Patch the object, never the method on its class.** A test replaced `Path.unlink` to simulate a locked file and restored a *bound* method onto the class, so every test that ran afterwards got a broken `unlink`. Test classes run alphabetically, so the blast radius moves whenever somebody renames one.
+
+### Read page globals through the DOM, and never search for what you injected
+
+- An isolated evaluation world cannot see page globals, so `typeof window.omniConfirm` answers `undefined` for a module that loaded perfectly well. Inject a `<script>` that writes its answer into the DOM, which both worlds share.
+- **And do not then search the page for the strings you just put in it.** A probe that serialised a list of device addresses into an injected script found those addresses in the page and reported a leak. Read the DOM out and search it in the harness, or ask the server for the responses directly.

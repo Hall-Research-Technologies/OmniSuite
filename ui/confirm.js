@@ -249,61 +249,23 @@
   // on one page has turned it off, and a second copy of this policy would be a
   // second thing to keep in step.
   //
-  // The keys are the ones the A/V Matrix already wrote, so an existing
-  // preference carries over rather than being silently reset.
-  const MV_EXIT_SESSION_KEY = 'matrix_multiview_exit_acknowledged';
-  const MV_EXIT_FOREVER_KEY = 'matrix_multiview_exit_suppressed';
+  // The Multiview-routing question has been retired.
+  //
+  // A normal A/V route means single view, so routing a source to a display
+  // that is compositing simply leaves the Multiview as part of the same
+  // verified transaction. Nobody is asked, so there is nothing to remember
+  // about not asking.
+  //
+  // The two preferences it wrote are dropped rather than merely ignored: a key
+  // that is no longer written still reads, and a browser would otherwise carry
+  // a suppression for a question that no longer exists.
+  (function forgetRetiredPreferences() {
+    const retired = ['matrix_multiview_exit_acknowledged',
+                     'matrix_multiview_exit_suppressed'];
+    try { retired.forEach((key) => sessionStorage.removeItem(key)); }
+    catch (err) { /* storage off: there is nothing stored to drop */ }
+    try { retired.forEach((key) => localStorage.removeItem(key)); }
+    catch (err) { /* same */ }
+  }());
 
-  window.omniMultiviewExit = window.omniMultiviewExit || {
-    SESSION_KEY: MV_EXIT_SESSION_KEY,
-    FOREVER_KEY: MV_EXIT_FOREVER_KEY,
-
-    // Storage that refuses to answer means ask: a browser with storage off
-    // must not quietly lose a warning that precedes a display change.
-    suppressed: function () {
-      try {
-        if (localStorage.getItem(MV_EXIT_FOREVER_KEY) === 'true') return true;
-        return sessionStorage.getItem(MV_EXIT_SESSION_KEY) === 'true';
-      } catch (err) {
-        return false;
-      }
-    },
-
-    remember: function (forever) {
-      try {
-        sessionStorage.setItem(MV_EXIT_SESSION_KEY, 'true');
-        if (forever) localStorage.setItem(MV_EXIT_FOREVER_KEY, 'true');
-      } catch (err) { /* not fatal: the warning simply returns */ }
-    },
-
-    // Resolves true when the operation may proceed. Nothing has been written
-    // to any device before this resolves, on either page.
-    // Named `ask`, not `confirm`: the page-wide guard that forbids the
-    // native dialogs matches a bare `confirm(`, and a helper that trips it
-    // would mean weakening the guard to accommodate a name.
-    ask: async function (options) {
-      options = options || {};
-      if (window.omniMultiviewExit.suppressed()) return true;
-      const who = options.decoder || 'this decoder';
-      const answer = await window.omniConfirm({
-        title: 'Multiview is active on this decoder',
-        message: options.message
-          || ('Completing this route will exit Multiview on ' + who + ' and '
-              + 'replace the Multiview display with the selected A/V route. '
-              + 'The saved Multiview is kept and can be shown again later.'),
-        summary: [
-          {label: 'Decoder', value: who},
-          {label: 'Currently showing', value: options.multiview || 'a Multiview'},
-          {label: 'After this route', value: options.after
-            || 'the source you selected'},
-          {label: 'Saved Multiview', value: 'kept, not deleted'},
-        ],
-        confirmText: 'Continue',
-        suppressLabel: 'Do not show this again',
-      });
-      const ok = answer === true || (answer && answer.ok);
-      if (ok) window.omniMultiviewExit.remember(!!(answer && answer.suppress));
-      return !!ok;
-    },
-  };
 })();

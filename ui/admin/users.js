@@ -563,6 +563,431 @@
   // never reaches the device and never takes part in a permission decision --
   // the checkbox lists below still store identities, and this screen only
   // changes what those checkboxes are called.
+  // Which devices Clear Units would keep, and for whom.
+  //
+  // Derived from the accounts and devices this page already has, so it costs
+  // no request of its own and cannot disagree with what is on screen.
+  function renderAssignedDevices() {
+    const section = el('assigned_clear_section');
+    const host = el('assigned_list');
+    if (!section || !host) return;
+
+    // The server says who has what, from the same query Clear Units uses, so
+    // this list and that operation cannot disagree. The page does not parse a
+    // permission key format that belongs to the store.
+    const held = state.devices.filter((d) => (d.assigned_to || []).length);
+
+    section.hidden = held.length === 0;
+    host.replaceChildren();
+    held.slice()
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .forEach((device) => {
+        const row = document.createElement('div');
+        row.className = 'assign-row';
+        const name = document.createElement('span');
+        name.textContent = device.name;
+        const meta = document.createElement('span');
+        meta.className = 'assign-meta';
+        meta.textContent = ' \u00b7 ' + device.assigned_to.join(', ');
+        row.append(name, meta);
+        host.appendChild(row);
+      });
+  }
+
+  function updateCount(kind, countId) {
+    el(countId).textContent = state.selected[kind].size + ' selected';
+  }
+
+  function openEditor(user) {
+    state.editing = user || null;
+    state.selected.sources = new Set(
+      (user && user.permissions && user.permissions.sources) || []);
+    state.selected.destinations = new Set(
+      (user && user.permissions && user.permissions.destinations) || []);
+    state.approvedMultiviews = new Set(
+      (user && user.permissions && user.permissions.multiviews) || []);
+    populateMultiviewDisplays();
+
+    el('editor_title').textContent = user ? 'Edit ' + user.username : 'Add account';
+    el('f_username').value = user ? user.username : '';
+    el('f_username').disabled = !!user;      // renaming is not an operation
+    el('f_role').value = user ? user.role : 'user';
+    el('f_password').value = '';
+    el('f_password').placeholder = user
+      ? 'Leave blank to keep the current password'
+      : 'At least 8 characters';
+
+    const features = new Set(
+      (user && user.permissions && user.permissions.features) || []);
+    document.querySelectorAll('.f-feature').forEach((box) => {
+      box.checked = features.has(box.value);
+    });
+
+    renderAssign('sources', 'src_list', 'src_count', 'src_filter');
+    renderAssign('destinations', 'dst_list', 'dst_count', 'dst_filter');
+    applyRoleVisibility();
+    // Read on its own, because it is the one thing in this dialog that is not
+    // part of the account record the table already holds.
+    renderDirect(null);
+    loadDirect().catch(() => {});
+    el('editor_error').style.display = 'none';
+    el('editor_backdrop').style.display = 'flex';
+    el('f_username').focus();
+  }
+
+  // ------------------------------------------------- Multiview approvals
+  //
+  // Presets are read for the one display an administrator picks, not for every
+  // decoder in the deployment: a preset list is a device read, and building
+  // one for the whole site to fill a dropdown is exactly the traffic this
+  // architecture avoids everywhere else.
+  function populateMultiviewDisplays() {
+    const pick = el('mv_display_pick');
+    pick.replaceChildren();
+    const first = document.createElement('option');
+    first.value = '';
+    first.textContent = 'Choose a display…';
+    pick.appendChild(first);
+    state.devices.filter((d) => d.role === 'decoder').forEach((device) => {
+      const option = document.createElement('option');
+      option.value = device.id;
+      option.textContent = device.name;
+      pick.appendChild(option);
+    });
+    el('mv_preset_list').replaceChildren(emptyNote('Choose a display above.'));
+    updateApprovedCount();
+  }
+
+  function emptyNote(text) {
+    const note = document.createElement('div');
+    note.className = 'empty';
+    note.style.padding = '14px';
+    note.textContent = text;
+    return note;
+  }
+
+  function updateApprovedCount() {
+    const n = state.approvedMultiviews.size;
+    el('mv_approved_count').textContent = n + ' approved';
+  }
+
+  async function loadPresetsFor(displayId) {
+    const host = el('mv_preset_list');
+    if (!displayId) {
+      host.replaceChildren(emptyNote('Choose a display above.'));
+      return;
+    }
+    host.replaceChildren(emptyNote('Reading layouts from the display…'));
+    const {status, body} = await api('/api/admin/multiviews?display='
+                                     + encodeURIComponent(displayId));
+    if (status !== 200 || !body.ok) {
+      host.replaceChildren(emptyNote(
+        body.error || 'That display did not answer.'));
+      return;
+    }
+    const presets = body.presets || [];
+    if (!presets.length) {
+      host.replaceChildren(emptyNote('No Multiview layouts are saved on it.'));
+      return;
+    }
+    host.replaceChildren();
+    presets.forEach((preset) => {
+      const row = document.createElement('label');
+      row.className = 'assign-row';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.value = preset.key;
+      box.checked = state.approvedMultiviews.has(preset.key);
+      box.addEventListener('change', () => {
+        if (box.checked) state.approvedMultiviews.add(preset.key);
+        else state.approvedMultiviews.delete(preset.key);
+        updateApprovedCount();
+      });
+      const text = document.createElement('span');
+      const name = document.createElement('span');
+      name.className = 'a-name';
+      name.textContent = preset.label;
+      const meta = document.createElement('span');
+      meta.className = 'a-meta';
+      meta.textContent = ' · ' + preset.name
+        + (preset.showing ? ' · on the display now' : '');
+      text.append(name, meta);
+      row.append(box, text);
+      host.appendChild(row);
+    });
+    updateApprovedCount();
+  }
+
+  el('mv_display_pick').addEventListener('change', function () {
+    loadPresetsFor(this.value).catch(() => {});
+  });
+
+  // ---------------------------------------------------- direct access
+  //
+  // This section does not take part in Save. Enabling it mints a credential on
+  // the server, and a checkbox that quietly creates a bearer token when
+  // somebody presses Save on an unrelated change would be the wrong shape
+  // entirely. Each control is one deliberate action with one server answer.
+  //
+  // The link itself is only ever held in the input it is shown in. Nothing
+  // writes it to storage -- it is a password, and a password does not belong
+  // in localStorage.
+  function renderDirect(payload) {
+    const section = el('direct_section');
+    const box = el('f_direct');
+    const detail = el('direct_detail');
+    const status = el('direct_status');
+    const user = state.editing;
+
+    // Nothing to attach a link to while an account is being created.
+    section.hidden = !user;
+    if (!user) return;
+
+    const info = (payload && payload.direct_access) || {};
+    box.checked = !!info.enabled;
+    detail.hidden = !info.enabled;
+    el('direct_link').value = (payload && payload.link) || '';
+
+    if (!info.enabled) {
+      status.textContent = 'No active direct link.';
+      return;
+    }
+    if (payload && payload.note) {
+      status.textContent = payload.note;
+    } else if (payload && !payload.recoverable) {
+      status.textContent = 'This link cannot be shown on this computer. '
+        + 'Regenerate it to get one you can copy.';
+    } else {
+      status.textContent = 'Direct access is on. Regenerating stops the old '
+        + 'link working immediately.';
+    }
+  }
+
+  async function loadDirect() {
+    const user = state.editing;
+    if (!user) { renderDirect(null); return; }
+    const res = await api('/api/admin/users/' + encodeURIComponent(user.id)
+                          + '/direct_access');
+    renderDirect(res.status === 200 ? res.body : null);
+  }
+
+  async function directAction(action) {
+    const user = state.editing;
+    if (!user) return;
+    const res = await api('/api/admin/users/' + encodeURIComponent(user.id)
+                          + '/direct_access',
+                          {method: 'POST', body: JSON.stringify({action})});
+    if (res.status !== 200 || !res.body.ok) {
+      showEditorError(res.body.error || 'That could not be changed.');
+      await loadDirect();
+      return;
+    }
+    renderDirect(res.body);
+    await load();
+  }
+
+  function applyRoleVisibility() {
+    // An administrator has no per-device grants -- the role is the grant -- so
+    // showing empty assignment lists for one would be misleading.
+    el('user_only').hidden = el('f_role').value === 'admin';
+  }
+
+  function closeEditor() {
+    el('editor_backdrop').style.display = 'none';
+    state.editing = null;
+  }
+
+  function showEditorError(message) {
+    const line = el('editor_error');
+    line.textContent = message;
+    line.style.display = 'block';
+  }
+
+  async function saveEditor() {
+    const role = el('f_role').value;
+    const password = el('f_password').value;
+    const permissions = {
+      features: Array.from(document.querySelectorAll('.f-feature'))
+        .filter((b) => b.checked).map((b) => b.value),
+      sources: Array.from(state.selected.sources),
+      destinations: Array.from(state.selected.destinations),
+      multiviews: Array.from(state.approvedMultiviews),
+    };
+
+    if (!state.editing) {
+      const username = el('f_username').value.trim();
+      if (!username) return showEditorError('A name is required.');
+      if (password.length < 8) {
+        return showEditorError('The password must be at least 8 characters.');
+      }
+      const {status, body} = await api('/api/admin/users', {
+        method: 'POST',
+        body: JSON.stringify({username, password, role, permissions}),
+      });
+      if (status !== 200 || !body.ok) {
+        return showEditorError(body.error || 'Could not create the account.');
+      }
+      closeEditor();
+      window.toast && window.toast('Account created', 'ok');
+      return load();
+    }
+
+    // Editing: each change is its own explicit action, so the audit trail
+    // records what was actually done rather than "something was updated".
+    const id = state.editing.id;
+    const steps = [];
+    if (role !== state.editing.role) steps.push({action: 'set_role', role});
+    if (role !== 'admin') steps.push({action: 'set_permissions', permissions});
+    if (password) {
+      if (password.length < 8) {
+        return showEditorError('The password must be at least 8 characters.');
+      }
+      steps.push({action: 'set_password', password});
+    }
+    for (const step of steps) {
+      const {status, body} = await api('/api/admin/users/' + id,
+                                       {method: 'POST', body: JSON.stringify(step)});
+      if (status !== 200 || !body.ok) {
+        return showEditorError(body.error || 'Could not save that change.');
+      }
+    }
+    closeEditor();
+    window.toast && window.toast(steps.length ? 'Saved' : 'No changes', 'ok');
+    return load();
+  }
+
+  // ------------------------------------------------------------- wiring
+  el('new_user').addEventListener('click', () => openEditor(null));
+  el('editor_cancel').addEventListener('click', closeEditor);
+  el('editor_save').addEventListener('click', () => {
+    saveEditor().catch((err) => {
+      if (String(err.message) !== 'signed out') {
+        showEditorError('Could not reach OmniSuite.');
+      }
+    });
+  });
+  el('f_role').addEventListener('change', applyRoleVisibility);
+
+  // Each of these is one deliberate action against the server, not a field in
+  // a form that gets saved later.
+  el('f_direct').addEventListener('change', () => {
+    directAction(el('f_direct').checked ? 'enable' : 'disable')
+      .catch(() => showEditorError('Could not reach OmniSuite.'));
+  });
+  el('direct_regen').addEventListener('click', async () => {
+    const ok = !window.omniConfirm ? false : await window.omniConfirm({
+      title: 'Replace this direct link?',
+      message: 'The link that has already been handed out will stop working '
+             + 'immediately, and anyone using it now will be signed out. '
+             + 'A new link is created in its place.',
+      confirmText: 'Replace link',
+      danger: true,
+    });
+    if (!ok) return;
+    directAction('regenerate')
+      .catch(() => showEditorError('Could not reach OmniSuite.'));
+  });
+  el('direct_copy').addEventListener('click', async () => {
+    const link = el('direct_link').value;
+    if (!link) return;
+    try {
+      await navigator.clipboard.writeText(link);
+      if (window.toast) window.toast('Link copied.');
+    } catch (err) {
+      // No clipboard permission, or an insecure context. Selecting the text
+      // is something the operator can act on; a silent failure is not.
+      el('direct_link').select();
+      if (window.toast) {
+        window.toast('Press Ctrl+C or long-press to copy.', 'warn');
+      }
+    }
+  });
+  el('editor_backdrop').addEventListener('click', (event) => {
+    if (event.target === el('editor_backdrop')) closeEditor();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && el('editor_backdrop').style.display === 'flex') {
+      closeEditor();
+    }
+  });
+
+  document.querySelectorAll('[data-all]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const kind = b.dataset.all;
+      const wantRole = kind === 'sources' ? 'encoder' : 'decoder';
+      state.devices.filter((d) => d.role === wantRole)
+        .forEach((d) => state.selected[kind].add(d.id));
+      refreshEditorLists();
+    });
+  });
+  document.querySelectorAll('[data-none]').forEach((b) => {
+    b.addEventListener('click', () => {
+      state.selected[b.dataset.none].clear();
+      refreshEditorLists();
+    });
+  });
+
+  function refreshEditorLists() {
+    ['sources', 'destinations'].forEach((kind) => {
+      const host = el(kind === 'sources' ? 'src_list' : 'dst_list');
+      host.querySelectorAll('input[type=checkbox]').forEach((box) => {
+        box.checked = state.selected[kind].has(box.value);
+      });
+      updateCount(kind, kind === 'sources' ? 'src_count' : 'dst_count');
+    });
+  }
+
+  // ------------------------------------------------------ device names
+  //
+  // An alias is a label OmniSuite keeps against a device's stable identity. It
+  // never reaches the device and never takes part in a permission decision --
+  // the checkbox lists below still store identities, and this screen only
+  // changes what those checkboxes are called.
+  // Which devices Clear Units would keep, and for whom.
+  //
+  // Derived from the accounts and devices this page already has, so it costs
+  // no request of its own and cannot disagree with what is on screen.
+  function renderAssignedDevices() {
+    const section = el('assigned_clear_section');
+    const host = el('assigned_list');
+    if (!section || !host) return;
+
+    const holders = new Map();
+    state.users.filter((u) => u.role !== 'admin').forEach((user) => {
+      const permissions = user.permissions || {};
+      const ids = new Set([...(permissions.sources || []),
+                           ...(permissions.destinations || [])]);
+      (permissions.multiviews || []).forEach((key) => {
+        const decoder = String(key).split('|')[0];
+        if (decoder) ids.add(decoder);
+      });
+      ids.forEach((id) => {
+        if (!holders.has(id)) holders.set(id, new Set());
+        holders.get(id).add(user.username);
+      });
+    });
+
+    section.hidden = holders.size === 0;
+    host.replaceChildren();
+    const byId = new Map(state.devices.map((d) => [d.id, d]));
+    [...holders.entries()]
+      .map(([id, names]) => ({id, names: [...names].sort(),
+                              device: byId.get(id)}))
+      .sort((a, b) => (a.device ? a.device.name : a.id)
+        .localeCompare(b.device ? b.device.name : b.id))
+      .forEach((entry) => {
+        const row = document.createElement('div');
+        row.className = 'assign-row';
+        const name = document.createElement('span');
+        name.textContent = entry.device ? entry.device.name : entry.id;
+        const meta = document.createElement('span');
+        meta.className = 'assign-meta';
+        meta.textContent = ' \u00b7 ' + entry.names.join(', ');
+        row.append(name, meta);
+        host.appendChild(row);
+      });
+  }
+
   function renderAliases() {
     const body = el('alias_body');
     body.replaceChildren();
@@ -678,6 +1103,40 @@
       row.hidden = needle !== '' && row.dataset.search.indexOf(needle) === -1;
     });
   });
+
+  const assignedClear = el('assigned_clear');
+  if (assignedClear) {
+    assignedClear.addEventListener('click', async () => {
+      const affected = [...new Set(state.users
+        .filter((u) => u.role !== 'admin')
+        .filter((u) => {
+          const p = u.permissions || {};
+          return (p.sources || []).length || (p.destinations || []).length
+                 || (p.multiviews || []).length;
+        })
+        .map((u) => u.username))].sort();
+      const ok = !window.omniConfirm ? false : await window.omniConfirm({
+        title: 'Clear every device, including assigned ones?',
+        message: 'This removes the whole discovered inventory. The accounts '
+               + 'below keep their assignments, and those devices come back '
+               + 'the next time you scan \u2014 but until then their controls '
+               + 'will have nothing to act on.',
+        summary: [{label: 'Accounts affected',
+                   value: affected.join(', ') || 'none'}],
+        confirmText: 'Clear everything',
+        danger: true,
+      });
+      if (!(ok === true || (ok && ok.ok))) return;
+      const res = await api('/api/clear_units',
+                            {method: 'POST', body: JSON.stringify({override: true})});
+      if (res.status === 200) {
+        window.toast && window.toast('Inventory cleared.', 'ok');
+        await load();
+      } else {
+        window.toast && window.toast('That could not be cleared.', 'error');
+      }
+    });
+  }
 
   el('alias_save').addEventListener('click', async () => {
     if (!state.pendingAliases.size) return;
@@ -864,6 +1323,7 @@
     state.devices = (devices.body && devices.body.devices) || [];
     renderUsers();
     renderAliases();
+    renderAssignedDevices();
     el('loading').hidden = true;
     el('admin_tabs').hidden = false;
     selectTab(state.tab);

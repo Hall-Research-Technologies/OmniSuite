@@ -795,6 +795,36 @@ class UserStore:
                 return account
         return None
 
+    # ---- what is assigned, and to whom --------------------------------
+    def assigned_devices(self) -> dict:
+        """identity -> sorted usernames that were given that device.
+
+        Every way an account can be given a device counts: as a source, as a
+        display, and as the decoder half of an approved Multiview -- a preset
+        approval names a decoder, and clearing that decoder would take the
+        approval's subject away just as surely as clearing a display.
+
+        Disabled accounts are included. An account that is off is one an
+        administrator can turn back on, and its assignments are still theirs.
+        """
+        assigned: dict = {}
+        with self._lock:
+            for account in self._accounts.values():
+                if account.is_admin:
+                    # An administrator has no per-device grants -- the role is
+                    # the grant -- so there is nothing here to protect.
+                    continue
+                permissions = account.permissions
+                identities = set(permissions.sources) | set(permissions.destinations)
+                for key in permissions.multiviews:
+                    decoder, _name = _split_multiview(key)
+                    if decoder:
+                        identities.add(_normalise_identity(decoder))
+                for identity in identities:
+                    if identity:
+                        assigned.setdefault(identity, set()).add(account.username)
+        return {identity: sorted(names) for identity, names in assigned.items()}
+
     def revoke_direct_sessions(self, user_id, _locked=False) -> int:
         """End link-established sessions only, leaving a password one alone."""
         def _do():

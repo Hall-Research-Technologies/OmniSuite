@@ -77,7 +77,7 @@ REQUIRED_PATHS = [
     ("/favicon.ico", None),
     # Sign out. Without it an administrator who signed in remotely has
     # no way out but to clear cookies, which is the defect it exists for.
-    ("/ui/signout.js", None),
+    ("/ui/adminnav.js", None),
     # The shared confirmation dialog, which now carries its own styling.
     # Left out, the question before a display leaves a Multiview cannot
     # be asked, and the route is refused rather than taken silently.

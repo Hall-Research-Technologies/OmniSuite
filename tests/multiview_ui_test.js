@@ -2989,47 +2989,30 @@ async function selectDecoder(ip) {
   });
 
   // ---- dropping a source on it -------------------------------------------
-  await check('a drop asks before anything is written', async () => {
+  await check('a drop routes immediately, asking nothing', async () => {
+    // A normal A/V route means single view. Dropping a source on the display
+    // IS the instruction, so the display simply changes -- the server leaves
+    // the Multiview as part of the same verified transaction.
     await openWith(OUTPUT_MULTIVIEW, [Object.assign({}, LIVE_VIEW)]);
-    sandbox.sessionStorage.removeItem('matrix_multiview_exit_acknowledged');
-    sandbox.localStorage.removeItem('matrix_multiview_exit_suppressed');
     confirmCalls = 0;
-    confirmAnswer = false;                       // Cancel
     const before = requests.length;
     dragTile('enc-test-01');
     const result = dropOnOutput('192.0.2.20');
     await flush();
     assert(result.offered, 'Display Output refused a routable source');
-    assertEqual(confirmCalls, 1, 'the operator was not asked');
-    assertEqual(requests.slice(before).filter(r =>
-      r.url.startsWith('/api/route')).length, 0,
-      'Cancel still sent a route');
-    confirmAnswer = true;
+    assertEqual(confirmCalls, 0,
+      'the operator was asked about something they had already asked for');
+    const routes = requests.slice(before)
+      .filter(r => r.url.startsWith('/api/route'));
+    assertEqual(routes.length, 1, 'expected exactly one route request');
+    assertEqual(routes[0].method, 'POST', 'route method');
+    assertEqual(routes[0].payload.decoder, '192.0.2.10', 'decoder');
+    assertEqual(routes[0].payload.encoder, '192.0.2.20', 'encoder');
+    assertEqual(routes[0].payload.mode, 'av',
+      'the drop did not ask for audio and video');
+    assert(!('exit_multiview' in routes[0].payload),
+      'the drop still carries an answer to a question nobody is asked');
   });
-
-  await check('Cancel writes nothing at all', () => {
-    const writes = requests.filter(r => r.method === 'POST');
-    assertEqual(writes.filter(r => r.url.startsWith('/api/route')).length, 0,
-      'a cancelled drop reached the device');
-  });
-
-  await check('Continue sends the ordinary A/V Matrix route, with consent',
-    async () => {
-      const before = requests.length;
-      dragTile('enc-test-01');
-      dropOnOutput('192.0.2.20');
-      await flush();
-      const routes = requests.slice(before)
-        .filter(r => r.url.startsWith('/api/route'));
-      assertEqual(routes.length, 1, 'expected exactly one route request');
-      assertEqual(routes[0].method, 'POST', 'route method');
-      assertEqual(routes[0].payload.decoder, '192.0.2.10', 'decoder');
-      assertEqual(routes[0].payload.encoder, '192.0.2.20', 'encoder');
-      assertEqual(routes[0].payload.mode, 'av',
-        'the drop did not ask for audio and video');
-      assertEqual(routes[0].payload.exit_multiview, true,
-        'the route did not carry the consent to leave Multiview');
-    });
 
   await check('it implements no teardown of its own', () => {
     // Everything that takes a decoder out of Multiview belongs to /api/route.
@@ -3045,45 +3028,40 @@ async function selectDecoder(ip) {
     });
   });
 
-  await check('the warning preference is the A/V Matrix one, not a new one',
-    async () => {
-      // Section 4: do not create another warning preference. Acknowledged on
-      // one page is acknowledged on the other, which means the same key.
-      assertEqual(sandbox.sessionStorage.getItem(
-        'matrix_multiview_exit_acknowledged'), 'true',
-        'Continue did not record the session acknowledgement');
-      const matrix = fs.readFileSync(
-        path.join(ROOT, 'ui', 'matrix', 'matrix.js'), 'utf8');
-      assert(matrix.includes('matrix_multiview_exit_acknowledged')
-             && matrix.includes('matrix_multiview_exit_suppressed'),
-        'the A/V Matrix no longer uses these keys, so the two have drifted');
-    });
-
-  await check('an acknowledged session is not asked again', async () => {
+  await check('no drop is ever a question', async () => {
+    // Not "not asked again" -- never asked. The preference that used to make
+    // the second drop quiet is retired along with the question.
     confirmCalls = 0;
     dragTile('enc-test-01');
     dropOnOutput('192.0.2.20');
     await flush();
-    assertEqual(confirmCalls, 0,
-      'the warning returned inside an acknowledged session');
+    assertEqual(confirmCalls, 0, 'a drop asked the operator something');
+    const source = fs.readFileSync(SOURCE, 'utf8');
+    assert(!source.includes('omniMultiviewExit'),
+      'the page still reaches for the retired confirmation helper');
+    assert(!source.includes('matrix_multiview_exit'),
+      'the page still reads a preference for a question that no longer exists');
   });
 
-  await check('with no Multiview active there is nothing to warn about',
+  await check('a drop is the same request whatever the display was doing',
     async () => {
+      // The page used to send a different body depending on what it believed
+      // the decoder was showing. It sends one request now, and the server --
+      // which has just read the decoder -- decides whether a Multiview has to
+      // be left. One shape, one decision, in the place that has the facts.
       await openWith(OUTPUT_SOURCE, [EXISTING_VIEW]);
-      sandbox.sessionStorage.removeItem('matrix_multiview_exit_acknowledged');
       confirmCalls = 0;
       const before = requests.length;
       dragTile('enc-test-01');
       dropOnOutput('192.0.2.20');
       await flush();
       assertEqual(confirmCalls, 0,
-        'the page warned about leaving a Multiview that is not on');
+        'the page asked about leaving a Multiview that is not on');
       const routes = requests.slice(before)
         .filter(r => r.url.startsWith('/api/route'));
       assertEqual(routes.length, 1, 'the route was not sent');
-      assertEqual(routes[routes.length - 1].payload.exit_multiview, false,
-        'consent to exit was sent when nothing was being exited');
+      assert(!('exit_multiview' in routes[routes.length - 1].payload),
+        'the drop still carries what the page believed about the decoder');
     });
 
   // ---- the two eligibilities ---------------------------------------------

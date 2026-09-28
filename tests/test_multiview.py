@@ -757,20 +757,28 @@ class MatrixMultiviewAwarenessTests(MultiviewTestBase):
         payload.update(extra)
         return self.client.post("/api/route", json=payload)
 
-    def test_routing_to_a_multiview_decoder_is_refused_without_consent(self):
-        """The warning happens in the page; this is the server's half of it."""
+    def test_routing_to_a_multiview_decoder_just_routes(self):
+        """A normal A/V route means single view, and says so by doing it.
+
+        This used to be refused with 409 MULTIVIEW ACTIVE so a page could ask
+        the operator. Putting a source on a display IS the instruction, so the
+        question is gone and the engine leaves the composition itself -- through
+        the same verified teardown, and putting it back if the route fails.
+        """
         decoder = self.decoder(
             multiviews=[_multiview_object("multiviewLive", 1920, 1088)])
         decoder.nodes["hdmi_output"][0]["video"]["input"] = "multiviewLive"
         self.encoder(ENCODER_IP)
-        before = copy.deepcopy(decoder.nodes)
         response = self._route()
-        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.status_code, 200,
+                         "a normal route was refused over a Multiview")
         body = response.get_json()
-        self.assertEqual(body["status"], "MULTIVIEW ACTIVE")
-        self.assertEqual(body["multiview"], "multiviewLive")
-        self.assertEqual(decoder.nodes, before,
-                         "a refused route still changed the decoder")
+        self.assertNotEqual(body.get("status"), "MULTIVIEW ACTIVE")
+        self.assertTrue(body["multiview_exit"]["ok"], body["multiview_exit"])
+        self.assertIn("multiviewLive",
+                      [str(o.get("name") or "")
+                       for o in decoder.nodes["multiview"]],
+                      "routing deleted the saved composition")
 
     def test_cancelling_writes_nothing_at_all(self):
         """Cancel never reaches the server, so nothing is written anywhere."""
@@ -2917,33 +2925,100 @@ class DisplayOutputRouteTests(MultiviewTestBase):
                          "Encoder 1 was lowered to make room for something")
 
     # ---- the transaction is the established one ---------------------------
-    def test_the_route_is_refused_without_consent(self):
-        decoder = self._composing()
-        self.encoder(ENCODER_IP)
-        before = copy.deepcopy(decoder.nodes)
-        response = self._route()
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.get_json()["status"], "MULTIVIEW ACTIVE")
-        self.assertEqual(decoder.nodes, before,
-                         "a refused route changed the decoder")
+    #
+    # A normal A/V route means "show this source in single view", so a display
+    # that is compositing simply stops. The operator used to have to say so,
+    # and every surface asked a question to obtain the answer; that question is
+    # gone. What is deliberately NOT gone is everything below it -- the engine
+    # still recognises the composition, still leaves it through the verified
+    # teardown, and still puts it back if the route then fails.
+    def test_a_normal_route_leaves_multiview_without_being_asked(self):
+        """No 409, and the teardown runs.
 
-    def test_consent_exits_multiview_and_keeps_the_saved_object(self):
+        The route itself cannot succeed here -- the fence stands between the
+        test and any device -- so the Multiview is then restored, which is the
+        documented behaviour rather than a shortcoming of the test. What this
+        measures is that the request was ACCEPTED and the exit was ATTEMPTED,
+        where before it was refused with 409 and nothing happened at all.
+        """
+        self._composing()
+        self.encoder(ENCODER_IP)
+        response = self._route()
+        self.assertEqual(response.status_code, 200,
+                         "a normal route was refused over a Multiview")
+        body = response.get_json()
+        self.assertNotEqual(body.get("status"), "MULTIVIEW ACTIVE")
+        self.assertTrue(body["multiview_exit"]["ok"], body["multiview_exit"])
+
+    def test_it_uses_the_established_teardown_rather_than_a_second_one(self):
+        """Structural: one implementation of leaving a Multiview, not two."""
+        source = pathlib.Path(srv.__file__).read_text(encoding="utf-8")
+        body = source[source.index("def api_route_matrix"):]
+        body = body[:body.index("\ndef ", 1)]
+        code = "\n".join(line.split("#")[0] for line in body.split("\n"))
+        self.assertIn("_exit_active_multiview", code,
+                      "the route no longer uses the verified teardown")
+        self.assertIn("_restore_multiview_after_failed_route", code,
+                      "the route no longer restores what it took down")
+
+    def test_the_saved_composition_is_never_deleted_by_a_route(self):
         decoder = self._composing()
         self.encoder(ENCODER_IP)
-        body = self._route(exit_multiview=True).get_json()
-        self.assertTrue(body["multiview_exit"]["ok"], body["multiview_exit"])
+        self._route()
         self.assertIn(self.MULTIVIEW,
                       [str(o.get("name") or "")
                        for o in decoder.nodes["multiview"]],
-                      "exiting Multiview deleted the saved composition")
+                      "routing deleted the saved composition")
 
-    def test_a_decoder_not_in_multiview_needs_no_consent(self):
-        """Dropping on Display Output with nothing composited is just a route."""
+    def test_a_stale_flag_from_an_older_page_changes_nothing(self):
+        """A browser holding a cached build still works."""
+        self._composing()
+        self.encoder(ENCODER_IP)
+        self.assertEqual(self._route(exit_multiview=True).status_code, 200)
+        self._composing()
+        self.assertEqual(self._route(exit_multiview=False).status_code, 200,
+                         "an old page saying 'do not exit' must not refuse a "
+                         "route the operator deliberately asked for")
+
+    def test_a_decoder_not_in_multiview_is_just_a_route(self):
         self.decoder()
         self.encoder(ENCODER_IP)
         response = self._route()
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("multiview_exit", response.get_json())
+
+    # ---- the five transitions --------------------------------------------
+    def test_when_the_exit_itself_fails_the_route_is_not_attempted(self):
+        """Nothing is half-applied: the display stays where it was.
+
+        Failed deterministically by giving the decoder nowhere to move the
+        display to -- a decoder whose only available video input is the
+        Multiview itself cannot leave it. That is a real condition rather than
+        an injected fault.
+        """
+        decoder = self._composing()
+        decoder.nodes["hdmi_output"][0]["video"]["available_inputs"] = [
+            self.MULTIVIEW]
+        self.encoder(ENCODER_IP)
+        body = self._route().get_json()
+        self.assertFalse(body["ok"], body)
+        self.assertIn("MULTIVIEW NOT EXITED", body["status"])
+        self.assertEqual(
+            decoder.nodes["hdmi_output"][0]["video"]["input"], self.MULTIVIEW,
+            "the display was left off its Multiview by a failed exit")
+
+    def test_a_device_that_disappears_during_the_transition_is_reported(self):
+        """Not claimed as rolled back when the rollback could not be verified."""
+        decoder = self._composing()
+        self.encoder(ENCODER_IP)
+        body = self._route().get_json()
+        # The fence makes the route itself fail, which is the condition.
+        self.assertFalse(body["ok"], body)
+        self.assertIn("ROLL", body["status"], body["status"])
+        rollback = body["multiview_exit"]["rollback"]
+        self.assertEqual(
+            body["status"] == "FAILED — ROLLED BACK", rollback["restored"],
+            "the status claimed something the rollback did not report")
 
     # ---- when the route fails after Multiview has been left ---------------
     def test_a_failed_route_puts_the_multiview_back(self):

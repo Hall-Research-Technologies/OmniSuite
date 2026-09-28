@@ -323,10 +323,15 @@ async function main() {
   });
 
   // ---- the consent travels with the request --------------------------------
-  await check('the route request carries the operator consent', () => {
+  await check('the route request carries no consent, because none is asked', () => {
+    // A normal A/V route means single view, so a decoder that is compositing
+    // simply stops -- decided by the server, which has just read the decoder,
+    // rather than by this page's idea of what it was doing a moment ago.
     const source = fs.readFileSync(SOURCE, 'utf8');
-    assert(/exit_multiview:\s*!!decoderMultiview\(/.test(source),
-           'the route request does not carry exit_multiview');
+    assert(!/exit_multiview/.test(source),
+           'the route request still carries an answer nobody is asked for');
+    assert(!/omniMultiviewExit/.test(source),
+           'the page still reaches for the retired confirmation helper');
   });
 
   console.log(failures.length

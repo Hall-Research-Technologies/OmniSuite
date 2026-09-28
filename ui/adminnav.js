@@ -1,4 +1,4 @@
-// Sign out, on every page that can have a session to end.
+// The administrator's shell: a way back, and a way out.
 //
 // An administrator who signed in through Remote Access had no way out: no
 // button anywhere in the application, so the only ways to stop being signed in
@@ -16,10 +16,11 @@
 // five pages with five copies to keep in step.
 (function () {
   'use strict';
-  if (window.__omniSignOutInstalled) return;
-  window.__omniSignOutInstalled = true;
+  if (window.__omniAdminNavInstalled) return;
+  window.__omniAdminNavInstalled = true;
 
   const BUTTON_ID = 'omni_signout';
+  const BACK_ID = 'omni_back';
 
   function style() {
     if (document.getElementById('omni_signout_style')) return;
@@ -40,6 +41,14 @@
       'var(--focus-ring,var(--accent,#3b82f6));outline-offset:2px}',
       '#omni_signed_in{font-size:12px;color:var(--muted,var(--text-muted,#a9b0c0));',
       'margin-left:10px;white-space:nowrap}',
+      '#' + BACK_ID + '{font:inherit;font-size:13px;line-height:1;',
+      'padding:8px 12px;margin-left:8px;border-radius:8px;cursor:pointer;',
+      'text-decoration:none;white-space:nowrap;',
+      'border:1px solid var(--border,var(--edge,#39424e));',
+      'background:var(--panel-2,var(--surface-elevated,#1b222a));',
+      'color:var(--text,var(--fg,#e6e8ee))}',
+      '#' + BACK_ID + ':focus-visible{outline:2px solid ',
+      'var(--focus-ring,var(--accent,#3b82f6));outline-offset:2px}',
     ].join('');
     (document.head || document.documentElement).appendChild(sheet);
   }
@@ -79,7 +88,42 @@
     location.replace('/login');
   }
 
+  // Is there already a visible way back to the application?
+  //
+  // The matrix pages own a tab bar whose first entry IS the application, so a
+  // second control beside it would be two things pointing at one place. This
+  // only fills a gap; it never duplicates what a page already owns.
+  function hasAWayBack() {
+    return [...document.querySelectorAll('a[href]')].some((link) => {
+      if (link.getAttribute('href') !== '/') return false;
+      if (link.id === BACK_ID) return true;
+      if (!(link.textContent || '').trim()) return false;   // a logo, not a link
+      const box = link.getBoundingClientRect();
+      return box.width > 0 && box.height > 0;
+    });
+  }
+
+  function addAWayBack() {
+    if (hasAWayBack() || document.getElementById(BACK_ID)) return;
+    const anchor = document.getElementById('header_gear')
+      || document.querySelector('.admin-header, .remote-header, header');
+    if (!anchor) return;
+    style();
+    const back = document.createElement('a');
+    back.id = BACK_ID;
+    back.href = '/';
+    back.textContent = 'Back to OmniSuite';
+    if (anchor.id === 'header_gear' && anchor.parentNode) {
+      anchor.parentNode.insertBefore(back, anchor);
+    } else {
+      anchor.appendChild(back);
+    }
+  }
+
   async function install() {
+    // A way back is not about being signed in: the local operator needs one
+    // just as much, and they have no session at all.
+    addAWayBack();
     if (!window.omniSession) return;
     let session;
     try {

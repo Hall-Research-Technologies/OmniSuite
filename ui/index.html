@@ -46,7 +46,7 @@
       margin-top:2px;overflow-wrap:anywhere}
   </style>
   <script src="/ui/csrf.js"></script>
-  <script src="/ui/signout.js"></script>
+  <script src="/ui/adminnav.js"></script>
   <script src="/ui/diagnostics.js?v=20260911-diag"></script>
 <link rel="stylesheet" href="/ui/templates.css?v=20260910-templates">
 <link rel="stylesheet" href="/ui/settings.css?v=20260911-settings">
@@ -2212,10 +2212,24 @@ $('#clear_units_btn').addEventListener('click', async () => {
   try {
     // Clear Units is the single clear action: it clears encoder/decoder state as
     // before and additionally forgets the standalone USB inventory server-side.
-    await fetch('/api/clear_units', {method: 'POST'});
+    //
+    // While Remote Access is on, a device assigned to a User account is kept.
+    // Silently keeping some is as surprising as silently removing them, so the
+    // result is said out loud.
+    const res = await fetch('/api/clear_units', {method: 'POST'});
+    const outcome = await res.json().catch(() => ({}));
     await loadUnits();
     await refreshUsbExtenderCount();
     if (wasPolling) startPolling();
+    if (outcome.retained) {
+      const people = (outcome.retained_for || []).join(', ');
+      toast(outcome.cleared + ' device' + (outcome.cleared === 1 ? '' : 's')
+            + ' cleared. ' + outcome.retained + ' kept because '
+            + (outcome.retained === 1 ? 'it is' : 'they are')
+            + ' assigned to ' + (people || 'a user account')
+            + '. Remove the assignment in Manage users to clear '
+            + (outcome.retained === 1 ? 'it' : 'them') + '.', 'warn');
+    }
   } catch (e) {
     toast('Clear failed: ' + e.message, 'error');
     if (wasPolling) startPolling();

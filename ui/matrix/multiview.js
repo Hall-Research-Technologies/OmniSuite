@@ -1429,28 +1429,13 @@
         : 'That source cannot be routed to this display.');
       return;
     }
-    const output = displayOutput();
-    const active = output && output.state === 'multiview' ? output.multiview : '';
-    const label = source.hostname + (source.ip ? ' (' + source.ip + ')' : '');
-
-    // Asked BEFORE anything is written. Cancel leaves the decoder untouched.
-    if (active) {
-      const proceed = await window.omniMultiviewExit.ask({
-        decoder: decoderLabel(),
-        multiview: active,
-        after: label,
-        message: 'Multiview is currently active on this decoder. Routing this '
-          + 'source to the display output will exit Multiview and replace the '
-          + 'Multiview picture with the selected source. The saved Multiview is '
-          + 'kept and can be shown again later.',
-      });
-      if (!proceed) { notify('Nothing was changed.', 'ok'); return; }
-    }
-
+    // Dropping a source on the display output is a normal A/V route, and a
+    // normal route means single view. If the display is compositing, the
+    // server leaves the Multiview itself as part of the same verified
+    // transaction -- the saved Multiview is kept and can be shown again.
     await runTransaction('Routing ' + source.hostname + ' to the display…',
                          '/api/route',
-                         {decoder: readingDecoder(), encoder: ip, mode: 'av',
-                          exit_multiview: !!active});
+                         {decoder: readingDecoder(), encoder: ip, mode: 'av'});
   }
 
   function pickSource(ip) {

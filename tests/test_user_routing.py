@@ -190,51 +190,43 @@ class UserRoutingTestBase(unittest.TestCase):
         return self.post("/api/user/route", body, session)
 
 
-class TheReportedDefectTests(UserRoutingTestBase):
-    """A display that is compositing refused every route, with no way through."""
+class ANormalRouteMeansSingleViewTests(UserRoutingTestBase):
+    """Routing a source to a compositing display just works.
 
-    MULTIVIEW_REFUSAL = ({
-        "ok": False, "status": "MULTIVIEW ACTIVE",
-        "multiview": "multiviewQuad",
-        "error": "that display is currently showing the Multiview multiviewQuad",
-    }, 409)
+    The first version of this fix made the operator say so: the engine refused
+    and each surface asked a question to obtain the answer. That was one
+    question too many -- putting a source on a display IS the instruction, and
+    nobody choosing a camera is thinking about what the display was doing
+    first. So the question is gone and the engine leaves the Multiview itself.
 
-    def test_the_refusal_names_itself_rather_than_being_a_bare_409(self):
-        self.route_answer = self.MULTIVIEW_REFUSAL
-        response = self.route(self.session_for(self.teacher))
-        self.assertEqual(response.status_code, 409)
-        body = response.get_json()
-        self.assertEqual(body["reason"], "multiview_active")
-        self.assertEqual(body["multiview"], "multiviewQuad")
+    What is NOT gone is the transaction around it, which is the reason this is
+    a change to the default rather than a deleted check.
+    """
 
-    def test_the_answer_travels_with_the_request(self):
-        """Without it the engine refuses; with it the engine is told."""
-        self.route_answer = self.MULTIVIEW_REFUSAL
-        self.route(self.session_for(self.teacher))
-        self.assertIs(self.routes[-1]["exit_multiview"], False)
-
-        self.route_answer = ({"ok": True, "status": "VERIFIED"}, 200)
-        self.route(self.session_for(self.teacher), exit_multiview=True)
-        self.assertIs(self.routes[-1]["exit_multiview"], True)
-
-    def test_an_ordinary_route_is_not_affected(self):
+    def test_a_route_to_a_compositing_display_is_not_refused(self):
         response = self.route(self.session_for(self.teacher))
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["ok"])
 
-    def test_a_busy_display_is_a_different_answer_from_a_composition(self):
-        """The two 409s must never again be distinguishable only by duration."""
-        self.route_answer = self.MULTIVIEW_REFUSAL
-        composition = self.route(self.session_for(self.teacher)).get_json()
+    def test_the_request_carries_no_answer_because_none_is_needed(self):
+        """Nothing has to be asked, so nothing has to be sent."""
+        self.route(self.session_for(self.teacher))
+        self.assertEqual(len(self.routes), 1)
+        self.assertNotIn("exit_multiview", self.routes[0],
+                         "a normal route should not need to say it is normal")
 
-        import omni_remote_api
-        def refuse(*_a, **_k):
-            raise omni_locks.ResourceBusy("decoder:" + FRONT_DISPLAY)
+    def test_a_stale_flag_from_an_older_page_is_harmless(self):
+        """A browser holding a cached page still works."""
+        response = self.route(self.session_for(self.teacher),
+                              exit_multiview=True)
+        self.assertEqual(response.status_code, 200)
+
+    def test_a_busy_display_is_still_its_own_answer(self):
+        """The refusal that remains still names itself."""
         self._patch_registered("locks", _BusyLocks())
         busy = self.route(self.session_for(self.teacher))
         self.assertEqual(busy.status_code, 409)
         self.assertEqual(busy.get_json()["reason"], "resource_busy")
-        self.assertNotEqual(composition["reason"], busy.get_json()["reason"])
 
     def test_a_busy_refusal_reaches_no_device(self):
         self._patch_registered("locks", _BusyLocks())

@@ -69,15 +69,11 @@ suite.push(() => check('a busy display is not reported as a bare failure', () =>
   assert(!/409/.test(text), 'the operator must never be shown a status code');
 }));
 
-suite.push(() => check('a composition is named as one', () => {
-  const text = failureText()({reason: 'multiview_active'}, 409);
-  assert(/Multiview/.test(text), text);
-}));
-
-suite.push(() => check('the two 409s say different things', () => {
+suite.push(() => check('the one 409 that remains says what to do', () => {
+  // There used to be two. A normal route no longer refuses over a Multiview,
+  // so a busy display is the only conflict an operator can meet.
   const busy = failureText()({reason: 'resource_busy'}, 409);
-  const mv = failureText()({reason: 'multiview_active'}, 409);
-  assert(busy !== mv, 'both 409s produced the same sentence');
+  assert(/wait|moment|try again/i.test(busy), busy);
 }));
 
 suite.push(() => check('a permission change reads as a change, not a telling-off', () => {
@@ -93,104 +89,71 @@ suite.push(() => check('an unreachable device is not "that did not work"', () =>
 }));
 
 // --------------------------------------------------------- the route flow ---
-function makeWorld(script) {
-  const requests = [];
-  const asked = [];
-  const world = {
-    requests,
-    asked,
-    state: {source: 'src-a', destination: 'dst-a', sources: [], destinations: []},
-    named: () => 'Front Display',
-    api: async (path, options) => {
-      requests.push({path, body: JSON.parse(options.body)});
-      return script.shift() || {status: 200, body: {ok: true}};
-    },
-    window: {
-      omniMultiviewExit: {
-        ask: async (options) => { asked.push(options); return world.answer; },
-      },
-    },
-    answer: true,
-  };
-  return world;
+// A normal route means single view, so there is no question and no second
+// request. These hold the absence: the flow that existed only to ask, and to
+// carry the answer, is gone from every surface.
+
+function routeHandlerSource() {
+  const start = SHELL_JS.indexOf("el('route_btn').addEventListener");
+  assert(start >= 0, 'the route button handler is not where this expects it');
+  const end = SHELL_JS.indexOf('\n  });\n', start);
+  return SHELL_JS.slice(start, end);
 }
 
-function liftRouteAv(world) {
-  const start = SHELL_JS.indexOf('  async function routeAv(answered) {');
-  assert(start >= 0, 'routeAv is not where this expects it');
-  const end = SHELL_JS.indexOf('\n  }\n', start);
-  const body = SHELL_JS.slice(start, end + 4);
-  const sandbox = Object.assign({Promise, JSON, Object, console}, world);
-  vm.createContext(sandbox);
-  vm.runInContext(`${body}\nglobalThis.__routeAv = routeAv;`, sandbox);
-  return sandbox.__routeAv;
-}
-
-suite.push(() => check('an ordinary route is one request and no question', async () => {
-  const world = makeWorld([{status: 200, body: {ok: true}}]);
-  const result = await liftRouteAv(world)(false);
-  assert(world.requests.length === 1, `${world.requests.length} requests`);
-  assert(world.asked.length === 0, 'nobody should have been asked anything');
-  assert(result.status === 200);
-  assert(!('exit_multiview' in world.requests[0].body),
-    'an ordinary route must not carry an answer nobody gave');
+suite.push(() => check('the shell asks nothing before routing', () => {
+  const body = code(routeHandlerSource());
+  assert(!/omniMultiviewExit/.test(body),
+    'the shell still asks about Multiview before a normal route');
+  assert(!/exit_multiview/.test(body),
+    'nothing has to be asked, so nothing has to be sent');
 }));
 
-suite.push(() => check('a composition asks, then carries the answer', async () => {
-  const world = makeWorld([
-    {status: 409, body: {reason: 'multiview_active', multiview: 'quad'}},
-    {status: 200, body: {ok: true}},
-  ]);
-  const result = await liftRouteAv(world)(false);
-  assert(world.asked.length === 1, 'the operator should have been asked once');
-  assert(world.asked[0].multiview === 'quad', JSON.stringify(world.asked[0]));
-  assert(world.requests.length === 2, `${world.requests.length} requests`);
-  assert(world.requests[1].body.exit_multiview === true,
-    'the second request must carry the answer');
-  assert(result.status === 200);
+suite.push(() => check('the shell makes one request per route', () => {
+  const body = code(routeHandlerSource());
+  const posts = body.match(/\/api\/user\/route/g) || [];
+  assert(posts.length === 1,
+    `the handler names the route endpoint ${posts.length} times; the second `
+    + 'request existed only to carry an answer to a question that is gone');
 }));
 
-suite.push(() => check('saying no sends nothing more', async () => {
-  const world = makeWorld([
-    {status: 409, body: {reason: 'multiview_active', multiview: 'quad'}},
-  ]);
-  world.answer = false;
-  const result = await liftRouteAv(world)(false);
-  assert(world.requests.length === 1,
-    `Cancel produced ${world.requests.length} requests; it must produce one`);
-  assert(result === null, 'a declined route must report that nothing happened');
+suite.push(() => check('the retired helper is gone from every surface', () => {
+  ['ui/user/user.js', 'ui/matrix/matrix.js', 'ui/matrix/multiview.js']
+    .forEach((page) => {
+      const source = code(read(...page.split('/')));
+      assert(!/omniMultiviewExit/.test(source),
+        `${page} still asks the retired question`);
+    });
+  // And the helper itself, so nothing can start asking it again by accident.
+  assert(!/omniMultiviewExit\s*=/.test(code(CONFIRM_JS)),
+    'confirm.js still defines the retired helper');
 }));
 
-suite.push(() => check('a refusal that already carried the answer is not retried', async () => {
-  // Otherwise a display that refuses for some other reason would be asked
-  // about forever.
-  const world = makeWorld([
-    {status: 409, body: {reason: 'multiview_active', multiview: 'quad'}},
-  ]);
-  const result = await liftRouteAv(world)(true);
-  assert(world.requests.length === 1, `${world.requests.length} requests`);
-  assert(world.asked.length === 0, 'it must not ask again');
-  assert(result.status === 409, 'and it must report the refusal');
+suite.push(() => check('the shared dialog itself is untouched', () => {
+  // It is still what asks before a Direct Access link is replaced.
+  const body = code(CONFIRM_JS);
+  assert(/window\.omniConfirm\s*=/.test(body), 'the shared dialog was removed');
+  assert(/omniSuppression/.test(body),
+    'the shared version-scoped suppression store was removed');
+  assert(/confirmText/.test(read('ui', 'admin', 'users.js')),
+    'the Direct Access confirmation should still be asked');
 }));
 
-suite.push(() => check('a busy display is never turned into a question', async () => {
-  const world = makeWorld([{status: 409, body: {reason: 'resource_busy'}}]);
-  const result = await liftRouteAv(world)(false);
-  assert(world.asked.length === 0, 'busy is not a question for the operator');
-  assert(world.requests.length === 1, 'and it is not retried');
-  assert(result.status === 409);
+suite.push(() => check('the preference the question wrote is dropped', () => {
+  // A key that is no longer written still reads, so a browser would carry a
+  // suppression for a question that no longer exists.
+  const body = code(CONFIRM_JS);
+  assert(/matrix_multiview_exit_suppressed/.test(body)
+    && /removeItem/.test(body),
+    'the retired preference is neither written nor cleared');
 }));
 
-suite.push(() => check('without the shared dialog nothing is sent silently', async () => {
-  // The dialog says what will happen to a display somebody is watching. If it
-  // is unavailable the action is refused, not taken.
-  const world = makeWorld([
-    {status: 409, body: {reason: 'multiview_active', multiview: 'quad'}},
-  ]);
-  world.window = {};
-  const result = await liftRouteAv(world)(false);
-  assert(world.requests.length === 1, `${world.requests.length} requests`);
-  assert(result.status === 409, 'it must report the refusal rather than proceed');
+suite.push(() => check('no surface sends exit_multiview any more', () => {
+  ['ui/user/user.js', 'ui/matrix/matrix.js', 'ui/matrix/multiview.js']
+    .forEach((page) => {
+      const source = code(read(...page.split('/')));
+      assert(!/exit_multiview/.test(source),
+        `${page} still sends an answer nobody is asked for`);
+    });
 }));
 
 // ----------------------------------------------------------- the markup ---
@@ -325,28 +288,15 @@ suite.push(() => check('the toast helper is the one that exists', () => {
     'users.js calls a toast that does not exist');
 }));
 
-suite.push(() => check('the sign-out control is one module, not markup per page', () => {
-  const signout = read('ui', 'signout.js');
-  assert(/omni_signout/.test(signout));
-  assert(/__omniSignOutInstalled/.test(code(signout)),
-    'injection must be guarded or a second load duplicates every id');
-  assert(/session\.local/.test(code(signout)),
-    'the local operator has no session to end and must not be offered one');
-  ['ui/index.html', 'ui/matrix/index.html', 'ui/matrix/configure.html',
-   'ui/matrix/usb.html', 'ui/matrix/multiview.html', 'ui/admin/users.html']
-    .forEach((page) => {
-      const html = read(...page.split('/'));
-      assert(/<script src="\/ui\/signout\.js"><\/script>/.test(html),
-        `${page} offers no way to sign out`);
-    });
+suite.push(() => check('signing out does not withdraw a direct access link', () => {
+  // Ending a session must never touch the link that can start another one:
+  // withdrawing a link is an administrator's decision.
+  const nav = code(read('ui', 'adminnav.js'));
+  assert(/\/api\/auth\/logout/.test(nav));
+  assert(!/direct_access/.test(nav),
+    'signing out reaches for the Direct Access link');
 }));
 
-suite.push(() => check('signing out does not withdraw a direct access link', () => {
-  const signout = code(read('ui', 'signout.js'));
-  assert(/\/api\/auth\/logout/.test(signout));
-  assert(!/direct_access/.test(signout),
-    'ending a session must not touch the link that can start another');
-}));
 
 (async function run() {
   for (const scenario of suite) await scenario();

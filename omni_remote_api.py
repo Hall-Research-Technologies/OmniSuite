@@ -699,6 +699,14 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         the cache already holds -- no extra read is issued to obtain them, and
         nothing here writes them back.
         """
+        # Who was given each device. Derived once, here, so the page renders
+        # it rather than parsing a key format that belongs to the store --
+        # and so Clear Units and this list can never disagree about what is
+        # assigned.
+        try:
+            assigned = store.assigned_devices()
+        except Exception:
+            assigned = {}
         devices = []
         for unit in load_cache() or []:
             identity = omni_users._normalise_identity(unit.get("mac"))
@@ -725,6 +733,10 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                 "description": omni_projection.device_description(unit),
                 "role": "encoder" if "enc" in role else
                         ("decoder" if "dec" in role else "other"),
+                # Usernames only. An administrator can already list accounts,
+                # and this says which of them would lose equipment if the
+                # inventory were cleared.
+                "assigned_to": assigned.get(identity, []),
             })
         devices.sort(key=lambda d: (d["role"], d["name"].lower()))
         return jsonify({"ok": True, "devices": devices,
@@ -879,13 +891,10 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         # destination held so two operators cannot interleave inside one
         # transaction. Last successful operation wins; the loser waits for the
         # winner to finish rather than corrupting it.
-        # Taking a display off a Multiview is allowed, and it is never
-        # implicit. The operator's answer travels with the request exactly as
-        # it does from the A/V Matrix; without it the engine refuses, which is
-        # what made this endpoint unreliable on any display that happened to be
-        # compositing.
-        leave_multiview = bool(data.get("exit_multiview"))
-
+        # A normal route means single view. If the display is compositing, the
+        # engine leaves the Multiview itself as part of the same verified
+        # transaction, so there is nothing for this endpoint to ask, to carry,
+        # or to forward.
         began = time.monotonic()
         try:
             with locks.hold(locks.decoder(destination_id)):
@@ -901,8 +910,7 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
                 with app.test_request_context(
                         "/api/route", method="POST",
                         json={"encoder": encoder_ip, "decoder": decoder_ip,
-                              "mode": mode,
-                              "exit_multiview": leave_multiview}):
+                              "mode": mode}):
                     result = route_view()
                 routed = time.monotonic() - began
                 log.info("[USER-ROUTE] %s -> %s waited %.2fs total %.2fs",
@@ -971,26 +979,26 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
         return response
 
     def _classify_route_result(result, destination_id):
-        """Give the A/V engine's answer a reason the restricted shell can use.
+        """Pass the A/V engine's answer through, noticing one thing.
 
-        The engine speaks to the A/V Matrix, which knows what `MULTIVIEW
-        ACTIVE` means. The restricted shell is a different audience: it needs
-        to know that this particular refusal is one the operator can answer,
-        rather than a fault. Everything else is passed through untouched --
-        this endpoint does not reimplement routing and must not reinterpret a
-        result it does not recognise.
+        The engine used to refuse a route to a compositing decoder with
+        `MULTIVIEW ACTIVE` and the restricted shell asked the operator about
+        it. A normal route now leaves the Multiview itself, so that refusal is
+        no longer produced -- and if it ever is again, it means somebody
+        restored the requirement without restoring a way to answer it, which
+        would look to an operator exactly like the defect this replaced. So it
+        is logged rather than silently reported as an unexplained failure.
+
+        Everything else is passed through untouched: this endpoint does not
+        reimplement routing and must not reinterpret a result it does not
+        recognise.
         """
         body = _payload_of(result)
         status = result[1] if isinstance(result, tuple) and len(result) > 1 else 200
         if status == 409 and body.get("status") == "MULTIVIEW ACTIVE":
-            log.info("[USER-ROUTE] %s is showing Multiview %s; asking",
-                     destination_id, body.get("multiview"))
-            return jsonify({
-                "ok": False,
-                "reason": "multiview_active",
-                "multiview": body.get("multiview"),
-                "error": body.get("error") or
-                         "That display is showing a Multiview."}), 409
+            log.error("[USER-ROUTE] %s refused the route because it is showing "
+                      "Multiview %s. A normal route is supposed to leave it.",
+                      destination_id, body.get("multiview"))
         return result
 
     def _payload_of(result):

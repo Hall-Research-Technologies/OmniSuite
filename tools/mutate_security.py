@@ -55,6 +55,11 @@ DIRECT = ["tests.test_direct_access", "tests.test_remote_browser_flow",
 #: Restricted-user routing and source previews.
 ROUTING = ["tests.test_user_routing", "tests.test_security_review"]
 
+#: Leaving a Multiview for a normal route, and protecting assigned devices
+#: from a clear.
+EXIT = ["tests.test_multiview"]
+CLEAR = ["tests.test_clear_protection"]
+
 #: (id, file, anchor, replacement, what the defect would be, suites)
 MUTATIONS = [
     # ---- the listener trust model -----------------------------------
@@ -332,20 +337,6 @@ MUTATIONS = [
      '                if False:\n                    continue',
      "any token at all would resolve to the first account with a link",
      DIRECT),
-    # ---- restricted-user routing --------------------------------------
-    #
-    # The reported defect: routing was "hit or miss" because the engine
-    # refuses to take a display off a Multiview unless the caller says so, and
-    # the answer was never passed through.
-    ("route.answer-not-passed-through", "omni_remote_api.py",
-     '        leave_multiview = bool(data.get("exit_multiview"))',
-     '        leave_multiview = False',
-     "a display showing a Multiview would refuse every User route", ROUTING),
-    ("route.409s-indistinguishable", "omni_remote_api.py",
-     '                "reason": "multiview_active",',
-     '                "reason": "resource_busy",',
-     "a composition and a busy display would be the same answer again",
-     ROUTING),
     ("route.busy-mislabelled", "omni_remote_api.py",
      '                "reason": "resource_busy",\n'
      '                "error": "That display is busy with another change. "',
@@ -387,6 +378,63 @@ MUTATIONS = [
      '    body, kind = _preview_images.get("thumb:" + address, fetch)',
      '    body, kind = fetch()',
      "every browser would fetch from every encoder for itself", ROUTING),
+
+    # ---- a normal route means single view -----------------------------
+    ("route.refuses-over-multiview", "OmniMatrix_upgrade_server_v7_6y.py",
+     '        log.info("[ROUTE] %s is showing Multiview %s; leaving it for a normal "\n'
+     '                 "route", decoder, active_multiview)',
+     '        return jsonify({"ok": False, "status": "MULTIVIEW ACTIVE",\n'
+     '                        "multiview": active_multiview}), 409',
+     "a normal route would be refused over a Multiview again", EXIT),
+    ("route.deletes-the-composition", "OmniMatrix_upgrade_server_v7_6y.py",
+     "        ok, steps, released, message = _exit_active_multiview(\n"
+     "            decoder, active_multiview, mv_state)",
+     "        ok, steps, released, message = (True, [], [], '')",
+     "the verified teardown would be skipped, leaving the display on a "
+     "Multiview it is no longer showing", EXIT),
+    # Aimed at the rollback that actually runs. The first version pointed at a
+    # second one further down that `if not ok:` above had already made
+    # unreachable -- mutating it changed nothing, which is how the dead code
+    # was found and removed.
+    ("route.no-rollback", "OmniMatrix_upgrade_server_v7_6y.py",
+     '        if multiview_exit:\n'
+     '            restored, restore_detail = _restore_multiview_after_failed_route(',
+     '        if False:\n'
+     '            restored, restore_detail = _restore_multiview_after_failed_route(',
+     "a failed route would leave the display blank rather than restoring the "
+     "Multiview", EXIT),
+
+    # ---- clearing must not take somebody's equipment away --------------
+    ("clear.ignores-assignments", "OmniMatrix_upgrade_server_v7_6y.py",
+     "    if not remote_access_enabled():\n        return {}",
+     "    if True:\n        return {}",
+     "Clear Scan Results would remove devices assigned to Users", CLEAR),
+    ("clear.protects-nothing-on-error", "OmniMatrix_upgrade_server_v7_6y.py",
+     '        log.warning("[CLEAR] could not read user assignments: %s",\n'
+     '                    type(exc).__name__)\n'
+     '        raise',
+     '        log.warning("[CLEAR] could not read user assignments: %s",\n'
+     '                    type(exc).__name__)\n'
+     '        return {}',
+     "an unreadable account store would clear everything rather than refuse",
+     CLEAR),
+    ("clear.multiview-approval-unprotected", "omni_users.py",
+     "                for key in permissions.multiviews:\n"
+     "                    decoder, _name = _split_multiview(key)",
+     "                for key in ():\n"
+     "                    decoder, _name = _split_multiview(key)",
+     "a decoder an account was approved a Multiview on would be cleared",
+     CLEAR),
+    ("clear.disabled-account-unprotected", "omni_users.py",
+     "                if account.is_admin:",
+     "                if account.is_admin or not account.enabled:",
+     "a disabled account's devices would be cleared, so re-enabling it would "
+     "give somebody a control with nothing behind it", CLEAR),
+    ("clear.override-is-the-default", "OmniMatrix_upgrade_server_v7_6y.py",
+     '    override = bool(data.get("override"))',
+     '    override = True',
+     "the ordinary Clear Units button would become the destructive override",
+     CLEAR),
 
     ("direct.session-method-ignored", "omni_users.py",
      '        self.method = method if method in SESSION_METHODS else BY_PASSWORD',

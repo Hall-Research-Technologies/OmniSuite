@@ -299,6 +299,33 @@
       <p>Range input is bounded before it is expanded, so an over-broad expression such as <code>10.0.0.0/8</code> is rejected immediately rather than being materialised. Range scanning is a discovery operation triggered by Scan; ordinary page polling never runs one.</p>
       <div class="warn">On macOS and Linux builds, adapter discovery depends on OS interface data. If the adapter list looks wrong, use the Targets box to enter the intended subnet manually.</div>
 
+      <h3 id="clear-assigned">Clear Units and assigned devices</h3>
+      <p>While <a href="#remote-access">Remote Access</a> is on,
+      <strong>Clear Units</strong> keeps any device that is assigned to a User
+      account and clears the rest. It tells you what it did:</p>
+      <p><em>7 devices cleared. 3 kept because they are assigned to
+      teacher, lab-tech.</em></p>
+      <p>The reason is that a User's controls are built from the devices you
+      assigned them. Clearing one would leave that person with a control that
+      has nothing behind it, and nothing on screen would have said so.</p>
+      <p>To clear a device that is being kept, take it away from the accounts
+      that have it &mdash; <strong>Manage users</strong>, edit the account,
+      untick the device. That is the ordinary way and it leaves their other
+      equipment alone. Once nobody has it, Clear Units removes it like any
+      other.</p>
+      <div class="note"><strong>If you really do want to clear everything</strong>,
+      <strong>Manage users &rsaquo; Device names</strong> lists the devices that
+      are being kept and who has them, with a button to clear the whole
+      inventory anyway. It asks first and names the accounts affected. The
+      assignments themselves are not deleted &mdash; the devices come back the
+      next time you scan, and each account still has the ones it had.</div>
+      <p>With Remote Access <strong>off</strong> there is nobody to protect and
+      Clear Units behaves exactly as it always has: everything goes. Accounts
+      and their assignments are kept, and because an assignment names a device
+      by its hardware identity rather than its address, turning Remote Access
+      back on later finds the same physical equipment again &mdash; never a
+      different unit that happens to have taken the same address.</p>
+
       <h3>Clear Units</h3>
       <p>Scan results are merged into the existing list; rediscovering a device at a new address updates the existing row rather than adding a second one, because identity is the hardware MAC and not the IP address. Clear Units is the single reset:</p>
       <ul>
@@ -481,7 +508,7 @@
       <div class="danger">Important: the matrix wires decoder video to <code>ip_input1</code> and decoder audio to <code>ip_input3</code>. When AV is selected, OmniSuite updates both fields. When Video or Audio is selected, it updates only the matching field.</div>
       <p>Routes are queued per decoder. You can click multiple decoders quickly; each decoder keeps only the latest requested route while different decoders can process in parallel.</p>
       <p>Use Lock Headers when the matrix is larger than the viewport. Use Preview to show or hide encoder preview behavior. Use the encoder and decoder filters to reduce the visible matrix without changing the discovered cache.</p>
-      <div class="note">A decoder currently showing a <strong>Multiview</strong> is marked <strong>MULTIVIEW</strong> and has no video crosspoint, because its picture is a composition rather than a route from one encoder. Its audio may still show a source, which is correct. Routing a normal source to it is still allowed and will exit Multiview after a warning &mdash; the saved Multiview is kept. See <a href="#multiview">9. Multiview</a>.</div>
+      <div class="note">A decoder currently showing a <strong>Multiview</strong> is marked <strong>MULTIVIEW</strong> and has no video crosspoint, because its picture is a composition rather than a route from one encoder. Its audio may still show a source, which is correct. Routing a normal source to it is still allowed: the display leaves Multiview and shows the source. The saved Multiview is kept and can be shown again. See <a href="#multiview">9. Multiview</a>.</div>
     </section>
 
     <section id="multiview">
@@ -776,11 +803,11 @@
       <h3>Multiview and the A/V Matrix</h3>
       <p>A decoder that is currently showing a Multiview is marked <strong>MULTIVIEW</strong> on its row in the A/V Matrix, and no video crosspoint is shown for it &mdash; because the picture is a composition of several sources, not a route from one encoder. Hovering the row explains this.</p>
       <p><strong>Audio may still show a source on that row, and that is correct.</strong> Multiview sound comes from the main window's source over its ordinary audio path, so the matrix is telling you exactly where the sound is coming from.</p>
-      <p>You can still route a normal source to that decoder from the matrix. Doing so <strong>exits Multiview</strong> and shows the route you asked for. OmniSuite warns you first:</p>
-      <div class="note">Multiview is active on this decoder. Completing this route will exit Multiview and replace the Multiview display with the selected A/V route.</div>
+      <p>You can still route a normal source to that decoder from the matrix. Doing so <strong>exits Multiview</strong> and shows the route you asked for &mdash; that is what a normal route means, so nothing asks you to confirm it.</p>
+      <div class="note"><strong>The saved Multiview is kept.</strong> Only the display changes, and you can show the same Multiview on that decoder again whenever you like. If the route cannot be completed, the display is put back on its Multiview rather than left blank.</div>
       <p><strong>The saved Multiview is not deleted.</strong> It stays in the Multiview dropdown and you can show it again whenever you like; it will be rebuilt against whatever the sources are doing at that time.</p>
       <p>If that decoder belongs to a group, only that one decoder leaves Multiview &mdash; the rest of the group carries on. It is then reported as <strong>Drifted</strong> until you choose to show the group Multiview again.</p>
-      <p>The warning appears <strong>once per session</strong> &mdash; after you have acknowledged it, further routes that exit Multiview during the same session go straight through. Refreshing the page or moving between pages does not bring it back. Ticking <strong>Do not show this again</strong> stops it appearing in future sessions as well.</p>
+
       <p>If the route cannot be completed, OmniSuite puts the Multiview back rather than leaving the display blank, and tells you so.</p>
 
       <h3>Deleting a Multiview</h3>
@@ -1429,9 +1456,10 @@
         <tr><td>That display is busy with another routing operation</td>
         <td>Somebody else is changing the same display at this moment. Wait a
         few seconds and press Show again.</td></tr>
-        <tr><td>That display is showing a Multiview</td>
-        <td>OmniSuite asks first, because showing one source will stop the
-        Multiview. See below.</td></tr>
+        <tr><td>The display was put back on its Multiview</td>
+        <td>The route could not be completed, so rather than leave the display
+        blank OmniSuite restored what was there. Try again, or check that the
+        source is switched on.</td></tr>
         <tr><td>Your permission for that has changed</td>
         <td>An administrator changed what this account may use while the screen
         was open. Sign in again to see the current list.</td></tr>
@@ -1441,14 +1469,16 @@
       </table>
 
       <h4 id="user-multiview-exit">Showing a source on a display that has a Multiview</h4>
-      <p>If the display is showing a Multiview, putting a single source on it
-      will stop that Multiview, so OmniSuite asks before doing anything:</p>
-      <p><em>Completing this route will exit Multiview on that display and
-      replace it with the selected source.</em></p>
-      <p><strong>Continue</strong> makes the change; <strong>Cancel</strong>
-      leaves the display exactly as it was &mdash; nothing at all is sent to the
-      equipment. The saved Multiview is kept either way and an administrator can
-      show it again later.</p>
+      <p>Nothing special is needed. Choosing a source and pressing
+      <strong>Show</strong> means &ldquo;put this on that display&rdquo;, so if
+      the display happens to be showing a Multiview it simply stops and shows
+      the source instead.</p>
+      <div class="note"><strong>The Multiview itself is kept.</strong> Only the
+      display changes. An administrator can put the same Multiview back on that
+      display at any time, and nothing about it has been deleted or altered.</div>
+      <p>If the change cannot be completed &mdash; the source is not answering,
+      say &mdash; the display is put back on its Multiview rather than left
+      blank, and the message says what happened.</p>
 
       <h4>USB</h4>
       <p>USB extension moves a keyboard, mouse, camera or other USB device from
