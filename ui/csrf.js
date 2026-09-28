@@ -69,11 +69,29 @@
   // every action.
   function token(original) {
     if (cached !== null) return Promise.resolve(cached);
-    var held = stored();
-    if (held) return Promise.resolve(remember(held));
+    // sessionStorage is NOT the authority, only a fallback.
+    //
+    // It is per-tab and it survives a change of session. A tab that had signed
+    // in with a password, then opened a Direct Access link, kept the token
+    // belonging to the session that had ended -- and this returned it without
+    // ever asking the server, so every action was refused for a bad CSRF token
+    // with nothing on screen to explain it. Measured on the bench: five
+    // consecutive routes refused with reason "csrf" from a direct-link session.
+    //
+    // The session endpoint answers with the token for the session the request
+    // actually arrived on, so that is what decides. `session()` is
+    // single-flighted and cached in memory for the life of the page, and every
+    // page already asks it once, so this costs no extra request.
     return session(original)
-      .then(function (body) { return remember((body || {}).csrf_token); })
-      .catch(function () { return remember(''); });
+      .then(function (body) {
+        var fresh = (body || {}).csrf_token;
+        if (fresh) return remember(fresh);
+        // The local operator has no session and needs no token; an empty
+        // answer is cached exactly like a real one. Only when the request
+        // itself failed is the stored copy worth falling back to.
+        return remember(body && Object.keys(body).length ? '' : stored());
+      })
+      .catch(function () { return remember(stored()); });
   }
 
   // Who this page is talking as. One request, shared by everything that asks.

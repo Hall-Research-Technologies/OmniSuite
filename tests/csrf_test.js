@@ -202,13 +202,22 @@ suite.push(() => check('storage being off does not break anything', async () => 
   assert(sent.header === 'TOKEN-1', 'the in-memory copy should still serve');
 }));
 
-suite.push(() => check('a token already in storage is used without asking', async () => {
-  const page = makePage({preset: 'FROM-SIGN-IN'});
+// This used to assert that a token already in sessionStorage was used without
+// asking the server, on the reasoning that the sign-in page had just handed
+// one over. That reasoning holds only while the tab's session never changes,
+// and on the bench it did: a tab that had signed in with a password then
+// opened a Direct Access link kept the old token and had five consecutive
+// routes refused for a bad CSRF token.
+//
+// So the server decides, and what this test was really protecting -- that a
+// page does not ask on every single request -- is asserted directly above, by
+// counting the requests rather than by forbidding the first one.
+suite.push(() => check('the sign-in token is kept when the server confirms it', async () => {
+  const page = makePage({preset: 'FROM-SIGN-IN',
+                         session: {csrf_token: 'FROM-SIGN-IN'}});
   await page.fetch('/api/route', {method: 'POST'});
   const sent = page.calls.filter((c) => c.method === 'POST').pop();
   assert(sent.header === 'FROM-SIGN-IN', `it used ${sent.header}`);
-  assert(page.calls.every((c) => c.url !== '/api/auth/session'),
-    'the sign-in page already handed one over');
 }));
 
 suite.push(() => check('the token is never written to localStorage', async () => {
@@ -281,6 +290,45 @@ suite.push(() => check('the firmware list is not requested from a remote browser
   assert(/omniIsLocal/.test(code),
     'the firmware folder is on the host disk; asking for it from elsewhere '
     + 'is a guaranteed 404 and a console error on every page load');
+}));
+
+suite.push(() => check('a token left over from an ended session is not used', async () => {
+  // The live defect. A tab that had signed in with a password, then opened a
+  // Direct Access link, kept `omni_csrf` in sessionStorage -- which is per-tab
+  // and survives a change of session. The wrapper returned it without asking
+  // the server, so every route from the panel was refused for a bad CSRF
+  // token, with nothing on screen to say why. Measured on the bench: five
+  // consecutive refusals with reason "csrf".
+  const page = makePage({preset: 'TOKEN-FROM-AN-OLD-SESSION',
+                         session: {csrf_token: 'TOKEN-FOR-THIS-SESSION'}});
+  await page.fetch('/api/user/route', {method: 'POST', body: '{}'});
+  const post = page.calls.filter((c) => c.method === 'POST').pop();
+  assert(post.header === 'TOKEN-FOR-THIS-SESSION',
+    `the stale token was presented: ${JSON.stringify(post.header)}`);
+  assert(page.storage.omni_csrf === 'TOKEN-FOR-THIS-SESSION',
+    'the stale token was left in storage to fail again');
+}));
+
+suite.push(() => check('the server is asked once, not once per request', async () => {
+  // Making the server the authority must not turn every action into two
+  // requests. `session()` is single-flighted and cached for the page.
+  const page = makePage();
+  await page.fetch('/api/route', {method: 'POST', body: '{}'});
+  await page.fetch('/api/route', {method: 'POST', body: '{}'});
+  await page.fetch('/api/unroute', {method: 'POST', body: '{}'});
+  const asks = page.calls.filter((c) => c.url === '/api/auth/session');
+  assert(asks.length === 1,
+    `the session endpoint was asked ${asks.length} times`);
+}));
+
+suite.push(() => check('a stored token still serves when the server cannot be reached', async () => {
+  // The fallback that makes the change safe: if the session request fails
+  // outright, the page is no worse off than before.
+  const page = makePage({preset: 'TOKEN-HELD', sessionFails: true});
+  await page.fetch('/api/route', {method: 'POST', body: '{}'});
+  const post = page.calls.filter((c) => c.method === 'POST').pop();
+  assert(post.header === 'TOKEN-HELD',
+    `nothing was presented: ${JSON.stringify(post.header)}`);
 }));
 
 (async function run() {

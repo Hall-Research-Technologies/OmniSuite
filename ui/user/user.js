@@ -860,7 +860,12 @@
     // draw the account controls again on every refresh.
     try {
       const {body} = await api('/api/auth/session');
-      if (body && body.csrf_token && !csrf()) {
+      // Adopted unconditionally. The endpoint answers with the token for the
+      // session this request arrived on, so a value already in sessionStorage
+      // is either the same one or a stale one belonging to a session that has
+      // ended -- and keeping the stale one is what made every action from a
+      // Direct Access panel fail for a bad CSRF token.
+      if (body && body.csrf_token) {
         sessionStorage.setItem('omni_csrf', body.csrf_token);
       }
       state.directLink = !!(body && body.method === 'direct_link');
