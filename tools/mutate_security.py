@@ -73,6 +73,12 @@ MUTATIONS = [
      '        return _project_engine_result(body, status)',
      '        return result',
      "the engine's decoder record would reach a restricted client", ROUTING),
+    ("project.reducer-leaks-input-names", "omni_remote_api.py",
+     '    _ENGINE_RESULT_KEYS = ("ok", "status", "reason", "error", "note", "planes")',
+     '    _ENGINE_RESULT_KEYS = ("ok", "status", "reason", "error", "note", "planes",\n'
+     '                           "cleared", "failed")',
+     "the decoder's own input names would reach a restricted client",
+     ROUTING),
     ("project.reducer-is-a-denylist", "omni_remote_api.py",
      '        out = {key: body[key] for key in _ENGINE_RESULT_KEYS if key in body}',
      '        out = {k: v for k, v in body.items() if k != "decoder"}',

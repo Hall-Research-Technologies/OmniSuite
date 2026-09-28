@@ -894,6 +894,26 @@ class UnrouteTests(UserRoutingTestBase):
         self.assertEqual(self.unroutes, [],
                          "a refused request still reached the hardware")
 
+    def test_the_decoder_s_own_input_names_are_not_reported(self):
+        """`cleared` names ip_input1 and ip_input3. That is device internals.
+
+        Caught by driving the real endpoint and searching the response, not by
+        reading the reducer: the names had been added to its allowlist without
+        anybody noticing what they contained. The operator learns what happened
+        from the status and the sentence.
+        """
+        self.unroute_answer = ({"ok": True, "status": "UNROUTED",
+                                "cleared": ["ip_input1", "ip_input3"],
+                                "failed": []}, 200)
+        response = self.unroute(FRONT_DISPLAY, self.session_for(self.teacher))
+        raw = response.get_data(as_text=True)
+        self.assertNotIn("ip_input", raw,
+                         "a decoder input name reached a restricted client")
+        body = response.get_json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["status"], "UNROUTED",
+                         "removing the detail removed the answer too")
+
     def test_the_answer_carries_no_device_address(self):
         self.unroute_answer = ({"ok": True, "status": "UNROUTED",
                                 "cleared": ["ip_input1", "ip_input3"],

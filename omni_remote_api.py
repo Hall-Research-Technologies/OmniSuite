@@ -1141,8 +1141,14 @@ def register(app, *, store, listener, aliases, load_cache, matrix_state,
     #: address, its multicast groups, its input names -- and none of it belongs
     #: in a projection whose whole purpose is that no device address reaches
     #: the browser.
-    _ENGINE_RESULT_KEYS = ("ok", "status", "reason", "error", "note", "planes",
-                           "cleared", "failed")
+    #
+    # `cleared` and `failed` are deliberately NOT here. They name the decoder's
+    # own inputs -- ip_input1, ip_input3 -- which is engineering detail this
+    # projection exists to keep out of a restricted browser, and the operator
+    # is told what happened by `status` and `error` without them. They were in
+    # this list briefly, which is the argument for the list being a fixed
+    # allowlist: widening it has to be a deliberate act that somebody reads.
+    _ENGINE_RESULT_KEYS = ("ok", "status", "reason", "error", "note", "planes")
 
     def _project_engine_result(body, status):
         """The A/V engine's answer, reduced to named fields.
