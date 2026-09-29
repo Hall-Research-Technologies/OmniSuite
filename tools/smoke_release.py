@@ -76,6 +76,10 @@ REQUIRED_PATHS = [
     # the package, an administrator signed in from another device can read
     # everything and change nothing, with nothing on screen saying why.
     ("/ui/csrf.js", None),
+    # Added this build. Every dialog asks it which level to sit on, so a
+    # package without it puts the Export dialog back underneath Settings --
+    # and builds perfectly cleanly while doing so.
+    ("/ui/modal-stack.js", None),
     # Every browser asks for this before it has a session. Missing, it is a
     # failed request in the console of a customer's machine on every page.
     ("/favicon.ico", None),
