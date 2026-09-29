@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("OMNI_SMOKE", "1")
 
+import omni_access                                   # noqa: E402
 import omni_remote                                   # noqa: E402
 import omni_users                                    # noqa: E402
 from omni_users import Permissions                   # noqa: E402
@@ -254,13 +255,32 @@ class TheOverrideTests(ClearTestBase):
         self.assertEqual(body["protection"], "override")
         self.assertEqual(body["retained"], 0)
 
-    def test_the_ordinary_clear_never_overrides(self):
-        """Device Info's button must not be the destructive one."""
+    def test_the_ordinary_clear_is_never_the_destructive_one(self):
+        """Device Info's button may now offer the override. It may not BE it.
+
+        This used to assert that the word `override` appeared nowhere in the
+        handler, on the reasoning that removing a device somebody was given is
+        a decision about their permissions and belongs where permissions are.
+        That path still exists and is unchanged; what has been added beside it
+        is an explicit, default-off choice in the confirmation, because an
+        administrator who has just been shown the list is exactly the person
+        in a position to decide.
+
+        So the property is not "the word is absent" -- it is that the safe
+        answer is what happens unless somebody deliberately asked otherwise.
+        """
         page = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
         start = page.index("#clear_units_btn")
-        handler = page[start:page.index("});", start)]
-        self.assertNotIn("override", handler,
-                         "Clear Units on Device Info sends the override")
+        handler = page[start:page.index("\n});", start)]
+        code = "\n".join(line.split("//")[0] for line in handler.split("\n"))
+
+        # It starts false and only a tick box changes it.
+        self.assertIn("let override = false;", code)
+        self.assertIn("onValue: (v) => { override = v; }", code)
+        # The request carries nothing unless it was asked for.
+        self.assertIn("JSON.stringify(override ? {override: true} : {})", code)
+        # And the dialog's own default is Cancel.
+        self.assertIn("defaultAction: 'cancel'", code)
 
     def _override_handler(self):
         """The click handler, not the render function that shares its name."""
@@ -374,3 +394,287 @@ class _RefusesToBeRemoved:
 
     def __str__(self):
         return str(self._real)
+
+
+
+class ThePreviewChangesNothingTests(ClearTestBase):
+    """The confirmation has to be built from facts, before anything is touched.
+
+    A page that decided what to warn about from what it happened to remember
+    would warn about the wrong thing exactly when it mattered, so it asks --
+    and asking must be free of consequences.
+    """
+
+    def preview(self):
+        return self.client.get("/api/clear_units/preview")
+
+    def test_it_is_a_read_and_leaves_the_inventory_alone(self):
+        before = self.cached()
+        self.remote_access(True)
+        self.with_a_user()
+        response = self.preview()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.cached(), before,
+                         "asking what a clear would do cleared something")
+
+    def test_it_says_whether_remote_access_is_on(self):
+        """The page confirms on this, not on whether anything is assigned."""
+        self.remote_access(False)
+        self.assertFalse(self.preview().get_json()["remote_access"])
+        self.remote_access(True)
+        self.assertTrue(self.preview().get_json()["remote_access"])
+
+    def test_it_names_the_units_and_the_people(self):
+        self.remote_access(True)
+        self.with_a_user()
+        body = self.preview().get_json()
+        self.assertEqual(body["assigned_count"], 2)
+        names = {row["name"] for row in body["assigned"]}
+        self.assertTrue(names, "nothing was named")
+        for row in body["assigned"]:
+            with self.subTest(unit=row["name"]):
+                self.assertEqual(row["users"], ["teacher"])
+                # A name a person can act on, not an identity.
+                self.assertNotIn(":", row["name"],
+                                 "a raw MAC reached the confirmation")
+
+    def test_a_friendly_name_is_used_where_one_is_set(self):
+        self.remote_access(True)
+        self.with_a_user()
+        self.srv._device_aliases.set_alias(ASSIGNED_DISPLAY, "Hall Display")
+        self.addCleanup(self.srv._device_aliases.set_alias,
+                        ASSIGNED_DISPLAY, "")
+        names = {row["name"] for row in self.preview().get_json()["assigned"]}
+        self.assertIn("Hall Display", names,
+                      "the operator's own name for the device was not used")
+
+    def test_it_is_sorted_so_the_list_does_not_move_about(self):
+        self.remote_access(True)
+        self.with_a_user()
+        rows = self.preview().get_json()["assigned"]
+        self.assertEqual([r["name"] for r in rows],
+                         sorted((r["name"] for r in rows), key=str.lower))
+
+    def test_nothing_assigned_is_still_worth_confirming(self):
+        """Clearing changes what every User's controls are built from."""
+        self.remote_access(True)
+        body = self.preview().get_json()
+        self.assertTrue(body["remote_access"])
+        self.assertEqual(body["assigned_count"], 0)
+        self.assertGreater(body["would_clear"], 0,
+                           "the page cannot say how much it would remove")
+
+    def test_it_fails_closed_when_assignments_cannot_be_read(self):
+        """An operator can look again; they cannot un-clear."""
+        self.remote_access(True)
+        broken = lambda: (_ for _ in ()).throw(OSError("the store is gone"))
+        original = self.store.assigned_devices
+        self.store.assigned_devices = broken
+        self.addCleanup(lambda: setattr(self.store, "assigned_devices",
+                                        original))
+        response = self.preview()
+        self.assertEqual(response.status_code, 503)
+        body = response.get_json()
+        self.assertFalse(body["ok"])
+        self.assertIn("could not read", body["error"].lower())
+        # And it does not report an empty list, which would read as "nothing
+        # is assigned" and invite exactly the clear it cannot vouch for.
+        self.assertNotIn("assigned", body)
+
+    def test_it_is_administrative(self):
+        access, _feature = omni_access.classify("/api/clear_units/preview")
+        self.assertIs(access, omni_access.Access.ADMIN,
+                      "it names User accounts")
+
+
+class TheOverrideKeepsThePermissionsTests(ClearTestBase):
+    """Removing a unit from the inventory is not removing somebody's grant.
+
+    The override takes the equipment out of the discovered list, which is what
+    an administrator asked for. What it must never do is quietly rewrite the
+    account, because then rediscovering the same physical unit would not bring
+    the assignment back and nobody would know why.
+    """
+
+    def granted(self):
+        account = self.store.find_by_username("teacher")
+        return (sorted(account.permissions.sources),
+                sorted(account.permissions.destinations))
+
+    def test_an_override_clear_does_not_touch_the_account(self):
+        self.remote_access(True)
+        self.with_a_user()
+        before = self.granted()
+        response = self.clear(override=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.cached(), [], "the override kept something")
+        self.assertEqual(self.granted(), before,
+                         "clearing a unit rewrote somebody's permissions")
+
+    def test_the_same_equipment_reconnects_when_it_is_found_again(self):
+        self.remote_access(True)
+        self.with_a_user()
+        self.clear(override=True)
+        self.assertEqual(self.cached(), [])
+
+        # A later scan finds the same physical units, at whatever addresses.
+        rediscovered = [dict(u) for u in UNITS]
+        for unit in rediscovered:
+            unit["ip"] = "198.51.100." + unit["ip"].rsplit(".", 1)[-1]
+        self.srv._save_cache(rediscovered)
+
+        body = self.client.get("/api/clear_units/preview").get_json()
+        self.assertEqual(body["assigned_count"], 2,
+                         "the assignments did not reconnect to the equipment")
+        for row in body["assigned"]:
+            self.assertEqual(row["users"], ["teacher"])
+
+    def test_a_different_unit_at_an_old_address_inherits_nothing(self):
+        """Identity, not address -- the rule the whole design rests on."""
+        self.remote_access(True)
+        self.with_a_user()
+        self.clear(override=True)
+        stranger = [{"ip": u["ip"], "mac": "b8:98:b0:00:00:ff",
+                     "hostname": "someone-elses-kit"} for u in UNITS]
+        self.srv._save_cache(stranger)
+        body = self.client.get("/api/clear_units/preview").get_json()
+        self.assertEqual(body["assigned_count"], 0,
+                         "a different device inherited an assignment by "
+                         "taking an old address")
+
+
+
+class TheUnitCacheSurvivesTwoWritersTests(unittest.TestCase):
+    """Found on the bench: units_cache.json was a complete 16-unit document
+    followed by 98 bytes of a longer previous one.
+
+    The cause was two writers -- this module's and the server's -- sharing one
+    temp filename, `units_cache.json.tmp`, with only one of them holding a
+    lock. The second truncated the shared temp, wrote less, and whichever
+    os.replace ran last published the mixture. A directly-run
+    `python OmniMatrix_upgrade_server_v7_6y.py` alongside the launcher is all
+    it took.
+    """
+
+    def setUp(self):
+        import omni_matrix_logic as logic
+        self.logic = logic
+        self.folder = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.folder.cleanup)
+        self.here = Path(self.folder.name)
+
+        saved_file = logic._cache_file
+        saved_enc = dict(logic._encoders)
+        saved_dec = dict(logic._decoders)
+        self.addCleanup(lambda: (
+            setattr(logic, "_cache_file", saved_file),
+            logic._encoders.clear(), logic._encoders.update(saved_enc),
+            logic._decoders.clear(), logic._decoders.update(saved_dec)))
+        logic._cache_file = self.here / "units_cache.json"
+        logic._encoders.clear()
+        logic._decoders.clear()
+
+    def test_each_write_uses_its_own_temp_file(self):
+        """A shared temp name is what let two writers collide."""
+        source = (ROOT / "omni_matrix_logic.py").read_text(encoding="utf-8")
+        block = source[source.index("def _save_cache_locked"):]
+        block = block[:block.index("\ndef ")]
+        self.assertIn("os.getpid()", block,
+                      "the temp file is not unique to this process")
+        self.assertIn("threading.get_ident()", block,
+                      "the temp file is not unique to this thread")
+
+    def test_the_whole_read_modify_write_is_one_critical_section(self):
+        """Locking only the write loses one of two concurrent changes."""
+        source = (ROOT / "omni_matrix_logic.py").read_text(encoding="utf-8")
+        wrapper = source[source.index("def _save_cache():"):]
+        wrapper = wrapper[:wrapper.index("def _save_cache_locked")]
+        self.assertIn("with _cache_write_lock:", wrapper)
+        self.assertIn("_save_cache_locked()", wrapper)
+        # And the inner function does the reading as well as the writing, so
+        # the lock above really does span both.
+        inner = source[source.index("def _save_cache_locked"):]
+        inner = inner[:inner.index("\ndef ")]
+        self.assertIn("json.load", inner)
+        self.assertIn("os.replace", inner)
+
+    def test_concurrent_writers_leave_a_readable_file(self):
+        """Driven, not asserted about: eight threads, all writing."""
+        import threading as _threading
+        self.logic._encoders.update({
+            "198.51.100.%d" % n: {"ip": "198.51.100.%d" % n,
+                                  "mac": "b8:98:b0:00:00:%02x" % n,
+                                  "hostname": "enc-%d" % n}
+            for n in range(1, 30)})
+        errors = []
+
+        def hammer():
+            try:
+                for _ in range(12):
+                    self.logic._save_cache()
+            except Exception as exc:                 # pragma: no cover
+                errors.append(exc)
+
+        threads = [_threading.Thread(target=hammer) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        self.assertEqual(errors, [])
+
+        raw = (self.here / "units_cache.json").read_text(encoding="utf-8")
+        data = json.loads(raw)                       # the assertion that matters
+        self.assertIsInstance(data, list)
+        self.assertEqual(len(data), 29)
+        # And no temp files left behind.
+        leftovers = [p.name for p in self.here.iterdir() if ".tmp" in p.name]
+        self.assertEqual(leftovers, [])
+
+    def test_a_malformed_cache_is_moved_aside_once(self):
+        """Re-reading a file that cannot be parsed will not start parsing it.
+
+        The bench logged the same failure five times during one startup,
+        because every caller re-read the same broken file.
+        """
+        broken = self.here / "units_cache.json"
+        broken.write_text('[{"ip": "198.51.100.1"}]\n  "left over"\n',
+                          encoding="utf-8")
+        # `_load_cache` populates the module's own device tables rather than
+        # returning anything, so that is what is inspected.
+        self.logic._load_cache()
+        self.assertEqual(dict(self.logic._encoders), {},
+                         "a malformed cache was used anyway")
+        self.assertEqual(dict(self.logic._decoders), {})
+        self.assertFalse(broken.exists(),
+                         "the malformed file was left where it would fail again")
+        spoiled = [p.name for p in self.here.iterdir() if "corrupt" in p.name]
+        self.assertEqual(len(spoiled), 1, spoiled)
+        # Kept, not deleted: it is the only evidence of how it got that way.
+        self.assertIn("left over",
+                      (self.here / spoiled[0]).read_text(encoding="utf-8"))
+
+    def test_a_good_cache_is_not_quarantined(self):
+        good = self.here / "units_cache.json"
+        good.write_text(json.dumps([{"ip": "198.51.100.1",
+                                     "mac": "b8:98:b0:00:00:01",
+                                     "role": "encoder",
+                                     "type": "Encoder"}]),
+                        encoding="utf-8")
+        self.logic._load_cache()
+        self.assertEqual(len(self.logic._encoders)
+                         + len(self.logic._decoders), 1)
+        self.assertTrue(good.exists())
+        self.assertEqual([p.name for p in self.here.iterdir()
+                          if "corrupt" in p.name], [])
+
+    def test_the_exact_bench_corruption_is_recognised(self):
+        """A complete document followed by the tail of a longer one."""
+        good = json.dumps([{"ip": "198.51.100.%d" % n} for n in range(1, 17)],
+                          indent=2)
+        tail = '\n      "2.2"\n    ],\n    "firmwareversion": "2.1.2"\n  }\n]'
+        (self.here / "units_cache.json").write_text(good + tail,
+                                                    encoding="utf-8")
+        self.logic._load_cache()
+        self.assertEqual(dict(self.logic._encoders), {})
+        self.assertEqual(len([p for p in self.here.iterdir()
+                              if "corrupt" in p.name]), 1)

@@ -297,7 +297,18 @@
       OmniSuite computer.</strong> They cannot be reached from another device,
       by a User, by a direct access link, or even by an administrator signed in
       remotely. The backup holds the equipment passwords, and rebuilding a
-      deployment is something you do standing at the machine.</div>
+      deployment is something you do standing at the machine.
+      <br><br>Open Settings from another device and the two buttons are not
+      there at all &mdash; in their place is a line saying that backup and
+      restore need local access through 127.0.0.1. That is decided by
+      OmniSuite itself rather than by the address you typed, so it is the same
+      answer however you reached the page.</div>
+
+      <h4>If the save window does not appear</h4>
+      <p>After you enter the passphrase, your browser saves the file. If it is
+      set to ask where to put each download, that window belongs to the browser
+      and can open behind whatever else is on screen. OmniSuite says so on the
+      Settings page when it hands the file over.</p>
 
       <h4>Direct access links after a restore</h4>
       <p><strong>Existing direct access links keep working.</strong> A tablet
@@ -438,13 +449,34 @@
 
       <h3 id="clear-assigned">Clear Units and assigned devices</h3>
       <p>While <a href="#remote-access">Remote Access</a> is on,
-      <strong>Clear Units</strong> keeps any device that is assigned to a User
-      account and clears the rest. It tells you what it did:</p>
+      <strong>Clear Units always asks first</strong> &mdash; whether or not
+      any device happens to be assigned to somebody today. Clearing removes the
+      discovered units your Users' controls are built from, so what they see is
+      rebuilt from whatever the next Scan finds. Run a Scan afterwards.</p>
+      <p><strong>Cancel changes nothing at all.</strong> Nothing is removed
+      until you confirm.</p>
+      <p>If any of the units are assigned to User accounts, the question lists
+      them by name, with the account each one belongs to:</p>
+      <p><em>Hall Display (192.168.1.31) &mdash; teacher<br>
+      Rear Camera (192.168.1.44) &mdash; teacher, lab-tech</em></p>
+      <p>Those units are <strong>kept</strong> unless you say otherwise, and
+      afterwards OmniSuite tells you what it did:</p>
       <p><em>7 devices cleared. 3 kept because they are assigned to
       teacher, lab-tech.</em></p>
       <p>The reason is that a User's controls are built from the devices you
       assigned them. Clearing one would leave that person with a control that
-      has nothing behind it, and nothing on screen would have said so.</p>
+      has nothing behind it, and nothing on screen would have said so.
+      Removing assigned units may affect User control.</p>
+      <h4>Removing them anyway</h4>
+      <p>The question has a tick box: <em>Also remove the assigned units</em>.
+      It is off to begin with, so the safe answer is what happens if you simply
+      press Clear Units.</p>
+      <div class="note"><strong>Ticking it removes the units from the list, not
+      from the accounts.</strong> Each User keeps every assignment they had.
+      Because an assignment names a device by its hardware identity rather than
+      its address, scanning again finds the same physical equipment and
+      reconnects it to the same people &mdash; never a different unit that
+      happens to have taken the same address.</div>
       <p>To clear a device that is being kept, take it away from the accounts
       that have it &mdash; <strong>Manage users</strong>, edit the account,
       untick the device. That is the ordinary way and it leaves their other

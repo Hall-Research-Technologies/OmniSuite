@@ -400,10 +400,35 @@ class AppWindow:
             opened = False
         if opened:
             log_message(f"Opened {url} in the default browser")
+            self.step_aside()
         else:
             log_message(f"Could not open a browser for {url}")
             self.report_browser_failure(url)
         return opened
+
+    def step_aside(self) -> None:
+        """Get out from in front of the browser we just opened.
+
+        Measured on this machine: the console sat at z-order 4 with the two
+        OmniSuite browser windows at 7 and 8 -- in front of the thing it had
+        just launched, with no topmost flag to explain it. Anything the
+        browser then put up, a save-as window in particular, appeared behind
+        this one, and the operator had to close a second OmniSuite window to
+        find out that the button had worked.
+
+        Lowered rather than hidden or minimised. The console is still there
+        with the address on it if somebody goes looking, the tray menu still
+        raises it, and nothing about the running server changes. Only when a
+        browser actually opened -- if it did not, this window is the only
+        place the address appears and must stay where it is.
+
+        Deferred a moment: lowering before the browser's own window exists
+        puts this one behind nothing at all.
+        """
+        try:
+            self.root.after(1200, self.root.lower)
+        except Exception as exc:
+            log_message(f"Could not lower the launcher window: {exc}")
 
     def report_browser_failure(self, url: str) -> None:
         """Say so without interrupting; the server is still running.

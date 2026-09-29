@@ -292,6 +292,272 @@ suite.push(() => check('the buttons are bound, not merely drawn', () => {
     'the restore button is not wired up');
 }));
 
+
+// ------------------------------------------------- local access and the UI
+
+suite.push(() => check('the backup controls are hidden until the server says local', async () => {
+  // Not worked out from the address bar: a hostname is not an authority.
+  // 127.0.0.1 can be forwarded and a machine can be reached by its own LAN
+  // address; what decides is the socket the request arrived on, which only
+  // the server can see.
+  const settings = code(SETTINGS_JS);
+  const fn = settings.slice(settings.indexOf('async function applyBackupLocality'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert(/omniIsLocal/.test(body),
+    'the page decides locality for itself');
+  assert(!/location\.hostname|127\.0\.0\.1['"]|localhost['"]/.test(body),
+    'the page trusts the address bar');
+}));
+
+suite.push(() => check('they start hidden, so nothing flashes up remotely', () => {
+  // Revealing on a positive answer is the safe direction. Hiding on a
+  // negative one shows them first and thinks better of it.
+  const markup = SETTINGS_JS.slice(SETTINGS_JS.indexOf('id="cfg_backup_section"'));
+  const block = markup.slice(0, markup.indexOf('cfg_backup_status'));
+  for (const id of ['cfg_backup_export', 'cfg_backup_restore']) {
+    const tag = block.slice(block.indexOf('id="' + id + '"'));
+    const end = tag.indexOf('>');
+    assert(/hidden/.test(tag.slice(0, end)), `${id} is not hidden by default`);
+    assert(/disabled/.test(tag.slice(0, end)), `${id} is not disabled by default`);
+  }
+}));
+
+suite.push(() => check('a remote page says what is needed instead', () => {
+  assert(/id="cfg_backup_remote"/.test(SETTINGS_JS), 'no notice element');
+  assert(/require local access to OmniSuite\s*\n?\s*through 127\.0\.0\.1/
+    .test(SETTINGS_JS.replace(/\s+/g, ' ')) ||
+    /require local access to OmniSuite through 127\.0\.0\.1/
+      .test(SETTINGS_JS.replace(/\s+/g, ' ')),
+    'the notice does not say what is required');
+}));
+
+suite.push(() => check('a failure to ask is treated as remote', async () => {
+  // The safe direction: a hidden control on the OmniSuite computer is a
+  // nuisance; an offered one elsewhere is a button that answers 404 and a
+  // description of where the credentials live.
+  const nodes = {};
+  const make = () => ({hidden: false, disabled: false});
+  ['cfg_backup_export', 'cfg_backup_restore', 'cfg_backup_remote',
+   'cfg_backup_blurb'].forEach((id) => { nodes[id] = make(); });
+  const apply = lift('async function applyBackupLocality(', {
+    document: {getElementById: (id) => nodes[id] || null},
+    window: {omniIsLocal: () => Promise.reject(new Error('offline'))},
+    backupStatus: () => {},
+  });
+  await apply();
+  assert(nodes.cfg_backup_export.hidden === true,
+    'the export button was offered when locality could not be established');
+  assert(nodes.cfg_backup_export.disabled === true);
+  assert(nodes.cfg_backup_remote.hidden === false, 'nothing explained why');
+  assert(nodes.cfg_backup_blurb.hidden === true,
+    'what the backup contains was described to a remote browser');
+}));
+
+suite.push(() => check('a local answer reveals them', async () => {
+  const nodes = {};
+  ['cfg_backup_export', 'cfg_backup_restore', 'cfg_backup_remote',
+   'cfg_backup_blurb'].forEach((id) => {
+    nodes[id] = {hidden: true, disabled: true};
+  });
+  const apply = lift('async function applyBackupLocality(', {
+    document: {getElementById: (id) => nodes[id] || null},
+    window: {omniIsLocal: () => Promise.resolve(true)},
+    backupStatus: () => {},
+  });
+  await apply();
+  assert(nodes.cfg_backup_export.hidden === false, 'still hidden locally');
+  assert(nodes.cfg_backup_export.disabled === false);
+  assert(nodes.cfg_backup_remote.hidden === true,
+    'the local operator is told they need local access');
+}));
+
+suite.push(() => check('the download is not cancelled before it starts', () => {
+  // revokeObjectURL on the same tick can abort the download the click just
+  // began, which looks exactly like a button that did nothing.
+  const settings = code(SETTINGS_JS);
+  const fn = settings.slice(settings.indexOf('async function exportConfiguration'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert(/setTimeout\(\(\) => URL\.revokeObjectURL\(url\)/.test(body),
+    'the object URL is revoked on the same tick as the click');
+  const click = body.indexOf('link.click()');
+  const revoke = body.indexOf('revokeObjectURL');
+  assert(click < revoke, 'it revokes before it clicks');
+}));
+
+// ----------------------------------------------------- clear units prompts
+
+suite.push(() => check('Clear Units asks the server what it would do', () => {
+  const page = code(INDEX_HTML);
+  const handler = page.slice(page.indexOf("$('#clear_units_btn')"));
+  const body = handler.slice(0, handler.indexOf('\n});'));
+  assert(/\/api\/clear_units\/preview/.test(body),
+    'the confirmation is built from what the page remembers');
+  // And the preview comes before anything is sent.
+  assert(body.indexOf('/api/clear_units/preview')
+         < body.indexOf("method: 'POST'"),
+    'it clears before it checks');
+}));
+
+suite.push(() => check('while Remote Access is on it always confirms', () => {
+  const page = code(INDEX_HTML);
+  const handler = page.slice(page.indexOf("$('#clear_units_btn')"));
+  const body = handler.slice(0, handler.indexOf('\n});'));
+  assert(/if \(preview && preview\.remote_access\)/.test(body),
+    'the prompt depends on something other than Remote Access being on');
+  // Not on whether anything is assigned -- clearing changes what every
+  // User's controls are built from either way.
+  assert(!/if \(assigned\.length\)\s*\{[\s\S]{0,80}omniConfirm/.test(body),
+    'it only asks when something is assigned');
+  assert(/requireDialog: true/.test(body),
+    'the confirmation can degrade to a browser box');
+}));
+
+suite.push(() => check('the confirmation says what it affects, in words', () => {
+  const page = INDEX_HTML;
+  const handler = page.slice(page.indexOf("$('#clear_units_btn')"));
+  const body = handler.slice(0, handler.indexOf('\n});'));
+  assert(/Run a Scan afterwards/.test(body), 'no mention of rescanning');
+  assert(/controls your Users see/.test(body),
+    'nothing about the effect on User control');
+  assert(/Removing assigned units may affect User control/.test(body));
+  // Named equipment and named people, not identities.
+  assert(/row\.name/.test(body) && /row\.users/.test(body),
+    'the confirmation does not name the units and the accounts');
+  assert(!/row\.mac|identity/.test(body),
+    'a raw identity reaches the confirmation');
+}));
+
+suite.push(() => check('Cancel sends nothing at all', async () => {
+  const requests = [];
+  const handler = extractClearHandler();
+  const sandbox = makeClearWorld(requests, {remote_access: true,
+                                            assigned: [], would_clear: 3},
+                                 () => Promise.resolve(false));
+  await runClearHandler(handler, sandbox);
+  assert(requests.filter((r) => r.method === 'POST').length === 0,
+    `Cancel still sent: ${JSON.stringify(requests)}`);
+  assert(requests.some((r) => r.url.indexOf('/preview') >= 0),
+    'it never even asked');
+}));
+
+suite.push(() => check('the override is off unless it is ticked', async () => {
+  const requests = [];
+  const handler = extractClearHandler();
+  const sandbox = makeClearWorld(
+    requests,
+    {remote_access: true, would_clear: 3,
+     assigned: [{name: 'Hall Display', address: '198.51.100.11',
+                 users: ['teacher']}]},
+    () => Promise.resolve(true));            // confirm, but never tick the box
+  await runClearHandler(handler, sandbox);
+  const post = requests.filter((r) => r.method === 'POST').pop();
+  assert(post, 'nothing was sent');
+  assert(post.body === '{}',
+    `the safe default was not what was sent: ${post.body}`);
+}));
+
+suite.push(() => check('ticking it sends the override', async () => {
+  const requests = [];
+  const handler = extractClearHandler();
+  const sandbox = makeClearWorld(
+    requests,
+    {remote_access: true, would_clear: 3,
+     assigned: [{name: 'Hall Display', address: '198.51.100.11',
+                 users: ['teacher']}]},
+    (options) => {
+      if (options.checkbox) options.checkbox.onValue(true);
+      return Promise.resolve(true);
+    });
+  await runClearHandler(handler, sandbox);
+  const post = requests.filter((r) => r.method === 'POST').pop();
+  assert(post && JSON.parse(post.body).override === true,
+    `the override was not sent: ${post && post.body}`);
+}));
+
+suite.push(() => check('a preview that cannot be read stops the clear', async () => {
+  // Fail closed: an operator can look again, they cannot un-clear.
+  const requests = [];
+  const handler = extractClearHandler();
+  const sandbox = makeClearWorld(requests,
+    {ok: false, error: 'could not read the assignments'},
+    () => Promise.resolve(true));
+  await runClearHandler(handler, sandbox);
+  assert(requests.filter((r) => r.method === 'POST').length === 0,
+    'it cleared without knowing what it would affect');
+}));
+
+suite.push(() => check('Remote Access off keeps the old behaviour', async () => {
+  const requests = [];
+  const asked = [];
+  const handler = extractClearHandler();
+  const sandbox = makeClearWorld(requests,
+    {remote_access: false, assigned: [], would_clear: 0},
+    (o) => { asked.push(o.title); return Promise.resolve(true); });
+  await runClearHandler(handler, sandbox);
+  assert(asked.length === 0,
+    'a standalone installation was made to argue with dormant records');
+  const post = requests.filter((r) => r.method === 'POST').pop();
+  assert(post, 'the ordinary clear did not happen');
+  assert(post.body === '{}');
+}));
+
+// -------------------------------------------- both dialogs know the option
+
+suite.push(() => check('both dialogs support the checkbox option', () => {
+  // The override needs somewhere of its own. Overloading Cancel to mean a
+  // second choice is the thing this project does not do.
+  for (const [name, source] of [['ui/confirm.js', CONFIRM_JS],
+                                ['ui/index.html', INDEX_HTML]]) {
+    const body = code(source);
+    assert(/options\.checkbox/.test(body), `${name} ignores the checkbox`);
+    assert(/confirm-checkbox-input|confirm_checkbox_input/.test(body),
+      `${name} has no checkbox markup`);
+    assert(/checkbox\.onValue/.test(body),
+      `${name} never reports what was ticked`);
+    assert(/boxInput\.checked = false/.test(body),
+      `${name} does not reset it, so the destructive answer could stick`);
+  }
+}));
+
+// --- helpers for driving the clear handler -------------------------------
+
+function extractClearHandler() {
+  const start = INDEX_HTML.indexOf("$('#clear_units_btn').addEventListener");
+  assert(start >= 0, 'the clear handler is not where this expects it');
+  const end = INDEX_HTML.indexOf('\n});', start);
+  assert(end > start, 'could not find the end of the clear handler');
+  // Just the async function body, so it can be called directly.
+  const whole = INDEX_HTML.slice(start, end + 4);
+  const bodyStart = whole.indexOf('async () => {') + 'async () => {'.length;
+  return whole.slice(bodyStart, whole.lastIndexOf('});'));
+}
+
+function makeClearWorld(requests, previewBody, confirmAnswer) {
+  return {
+    Promise, JSON, Object, console,
+    fetch: (url, init) => {
+      const method = ((init && init.method) || 'GET').toUpperCase();
+      requests.push({url, method, body: init && init.body});
+      const payload = url.indexOf('/preview') >= 0 ? previewBody : {ok: true};
+      return Promise.resolve({json: () => Promise.resolve(payload)});
+    },
+    omniConfirm: confirmAnswer,
+    toast: () => {},
+    loadUnits: () => Promise.resolve(),
+    refreshUsbExtenderCount: () => Promise.resolve(),
+    stopPolling: () => {},
+    startPolling: () => {},
+    pollInterval: null,
+  };
+}
+
+async function runClearHandler(body, sandbox) {
+  vm.createContext(sandbox);
+  vm.runInContext(
+    `globalThis.__run = async () => {${body}};`, sandbox);
+  await sandbox.__run();
+}
+
 (async function run() {
   for (const scenario of suite) await scenario();
   results.forEach(([status, name]) => console.log(`${status} ${name}`));

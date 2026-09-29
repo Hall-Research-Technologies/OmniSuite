@@ -9377,6 +9377,72 @@ def _split_assigned(units, assigned):
     return retained, cleared, who
 
 
+@app.route("/api/clear_units/preview", methods=["GET"])
+def api_clear_units_preview():
+    """What Clear Units would do, without doing any of it.
+
+    The confirmation an operator sees has to be built from facts rather than
+    from what the page happens to remember, and it has to be available before
+    anything is touched. So this reads the same assignments the clear itself
+    reads and reports them in the operator's own terms: which equipment, and
+    whose.
+
+    Changes nothing. It is a GET for that reason.
+    """
+    remote_on = remote_access_enabled()
+    try:
+        assigned = _protected_assignments()
+    except Exception:
+        # Fail closed, exactly as the clear does. If what is assigned cannot
+        # be established, the operator is told rather than shown an empty list
+        # that would read as "nothing is assigned".
+        return jsonify({
+            "ok": False,
+            "remote_access": remote_on,
+            "error": "OmniSuite could not read the User assignments, so it "
+                     "cannot say what clearing would affect. Nothing has been "
+                     "changed."}), 503
+
+    rows, cleared_count = [], 0
+    if assigned:
+        units = _load_cache() or []
+        retained, cleared, who = _split_assigned(units, assigned)
+        cleared_count = len(cleared)
+        for unit in retained:
+            identity = omni_users._normalise_identity(unit.get("mac"))
+            rows.append({
+                # A name a person can act on, never a raw identity. The alias
+                # the operator set, then the device's own name, and only then
+                # its address -- and never the MAC, which is the engineering
+                # detail these projections exist to keep out of the way.
+                "name": _device_aliases.display_name(
+                    identity, unit.get("hostname") or unit.get("host")
+                    or unit.get("ip") or "a device"),
+                "address": unit.get("ip") or "",
+                "users": sorted(who.get(identity) or []),
+            })
+        rows.sort(key=lambda row: row["name"].lower())
+    else:
+        # Nothing is assigned, or Remote Access is off. The ordinary clear
+        # removes the files wholesale and has never enumerated, so this does
+        # not either -- but the page still needs to know how much there is.
+        try:
+            cleared_count = len(_load_cache() or []) if remote_on else 0
+        except Exception:
+            cleared_count = 0
+
+    return jsonify({
+        "ok": True,
+        # The page always confirms while this is on, whether or not anything
+        # is assigned: clearing changes what a User's controls are built from,
+        # and that is true even when no single device is assigned today.
+        "remote_access": remote_on,
+        "assigned": rows,
+        "assigned_count": len(rows),
+        "would_clear": cleared_count,
+    })
+
+
 @app.route("/api/clear_units", methods=["POST"])
 def api_clear_units_dup():
     data = request.get_json(silent=True) or {}

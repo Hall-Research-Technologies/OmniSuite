@@ -62,7 +62,7 @@ def poll_unit_status(ip: str) -> dict:
 
 import importlib.util as _ilu, pathlib as _pl, threading, sys as _sys, types as _types, re as _re
 from typing import Any, Dict, Tuple, List
-import json, os
+import json, os, time
 
 # Minimal rich shim for pure-python runs
 try:
@@ -100,6 +100,13 @@ except Exception:
     _spec.loader.exec_module(user)       # type: ignore
 
 _state_lock = threading.RLock()
+#: Serialises this module's writes to units_cache.json. The server has its own
+#: lock for the same file; they are different processes' worth of threads in
+#: one process, and what actually made the file safe was giving each write its
+#: own temp name -- but a writer that reads the file, merges and writes it back
+#: is a read-modify-write, and that has to be one critical section or two
+#: writers each apply their change to their own copy and one is lost.
+_cache_write_lock = threading.RLock()
 _args: Dict[str, Any] = {}
 _ws = None
 _encoders: Dict[str, Dict[str, Any]] = {}
@@ -134,6 +141,29 @@ def _ensure_ws():
                 ws_path=_args.get("ws_path", "/wsapp/"),
                 debug=bool(_args.get("debug", False)),
             )
+
+def _quarantine_cache(error) -> None:
+    """Move a malformed cache aside once, rather than failing on it forever.
+
+    Measured on the bench: `units_cache.json` held a complete 16-unit document
+    followed by 98 bytes of a longer previous one, and every caller re-read it,
+    failed the same way and logged the same line -- five times during one
+    startup. A file that cannot be parsed will not start parsing, so it is
+    moved aside and discovery degrades to empty, which a scan repairs. The bad
+    copy is kept: it is the only evidence of how it got that way.
+    """
+    try:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        spoiled = _cache_file.with_name(
+            "%s.corrupt-%s%s" % (_cache_file.stem, stamp, _cache_file.suffix))
+        os.replace(_cache_file, spoiled)
+        print("[CACHE] %s was unreadable (%s); moved to %s and starting empty. "
+              "Run a Scan to rebuild it."
+              % (_cache_file.name, type(error).__name__, spoiled.name))
+    except Exception as move_error:
+        print("[CACHE] %s is unreadable and could not be moved aside: %s"
+              % (_cache_file.name, move_error))
+
 
 def _load_cache():
     import traceback
@@ -173,11 +203,29 @@ def _load_cache():
                     _encoders[ip] = u
                 elif role == 'decoder' and ip:
                     _decoders[ip] = u
+        except (ValueError, UnicodeDecodeError) as e:
+            # The file is there and cannot be parsed. Re-reading it will fail
+            # in exactly the same way, so it is moved aside once and discovery
+            # degrades to empty rather than logging the same line on every
+            # caller for the life of the process.
+            _quarantine_cache(e)
         except Exception as e:
             print(f"[CACHE][ERROR] Failed to load cache: {e}")
             traceback.print_exc()
 
 def _save_cache():
+    # One lock across the WHOLE read-modify-write.
+    #
+    # This reads the file, merges what is in memory into it and writes it
+    # back. Locking only the write would let two callers each read the same
+    # starting point, each apply their own change to their own copy, and the
+    # second publish a file with the first's change missing. Two individually
+    # locked operations do not compose into an atomic one.
+    with _cache_write_lock:
+        _save_cache_locked()
+
+
+def _save_cache_locked():
     try:
         existing = []
         if os.path.exists(_cache_file):
@@ -198,7 +246,19 @@ def _save_cache():
             merged.update(u)
             by_ip[ip] = merged
 
-        tmp_path = _cache_file.with_suffix(_cache_file.suffix + ".tmp")
+        # A UNIQUE temp name, not a shared one.
+        #
+        # This writer and the server's both wrote `units_cache.json.tmp`, and
+        # only the server's held a lock. Two of them interleaving is how the
+        # bench ended up with a file that was a complete 16-unit document
+        # followed by 98 bytes of a longer previous one: the second writer
+        # truncated the shared temp, wrote less, and whichever os.replace ran
+        # last published the mixture. Every write to a shared JSON file gets
+        # its own temp file, fsync, os.replace -- the rule this project
+        # already has, applied here too.
+        tmp_path = _cache_file.with_suffix(
+            "%s.%d-%d.tmp" % (_cache_file.suffix, os.getpid(),
+                              threading.get_ident()))
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(list(by_ip.values()), f, indent=2)
             f.flush()
@@ -206,6 +266,11 @@ def _save_cache():
         os.replace(tmp_path, _cache_file)
     except Exception as e:
         print(f"[CACHE] Failed to save cache: {e}")
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            pass
 
 def configure(**kw):
     with _state_lock:

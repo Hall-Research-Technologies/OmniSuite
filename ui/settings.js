@@ -109,17 +109,33 @@ const SETTINGS_MODAL_HTML = `
       <div class="modal-row" style="align-items:flex-start;">
         <label>Backup</label>
         <div style="flex:1 1 auto;min-width:0;">
-          <div class="small" style="color:var(--muted);margin-bottom:8px;">
+          <div id="cfg_backup_blurb" class="small" hidden
+               style="color:var(--muted);margin-bottom:8px;">
             Saves your accounts, device names, Multiview layouts, permissions
             and device sign-in details to one encrypted file. Keep it
             somewhere other than this computer &mdash; a backup that only
             exists on the machine that failed is not a backup.
           </div>
+          <!-- Hidden until the SERVER says this browser is the local
+               operator, so a remote administrator never sees the controls
+               even for the moment that answer takes to arrive. Revealing on
+               a positive answer is the safe direction; hiding on a negative
+               one would show them first and think better of it. -->
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <button id="cfg_backup_export" class="btn secondary" type="button">
-              Export Configuration&hellip;</button>
-            <button id="cfg_backup_restore" class="btn secondary" type="button">
-              Restore Configuration&hellip;</button>
+            <button id="cfg_backup_export" class="btn secondary" type="button"
+                    hidden disabled>Export Configuration&hellip;</button>
+            <button id="cfg_backup_restore" class="btn secondary" type="button"
+                    hidden disabled>Restore Configuration&hellip;</button>
+          </div>
+          <!-- Shown instead of the buttons when Settings is open from another
+               device. The server refuses these endpoints to anything but the
+               OmniSuite computer, so offering them remotely produced a button
+               that could only ever answer 404. -->
+          <div id="cfg_backup_remote" class="small" hidden
+               style="margin-top:4px;">
+            Configuration backup and restore require local access to OmniSuite
+            through 127.0.0.1. Open OmniSuite on the computer it is running on
+            to export or restore a configuration.
           </div>
           <div id="cfg_backup_status" class="small"
                style="margin-top:8px;color:var(--muted);"></div>
@@ -370,6 +386,7 @@ function initConfig() {
   if (backupRestoreBtn) {
     backupRestoreBtn.addEventListener('click', () => restoreConfiguration());
   }
+  applyBackupLocality();
   // The layout selector lives with the rest of the application's settings.
   // Behaviour is untouched by it: this chooses spacing and grouping, nothing else.
   const templateHost = $('#cfg_template_choice');
@@ -1583,6 +1600,48 @@ if (document.readyState === 'loading') {
 // Nothing here ever logs, stores or echoes the passphrase. It exists for the
 // length of one request and is not kept.
 
+// Whether this browser is the operator sitting at the OmniSuite computer.
+//
+// Asked of the SERVER, not worked out from the address bar. A hostname is not
+// an authority -- 127.0.0.1 can be forwarded, a machine can be reached by its
+// own LAN address, and either way what decides is the socket the request
+// arrived on, which only the server can see. `omniIsLocal` reads the same
+// session answer the CSRF wrapper already fetched, so this costs no request.
+//
+// This is presentation, never permission. The endpoints are LOCAL_ONLY and
+// answer 404 to anything else whatever this function returns; hiding the
+// buttons only stops offering a control that could not work, and stops the
+// remote page describing what a backup would contain.
+async function applyBackupLocality() {
+  const exportBtn = document.getElementById('cfg_backup_export');
+  const restoreBtn = document.getElementById('cfg_backup_restore');
+  const notice = document.getElementById('cfg_backup_remote');
+  const blurb = document.getElementById('cfg_backup_blurb');
+  if (!exportBtn && !restoreBtn) return;
+
+  let local = true;
+  try {
+    if (window.omniIsLocal) local = await window.omniIsLocal();
+  } catch (err) {
+    // If the server cannot be asked, assume remote and offer nothing. The
+    // safe direction: a hidden control on the OmniSuite computer is a
+    // nuisance, an offered one elsewhere is a button that answers 404 and a
+    // description of what the backup holds.
+    local = false;
+  }
+
+  [exportBtn, restoreBtn].forEach((button) => {
+    if (!button) return;
+    button.hidden = !local;
+    button.disabled = !local;
+  });
+  if (notice) notice.hidden = !!local;
+  // The explanation of what a backup contains is for somebody who can make
+  // one. Remotely it is a description of where the credentials live.
+  if (blurb) blurb.hidden = !local;
+  if (!local) backupStatus('');
+}
+
 function backupStatus(text, tone) {
   const node = document.getElementById('cfg_backup_status');
   if (!node) return;
@@ -1649,9 +1708,17 @@ async function exportConfiguration() {
     document.body.appendChild(link);
     link.click();
     link.remove();
-    URL.revokeObjectURL(url);
-    backupStatus('Saved ' + name + '. Keep it somewhere other than this '
-                 + 'computer.', 'ok');
+    // Revoked later, never on this tick.
+    //
+    // The browser has not necessarily started reading the blob by the time
+    // click() returns, and revoking the URL underneath it cancels the
+    // download -- which looks exactly like a button that did nothing. A
+    // minute is far longer than any save needs and the blob is released
+    // either way when the page goes.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    backupStatus('Saved ' + name + '. If your browser asked where to put it, '
+                 + 'the save window may be behind this one. Keep the file '
+                 + 'somewhere other than this computer.', 'ok');
   } catch (err) {
     backupStatus('The backup could not be created.', 'error');
   }

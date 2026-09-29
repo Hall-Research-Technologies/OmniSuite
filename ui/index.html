@@ -123,6 +123,12 @@
     .clearable-input input{padding-right:28px}
     .input-clear-btn{position:absolute;right:4px;width:22px;height:22px;border:0;background:transparent;color:var(--muted);cursor:pointer;border-radius:50%;font-size:18px;line-height:1;display:flex;align-items:center;justify-content:center;padding:0}
     .input-clear-btn:hover{background:var(--selected-tint);color:var(--fg);filter:none}
+    /* Restated beside the rule that makes it necessary. `.btn` sets
+       display:inline-flex, and a class that sets display beats the `hidden`
+       attribute -- so a button hidden in markup or by script stayed on
+       screen, which is how the backup controls remained visible to a remote
+       administrator who could never use them. */
+    [hidden]{display:none !important}
     .btn{padding:3px 8px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--action-primary,var(--accent));color:var(--on-accent,var(--fg));font-size:14px;display:inline-flex;align-items:center;gap:6px;transition:filter .16s}
     .btn:hover{filter:brightness(1.1)}
     .btn.small{padding:3px 8px;font-size:12px}
@@ -178,6 +184,8 @@
     /* The dialog's optional field. Styled beside the rest of this dialog, so
        it is not a control that renders only where some other stylesheet
        happens to be loaded. */
+    .confirm-checkbox{display:flex;align-items:flex-start;gap:8px;margin-top:12px;font-size:13px;color:var(--fg);cursor:pointer}
+    .confirm-checkbox input{margin-top:2px;flex:0 0 auto}
     .confirm-field{display:block;margin-top:12px;font-size:13px;color:var(--muted)}
     .confirm-field-input{display:block;width:100%;box-sizing:border-box;margin-top:5px;min-height:38px;padding:0 10px;border-radius:7px;border:1px solid var(--border);background:var(--panel-2);color:var(--fg);font-size:15px}
     .confirm-field-input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
@@ -554,6 +562,14 @@
     <div id="confirm_message" class="confirm-message"></div>
     <div id="confirm_summary" class="confirm-summary" style="display:none;"></div>
     <div id="confirm_list" class="confirm-list" style="display:none;"></div>
+    <!-- One optional tick box, matching the shared dialog's `checkbox`
+         option. A second, more destructive choice needs somewhere of its own:
+         overloading Cancel to mean it, or adding a third button, both ask the
+         operator to read carefully at the moment they are least likely to. -->
+    <label id="confirm_checkbox" class="confirm-checkbox" style="display:none;">
+      <input id="confirm_checkbox_input" type="checkbox">
+      <span id="confirm_checkbox_label"></span>
+    </label>
     <!-- One optional field, matching the shared dialog's `field` option.
          A backup passphrase is a credential: the browser's own string box
          shows it in the clear, carries no explanation, and is a native
@@ -1732,6 +1748,22 @@ function omniConfirm(options = {}) {
     listEl.style.display = 'none';
   }
 
+  // One optional tick box, for a second and more destructive choice. Its
+  // state travels back through the caller's own callback, and it is always
+  // reset to unchecked on the way in so the safe answer is the default every
+  // time the dialog opens.
+  const boxWrap = $('#confirm_checkbox');
+  const boxInput = $('#confirm_checkbox_input');
+  const boxLabel = $('#confirm_checkbox_label');
+  const checkbox = options.checkbox;
+  if (checkbox && boxWrap && boxInput) {
+    boxLabel.textContent = checkbox.label || '';
+    boxInput.checked = false;
+    boxWrap.style.display = '';
+  } else if (boxWrap) {
+    boxWrap.style.display = 'none';
+  }
+
   // One optional field, the same contract as the shared dialog in
   // ui/confirm.js. tests/settings_backup_test.js asserts the two agree about
   // it, because two implementations of one control drift.
@@ -1779,6 +1811,13 @@ function omniConfirm(options = {}) {
         }
         fieldInput.value = '';
         if (fieldWrap) fieldWrap.style.display = 'none';
+      }
+      if (checkbox && boxInput) {
+        if (result && typeof checkbox.onValue === 'function') {
+          checkbox.onValue(!!boxInput.checked);
+        }
+        boxInput.checked = false;
+        if (boxWrap) boxWrap.style.display = 'none';
       }
       backdrop.style.display = 'none';
       cancelBtn.hidden = false;
@@ -2258,16 +2297,86 @@ if (targetsField) {
 }
 
 $('#clear_units_btn').addEventListener('click', async () => {
+  // Ask what this would do before doing any of it.
+  //
+  // While Remote Access is on, clearing changes what every User's controls are
+  // built from, so it always confirms -- whether or not a single device is
+  // assigned today. With Remote Access off there is nobody to surprise and
+  // the ordinary behaviour is left exactly as it was.
+  let preview = null;
+  try {
+    const res = await fetch('/api/clear_units/preview');
+    preview = await res.json().catch(() => null);
+    if (preview && preview.ok === false) {
+      // Fail closed. If OmniSuite cannot say what clearing would affect, it
+      // does not clear: an operator can look again, they cannot un-clear.
+      toast(preview.error || 'Could not check what clearing would affect.',
+            'error');
+      return;
+    }
+  } catch (e) {
+    toast('Could not check what clearing would affect. Nothing was changed.',
+          'error');
+    return;
+  }
+
+  let override = false;
+  if (preview && preview.remote_access) {
+    const assigned = preview.assigned || [];
+    const lines = [];
+    let message =
+      'Remote Access is on. Clearing removes the discovered units this '
+      + 'installation is built from, so the controls your Users see are '
+      + 'rebuilt from whatever the next Scan finds. Run a Scan afterwards.';
+
+    if (assigned.length) {
+      message += '\n\nThese units are assigned to User accounts and will be '
+        + 'KEPT:';
+      assigned.forEach((row) => {
+        const who = (row.users || []).join(', ');
+        lines.push(row.name + (row.address ? '  (' + row.address + ')' : '')
+                   + ' — ' + (who || 'a User account'));
+      });
+      message += '\n\nRemoving assigned units may affect User control.';
+    }
+
+    const go = await omniConfirm({
+      title: 'Clear discovered units?',
+      message: message,
+      items: lines,
+      confirmText: 'Clear Units',
+      cancelText: 'Cancel',
+      defaultAction: 'cancel',
+      requireDialog: true,
+      // The explicit override. A tick box rather than a third button or an
+      // overloaded Cancel: the safe answer is the default, and choosing the
+      // destructive one is a deliberate act rather than a misread.
+      checkbox: assigned.length ? {
+        label: 'Also remove the ' + assigned.length + ' assigned unit'
+               + (assigned.length === 1 ? '' : 's')
+               + '. The User accounts keep their assignments, so the same '
+               + 'equipment reconnects to them when it is found again.',
+        onValue: (v) => { override = v; },
+      } : null,
+    });
+    if (!go) return;                 // Cancel changes nothing at all.
+  }
+
   const wasPolling = pollInterval !== null;
   if (wasPolling) stopPolling();
   try {
     // Clear Units is the single clear action: it clears encoder/decoder state as
     // before and additionally forgets the standalone USB inventory server-side.
     //
-    // While Remote Access is on, a device assigned to a User account is kept.
-    // Silently keeping some is as surprising as silently removing them, so the
-    // result is said out loud.
-    const res = await fetch('/api/clear_units', {method: 'POST'});
+    // While Remote Access is on, a device assigned to a User account is kept
+    // unless the administrator explicitly asked otherwise above. Silently
+    // keeping some is as surprising as silently removing them, so the result
+    // is said out loud either way.
+    const res = await fetch('/api/clear_units', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(override ? {override: true} : {}),
+    });
     const outcome = await res.json().catch(() => ({}));
     await loadUnits();
     await refreshUsbExtenderCount();
@@ -2280,6 +2389,10 @@ $('#clear_units_btn').addEventListener('click', async () => {
             + ' assigned to ' + (people || 'a user account')
             + '. Remove the assignment in Manage users to clear '
             + (outcome.retained === 1 ? 'it' : 'them') + '.', 'warn');
+    } else if (override) {
+      toast('Cleared, including the units that were assigned to Users. Their '
+            + 'assignments are kept — run a Scan and the same equipment '
+            + 'reconnects to them.', 'warn');
     }
   } catch (e) {
     toast('Clear failed: ' + e.message, 'error');

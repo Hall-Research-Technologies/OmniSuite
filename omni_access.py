@@ -250,6 +250,10 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     "/api/cache": (Access.ADMIN, None),
     "/api/clear": (Access.ADMIN, None),
     "/api/clear_units": (Access.ADMIN, None),
+    # What clearing would affect, so the confirmation is built from facts
+    # rather than from what a page remembers. Reads assignments and changes
+    # nothing; administrative because it names User accounts.
+    "/api/clear_units/preview": (Access.ADMIN, None),
     "/api/codec": (Access.ADMIN, None),
     "/api/config": (Access.ADMIN, None),
     "/api/decoder_input": (Access.ADMIN, None),

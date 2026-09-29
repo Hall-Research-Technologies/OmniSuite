@@ -118,6 +118,50 @@ MUTATIONS = [
      '                        "reason": reason}), 403',
      '                        "reason": "denied"}), 403',
      "a 403 would not say which refusal it is", ROUTING),
+    # ---- Clear Units: the preview, and failing closed ------------------
+    ("clear.preview-is-remote", "omni_access.py",
+     '    "/api/clear_units/preview": (Access.ADMIN, None),',
+     '    "/api/clear_units/preview": (Access.USER, None),',
+     "a restricted account could read which devices belong to whom",
+     CLEAR),
+    ("clear.preview-hides-the-failure", "OmniMatrix_upgrade_server_v7_6y.py",
+     '        return jsonify({\n'
+     '            "ok": False,\n'
+     '            "remote_access": remote_on,\n'
+     '            "error": "OmniSuite could not read the User assignments, so it "',
+     '        return jsonify({\n'
+     '            "ok": True,\n'
+     '            "remote_access": remote_on,\n'
+     '            "error": "OmniSuite could not read the User assignments, so it "',
+     "a confirmation would say nothing is assigned when it cannot tell",
+     CLEAR),
+    ("clear.preview-mutates", "OmniMatrix_upgrade_server_v7_6y.py",
+     '    remote_on = remote_access_enabled()\n'
+     '    try:\n'
+     '        assigned = _protected_assignments()',
+     '    remote_on = remote_access_enabled()\n'
+     '    _save_cache([])\n'
+     '    try:\n'
+     '        assigned = _protected_assignments()',
+     "asking what a clear would do would clear something", CLEAR),
+
+    # ---- the unit cache is written by two things -----------------------
+    ("cache.shared-temp-name", "omni_matrix_logic.py",
+     '        tmp_path = _cache_file.with_suffix(\n'
+     '            "%s.%d-%d.tmp" % (_cache_file.suffix, os.getpid(),\n'
+     '                              threading.get_ident()))',
+     '        tmp_path = _cache_file.with_suffix(_cache_file.suffix + ".tmp")',
+     "two writers would collide and publish a mixture of both", CLEAR),
+    ("cache.read-modify-write-unlocked", "omni_matrix_logic.py",
+     "    with _cache_write_lock:\n"
+     "        _save_cache_locked()",
+     "    _save_cache_locked()",
+     "two concurrent writers would each lose the other's change", CLEAR),
+    ("cache.malformed-not-quarantined", "omni_matrix_logic.py",
+     "        except (ValueError, UnicodeDecodeError) as e:",
+     "        except (KeyboardInterrupt,) as e:",
+     "a malformed cache would fail on every read for the life of the "
+     "process", CLEAR),
     # ---- configuration backup ------------------------------------------
     #
     # A restore replaces every account on the installation and the backup

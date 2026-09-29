@@ -58,6 +58,10 @@
       // The optional field. Styled here with the rest of the dialog, because
       // markup shared by every page renders unstyled everywhere except the
       // one whose stylesheet it came from.
+      '.confirm-checkbox{display:flex;align-items:flex-start;gap:8px;',
+      'margin-top:12px;font-size:13px;color:var(--text,#e6e9ef);',
+      'cursor:pointer}',
+      '.confirm-checkbox input{margin-top:2px;flex:0 0 auto}',
       '.confirm-field{display:block;margin-top:12px;font-size:13px;',
       'color:var(--muted,#a9b0c0)}',
       '.confirm-field-input{display:block;width:100%;box-sizing:border-box;',
@@ -103,6 +107,11 @@
       // rather than a yes. A backup passphrase is a credential: prompt()
       // shows it in the clear, cannot carry the sentence explaining what it
       // is for, and is the native dialog this project does not use.
+      // One optional tick box, for a second and more destructive choice --
+      // the same contract as the dialog in index.html.
+      '<label class="confirm-checkbox" style="display:none;">' +
+      '<input class="confirm-checkbox-input" type="checkbox">' +
+      '<span class="confirm-checkbox-label"></span></label>' +
       '<label class="confirm-field" style="display:none;">' +
       '<span class="confirm-field-label"></span>' +
       '<input class="confirm-field-input" type="password" ' +
@@ -215,6 +224,20 @@
     // The optional field. Its value goes back through the caller's own
     // callback rather than being returned, so nothing this dialog keeps can
     // outlive the call -- and it is cleared on the way out either way.
+    // Reset to unchecked every time, so the safe answer is the default
+    // whenever this dialog opens rather than whatever the last caller left.
+    const boxWrap = backdrop.querySelector('.confirm-checkbox');
+    const boxInput = backdrop.querySelector('.confirm-checkbox-input');
+    const boxLabel = backdrop.querySelector('.confirm-checkbox-label');
+    const checkbox = options.checkbox;
+    if (checkbox) {
+      boxLabel.textContent = checkbox.label || '';
+      boxInput.checked = false;
+      boxWrap.style.display = '';
+    } else {
+      boxWrap.style.display = 'none';
+    }
+
     const fieldWrap = backdrop.querySelector('.confirm-field');
     const fieldInput = backdrop.querySelector('.confirm-field-input');
     const fieldLabel = backdrop.querySelector('.confirm-field-label');
@@ -258,6 +281,13 @@
             field.onValue(fieldInput.value);
           }
           fieldInput.value = '';
+        }
+        if (checkbox) {
+          if (result && typeof checkbox.onValue === 'function') {
+            checkbox.onValue(!!boxInput.checked);
+          }
+          boxInput.checked = false;
+          boxWrap.style.display = 'none';
         }
         backdrop.classList.add('hidden');
         cancelBtn.style.display = '';

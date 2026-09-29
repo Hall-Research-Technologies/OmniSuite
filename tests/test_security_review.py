@@ -100,10 +100,10 @@ class FinalInventoryTests(unittest.TestCase):
         # and the restricted shell's unroute, so there is one implementation.
         # /api/admin/credentials added: which credential each device is
         # actually answering to, by name -- never a value.
-        self.assertEqual(counts[Access.ADMIN], 109,
+        self.assertEqual(counts[Access.ADMIN], 110,
                          "the administrative surface changed")
         self.assertEqual(sum(counts.values()), len(registered_rules()))
-        self.assertEqual(sum(counts.values()), 146)
+        self.assertEqual(sum(counts.values()), 147)
 
     def test_the_public_surface_is_still_only_what_signing_in_needs(self):
         public = {rule for rule, (access, _f) in omni_access.ROUTES.items()
