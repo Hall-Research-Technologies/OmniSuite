@@ -416,6 +416,31 @@ def run(binary: Path, expected_version: str, scope: Path | None = None) -> int:
         else:
             log("  clean start: no firmware folder configured")
 
+        # Disaster recovery, asked of the binary rather than assumed. The
+        # module is new and AES-256-GCM reaches a native backend, either of
+        # which a onefile build can leave out without saying a word -- and the
+        # day that is discovered would be the day somebody needs it.
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/backup/export",
+                data=_json.dumps(
+                    {"passphrase": "smoke-test-backup-passphrase"}).encode(),
+                headers={"Content-Type": "application/json",
+                         "User-Agent": "OmniSuite-smoke"},
+                method="POST")
+            with urllib.request.urlopen(request, timeout=30) as response:
+                blob = response.read()
+            header = _json.loads(blob.split(b"\n", 2)[1])
+            if header.get("cipher") != "AES-256-GCM":
+                failures.append("a backup was produced without encryption")
+            else:
+                log(f"  configuration backup: {len(blob)} bytes, "
+                    f"{header['cipher']}, {header['kdf']['name']}")
+        except Exception as exc:
+            failures.append(
+                f"the packaged build cannot produce a backup "
+                f"({type(exc).__name__})")
+
         try:
             status, _ctype, body = get(f"http://127.0.0.1:{port}/api/state")
             state = _json.loads(body) if status == 200 else {}
