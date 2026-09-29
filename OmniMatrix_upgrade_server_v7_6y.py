@@ -17663,13 +17663,26 @@ def api_backup_restore():
     log.info("[BACKUP] restored %d file(s); %d device(s) matched by identity, "
              "%d awaiting a scan", len(applied["written"]), devices_matched,
              devices_unmatched)
+    # Past this point the restore HAS happened, so nothing left to do may be
+    # able to report it as a failure. Building the results screen is the last
+    # thing, it is cosmetic, and an exception in it once turned a restore that
+    # had written all ten files into a 500 -- which, on the day somebody is
+    # rebuilding a dead deployment, is the worst lie this endpoint could tell.
+    try:
+        recovery = _admin_recovery_note()
+    except Exception as e:
+        log.error("[BACKUP] restored, but the summary could not be built: %s", e)
+        recovery = {"administrators": [],
+                    "note": "The configuration was restored. If nobody knows "
+                            "the restored administrator passwords, set a new "
+                            "one here on the OmniSuite computer."}
     return jsonify({
         "ok": True, "status": "RESTORED",
         "summary": summary,
         "applied": applied,
         "devices": {"matched": devices_matched,
                     "awaiting_scan": devices_unmatched},
-        "admin_recovery": _admin_recovery_note(),
+        "admin_recovery": recovery,
     })
 
 
@@ -17693,8 +17706,13 @@ def _admin_recovery_note() -> dict:
     the results screen is the difference between a calm afternoon and a
     reinstall.
     """
-    accounts = _user_store.list_accounts()
-    admins = [a.username for a in accounts if a.is_admin]
+    # `list_accounts` hands back the public projection -- dictionaries, not
+    # Account objects. Reading `.is_admin` off one raised, which turned a
+    # restore that had actually succeeded into a 500 on the results screen:
+    # the worst possible moment to tell somebody their recovery failed when
+    # it did not.
+    admins = [a.get("username") for a in _user_store.list_accounts()
+              if a.get("role") == omni_users.ROLE_ADMIN and a.get("username")]
     return {
         "administrators": sorted(admins),
         "note": "These administrator accounts came from the backup. If nobody "

@@ -830,3 +830,45 @@ class ATechnicianIsNeverLockedOutTests(unittest.TestCase):
             {"REQUEST_METHOD": "POST"}, {}, self.store)
         self.assertTrue(decision.allowed,
                         "a technician at the machine cannot reset a password")
+
+
+
+class ASucceededRestoreIsNeverReportedAsAFailureTests(unittest.TestCase):
+    """The results screen is cosmetic and must not be able to undo the verdict.
+
+    Found on the bench: the restore wrote all ten files and matched every
+    device, and then the summary raised because `list_accounts()` hands back
+    dictionaries rather than Account objects. The operator saw HTTP 500 on the
+    day they were rebuilding a dead deployment, which is the worst lie this
+    endpoint could tell.
+    """
+
+    def test_the_summary_is_built_after_the_writing_is_finished(self):
+        source = (ROOT / "OmniMatrix_upgrade_server_v7_6y.py").read_text(
+            encoding="utf-8")
+        block = source[source.index("def api_backup_restore"):]
+        block = block[:block.index("\ndef _backup_upload")]
+        applied = block.index("applied = omni_backup.apply_payload")
+        summary = block.index("_admin_recovery_note()")
+        self.assertLess(applied, summary,
+                        "the results screen is built before the restore")
+
+    def test_a_failure_building_the_summary_does_not_fail_the_restore(self):
+        source = (ROOT / "OmniMatrix_upgrade_server_v7_6y.py").read_text(
+            encoding="utf-8")
+        block = source[source.index("def api_backup_restore"):]
+        block = block[:block.index("\ndef _backup_upload")]
+        tail = block[block.index("recovery = _admin_recovery_note()") - 200:]
+        self.assertIn("try:", tail,
+                      "an exception in the results screen still escapes as a "
+                      "500 over a restore that succeeded")
+        self.assertIn('"ok": True, "status": "RESTORED"', tail)
+
+    def test_the_note_reads_the_projection_rather_than_the_objects(self):
+        source = (ROOT / "OmniMatrix_upgrade_server_v7_6y.py").read_text(
+            encoding="utf-8")
+        note = source[source.index("def _admin_recovery_note"):]
+        note = note[:note.index("\n    }")]
+        self.assertNotIn("a.is_admin", note,
+                         "list_accounts() returns dictionaries")
+        self.assertIn('a.get("role")', note)
