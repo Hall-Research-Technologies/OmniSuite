@@ -1333,6 +1333,12 @@
       you granted that account and nothing else.</p>
       <p>The browser stays on the link&rsquo;s own address, so it can be
       bookmarked, saved to a home screen and refreshed like any other page.</p>
+      <p><strong>It does not expire.</strong> A panel left untouched for a
+      night, a weekend or a whole holiday is still working when somebody walks
+      up to it, and it never asks for a password it was never given. If
+      OmniSuite is restarted the panel re-establishes itself the next time it
+      is used. A link stops working when, and only when, you stop it &mdash;
+      see <a href="#remote-signing-in">Signing in and out</a>.</p>
       <div class="warn"><strong>The address bar holds the credential.</strong>
       That is what makes the bookmark work, and it means the address deserves
       the same care as a password. Anyone who reads it off the screen, a
@@ -1416,14 +1422,33 @@
       and password you gave them. Signing in on a second device is fine &mdash; a
       phone and a laptop can both be signed in at once. <strong>Sign out</strong>
       is in the top right.</p>
-      <p>Sessions end on their own after a period of inactivity, and everyone is
-      signed out if OmniSuite restarts. Repeated wrong passwords are slowed down
-      for a while. A session opened by a
-      <a href="#remote-direct">direct access link</a> ends sooner than one
-      opened with a password, and opening the link again simply starts a new
-      one.</p>
-      <p>If a session ends while somebody is using OmniSuite, the sign-in page
-      comes back by itself &mdash; they do not have to know where to go.</p>
+      <p><strong>Password sessions</strong> end on their own after about eight
+      hours without use, and after twenty-four hours whatever happens. Everyone
+      is signed out if OmniSuite restarts, and repeated wrong passwords are
+      slowed down for a while. If a password session ends while somebody is
+      using OmniSuite, the sign-in page comes back by itself &mdash; they do not
+      have to know where to go.</p>
+      <div class="note"><strong>A
+      <a href="#remote-direct">direct access link</a> works differently, on
+      purpose.</strong> It does not time out, however long the panel sits
+      untouched &mdash; overnight, over a weekend, over the holidays. Somebody
+      walking up to a wall panel has no password to give a sign-in page, so
+      being asked for one would simply leave the room without controls. If
+      OmniSuite restarts, the panel puts itself back the next time it is
+      touched, with nobody going to fix it.</div>
+      <p>That is not a gap in the protection. The link itself is the credential,
+      so anyone holding it could open a fresh session at any moment anyway
+      &mdash; waiting would have protected nothing. What actually stops a link
+      is <strong>you</strong> stopping it, and that takes effect immediately:</p>
+      <ul>
+        <li>Untick <strong>Allow passwordless direct link</strong>.</li>
+        <li>Press <strong>Regenerate</strong>.</li>
+        <li>Disable or delete the account.</li>
+        <li>Make the account an administrator.</li>
+        <li>Change what the account is allowed to use.</li>
+      </ul>
+      <p>Any of those ends both the link and every panel it had open, at once
+      &mdash; not at the end of some timer.</p>
       <p>Accounts you create here are OmniSuite sign-ins. They are not the
       <a href="#settings">device passwords</a> OmniSuite uses to talk to
       encoders and decoders; those are separate and unchanged.</p>

@@ -551,6 +551,36 @@ MUTATIONS = [
      "the ordinary Clear Units button would become the destructive override",
      CLEAR),
 
+    # ---- a link is indefinite until somebody revokes it -----------------
+    #
+    # These links are wall panels and lectern tablets: idle by definition, and
+    # nobody standing at one has a password. A session that expired put a
+    # sign-in page in front of them. Removing the timeout takes nothing away,
+    # because whoever holds the URL can mint a fresh session at any moment --
+    # so both directions need fencing: the timeout must not come back, and the
+    # password limits must not be loosened to match.
+    ("direct.sessions-expire-again", "omni_users.py",
+     "DIRECT_SESSIONS_EXPIRE = False",
+     "DIRECT_SESSIONS_EXPIRE = True",
+     "an idle wall panel would be asked for a password it does not have",
+     DIRECT + ["tests.test_remote_authorization"]),
+    ("direct.password-limits-loosened", "omni_users.py",
+     "IDLE_TIMEOUT_SECONDS = 8 * 60 * 60\n"
+     "ABSOLUTE_TIMEOUT_SECONDS = 24 * 60 * 60",
+     "IDLE_TIMEOUT_SECONDS = 8 * 60 * 60 * 1000\n"
+     "ABSOLUTE_TIMEOUT_SECONDS = 24 * 60 * 60 * 1000",
+     "a password session would effectively never expire either",
+     DIRECT + ["tests.test_remote_authorization"]),
+    ("direct.expiry-check-removed", "omni_users.py",
+     "            if session.expired():\n"
+     "                self._sessions.pop(token, None)\n"
+     "                return (None, None)",
+     "            if False:\n"
+     "                self._sessions.pop(token, None)\n"
+     "                return (None, None)",
+     "no session would ever expire, password ones included",
+     DIRECT + ["tests.test_remote_authorization"]),
+
     ("direct.session-method-ignored", "omni_users.py",
      '        self.method = method if method in SESSION_METHODS else BY_PASSWORD',
      '        self.method = BY_PASSWORD',

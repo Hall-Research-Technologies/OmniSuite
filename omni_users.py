@@ -53,12 +53,33 @@ BY_PASSWORD = "password"
 BY_DIRECT_LINK = "direct_link"
 SESSION_METHODS = (BY_PASSWORD, BY_DIRECT_LINK)
 
-#: A link-established session is shorter than a password one. Opening the link
-#: again makes a new one, so there is nothing to be gained by keeping a stale
-#: one alive -- and the credential is a URL somebody may have saved on a shared
-#: tablet.
-DIRECT_IDLE_TIMEOUT_SECONDS = 2 * 60 * 60
-DIRECT_ABSOLUTE_TIMEOUT_SECONDS = 12 * 60 * 60
+#: A link-established session does NOT expire with time or idleness.
+#:
+#: It used to expire sooner than a password session -- two hours idle, twelve
+#: absolute -- on the reasoning that opening the link again makes a new one, so
+#: nothing was lost. That reasoning is wrong for the thing these links are
+#: actually for. A Direct Access link is a wall panel or a lectern tablet: it
+#: sits untouched overnight, over a weekend, over a holiday, and the person who
+#: walks up to it has no password and no reason to know it needs one. An
+#: expiring session turned that panel into a sign-in page nobody could answer.
+#:
+#: Removing the timeout takes nothing away, because it never protected
+#: anything. Whoever holds the URL can mint a fresh session at any moment by
+#: opening it, so an old session grants exactly what the URL already grants.
+#: What does the protecting is revocation, and that is enforced on every single
+#: request rather than by waiting: `resolve_session` re-reads the account and
+#: drops the session the instant it is disabled or deleted, `set_role` and
+#: `set_permissions` revoke, and turning the link off or regenerating it
+#: revokes every session it opened in the same critical section that replaces
+#: the token.
+#:
+#: Password sessions are untouched and keep their 8-hour idle / 24-hour
+#: absolute limits. The two are different because the credentials are
+#: different: a password was typed by somebody who knew it and can type it
+#: again, so ending their session costs them one sign-in. A link holder has no
+#: second factor to fall back on -- the URL is the whole credential -- so
+#: ending their session costs them the panel.
+DIRECT_SESSIONS_EXPIRE = False
 
 #: How many characters of a token may appear in a log line or an audit record.
 #: Enough to correlate two entries, far too few to be a credential.
@@ -403,11 +424,16 @@ class Session:
     def expired(self, now=None) -> bool:
         now = now or _now()
         if self.from_direct_link:
-            # Shorter on purpose. The bearer URL can make a new one whenever
-            # it is opened, so nothing is lost by not keeping this one alive
-            # for a day -- and a phone left on a lectern is the ordinary case.
-            return (now - self.last_seen > DIRECT_IDLE_TIMEOUT_SECONDS
-                    or now - self.created_at > DIRECT_ABSOLUTE_TIMEOUT_SECONDS)
+            # Never, by time or idleness. A link-established session ends when
+            # somebody ends it: the account disabled or deleted, the role
+            # changed, the permissions changed, the link turned off or
+            # regenerated. Every one of those revokes immediately and is
+            # re-checked on every request, so waiting adds nothing.
+            #
+            # A wall panel is the ordinary case for these links, and it is
+            # idle by definition. Expiring its session put a sign-in page in
+            # front of somebody who has no password to give it.
+            return DIRECT_SESSIONS_EXPIRE
         return (now - self.last_seen > IDLE_TIMEOUT_SECONDS
                 or now - self.created_at > ABSOLUTE_TIMEOUT_SECONDS)
 

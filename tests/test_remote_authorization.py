@@ -717,3 +717,79 @@ class MalformedPermissionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AnIdlePanelStillWorksOverHttpTests(GateTestBase):
+    """The same question asked of the running application, not the store.
+
+    The store tests prove the session survives. These prove that a request
+    carrying that session's cookie is still admitted after the clock has moved,
+    which is the thing an operator actually experiences, and that an expired
+    PASSWORD session is still turned away at the same instant.
+    """
+
+    HOUR = 60 * 60
+    DAY = 24 * HOUR
+
+    def setUp(self):
+        super().setUp()
+        self.real_now = omni_users._now
+        self.addCleanup(lambda: setattr(omni_users, "_now", self.real_now))
+        self.base = self.real_now()
+        self.store.enable_direct_access(self.teacher.id, actor=self.admin)
+        self.direct = self.store.open_session(self.teacher.id,
+                                              omni_users.BY_DIRECT_LINK)
+        self.password = self.store.open_session(self.teacher.id)
+
+    def at(self, seconds):
+        omni_users._now = lambda: self.base + seconds
+
+    def admits(self, session, rule="/api/user/state", method="GET"):
+        return self.decide(rule, method, session=session)
+
+    def test_a_panel_idle_for_a_week_is_still_admitted(self):
+        for elapsed in (9 * self.HOUR, 25 * self.HOUR, 7 * self.DAY,
+                        365 * self.DAY):
+            with self.subTest(elapsed=elapsed):
+                self.at(elapsed)
+                decision = self.admits(self.direct)
+                self.assertTrue(
+                    decision.allowed,
+                    "an idle panel was refused: %s" % decision.reason)
+
+    def test_a_password_session_is_turned_away_at_the_same_instant(self):
+        """The control: the change is scoped to link sessions."""
+        self.at(9 * self.HOUR)
+        self.assertTrue(self.admits(self.direct).allowed)
+        self.assertFalse(self.admits(self.password).allowed,
+                         "the password session's idle limit was weakened")
+
+    def test_an_idle_panel_can_still_act_not_merely_read(self):
+        """CSRF is per session, and the session did not change underneath it.
+
+        A renewal that issued a new CSRF token would leave the open page
+        presenting the old one, which is the failure mode this has to rule out.
+        """
+        self.at(30 * self.DAY)
+        token_before = self.direct.csrf_token
+        decision = self.admits(self.direct, "/api/user/route", "POST")
+        self.assertTrue(decision.allowed,
+                        "an idle panel could read but not act: %s"
+                        % decision.reason)
+        _account, session = self.store.resolve_session(self.direct.token)
+        self.assertEqual(session.csrf_token, token_before,
+                         "the session's CSRF token changed under an open page")
+
+    def test_an_idle_panel_is_still_barred_from_the_administrative_surface(self):
+        """Indefinite is not the same as privileged."""
+        self.at(365 * self.DAY)
+        decision = self.admits(self.direct, "/api/admin/users")
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "direct_link_not_admin")
+
+    def test_revocation_after_a_year_is_immediate_over_http_too(self):
+        self.at(365 * self.DAY)
+        self.assertTrue(self.admits(self.direct).allowed)
+        self.store.disable_direct_access(self.teacher.id, actor=self.admin)
+        self.assertFalse(self.admits(self.direct).allowed,
+                         "a revoked link's session was still admitted")

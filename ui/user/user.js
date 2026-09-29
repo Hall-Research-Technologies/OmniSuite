@@ -89,7 +89,29 @@
     catch (err) { return ''; }
   }
 
+  // A panel opened from a direct access link is standing on its own
+  // credential: the URL. It has no password and nobody to type one.
+  function onAccessUrl() {
+    return location.pathname.indexOf('/access/') === 0;
+  }
+
   function toLogin() {
+    if (onAccessUrl()) {
+      // Re-open the link instead of asking for a password nobody has.
+      //
+      // Session state lives in memory on the host, so an OmniSuite restart
+      // ends every session even though no link was revoked. A wall panel that
+      // met that with a sign-in page was unusable until somebody noticed and
+      // reloaded it by hand. Re-requesting this page's own address mints a
+      // fresh session exactly as opening the bookmark would.
+      //
+      // This cannot loop: a link that really has been revoked answers that
+      // address with the "no longer valid" page rather than the shell, which
+      // is where it stops. And the token is never put anywhere new -- this is
+      // the address the browser is already on.
+      location.reload();
+      return;
+    }
     location.replace('/login?next=' + encodeURIComponent(location.pathname));
   }
 

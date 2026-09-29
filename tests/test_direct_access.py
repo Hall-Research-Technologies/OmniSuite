@@ -235,18 +235,40 @@ class SessionTests(StoreTestBase):
         self.assertTrue(self.direct.from_direct_link)
         self.assertFalse(self.password.from_direct_link)
 
-    def test_a_link_session_is_shorter_lived_than_a_password_one(self):
-        self.assertLess(omni_users.DIRECT_ABSOLUTE_TIMEOUT_SECONDS,
-                        omni_users.ABSOLUTE_TIMEOUT_SECONDS)
-        self.assertLess(omni_users.DIRECT_IDLE_TIMEOUT_SECONDS,
-                        omni_users.IDLE_TIMEOUT_SECONDS)
-        # And the shorter limit is the one actually applied to it. Taken just
-        # past the link session's idle window, which is still well inside the
-        # password session's -- so the two are judged by different rules at the
-        # same instant, which is the property under test.
-        stale = self.direct.last_seen + omni_users.DIRECT_IDLE_TIMEOUT_SECONDS + 1
-        self.assertTrue(self.direct.expired(stale))
-        self.assertFalse(self.password.expired(stale))
+    # This used to assert that a link session expired SOONER than a password
+    # one -- two hours idle, twelve absolute. The reasoning was that opening
+    # the link again makes a new session, so nothing was lost by letting the
+    # old one lapse. What was lost was the panel: these links are wall panels
+    # and lectern tablets, they are idle by definition, and the person who
+    # walks up to one has no password to answer a sign-in page with.
+    #
+    # The two are still judged by different rules, which is what the test was
+    # really protecting. The direction is simply the other way round.
+    def test_a_link_session_is_not_judged_by_the_password_rules(self):
+        HOUR = 60 * 60
+        for hours in (9, 25, 24 * 7, 24 * 365):
+            with self.subTest(hours=hours):
+                later = self.direct.last_seen + hours * HOUR
+                self.assertFalse(
+                    self.direct.expired(later),
+                    "a direct access session expired after %d hours idle"
+                    % hours)
+
+        # And the password session is still held to its own limits at the same
+        # instant, so the two really are being judged differently rather than
+        # both having been loosened.
+        stale = self.password.last_seen + omni_users.IDLE_TIMEOUT_SECONDS + 1
+        self.assertTrue(self.password.expired(stale),
+                        "the password session's idle limit was weakened")
+
+    def test_the_password_limits_are_left_exactly_as_they_were(self):
+        """The fix must not be a general loosening."""
+        self.assertEqual(omni_users.IDLE_TIMEOUT_SECONDS, 8 * 60 * 60)
+        self.assertEqual(omni_users.ABSOLUTE_TIMEOUT_SECONDS, 24 * 60 * 60)
+        absolute = self.password.created_at + omni_users.ABSOLUTE_TIMEOUT_SECONDS + 1
+        self.password.last_seen = absolute - 1          # busy right up to it
+        self.assertTrue(self.password.expired(absolute),
+                        "the password session's absolute cap was weakened")
 
     def test_regenerating_ends_the_sessions_the_old_link_opened(self):
         self.store.regenerate_direct_access(self.teacher.id, actor=self.admin)
@@ -596,3 +618,159 @@ class SourceFenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ADirectAccessPanelOutlivesEveryClockTests(StoreTestBase):
+    """A valid link is indefinite until somebody revokes it.
+
+    Driven with a controlled clock rather than by waiting, and through the
+    store's own resolve path rather than by reading `expired()` directly, so
+    what is asserted is what a request would actually get.
+
+    The wall-panel case is the ordinary one for these links: untouched
+    overnight, over a weekend, over a summer holiday. None of that is a reason
+    to ask somebody who has no password for one.
+    """
+
+    HOUR = 60 * 60
+    DAY = 24 * HOUR
+
+    def setUp(self):
+        super().setUp()
+        self.token = self.store.enable_direct_access(
+            self.teacher.id, actor=self.admin)["token"]
+        self.session = self.store.open_session(self.teacher.id,
+                                               omni_users.BY_DIRECT_LINK)
+        self.password = self.store.open_session(self.teacher.id)
+        self.real_now = omni_users._now
+        self.addCleanup(lambda: setattr(omni_users, "_now", self.real_now))
+        self.base = self.real_now()
+
+    def at(self, seconds_later):
+        """Move the whole module's clock, the way real elapsed time would."""
+        omni_users._now = lambda: self.base + seconds_later
+
+    def still_works(self, label):
+        account, session = self.store.resolve_session(self.session.token)
+        self.assertIsNotNone(
+            account, "the direct access session was refused " + label)
+        return session
+
+    def test_it_survives_more_than_eight_hours_idle(self):
+        self.at(9 * self.HOUR)
+        self.still_works("after 9 hours idle")
+
+    def test_it_survives_more_than_twenty_four_hours_elapsed(self):
+        self.at(25 * self.HOUR)
+        self.still_works("after 25 hours")
+
+    def test_it_survives_several_days(self):
+        for days in (2, 7, 30, 365):
+            with self.subTest(days=days):
+                self.at(days * self.DAY)
+                self.still_works("after %d days" % days)
+
+    def test_being_used_does_not_restart_a_clock_that_does_not_exist(self):
+        """Touched on day one, then left for a year: still fine.
+
+        A session whose absolute cap had merely been raised would fail this;
+        one with no cap passes it.
+        """
+        self.at(1 * self.DAY)
+        self.still_works("after a day")
+        self.at(400 * self.DAY)
+        self.still_works("a year after it was last touched")
+
+    def test_the_password_session_beside_it_does_expire(self):
+        """The control. Without this the test above could pass by accident.
+
+        If `resolve_session` had simply stopped checking expiry at all, every
+        assertion above would still pass and the password rules would be gone.
+        """
+        self.at(9 * self.HOUR)
+        account, _s = self.store.resolve_session(self.password.token)
+        self.assertIsNone(account,
+                          "the password session's idle limit was weakened")
+
+    def test_the_bearer_link_itself_has_no_age(self):
+        """The token is resolved by digest and account state, never by time."""
+        for elapsed in (9 * self.HOUR, 25 * self.HOUR, 365 * self.DAY):
+            with self.subTest(elapsed=elapsed):
+                self.at(elapsed)
+                self.assertIsNotNone(
+                    self.store.resolve_direct_token(self.token),
+                    "the link stopped resolving with age")
+
+    def test_a_lost_session_is_re_established_by_the_link(self):
+        """The restart case: sessions live in memory, links live on disk.
+
+        An OmniSuite restart ends every session without revoking anything. The
+        panel's own address has to be able to mint a new one, or a wall panel
+        needs somebody to go and fix it by hand.
+        """
+        self.at(30 * self.DAY)
+        self.store.revoke_every_session()          # as a restart would
+        self.assertEqual(self.store.resolve_session(self.session.token),
+                         (None, None))
+        account = self.store.resolve_direct_token(self.token)
+        self.assertIsNotNone(account, "the link could not re-establish")
+        fresh = self.store.open_session(account.id, omni_users.BY_DIRECT_LINK)
+        self.assertTrue(fresh.from_direct_link)
+        self.assertIsNotNone(self.store.resolve_session(fresh.token)[0])
+
+    # ---- and it still ends the moment somebody ends it -----------------
+
+    def test_regenerating_after_a_year_revokes_immediately(self):
+        self.at(365 * self.DAY)
+        self.still_works("after a year")
+        replacement = self.store.regenerate_direct_access(
+            self.teacher.id, actor=self.admin)["token"]
+        self.assertEqual(self.store.resolve_session(self.session.token),
+                         (None, None),
+                         "an old session outlived the link that opened it")
+        self.assertIsNone(self.store.resolve_direct_token(self.token),
+                          "the old URL still works")
+        self.assertIsNotNone(self.store.resolve_direct_token(replacement))
+
+    def test_disabling_after_a_year_revokes_immediately(self):
+        self.at(365 * self.DAY)
+        self.still_works("after a year")
+        self.store.disable_direct_access(self.teacher.id, actor=self.admin)
+        self.assertEqual(self.store.resolve_session(self.session.token),
+                         (None, None))
+        self.assertIsNone(self.store.resolve_direct_token(self.token))
+
+    def test_disabling_the_account_after_a_year_revokes_immediately(self):
+        self.at(365 * self.DAY)
+        self.store.set_enabled(self.teacher.id, False, actor=self.admin)
+        self.assertEqual(self.store.resolve_session(self.session.token),
+                         (None, None))
+        self.assertIsNone(self.store.resolve_direct_token(self.token))
+
+    def test_deleting_the_account_after_a_year_revokes_immediately(self):
+        self.at(365 * self.DAY)
+        self.store.delete(self.teacher.id, actor=self.admin)
+        self.assertEqual(self.store.resolve_session(self.session.token),
+                         (None, None))
+        self.assertIsNone(self.store.resolve_direct_token(self.token))
+
+    def test_promotion_to_administrator_after_a_year_revokes_immediately(self):
+        """A link must never become a passwordless administrator."""
+        self.at(365 * self.DAY)
+        self.store.set_role(self.teacher.id, omni_users.ROLE_ADMIN,
+                            actor=self.admin)
+        self.assertEqual(self.store.resolve_session(self.session.token),
+                         (None, None))
+        self.assertIsNone(self.store.resolve_direct_token(self.token))
+
+    def test_nothing_prunes_a_link_by_age(self):
+        """The session sweep must not take the link with it.
+
+        `active_session_count` rebuilds the session table from what has not
+        expired. A link that had somehow been keyed to that would disappear
+        with the sessions.
+        """
+        self.at(365 * self.DAY)
+        self.store.active_session_count()
+        self.assertIsNotNone(self.store.resolve_direct_token(self.token))
+        self.still_works("after the session sweep ran")

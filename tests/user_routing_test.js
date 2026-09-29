@@ -446,6 +446,60 @@ suite.push(() => check('the unroute button is loaded and styled', () => {
   assert(/btn-secondary-lg/.test(REMOTE_CSS),
     'the unroute button has no style of its own');
 }));
+// `toLogin` calls `onAccessUrl`, so both are lifted into one scope: stubbing
+// the helper would test the stub rather than the rule it encodes.
+function liftLostSession(pathname, location) {
+  const from = SHELL_JS.indexOf('  function onAccessUrl(');
+  const to = SHELL_JS.indexOf('\n  }\n', SHELL_JS.indexOf('  function toLogin('));
+  assert(from >= 0 && to > from, 'the lost-session handling is not where this expects it');
+  const body = SHELL_JS.slice(from, to + 4);
+  const sandbox = {Object, JSON, console, encodeURIComponent,
+                   location: Object.assign({pathname}, location)};
+  vm.createContext(sandbox);
+  vm.runInContext(`${body}\nglobalThis.__toLogin = toLogin;`, sandbox);
+  return sandbox.__toLogin;
+}
+
+suite.push(() => check('a panel with no session re-opens its own link, not a sign-in page', () => {
+  // Sessions live in memory on the host, so an OmniSuite restart ends every
+  // one of them without anything having been revoked. A wall panel that met
+  // that with /login was unusable until somebody walked over and reloaded it
+  // -- and it carried the bearer token into a `next` parameter on the way.
+  const calls = [];
+  const toLogin = liftLostSession('/access/SOME-TOKEN', {
+    replace: () => {
+      throw new Error('a panel was sent to a sign-in page it cannot answer');
+    },
+    reload: () => { calls.push('reload'); },
+  });
+  toLogin();
+  assert(calls.length === 1, 'the panel did not re-open its own address');
+}));
+
+suite.push(() => check('an ordinary page still goes to the sign-in page', () => {
+  // The recovery is scoped to /access/. A password user whose session ended
+  // must still be asked to sign in.
+  let sentTo = null;
+  const toLogin = liftLostSession('/user', {
+    replace: (url) => { sentTo = url; },
+    reload: () => { throw new Error('a password page reloaded instead'); },
+  });
+  toLogin();
+  assert(sentTo && sentTo.indexOf('/login?next=') === 0,
+    `it went to ${JSON.stringify(sentTo)}`);
+}));
+
+suite.push(() => check('the bearer token is never put into a sign-in URL', () => {
+  // The old path carried it in `next=`, which is a credential moved somewhere
+  // new by the very code meant to recover from losing it.
+  const source = code(SHELL_JS);
+  const fn = source.slice(source.indexOf('function toLogin('));
+  const body = fn.slice(0, fn.indexOf('\n  }'));
+  assert(/onAccessUrl\(\)/.test(body),
+    'toLogin does not distinguish a panel from an ordinary page');
+  assert(body.indexOf('location.reload()') < body.indexOf('/login?next='),
+    'a panel reaches the sign-in branch before the reload one');
+}));
 
 
 (async function run() {
