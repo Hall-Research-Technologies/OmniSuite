@@ -100,6 +100,32 @@ const SETTINGS_MODAL_HTML = `
         </div>
       </div>
     </div>
+    <!-- Configuration backup. Two buttons, because the day somebody needs
+         the second one is not a day to be reading documentation. It sits
+         above Remote Access because it is about this installation rather
+         than about who may reach it. -->
+    <div class="settings-section" id="cfg_backup_section">
+      <h4>Configuration Backup</h4>
+      <div class="modal-row" style="align-items:flex-start;">
+        <label>Backup</label>
+        <div style="flex:1 1 auto;min-width:0;">
+          <div class="small" style="color:var(--muted);margin-bottom:8px;">
+            Saves your accounts, device names, Multiview layouts, permissions
+            and device sign-in details to one encrypted file. Keep it
+            somewhere other than this computer &mdash; a backup that only
+            exists on the machine that failed is not a backup.
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button id="cfg_backup_export" class="btn secondary" type="button">
+              Export Configuration&hellip;</button>
+            <button id="cfg_backup_restore" class="btn secondary" type="button">
+              Restore Configuration&hellip;</button>
+          </div>
+          <div id="cfg_backup_status" class="small"
+               style="margin-top:8px;color:var(--muted);"></div>
+        </div>
+      </div>
+    </div>
     <!-- Remote access. Off unless an administrator turns it on, and the
          section says in plain words what turning it on means: other devices
          on the chosen network can reach OmniSuite. It is deliberately the
@@ -336,6 +362,14 @@ function initConfig() {
   const fallbackPwInput = $('#cfg_fallback_password');
   const fbtn = $('#cfg_firmware_browse');
   const guideBtn = $('#cfg_user_guide');
+  const backupExportBtn = $('#cfg_backup_export');
+  const backupRestoreBtn = $('#cfg_backup_restore');
+  if (backupExportBtn) {
+    backupExportBtn.addEventListener('click', () => exportConfiguration());
+  }
+  if (backupRestoreBtn) {
+    backupRestoreBtn.addEventListener('click', () => restoreConfiguration());
+  }
   // The layout selector lives with the rest of the application's settings.
   // Behaviour is untouched by it: this chooses spacing and grouping, nothing else.
   const templateHost = $('#cfg_template_choice');
@@ -1537,4 +1571,235 @@ if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', initSettings, {once: true});
 } else {
   initSettings();
+}
+
+
+// ------------------------------------------------------- configuration backup
+//
+// Two buttons and as few decisions as the job allows. The day somebody needs
+// Restore is not a day to be reading documentation, so the flow states what is
+// about to happen at each step and refuses clearly when it cannot continue.
+//
+// Nothing here ever logs, stores or echoes the passphrase. It exists for the
+// length of one request and is not kept.
+
+function backupStatus(text, tone) {
+  const node = document.getElementById('cfg_backup_status');
+  if (!node) return;
+  node.textContent = text || '';
+  node.style.color = tone === 'error' ? 'var(--state-error, #e5534b)'
+    : (tone === 'ok' ? 'var(--state-success, #3fb950)' : 'var(--muted)');
+}
+
+async function askForPassphrase(opts) {
+  // The shared dialog, with a password field injected into it. Never a browser
+  // prompt(): this is a credential, and prompt() shows it in the clear and
+  // cannot carry the sentence explaining what it is for.
+  if (typeof window.omniConfirm !== 'function') {
+    backupStatus('Cannot ask for a passphrase on this page.', 'error');
+    return null;
+  }
+  let value = null;
+  const ok = await window.omniConfirm({
+    title: opts.title,
+    message: opts.message,
+    confirmText: opts.confirmText,
+    danger: !!opts.danger,
+    field: {
+      type: 'password',
+      label: opts.label || 'Backup passphrase',
+      placeholder: opts.placeholder || '',
+      onValue: (v) => { value = v; },
+    },
+  });
+  return ok ? (value || '') : null;
+}
+
+async function exportConfiguration() {
+  const passphrase = await askForPassphrase({
+    title: 'Export configuration',
+    message: 'Choose a passphrase for this backup. You will need it to '
+           + 'restore, and nobody can recover it for you. At least 12 '
+           + 'characters.',
+    confirmText: 'Export',
+    placeholder: 'At least 12 characters',
+  });
+  if (passphrase === null) return;
+
+  backupStatus('Preparing the backup…');
+  try {
+    const res = await fetch('/api/backup/export', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      credentials: 'same-origin',
+      body: JSON.stringify({passphrase: passphrase}),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      backupStatus(body.error || 'The backup could not be created.', 'error');
+      return;
+    }
+    const blob = await res.blob();
+    const name = filenameFrom(res.headers.get('Content-Disposition'))
+                 || 'OmniSuite-backup.omnibak';
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    backupStatus('Saved ' + name + '. Keep it somewhere other than this '
+                 + 'computer.', 'ok');
+  } catch (err) {
+    backupStatus('The backup could not be created.', 'error');
+  }
+}
+
+function filenameFrom(disposition) {
+  const match = /filename="([^"]+)"/.exec(disposition || '');
+  return match ? match[1] : '';
+}
+
+function chooseBackupFile() {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.omnibak';
+    input.addEventListener('change', () => {
+      resolve(input.files && input.files[0] ? input.files[0] : null);
+    });
+    input.click();
+  });
+}
+
+async function restoreConfiguration() {
+  const file = await chooseBackupFile();
+  if (!file) return;
+
+  const passphrase = await askForPassphrase({
+    title: 'Restore from ' + file.name,
+    message: 'Enter the passphrase this backup was created with. Nothing is '
+           + 'changed until you have seen what it contains and confirmed.',
+    confirmText: 'Open backup',
+    placeholder: 'Backup passphrase',
+  });
+  if (passphrase === null) return;
+
+  // Step one: decrypt and validate, changing nothing.
+  backupStatus('Checking the backup…');
+  const summary = await postBackup('/api/backup/inspect', file, passphrase);
+  if (!summary.ok) {
+    backupStatus(summary.error || 'That backup could not be opened.', 'error');
+    return;
+  }
+
+  // Step two: show what is in it, and what will not survive the move.
+  const s = summary.summary || {};
+  const lines = [];
+  if (s.created_at) lines.push('Created ' + s.created_at);
+  if (s.omnisuite_version) lines.push('From OmniSuite ' + s.omnisuite_version);
+  (s.sections || []).forEach((row) => {
+    lines.push('• ' + backupSectionLabel(row.name)
+               + (row.detail ? ' — ' + row.detail : ''));
+  });
+  if (s.devices) lines.push('• ' + s.devices + ' known device(s)');
+  (s.notes || []).forEach((note) => lines.push('⚠ ' + note));
+  if ((s.machine_specific || []).length) {
+    lines.push('⚠ Settings that belong to the other computer (network '
+               + 'adapter, folders, certificate) are not copied. This '
+               + 'computer keeps its own.');
+  }
+
+  const go = await window.omniConfirm({
+    title: 'Replace this configuration?',
+    message: 'This replaces the accounts, permissions, device names, '
+           + 'Multiview layouts and device sign-in details on this computer '
+           + 'with the ones in the backup. A copy of the current '
+           + 'configuration is saved first and put back automatically if '
+           + 'anything goes wrong.\n\n' + lines.join('\n'),
+    confirmText: 'Restore',
+    danger: true,
+  });
+  if (!go) { backupStatus('Nothing was changed.'); return; }
+
+  // Step three: apply.
+  backupStatus('Restoring…');
+  const result = await postBackup('/api/backup/restore', file, passphrase);
+  if (!result.ok) {
+    backupStatus(result.error || 'The restore did not complete.', 'error');
+    return;
+  }
+  renderRestoreResult(result);
+}
+
+function backupSectionLabel(name) {
+  return {
+    accounts: 'User accounts and permissions',
+    device_names: 'Device names',
+    multiview: 'Multiview layouts',
+    multiview_groups: 'Multiview groups',
+    usb_associations: 'USB associations',
+    usb_extenders: 'USB scan ranges',
+    scan_preferences: 'Scan settings',
+    device_credentials: 'Device sign-in',
+    remote_access: 'Remote access',
+    notices: 'Acknowledged notices',
+    appearance: 'Appearance',
+    topology_notices: 'Network notices',
+  }[name] || name;
+}
+
+async function postBackup(path, file, passphrase) {
+  const form = new FormData();
+  form.append('passphrase', passphrase);
+  form.append('backup', file, file.name);
+  try {
+    const res = await fetch(path, {method: 'POST', body: form,
+                                   credentials: 'same-origin'});
+    return await res.json();
+  } catch (err) {
+    return {ok: false, error: 'OmniSuite could not be reached.'};
+  }
+}
+
+function renderRestoreResult(result) {
+  const parts = [];
+  const applied = result.applied || {};
+  parts.push('Restored ' + (applied.written || []).length + ' item(s).');
+  const devices = result.devices || {};
+  if (devices.matched) {
+    parts.push(devices.matched + ' device(s) recognised.');
+  }
+  if (devices.awaiting_scan) {
+    parts.push(devices.awaiting_scan + ' device(s) from the backup have not '
+               + 'been seen yet — run a Scan.');
+  }
+  backupStatus(parts.join(' '), 'ok');
+
+  const notes = [];
+  (applied.attention || []).forEach((row) => {
+    notes.push('• ' + backupSectionLabel(row.section) + ' — '
+               + row.setting + ': this computer keeps ' + row.now
+               + ' (the backup had ' + row.was + ')');
+  });
+  const recovery = result.admin_recovery || {};
+  if ((recovery.administrators || []).length) {
+    notes.push('• Administrator account(s) from the backup: '
+               + recovery.administrators.join(', ') + '. ' + recovery.note);
+  }
+  if (result.status === 'RESTORED — RESTART REQUIRED' || result.error) {
+    notes.push('• ' + (result.error || ''));
+  }
+  notes.push('• Run a Scan so OmniSuite finds the equipment again.');
+
+  if (typeof window.omniConfirm === 'function') {
+    window.omniConfirm({
+      title: 'Restore complete',
+      message: parts.join(' ') + '\n\n' + notes.join('\n'),
+      confirmText: 'Close',
+      acknowledge: true,
+    });
+  }
 }

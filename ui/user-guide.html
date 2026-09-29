@@ -183,7 +183,144 @@
         <tr><td>TS Dump</td><td>Downloads a timestamped troubleshooting JSON file.</td><td>Built entirely from state OmniSuite already holds, so generating it sends nothing to any device. See below.</td></tr>
       </table>
 
-      <h3>Choosing the firmware folder</h3>
+      <h3 id="settings-backup">Configuration Backup</h3>
+      <p>OmniSuite runs on an ordinary PC, and ordinary PCs fail. Everything
+      that makes your installation <em>yours</em> &mdash; who is allowed to
+      route what, what each display is called, the Multiview layouts somebody
+      spent an afternoon building, the passwords the equipment answers to
+      &mdash; lives on that machine. <strong>Configuration Backup</strong>
+      writes all of it to one encrypted file you can keep somewhere else.</p>
+      <div class="note"><strong>Keep the backup off the OmniSuite PC.</strong>
+      A backup that only exists on the machine that failed is not a backup.
+      A network share, a USB stick in a drawer, anywhere that is not this
+      computer.</div>
+
+      <h4>Export Configuration</h4>
+      <ol>
+        <li><strong>Settings &gt; Configuration Backup &gt; Export
+        Configuration</strong>.</li>
+        <li>Choose a <strong>backup passphrase</strong> &mdash; at least 12
+        characters.</li>
+        <li>The file is saved through your browser, named something like
+        <code>OmniSuite-V1.2.0-backup-20260928-143000.omnibak</code>.</li>
+      </ol>
+      <div class="warn"><strong>Write the passphrase down and keep it
+      separately.</strong> It is not stored anywhere in OmniSuite and it
+      cannot be recovered or reset. Without it the backup file is of no use to
+      anybody &mdash; including you.</div>
+
+      <h4>What is in the backup</h4>
+      <table>
+        <tr><th>Included</th><th>Why</th></tr>
+        <tr><td>User accounts and their passwords</td>
+        <td>So everybody's existing sign-in keeps working after a
+        restore.</td></tr>
+        <tr><td>Permissions and device assignments</td>
+        <td>Who may use which source and which display.</td></tr>
+        <tr><td>Device names you have set</td><td>Stored against the
+        equipment itself, so they come back on the right units.</td></tr>
+        <tr><td>Multiview layouts and groups</td><td>Rebuilding these by hand
+        is the part nobody wants to do twice.</td></tr>
+        <tr><td>USB associations</td><td>Learned over time and slow to learn
+        again.</td></tr>
+        <tr><td>Device sign-in details</td><td>What OmniSuite uses to talk to
+        encoders and decoders.</td></tr>
+        <tr><td>Scan settings and USB scan ranges</td><td>The addresses your
+        equipment lives on.</td></tr>
+        <tr><td>Remote Access on/off, port and encryption choice</td>
+        <td>Your decisions, as opposed to this machine's hardware.</td></tr>
+        <tr><td>A short record of every device OmniSuite knows</td>
+        <td>Its hardware identity and the password it answers to, so the
+        equipment is recognised again after a scan.</td></tr>
+      </table>
+      <table>
+        <tr><th>Not included</th><th>Why</th></tr>
+        <tr><td>Scan results</td><td>A Scan rebuilds them in seconds.</td></tr>
+        <tr><td>The Activity log</td><td>It is a record of what happened on
+        the old machine. Copying it onto a new one would make that machine's
+        history claim things it never saw.</td></tr>
+        <tr><td>The HTTPS certificate and its private key</td>
+        <td>A certificate is only valid for the address it was made for, so it
+        would be wrong on the replacement PC anyway. A new one is generated
+        there.</td></tr>
+        <tr><td>Who is signed in right now</td><td>Sign-ins are not
+        configuration.</td></tr>
+      </table>
+
+      <h4>Restore Configuration</h4>
+      <ol>
+        <li><strong>Settings &gt; Configuration Backup &gt; Restore
+        Configuration</strong>.</li>
+        <li>Choose the <code>.omnibak</code> file.</li>
+        <li>Enter the backup passphrase. <strong>Nothing is changed yet.</strong>
+        OmniSuite opens the file and shows you what is in it.</li>
+        <li>Read the summary, then press <strong>Restore</strong>.</li>
+        <li>Run a <strong>Scan</strong> so OmniSuite finds the equipment
+        again.</li>
+      </ol>
+      <p>Before anything is written, OmniSuite saves a copy of the
+      configuration that is on the machine now. If the restore cannot be
+      finished, that copy goes back automatically and you are told so. You will
+      never be left with half of one deployment and half of another.</p>
+      <p>A wrong passphrase, a damaged file, a file from a newer version of
+      OmniSuite, or one that has been altered since it was written, are all
+      refused with a message &mdash; and the configuration you already have is
+      untouched.</p>
+
+      <h4 id="settings-backup-newpc">Restoring onto a different computer</h4>
+      <p>This is what the feature is for, and most of it simply works. Three
+      things belong to the machine rather than to the deployment, so the new
+      PC keeps its own and tells you on the results screen:</p>
+      <ul>
+        <li><strong>The network adapter</strong> Remote Access uses. Choose it
+        again in Settings.</li>
+        <li><strong>The firmware folder.</strong> Choose it again if you use
+        firmware upgrades.</li>
+        <li><strong>The HTTPS certificate.</strong> A new one is generated for
+        the new machine's address. Anybody connecting remotely will see their
+        browser's warning once more, because it is genuinely a different
+        certificate.</li>
+      </ul>
+
+      <h4 id="settings-backup-admin">If nobody remembers the old administrator
+      password</h4>
+      <p>A restore brings the old deployment's accounts with it, and that may
+      include an administrator password nobody at your site has ever known.
+      <strong>This does not lock you out.</strong></p>
+      <p>Anyone working at the OmniSuite computer itself is already trusted
+      &mdash; the local screens never ask for a password. So from that machine
+      you can set a new password on any account, or create a new administrator,
+      exactly as you would normally. The results screen lists which
+      administrator accounts arrived with the backup so you know which ones to
+      deal with.</p>
+      <div class="note"><strong>Export and Restore are only available at the
+      OmniSuite computer.</strong> They cannot be reached from another device,
+      by a User, by a direct access link, or even by an administrator signed in
+      remotely. The backup holds the equipment passwords, and rebuilding a
+      deployment is something you do standing at the machine.</div>
+
+      <h4>Direct access links after a restore</h4>
+      <p><strong>Existing direct access links keep working.</strong> A tablet
+      on a wall with a link saved to it carries on as before, which is usually
+      the difference between a quiet afternoon and a walk around the building.
+      </p>
+      <p>What you cannot do on the new machine is display an old link again to
+      copy it, because the copy OmniSuite keeps for that purpose is locked to
+      the computer that created it. If somebody needs the link sent to them
+      again, press <strong>Regenerate</strong> for that account &mdash; which
+      gives a new link and stops the old one, as it always does.</p>
+
+      <h4>How the backup is protected</h4>
+      <p>The file is encrypted with your passphrase and cannot be read without
+      it. It is also <em>authenticated</em>: if a single byte is altered, the
+      file is refused rather than partly read. None of the passwords inside it
+      &mdash; yours or the equipment's &mdash; appear anywhere in the file in
+      readable form, and the passphrase itself is never written down by
+      OmniSuite, never logged, and never sent anywhere.</p>
+      <p>Treat the file as you would the equipment passwords, because that is
+      what it contains.</p>
+
+      <h3 id="settings-firmware-folder">Choosing the firmware folder</h3>
       <p>A browser file input cannot return a directory path, and OmniSuite does not pretend otherwise. <strong>Choose Folder</strong> opens the application's own folder browser, which lists directories on the machine running the server. You can double-click through the tree, pick a drive, or type/paste a full path. The chosen path is stored server-side in <code>config.json</code>, so it survives a restart, and the firmware selector then lists the <code>.vpup2</code> files in that folder.</p>
 
       <h3>TS Dump / support information</h3>

@@ -59,6 +59,7 @@ ROUTING = ["tests.test_user_routing", "tests.test_security_review"]
 #: from a clear.
 EXIT = ["tests.test_multiview"]
 CLEAR = ["tests.test_clear_protection"]
+BACKUP = ["tests.test_backup"]
 
 #: (id, file, anchor, replacement, what the defect would be, suites)
 MUTATIONS = [
@@ -117,6 +118,96 @@ MUTATIONS = [
      '                        "reason": reason}), 403',
      '                        "reason": "denied"}), 403',
      "a 403 would not say which refusal it is", ROUTING),
+    # ---- configuration backup ------------------------------------------
+    #
+    # A restore replaces every account on the installation and the backup
+    # carries the device credentials, so the boundaries worth breaking on
+    # purpose are: who may call it, whether the file is really authenticated,
+    # whether a device is matched by identity rather than by address, and
+    # whether a failure really leaves the installation alone.
+    ("backup.export-is-remote", "omni_access.py",
+     '    "/api/backup/export": (Access.LOCAL_ONLY, None),',
+     '    "/api/backup/export": (Access.ADMIN, None),',
+     "the device credentials would be reachable from the network",
+     BACKUP),
+    ("backup.restore-is-remote", "omni_access.py",
+     '    "/api/backup/restore": (Access.LOCAL_ONLY, None),',
+     '    "/api/backup/restore": (Access.ADMIN, None),',
+     "a stolen administrator session could replace every account",
+     BACKUP),
+    ("backup.inspect-is-remote", "omni_access.py",
+     '    "/api/backup/inspect": (Access.LOCAL_ONLY, None),',
+     '    "/api/backup/inspect": (Access.ADMIN, None),',
+     "a remote caller could read a deployment out of a backup file",
+     BACKUP),
+
+    # The header is the additional authenticated data. Without it the version,
+    # the salt and the nonce can all be edited without detection.
+    ("backup.header-not-authenticated", "omni_backup.py",
+     "    ciphertext = AESGCM(_derive(passphrase, salt)).encrypt(nonce, plaintext, aad)",
+     "    ciphertext = AESGCM(_derive(passphrase, salt)).encrypt(nonce, plaintext, None)",
+     "a backup's header could be edited without the file being refused",
+     BACKUP),
+    ("backup.decrypt-ignores-the-tag", "omni_backup.py",
+     "        plaintext = AESGCM(key).decrypt(nonce, ciphertext, aad)",
+     "        plaintext = AESGCM(key).decrypt(nonce, ciphertext, None)",
+     "a tampered header would be accepted", BACKUP),
+    ("backup.weak-passphrase-allowed", "omni_backup.py",
+     "    if not isinstance(passphrase, str) or len(passphrase) < MIN_PASSPHRASE:",
+     "    if False:",
+     "a backup of every credential could be sealed with one character",
+     BACKUP),
+    ("backup.newer-format-accepted", "omni_backup.py",
+     "    if fmt > FORMAT_VERSION:",
+     "    if False:",
+     "a file this build cannot understand would be read anyway", BACKUP),
+
+    # Identity, not address. The whole reason a device record is carried by
+    # MAC is that a different unit must never inherit an authorisation by
+    # turning up at an old address.
+    ("backup.device-matched-by-address", "omni_backup.py",
+     '        mac = _normal_mac(unit.get("mac"))\n'
+     "        record = remembered.get(mac)",
+     '        mac = _normal_mac(unit.get("mac"))\n'
+     '        record = remembered.get(mac) or next(iter(remembered.values()), None)',
+     "a device could inherit another unit's credential", BACKUP),
+    ("backup.identityless-device-carried", "omni_backup.py",
+     "        if not mac:\n"
+     "            continue",
+     "        if not mac:\n"
+     '            mac = str(unit.get("ip") or "")',
+     "an address would be carried as if it were a hardware identity",
+     BACKUP),
+    ("backup.stale-data-overwrites-live", "omni_backup.py",
+     '            if unit.get(field) in (None, ""):\n'
+     "                unit[field] = value",
+     "            unit[field] = value",
+     "a backup would overwrite what a scan had just learned", BACKUP),
+
+    # Transactional restore.
+    ("backup.no-snapshot", "omni_backup.py",
+     "    saved = []\n"
+     "    for section in SECTIONS:\n"
+     "        source = data_dir / section.filename\n"
+     "        if source.exists():\n"
+     "            shutil.copy2(source, into / section.filename)\n"
+     "            saved.append(section.filename)",
+     "    saved = []",
+     "a failed restore would have nothing to roll back to", BACKUP),
+    ("backup.validation-skipped", "omni_backup.py",
+     '    if not isinstance(payload.get("sections"), dict):\n'
+     '        return ["the backup has no configuration in it"]',
+     "    if True:\n"
+     "        return []",
+     "a damaged backup would be written to disk", BACKUP),
+
+    # What must never travel.
+    ("backup.carries-the-bearer-token", "omni_backup.py",
+     '        record["blob"] = ""',
+     "        pass",
+     "a working passwordless link would be written into the backup file",
+     BACKUP),
+
     # ---- the listener trust model -----------------------------------
     ("listener.unknown-is-remote", "omni_remote.py",
      'return REMOTE if value == REMOTE else LOCAL',

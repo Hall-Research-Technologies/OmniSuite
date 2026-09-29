@@ -170,6 +170,21 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     "/api/bootstrap/state": (Access.LOCAL_ONLY, None),
     "/api/bootstrap/admin": (Access.LOCAL_ONLY, None),
 
+    # Configuration backup and disaster restore. LOCAL_ONLY, and that is a
+    # security decision rather than a convenience one.
+    #
+    # The backup contains the device credentials, which `/api/config` already
+    # refuses to hand to anything but the local host -- an export reachable
+    # remotely would be a second, quieter way to the same secret. Restore is
+    # local-only for a second reason as well: the machine's own operator is
+    # trusted by the socket rather than by a password, which is what lets a
+    # technician who never knew the old administrator's password rebuild a
+    # deployment at all. A remote administrator, a restricted User and a
+    # Direct Access panel can reach none of these.
+    "/api/backup/export": (Access.LOCAL_ONLY, None),
+    "/api/backup/inspect": (Access.LOCAL_ONLY, None),
+    "/api/backup/restore": (Access.LOCAL_ONLY, None),
+
     # ---- restricted routing User --------------------------------------
     #
     # Being allowed to CALL an endpoint is not the same as being allowed to SEE

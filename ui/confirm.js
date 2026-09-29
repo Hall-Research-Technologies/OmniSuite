@@ -55,6 +55,18 @@
       '.confirm-summary-row span:first-child{color:var(--muted,#a9b0c0)}',
       '.confirm-suppress{display:flex;align-items:center;gap:8px;',
       'margin-top:10px;font-size:12px;color:var(--muted,#a9b0c0)}',
+      // The optional field. Styled here with the rest of the dialog, because
+      // markup shared by every page renders unstyled everywhere except the
+      // one whose stylesheet it came from.
+      '.confirm-field{display:block;margin-top:12px;font-size:13px;',
+      'color:var(--muted,#a9b0c0)}',
+      '.confirm-field-input{display:block;width:100%;box-sizing:border-box;',
+      'margin-top:5px;min-height:38px;padding:0 10px;border-radius:7px;',
+      'border:1px solid var(--edge,#3a4254);',
+      'background:var(--surface,#11151f);color:var(--text,#e6e9ef);',
+      'font-size:15px}',
+      '.confirm-field-input:focus-visible{outline:2px solid ',
+      'var(--focus-ring,#5b9dd9);outline-offset:1px}',
       '.confirm-actions{display:flex;justify-content:flex-end;gap:8px;',
       'margin-top:14px}',
       // The dialog's own buttons, so it does not depend on a page stylesheet
@@ -87,6 +99,14 @@
       '<h3 class="confirm-title"></h3>' +
       '<div class="confirm-message"></div>' +
       '<div class="confirm-summary" style="display:none;"></div>' +
+      // One optional field, for the cases where the question needs an answer
+      // rather than a yes. A backup passphrase is a credential: prompt()
+      // shows it in the clear, cannot carry the sentence explaining what it
+      // is for, and is the native dialog this project does not use.
+      '<label class="confirm-field" style="display:none;">' +
+      '<span class="confirm-field-label"></span>' +
+      '<input class="confirm-field-input" type="password" ' +
+      'autocomplete="off" spellcheck="false"></label>' +
       '<label class="confirm-suppress" style="display:none;">' +
       '<input type="checkbox" class="confirm-suppress-box">' +
       '<span class="confirm-suppress-label"></span></label>' +
@@ -187,6 +207,28 @@
     okBtn.textContent = options.confirmText || 'Continue';
     okBtn.classList.toggle('confirm-danger', !!options.danger);
 
+    // An acknowledgement offers one button. Showing Cancel beside OK asks a
+    // question that has no second answer -- and whatever a dialog hides for
+    // one caller it must restore for the next.
+    cancelBtn.style.display = options.acknowledge ? 'none' : '';
+
+    // The optional field. Its value goes back through the caller's own
+    // callback rather than being returned, so nothing this dialog keeps can
+    // outlive the call -- and it is cleared on the way out either way.
+    const fieldWrap = backdrop.querySelector('.confirm-field');
+    const fieldInput = backdrop.querySelector('.confirm-field-input');
+    const fieldLabel = backdrop.querySelector('.confirm-field-label');
+    const field = options.field;
+    if (field) {
+      fieldLabel.textContent = field.label || '';
+      fieldInput.type = field.type || 'text';
+      fieldInput.placeholder = field.placeholder || '';
+      fieldInput.value = '';
+      fieldWrap.style.display = '';
+    } else {
+      fieldWrap.style.display = 'none';
+    }
+
     // A caller that offers "do not show again" gets the checkbox back with the
     // answer, so the preference is the caller's to store rather than something
     // this dialog decides on its behalf.
@@ -208,7 +250,17 @@
 
     return new Promise(function (resolve) {
       function cleanup(result) {
+        // The field's value goes to the caller on the way out and is wiped
+        // here whatever the answer was, so a passphrase does not sit in a
+        // detached DOM node for the life of the page.
+        if (field) {
+          if (result && typeof field.onValue === 'function') {
+            field.onValue(fieldInput.value);
+          }
+          fieldInput.value = '';
+        }
         backdrop.classList.add('hidden');
+        cancelBtn.style.display = '';
         okBtn.removeEventListener('click', onOk);
         cancelBtn.removeEventListener('click', onCancel);
         backdrop.removeEventListener('click', onBackdrop);
@@ -229,6 +281,13 @@
       }
       function onKeydown(event) {
         if (event.key === 'Escape') { event.stopPropagation(); cleanup(answer(false)); }
+        // Enter in the field means "that is my answer", which is what anybody
+        // who has just typed a passphrase expects.
+        if (event.key === 'Enter' && field && event.target === fieldInput) {
+          event.preventDefault();
+          event.stopPropagation();
+          cleanup(answer(true));
+        }
       }
       okBtn.addEventListener('click', onOk);
       cancelBtn.addEventListener('click', onCancel);
@@ -236,7 +295,12 @@
       document.addEventListener('keydown', onKeydown);
       // The costly answer sits behind the focus: Cancel takes it, so the
       // keyboard default and the visual default agree.
-      (options.danger ? cancelBtn : okBtn).focus();
+      // A dialog that asks for something puts the cursor in the thing it is
+      // asking for. Otherwise the usual rule: where the costly answer is Yes,
+      // Cancel takes the focus so the keyboard default and the visual default
+      // agree.
+      if (field) fieldInput.focus();
+      else (options.danger ? cancelBtn : okBtn).focus();
     });
   };
 

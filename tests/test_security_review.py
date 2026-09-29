@@ -83,7 +83,14 @@ class FinalInventoryTests(unittest.TestCase):
         # else's. It takes no user id, so there is no account to aim it at.
         self.assertEqual(counts[Access.AUTHENTICATED], 7,
                          "what any signed-in principal may call changed")
-        self.assertEqual(counts[Access.LOCAL_ONLY], 11,
+        # Three added for configuration backup and disaster restore. They are
+        # local-only because the backup carries the device credentials --
+        # which /api/config already refuses to anything but this host -- and
+        # because a restore replaces every account on the installation. The
+        # machine's own operator is the recovery authority, which is also what
+        # lets a technician who never knew the old administrator's password
+        # rebuild a deployment.
+        self.assertEqual(counts[Access.LOCAL_ONLY], 14,
                          "the local-host-only surface changed")
         # /api/admin/users/<user_id>/direct_access added: turning a Direct
         # Access link on, off, or replacing it. Administrative in both
@@ -96,7 +103,7 @@ class FinalInventoryTests(unittest.TestCase):
         self.assertEqual(counts[Access.ADMIN], 109,
                          "the administrative surface changed")
         self.assertEqual(sum(counts.values()), len(registered_rules()))
-        self.assertEqual(sum(counts.values()), 143)
+        self.assertEqual(sum(counts.values()), 146)
 
     def test_the_public_surface_is_still_only_what_signing_in_needs(self):
         public = {rule for rule, (access, _f) in omni_access.ROUTES.items()
@@ -273,17 +280,42 @@ class HostActingEndpointTests(unittest.TestCase):
     #: able to make itself one.
     BOOTSTRAP = {"/api/bootstrap/admin", "/api/bootstrap/state"}
 
+    #: Disaster recovery. A third reason, kept separate from the other two
+    #: because it is a different argument: the backup carries the device
+    #: credentials, which /api/config already refuses to anything but this
+    #: host, and a restore replaces every account on the installation. The
+    #: machine's own operator is the recovery authority -- which is also what
+    #: lets a technician who never knew the old administrator's password
+    #: rebuild a deployment at all.
+    RECOVERY = {"/api/backup/export", "/api/backup/inspect",
+                "/api/backup/restore"}
+
     def test_the_local_only_set_is_exactly_what_is_intended(self):
         """Nothing has quietly joined or left it.
 
-        Two reasons put a route here, and they are worth keeping distinct: it
-        makes the host computer do something, or it establishes the first
-        administrator. Anything else appearing is a decision somebody should
+        Three reasons put a route here, and they are worth keeping distinct:
+        it makes the host computer do something, it establishes the first
+        administrator, or it is how a deployment is rebuilt after the PC it
+        lived on failed. Anything else appearing is a decision somebody should
         have to make deliberately.
         """
         local_only = {rule for rule, (access, _f) in omni_access.ROUTES.items()
                       if access is Access.LOCAL_ONLY}
-        self.assertEqual(local_only, set(self.HOST_ACTING) | self.BOOTSTRAP)
+        self.assertEqual(local_only,
+                         set(self.HOST_ACTING) | self.BOOTSTRAP | self.RECOVERY)
+
+    def test_a_remote_caller_is_not_told_the_recovery_routes_exist(self):
+        """The same treatment the host-acting routes get."""
+        store = _one_admin_store()
+        _account, session = store.resolve_session(_admin_session(store).token)
+        environ = {omni_remote.LISTENER_KEY: omni_remote.REMOTE,
+                   "HTTP_COOKIE": "omnisuite_session=" + session.token,
+                   "HTTP_X_OMNISUITE_CSRF": session.csrf_token}
+        for rule in self.RECOVERY:
+            with self.subTest(rule=rule):
+                decision = omni_gate.evaluate(rule, "POST", environ, {}, store)
+                self.assertFalse(decision.allowed)
+                self.assertEqual(decision.status, 404)
 
     def test_a_remote_administrator_is_refused_and_not_told_it_exists(self):
         store = _one_admin_store()

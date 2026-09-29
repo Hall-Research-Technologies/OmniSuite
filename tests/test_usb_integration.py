@@ -4802,8 +4802,22 @@ class NativeDialogTests(ServerTestBase):
         # It fires only when the dialog's own elements are absent, and a caller
         # that must not degrade passes requireDialog.
         self.assertIn("if (!backdrop || !okBtn || !cancelBtn) {", block)
-        self.assertIn("if (options.requireDialog) return Promise.resolve(false);", block)
+        # `field` joined requireDialog rather than replacing it, which widens
+        # what refuses: a dialog asking for a passphrase cannot degrade to a
+        # browser box either, because that box takes no input and the only one
+        # that does shows what is typed in the clear.
+        self.assertIn(
+            "if (options.requireDialog || options.field) return Promise.resolve(false);",
+            block)
         self.assertIn('id="confirm_backdrop"', page, "the markup is present, so it never fires")
+
+    def test_a_dialog_that_asks_for_something_never_degrades(self):
+        """The fallback must not hand a credential prompt to the browser."""
+        page = self.source("index.html")
+        block = page[page.index("function omniConfirm("):]
+        fallback = block[:block.index("\n  }\n")]
+        self.assertIn("options.field", fallback,
+                      "a field request can reach the browser's own dialog")
 
     # ---- 13. a required confirmation was never downgraded ----
     def test_the_destructive_actions_still_confirm(self):

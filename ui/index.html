@@ -175,6 +175,12 @@
     .confirm-summary-row{display:flex;justify-content:space-between;gap:16px;padding:3px 0;font-size:13px}
     .confirm-summary-row span:first-child{color:var(--muted)}
     .confirm-list{max-height:180px;overflow:auto;border:1px solid var(--border);border-radius:8px;background:var(--table);padding:6px;margin-top:8px}
+    /* The dialog's optional field. Styled beside the rest of this dialog, so
+       it is not a control that renders only where some other stylesheet
+       happens to be loaded. */
+    .confirm-field{display:block;margin-top:12px;font-size:13px;color:var(--muted)}
+    .confirm-field-input{display:block;width:100%;box-sizing:border-box;margin-top:5px;min-height:38px;padding:0 10px;border-radius:7px;border:1px solid var(--border);background:var(--panel-2);color:var(--fg);font-size:15px}
+    .confirm-field-input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
     .confirm-list div{padding:4px 6px;border-bottom:1px solid var(--border);font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif}
     .confirm-list div:last-child{border-bottom:none}
     .small{font-size:12px;color:var(--muted)}
@@ -548,6 +554,15 @@
     <div id="confirm_message" class="confirm-message"></div>
     <div id="confirm_summary" class="confirm-summary" style="display:none;"></div>
     <div id="confirm_list" class="confirm-list" style="display:none;"></div>
+    <!-- One optional field, matching the shared dialog's `field` option.
+         A backup passphrase is a credential: the browser's own string box
+         shows it in the clear, carries no explanation, and is a native
+         dialog this project does not use. -->
+    <label id="confirm_field" class="confirm-field" style="display:none;">
+      <span id="confirm_field_label" class="confirm-field-label"></span>
+      <input id="confirm_field_input" class="confirm-field-input"
+             type="password" autocomplete="off" spellcheck="false">
+    </label>
     <div class="modal-buttons">
       <button id="confirm_cancel" class="btn secondary" type="button">Cancel</button>
       <button id="confirm_ok" class="btn" type="button">Continue</button>
@@ -1684,7 +1699,10 @@ function omniConfirm(options = {}) {
     // something expensive or irreversible. Degrading that to a native confirm
     // would replace the notice the operator is supposed to read with a browser
     // string box; a missing dialog means the action does not happen.
-    if (options.requireDialog) return Promise.resolve(false);
+    // A dialog that was asking for something cannot degrade to a browser
+    // string box either: window.confirm() takes no input, and prompt() would
+    // show a passphrase in the clear.
+    if (options.requireDialog || options.field) return Promise.resolve(false);
     return Promise.resolve(window.confirm(options.message || options.title || 'Continue?'));
   }
 
@@ -1714,6 +1732,23 @@ function omniConfirm(options = {}) {
     listEl.style.display = 'none';
   }
 
+  // One optional field, the same contract as the shared dialog in
+  // ui/confirm.js. tests/settings_backup_test.js asserts the two agree about
+  // it, because two implementations of one control drift.
+  const fieldWrap = $('#confirm_field');
+  const fieldInput = $('#confirm_field_input');
+  const fieldLabel = $('#confirm_field_label');
+  const field = options.field;
+  if (field && fieldWrap && fieldInput) {
+    fieldLabel.textContent = field.label || '';
+    fieldInput.type = field.type || 'text';
+    fieldInput.placeholder = field.placeholder || '';
+    fieldInput.value = '';
+    fieldWrap.style.display = '';
+  } else if (fieldWrap) {
+    fieldWrap.style.display = 'none';
+  }
+
   okBtn.textContent = options.confirmText || 'Continue';
   cancelBtn.textContent = options.cancelText || 'Cancel';
   // `acknowledge` is a message, not a choice: there is nothing to cancel, so
@@ -1735,6 +1770,16 @@ function omniConfirm(options = {}) {
   const invoker = document.activeElement;
   return new Promise(resolve => {
     const cleanup = (result) => {
+      // The field's value reaches the caller on the way out and is wiped
+      // here whatever the answer was, so a passphrase does not sit in the
+      // DOM for the life of the page.
+      if (field && fieldInput) {
+        if (result && typeof field.onValue === 'function') {
+          field.onValue(fieldInput.value);
+        }
+        fieldInput.value = '';
+        if (fieldWrap) fieldWrap.style.display = 'none';
+      }
       backdrop.style.display = 'none';
       cancelBtn.hidden = false;
       // Back to the arrangement in the markup, so the next caller is not
@@ -1757,6 +1802,12 @@ function omniConfirm(options = {}) {
     };
     const onKeydown = (event) => {
       if (event.key === 'Escape') cleanup(false);
+      // Enter in the field means "that is my answer".
+      if (event.key === 'Enter' && field && fieldInput
+          && event.target === fieldInput) {
+        event.preventDefault();
+        cleanup(true);
+      }
     };
     okBtn.addEventListener('click', onOk);
     cancelBtn.addEventListener('click', onCancel);

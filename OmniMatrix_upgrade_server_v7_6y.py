@@ -26,6 +26,7 @@ except Exception:
 # modules so the trust decision stays reviewable in one place.
 import omni_access
 import omni_aliases
+import omni_backup
 import omni_gate
 import omni_locks
 import omni_projection
@@ -17484,6 +17485,222 @@ def _matrix_state_snapshot():
         import json as _json
         return _view_payload(api_state_matrix())
 
+
+
+# ---------------------------------------------------------------- backup ----
+#
+# Export and restore are LOCAL_ONLY, and that is a security decision rather
+# than a convenience one.
+#
+# The backup contains the device credentials, which `/api/config` already
+# refuses to hand to anything but the local host. An export endpoint reachable
+# remotely would be a second, quieter way to the same secret, so it is not one.
+# It also matches how a disaster actually unfolds: somebody is standing at the
+# replacement PC with the backup file. The local operator is trusted by the
+# socket the request arrived on, which is what lets a technician who never knew
+# the old administrator's password rebuild the deployment anyway.
+
+BACKUP_SNAPSHOT_DIR = DATA_DIR / "restore-snapshot"
+
+
+def _backup_data_dir():
+    """Where the deployment's files live. One answer, used by both halves."""
+    return DATA_DIR
+
+
+@app.route("/api/backup/export", methods=["POST"])
+def api_backup_export():
+    """Encrypt this deployment into one file the operator saves somewhere else."""
+    data = request.get_json(silent=True) or {}
+    passphrase = data.get("passphrase") or ""
+    # Named fields only, and never this one: a verbatim request dump would put
+    # the backup passphrase in the log.
+    log.info("[BACKUP] export requested")
+
+    try:
+        payload = omni_backup.build_payload(
+            _backup_data_dir(), _load_cache() or [], app_version=_app_version())
+        blob = omni_backup.seal(payload, passphrase, app_version=_app_version())
+    except omni_backup.BackupError as e:
+        log.warning("[BACKUP] export refused: %s", e.reason)
+        return jsonify({"ok": False, "reason": e.reason,
+                        "error": e.message}), 400
+
+    summary = omni_backup.summarise(payload, {"created_at": "",
+                                              "omnisuite_version": _app_version(),
+                                              "format": omni_backup.FORMAT_VERSION})
+    name = omni_backup.suggested_filename(_app_version())
+    log.info("[BACKUP] exported %d section(s), %d device(s), %d bytes",
+             len(summary["sections"]), summary["devices"], len(blob))
+
+    response = app.response_class(blob, mimetype="application/octet-stream")
+    response.headers["Content-Disposition"] = 'attachment; filename="%s"' % name
+    response.headers["Cache-Control"] = "no-store, private"
+    response.headers["X-OmniSuite-Backup-Sections"] = str(len(summary["sections"]))
+    return response
+
+
+@app.route("/api/backup/inspect", methods=["POST"])
+def api_backup_inspect():
+    """Decrypt and validate, and change absolutely nothing.
+
+    This is what the confirmation screen is built from, so an operator decides
+    with the real contents in front of them rather than a filename.
+    """
+    blob = _backup_upload()
+    if blob is None:
+        return jsonify({"ok": False, "reason": "no_file",
+                        "error": "Choose a backup file first."}), 400
+    passphrase = request.form.get("passphrase") or ""
+    try:
+        header, payload = omni_backup.unseal(blob, passphrase)
+    except omni_backup.BackupError as e:
+        log.warning("[BACKUP] inspect refused: %s", e.reason)
+        return jsonify({"ok": False, "reason": e.reason,
+                        "error": e.message}), 400
+    problems = omni_backup.validate(payload)
+    if problems:
+        return jsonify({"ok": False, "reason": "invalid",
+                        "error": "This backup is missing something it needs: "
+                                 + "; ".join(problems),
+                        "problems": problems}), 400
+    return jsonify({"ok": True,
+                    "summary": omni_backup.summarise(payload, header)})
+
+
+@app.route("/api/backup/restore", methods=["POST"])
+def api_backup_restore():
+    """Replace this deployment's configuration, or leave it exactly as it is.
+
+    Read, authenticate, validate, snapshot, apply, verify. Nothing is written
+    until every one of the first four has succeeded, and if the apply fails
+    partway the snapshot goes back.
+    """
+    blob = _backup_upload()
+    if blob is None:
+        return jsonify({"ok": False, "reason": "no_file",
+                        "error": "Choose a backup file first."}), 400
+    passphrase = request.form.get("passphrase") or ""
+    log.info("[BACKUP] restore requested")
+
+    # ---- 1-4: nothing is touched until all of this has passed ----------
+    try:
+        header, payload = omni_backup.unseal(blob, passphrase)
+    except omni_backup.BackupError as e:
+        log.warning("[BACKUP] restore refused: %s", e.reason)
+        return jsonify({"ok": False, "reason": e.reason,
+                        "error": e.message}), 400
+    problems = omni_backup.validate(payload)
+    if problems:
+        log.warning("[BACKUP] restore refused: invalid payload")
+        return jsonify({"ok": False, "reason": "invalid",
+                        "error": "This backup is missing something it needs: "
+                                 + "; ".join(problems),
+                        "problems": problems}), 400
+
+    data_dir = _backup_data_dir()
+    summary = omni_backup.summarise(payload, header)
+
+    # ---- 5: the way back, before there is anything to come back from ---
+    try:
+        saved = omni_backup.snapshot(data_dir, BACKUP_SNAPSHOT_DIR)
+    except OSError as e:
+        log.error("[BACKUP] could not take a rollback snapshot: %s", e)
+        return jsonify({
+            "ok": False, "reason": "no_snapshot",
+            "error": "The current configuration could not be saved first, so "
+                     "nothing was changed."}), 500
+
+    # ---- 6: apply -------------------------------------------------------
+    try:
+        applied = omni_backup.apply_payload(
+            payload, data_dir, write_json=omni_users._atomic_write_json)
+    except Exception as e:
+        log.error("[BACKUP] restore failed partway: %s", e)
+        restored, failures = omni_backup.rollback(
+            BACKUP_SNAPSHOT_DIR, data_dir, saved)
+        status = ("FAILED — ROLLED BACK" if not failures
+                  else "FAILED — ROLLBACK INCOMPLETE")
+        return jsonify({
+            "ok": False, "reason": "apply_failed", "status": status,
+            "error": "The restore could not be completed. %s"
+                     % ("The previous configuration has been put back."
+                        if not failures else
+                        "Some files could not be put back: "
+                        + ", ".join(failures)),
+            "rolled_back": restored, "rollback_failures": failures}), 500
+
+    # ---- 7: re-read everything from what is now on disk -----------------
+    devices_matched = devices_unmatched = 0
+    try:
+        # Both stores read their own file on demand; this is the same load
+        # they do at startup, so there is one way to read each of them.
+        _user_store._load()
+        _device_aliases._load()
+        # The restored device credentials, into the live application. The
+        # same keys startup sets, from the same loader, so a restored
+        # deployment talks to its hardware without a restart.
+        restored_cfg = _load_config()
+        for key in ("USERNAME", "PASSWORD", "FALLBACK_PASSWORD", "WS_PORT",
+                    "TIMEOUT", "UPLOAD_CONCURRENCY", "FIRMWARE_PATH"):
+            if key in restored_cfg:
+                app.config[key] = restored_cfg[key]
+        units, devices_matched, devices_unmatched = omni_backup.merge_devices(
+            payload, _load_cache() or [])
+        _save_cache(units)
+    except Exception as e:
+        # The files are written and valid; what failed is this process picking
+        # them up. A restart does that, and saying so is better than rolling
+        # back a restore that actually succeeded.
+        log.error("[BACKUP] restored, but reloading in place failed: %s", e)
+        return jsonify({
+            "ok": True, "status": "RESTORED — RESTART REQUIRED",
+            "summary": summary, "applied": applied,
+            "error": "The configuration was restored, but OmniSuite could not "
+                     "load all of it without restarting. Close and reopen "
+                     "OmniSuite."}), 200
+
+    log.info("[BACKUP] restored %d file(s); %d device(s) matched by identity, "
+             "%d awaiting a scan", len(applied["written"]), devices_matched,
+             devices_unmatched)
+    return jsonify({
+        "ok": True, "status": "RESTORED",
+        "summary": summary,
+        "applied": applied,
+        "devices": {"matched": devices_matched,
+                    "awaiting_scan": devices_unmatched},
+        "admin_recovery": _admin_recovery_note(),
+    })
+
+
+def _backup_upload():
+    """The uploaded file's bytes, however the caller sent them."""
+    upload = request.files.get("backup")
+    if upload is not None:
+        return upload.read()
+    if request.data:
+        return request.data
+    return None
+
+
+def _admin_recovery_note() -> dict:
+    """Whether anybody can still get in, said plainly.
+
+    A restore replaces the account table with the old deployment's, whose
+    administrator password may be one nobody at this site remembers. That is
+    not a lock-out: this machine's own operator is trusted by the socket and
+    can reset any password or create an administrator from here. Saying so on
+    the results screen is the difference between a calm afternoon and a
+    reinstall.
+    """
+    accounts = _user_store.list_accounts()
+    admins = [a.username for a in accounts if a.is_admin]
+    return {
+        "administrators": sorted(admins),
+        "note": "These administrator accounts came from the backup. If nobody "
+                "knows their passwords, set a new one here on the OmniSuite "
+                "computer -- this screen does not require one.",
+    }
 
 omni_remote_api.register(
     app,
