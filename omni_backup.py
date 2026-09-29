@@ -140,7 +140,14 @@ NONCE_BYTES = 12
 
 #: Short enough not to be a nuisance, long enough that the scrypt work factor
 #: is doing its job rather than covering for a four-character passphrase.
-MIN_PASSPHRASE = 12
+#:
+#: Length is the only rule. No mandatory capital, digit or symbol: those push
+#: people towards one predictable shape -- a word, a capital, a digit, an
+#: exclamation mark -- and a passphrase nobody can remember gets written on
+#: the box the backup is stored in, which is a worse outcome than a shorter
+#: one. Letters, digits, punctuation and spaces are all accepted, and the
+#: whole thing goes through scrypt either way.
+MIN_PASSPHRASE = 8
 
 
 class BackupError(Exception):
@@ -192,6 +199,10 @@ def seal(payload: dict, passphrase: str, *, app_version: str = "",
             "Choose a backup passphrase of at least %d characters. You will "
             "need it to restore, and nobody can recover it for you."
             % MIN_PASSPHRASE)
+    # Whatever they chose is used as typed. Nothing is trimmed, folded or
+    # rejected for its shape: a trailing space somebody meant is part of the
+    # passphrase, and silently removing it would make the backup refuse the
+    # very thing they typed to create it.
 
     salt = os.urandom(SALT_BYTES)
     nonce = os.urandom(NONCE_BYTES)

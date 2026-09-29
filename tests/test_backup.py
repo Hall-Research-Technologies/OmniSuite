@@ -278,9 +278,58 @@ class TheContainerTests(BackupTestBase):
 
     def test_a_short_passphrase_is_refused_before_anything_is_written(self):
         payload = omni_backup.build_payload(self.source, UNITS)
+        for too_short in ("", "a", "short", "1234567"):
+            with self.subTest(passphrase=len(too_short)):
+                with self.assertRaises(omni_backup.BackupError) as caught:
+                    omni_backup.seal(payload, too_short)
+                self.assertEqual(caught.exception.reason, "weak_passphrase")
+
+    def test_the_minimum_is_eight_and_the_message_says_so(self):
+        """One number, and the sentence an operator reads agrees with it."""
+        self.assertEqual(omni_backup.MIN_PASSPHRASE, 8)
+        payload = omni_backup.build_payload(self.source, UNITS)
         with self.assertRaises(omni_backup.BackupError) as caught:
-            omni_backup.seal(payload, "short")
-        self.assertEqual(caught.exception.reason, "weak_passphrase")
+            omni_backup.seal(payload, "1234567")
+        self.assertIn("8 characters", caught.exception.message)
+
+    def test_exactly_the_minimum_is_accepted(self):
+        """The boundary itself, which off-by-one would take away."""
+        payload = omni_backup.build_payload(self.source, UNITS)
+        blob = omni_backup.seal(payload, "12345678")
+        _header, back = omni_backup.unseal(blob, "12345678")
+        self.assertEqual(back["sections"], payload["sections"])
+
+    def test_no_shape_is_demanded_of_a_passphrase(self):
+        """Length is the only rule.
+
+        Mandatory capitals, digits and symbols push people towards one
+        predictable shape, and a passphrase nobody can remember gets written
+        on the box the backup is kept in -- which is worse than a short one.
+        """
+        payload = omni_backup.build_payload(self.source, UNITS)
+        for shape in ("alllowercase", "ALLUPPERCASE", "12345678901",
+                      "!!!!!!!!!!!!", "correct horse battery staple",
+                      "  leading and trailing  ", "pass phrase", "ünïcödé!",
+                      "tab\tseparated"):
+            with self.subTest(shape=shape):
+                blob = omni_backup.seal(payload, shape)
+                _header, back = omni_backup.unseal(blob, shape)
+                self.assertEqual(back["sections"], payload["sections"])
+
+    def test_a_passphrase_is_used_exactly_as_typed(self):
+        """Nothing is trimmed or folded on the way in.
+
+        Silently removing a trailing space would make the backup refuse the
+        very thing somebody typed to create it.
+        """
+        payload = omni_backup.build_payload(self.source, UNITS)
+        blob = omni_backup.seal(payload, "trailing space ")
+        with self.assertRaises(omni_backup.BackupError):
+            omni_backup.unseal(blob, "trailing space")
+        with self.assertRaises(omni_backup.BackupError):
+            omni_backup.unseal(blob, "Trailing Space ")
+        _header, back = omni_backup.unseal(blob, "trailing space ")
+        self.assertEqual(back["sections"], payload["sections"])
 
     def test_two_backups_of_the_same_thing_differ(self):
         """Fresh salt and nonce each time, so the file is not a fingerprint."""

@@ -447,6 +447,9 @@ function initConfig() {
   // backdrop and Escape cannot drift apart.
   const closeSettings = () => {
     backdrop.style.display = 'none';
+    // Out of the modal stack, so it stops claiming a level and whatever is
+    // still open comes back to the top.
+    if (window.omniModalStack) window.omniModalStack.release(backdrop);
     // A modal returns focus to the control that opened it; without this,
     // dismissing the dialog drops the keyboard at the top of the document.
     if (gear && typeof gear.focus === 'function') gear.focus();
@@ -458,6 +461,10 @@ function initConfig() {
     // only through this dialog, so polling it would be traffic for nothing.
     loadRemoteAccess();
     backdrop.style.display = 'flex';
+    // Settings is injected at the end of <body> and every dialog shares one
+    // z-index, so without a stack it would paint over anything opened from
+    // it -- which is what hid the Export Configuration dialog underneath it.
+    if (window.omniModalStack) window.omniModalStack.raise(backdrop);
   });
   if (closeBtn) closeBtn.addEventListener('click', closeSettings);
 
@@ -1642,6 +1649,12 @@ async function applyBackupLocality() {
   if (!local) backupStatus('');
 }
 
+// The same number the server enforces. Length is the only rule:
+// letters, digits, punctuation and spaces are all accepted, and no
+// shape is demanded, because a passphrase nobody can remember ends up
+// written on the box the backup is kept in.
+const BACKUP_MIN_PASSPHRASE = 8;
+
 function backupStatus(text, tone) {
   const node = document.getElementById('cfg_backup_status');
   if (!node) return;
@@ -1678,12 +1691,21 @@ async function exportConfiguration() {
   const passphrase = await askForPassphrase({
     title: 'Export configuration',
     message: 'Choose a passphrase for this backup. You will need it to '
-           + 'restore, and nobody can recover it for you. At least 12 '
-           + 'characters.',
+           + 'restore, and nobody can recover it for you. At least 8 '
+           + 'characters \u2014 letters, numbers, symbols and spaces are all '
+           + 'fine.',
     confirmText: 'Export',
-    placeholder: 'At least 12 characters',
+    placeholder: 'At least 8 characters',
   });
   if (passphrase === null) return;
+  // Said here rather than after a round trip, because the operator has the
+  // box open and can simply type more. The server checks it too and is what
+  // actually decides -- this is courtesy, not a control.
+  if (passphrase.length < BACKUP_MIN_PASSPHRASE) {
+    backupStatus('That passphrase is too short. Use at least '
+                 + BACKUP_MIN_PASSPHRASE + ' characters.', 'error');
+    return;
+  }
 
   backupStatus('Preparing the backup…');
   try {

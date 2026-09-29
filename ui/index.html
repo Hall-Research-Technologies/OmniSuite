@@ -46,6 +46,7 @@
       margin-top:2px;overflow-wrap:anywhere}
   </style>
   <script src="/ui/csrf.js"></script>
+  <script src="/ui/modal-stack.js"></script>
   <script src="/ui/adminnav.js"></script>
   <script src="/ui/diagnostics.js?v=20260911-diag"></script>
 <link rel="stylesheet" href="/ui/templates.css?v=20260910-templates">
@@ -1798,6 +1799,9 @@ function omniConfirm(options = {}) {
   okBtn.classList.toggle('secondary', cancelIsDefault && !options.danger);
   cancelBtn.classList.toggle('secondary', !cancelIsDefault);
   backdrop.style.display = 'flex';
+  // Above whatever is already open -- Settings in particular, which is
+  // injected at the end of <body> and would otherwise win on document order.
+  if (window.omniModalStack) window.omniModalStack.raise(backdrop);
 
   const invoker = document.activeElement;
   return new Promise(resolve => {
@@ -1820,6 +1824,7 @@ function omniConfirm(options = {}) {
         if (boxWrap) boxWrap.style.display = 'none';
       }
       backdrop.style.display = 'none';
+      if (window.omniModalStack) window.omniModalStack.release(backdrop);
       cancelBtn.hidden = false;
       // Back to the arrangement in the markup, so the next caller is not
       // styled by whatever the previous one asked for.
@@ -1855,7 +1860,15 @@ function omniConfirm(options = {}) {
     // Focus goes back where it came from. Without this, dismissing a dialog
     // dropped the keyboard at the top of the document and the operator had to
     // tab back to the control they had just used.
-    (cancelIsDefault && !options.acknowledge ? cancelBtn : okBtn).focus();
+    // A dialog that asks for something puts the cursor in the thing it is
+    // asking for -- otherwise the operator types a passphrase into a button.
+    // Otherwise the usual rule: where the costly answer is Yes, Cancel takes
+    // the focus so the keyboard default and the visual default agree.
+    if (field && fieldInput) {
+      fieldInput.focus();
+    } else {
+      (cancelIsDefault && !options.acknowledge ? cancelBtn : okBtn).focus();
+    }
   });
 }
 

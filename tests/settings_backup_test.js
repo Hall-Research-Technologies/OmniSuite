@@ -127,6 +127,8 @@ suite.push(() => check('export posts the passphrase and downloads the file', asy
   const fakeLink = {click() { clicked.push(this.download); }, remove() {}};
   const exportFn = lift('async function exportConfiguration(', {
     askForPassphrase: () => Promise.resolve(ask.value),
+    BACKUP_MIN_PASSPHRASE: 8,
+    setTimeout: () => {},
     backupStatus: () => {},
     filenameFrom: () => 'OmniSuite-V1.2.0-backup-20260101-000000.omnibak',
     fetch: (url, opts) => {
@@ -157,6 +159,10 @@ suite.push(() => check('a refused export reports the reason and downloads nothin
   const clicked = [];
   const exportFn = lift('async function exportConfiguration(', {
     askForPassphrase: () => Promise.resolve('short'),
+    // Long enough to reach the server in this scenario: what is under test
+    // here is how a refusal is reported, not the length check.
+    BACKUP_MIN_PASSPHRASE: 1,
+    setTimeout: () => {},
     backupStatus: (text) => { said = text; },
     filenameFrom: () => '',
     fetch: () => Promise.resolve({
@@ -557,6 +563,280 @@ async function runClearHandler(body, sandbox) {
     `globalThis.__run = async () => {${body}};`, sandbox);
   await sandbox.__run();
 }
+
+
+// ------------------------------------------------------- the modal stack
+
+const MODAL_STACK_JS = read('ui', 'modal-stack.js');
+
+function loadStack() {
+  const sandbox = {window: {}, Object, String, console};
+  sandbox.window.window = sandbox.window;
+  vm.createContext(sandbox);
+  vm.runInContext(MODAL_STACK_JS, sandbox);
+  return sandbox.window.omniModalStack;
+}
+
+function fakeModal(name) {
+  return {name: name, style: {zIndex: ''}};
+}
+
+suite.push(() => check('the most recently opened dialog is the one on top', () => {
+  // The defect: every dialog was `.modal-backdrop` at one z-index, so two
+  // open at once were ordered by document order. Settings is injected at the
+  // end of <body> and the confirmation dialog is static markup further up, so
+  // Settings painted over the thing it had opened.
+  const stack = loadStack();
+  const settings = fakeModal('settings');
+  const dialog = fakeModal('dialog');
+
+  stack.raise(settings);
+  stack.raise(dialog);
+
+  const a = Number(settings.style.zIndex);
+  const b = Number(dialog.style.zIndex);
+  assert(a > 0 && b > 0, `nothing was assigned: ${a}, ${b}`);
+  assert(b > a, `the dialog opened from Settings is underneath it: ${b} <= ${a}`);
+  assert(stack.top() === dialog, 'the stack disagrees about what is on top');
+}));
+
+suite.push(() => check('closing the top one gives the level back', () => {
+  const stack = loadStack();
+  const settings = fakeModal('settings');
+  const dialog = fakeModal('dialog');
+  stack.raise(settings);
+  stack.raise(dialog);
+  stack.release(dialog);
+  assert(dialog.style.zIndex === '',
+    `a closed dialog is still claiming ${dialog.style.zIndex}`);
+  assert(stack.top() === settings, 'Settings did not come back to the top');
+  assert(stack.depth() === 1, `depth is ${stack.depth()}`);
+}));
+
+suite.push(() => check('closing out of order does not strand a level', () => {
+  // A counter would hand the next dialog a level that is already taken.
+  const stack = loadStack();
+  const first = fakeModal('first');
+  const second = fakeModal('second');
+  const third = fakeModal('third');
+  stack.raise(first);
+  stack.raise(second);
+  stack.raise(third);
+  stack.release(second);                    // the middle one goes first
+  assert(Number(third.style.zIndex) > Number(first.style.zIndex),
+    'the top dialog fell behind one underneath it');
+  const fourth = fakeModal('fourth');
+  stack.raise(fourth);
+  assert(Number(fourth.style.zIndex) > Number(third.style.zIndex),
+    'a new dialog opened underneath an existing one');
+}));
+
+suite.push(() => check('re-opening the same dialog does not stack it twice', () => {
+  const stack = loadStack();
+  const dialog = fakeModal('dialog');
+  stack.raise(dialog);
+  stack.raise(dialog);
+  stack.raise(dialog);
+  assert(stack.depth() === 1, `depth is ${stack.depth()}`);
+  stack.release(dialog);
+  assert(stack.depth() === 0, 'a repeat open left a level behind');
+  assert(dialog.style.zIndex === '', 'and it is still claiming one');
+}));
+
+suite.push(() => check('releasing something that was never raised is harmless', () => {
+  const stack = loadStack();
+  stack.release(fakeModal('never-opened'));
+  stack.release(null);
+  assert(stack.depth() === 0);
+}));
+
+suite.push(() => check('it sits above the modal layer and below the loading overlay', () => {
+  // A dialog must clear `.modal-backdrop` (20000) and the notice layer
+  // (20010); the loading overlay (30000) is deliberately in front of
+  // everything, because it means the page is not ready to be used.
+  const stack = loadStack();
+  const dialog = fakeModal('dialog');
+  stack.raise(dialog);
+  const z = Number(dialog.style.zIndex);
+  assert(z > 20010, `${z} does not clear the notice layer`);
+  assert(z < 30000, `${z} is in front of the loading overlay`);
+
+  const settingsCss = read('ui', 'settings.css');
+  assert(/\.modal-backdrop\{[^}]*z-index:20000/.test(settingsCss),
+    'the base modal layer moved; the stack base needs revisiting');
+  assert(/\.notice-backdrop\{z-index:20010\}/.test(settingsCss));
+}));
+
+suite.push(() => check('twenty dialogs deep is still ordered', () => {
+  const stack = loadStack();
+  const modals = [];
+  for (let i = 0; i < 20; i++) {
+    const m = fakeModal('m' + i);
+    stack.raise(m);
+    modals.push(m);
+  }
+  for (let i = 1; i < modals.length; i++) {
+    assert(Number(modals[i].style.zIndex) > Number(modals[i - 1].style.zIndex),
+      `dialog ${i} is not above ${i - 1}`);
+  }
+  assert(Number(modals[19].style.zIndex) < 30000,
+    'a deep stack climbs over the loading overlay');
+}));
+
+// ------------------------------------------ the pages actually use it
+
+suite.push(() => check('Settings joins the stack when it opens and leaves when it closes', () => {
+  const code_ = code(SETTINGS_JS);
+  assert(/omniModalStack\.raise\(backdrop\)/.test(code_),
+    'Settings does not join the stack');
+  assert(/omniModalStack\.release\(backdrop\)/.test(code_),
+    'Settings never leaves the stack, so it keeps its level forever');
+  // Raised after it is shown, released when it is hidden.
+  const open = code_.indexOf("backdrop.style.display = 'flex'");
+  const raise = code_.indexOf('omniModalStack.raise(backdrop)');
+  assert(open < raise && raise - open < 600,
+    'the raise is not beside the show');
+}));
+
+suite.push(() => check('both dialog implementations join the stack', () => {
+  for (const [name, source] of [['ui/confirm.js', CONFIRM_JS],
+                                ['ui/index.html', INDEX_HTML]]) {
+    const body = code(source);
+    assert(/omniModalStack\.raise\(backdrop\)/.test(body),
+      `${name} does not join the modal stack`);
+    assert(/omniModalStack\.release\(backdrop\)/.test(body),
+      `${name} never leaves it`);
+  }
+}));
+
+suite.push(() => check('nobody reached for a giant z-index instead', () => {
+  // The fix is a stack, not a bigger number. A five- or six-figure literal
+  // parked in a dialog is the thing this replaced.
+  const inline = code(INDEX_HTML);
+  const dialog = inline.slice(inline.indexOf('function omniConfirm('));
+  const body = dialog.slice(0, dialog.indexOf('\n}'));
+  assert(!/z-?[Ii]ndex\s*[:=]\s*['"]?\d{4,}/.test(body),
+    'a hard-coded z-index was added to the dialog');
+}));
+
+suite.push(() => check('every page with modals loads the stack, before it needs it', () => {
+  const pages = ['ui/index.html', 'ui/admin/users.html', 'ui/matrix/index.html',
+                 'ui/matrix/configure.html', 'ui/matrix/usb.html',
+                 'ui/matrix/multiview.html', 'ui/user/index.html'];
+  for (const page of pages) {
+    const html = read(...page.split('/'));
+    assert(/modal-stack\.js/.test(html), `${page} does not load the stack`);
+    const stackAt = html.indexOf('modal-stack.js');
+    for (const user of ['settings.js', 'confirm.js']) {
+      const at = html.indexOf('/ui/' + user);
+      if (at >= 0) {
+        assert(stackAt < at,
+          `${page} loads ${user} before the stack it uses`);
+      }
+    }
+    // csrf.js stays first: a script before it would hold the unwrapped fetch.
+    const csrfAt = html.indexOf('/ui/csrf.js');
+    if (csrfAt >= 0) {
+      assert(csrfAt < stackAt, `${page} loads the stack before csrf.js`);
+    }
+  }
+}));
+
+suite.push(() => check('a missing stack does not break a dialog', () => {
+  // Every call is guarded, so a page that somehow has no stack still shows
+  // its dialogs -- just without the ordering.
+  for (const [name, source] of [['ui/confirm.js', CONFIRM_JS],
+                                ['ui/index.html', INDEX_HTML],
+                                ['ui/settings.js', SETTINGS_JS]]) {
+    const body = code(source);
+    const calls = body.match(/omniModalStack\.\w+\(/g) || [];
+    const guards = body.match(/window\.omniModalStack\s*\)/g) || [];
+    assert(guards.length >= calls.length / 2,
+      `${name} calls the stack without checking it is there`);
+  }
+}));
+
+// --------------------------------------------------- passphrase minimum
+
+suite.push(() => check('the client and the server agree the minimum is eight', () => {
+  assert(/const BACKUP_MIN_PASSPHRASE = 8;/.test(SETTINGS_JS),
+    'the page does not know the minimum');
+  const server = read('omni_backup.py');
+  assert(/^MIN_PASSPHRASE = 8$/m.test(server),
+    'the server minimum is not 8');
+  // And what the operator is shown says the same number.
+  assert(/At least 8 characters/.test(SETTINGS_JS),
+    'the placeholder still says something else');
+  assert(/at least 8 /i.test(SETTINGS_JS),
+    'the explanation still says something else');
+  assert(!/12 characters/.test(SETTINGS_JS),
+    'the old minimum is still on screen somewhere');
+}));
+
+suite.push(() => check('a short passphrase is refused without a round trip', async () => {
+  const calls = [];
+  let said = null;
+  const exportFn = lift('async function exportConfiguration(', {
+    askForPassphrase: () => Promise.resolve('short'),
+    backupStatus: (text, tone) => { said = {text, tone}; },
+    filenameFrom: () => '',
+    BACKUP_MIN_PASSPHRASE: 8,
+    fetch: (url) => { calls.push(url); return Promise.resolve({ok: true}); },
+    document: {createElement: () => ({click() {}, remove() {}}),
+               body: {appendChild: () => {}}},
+  });
+  await exportFn();
+  assert(calls.length === 0, `it asked the server anyway: ${calls}`);
+  assert(said && said.tone === 'error', 'nothing was said');
+  assert(/at least 8/i.test(said.text), `it said: ${said.text}`);
+}));
+
+suite.push(() => check('exactly eight is allowed through', async () => {
+  const calls = [];
+  const exportFn = lift('async function exportConfiguration(', {
+    askForPassphrase: () => Promise.resolve('12345678'),
+    backupStatus: () => {},
+    filenameFrom: () => 'x.omnibak',
+    BACKUP_MIN_PASSPHRASE: 8,
+    fetch: (url, opts) => {
+      calls.push({url, body: opts && opts.body});
+      return Promise.resolve({
+        ok: true,
+        headers: {get: () => 'attachment; filename="x.omnibak"'},
+        blob: () => Promise.resolve('BYTES'),
+        json: () => Promise.resolve({}),
+      });
+    },
+    setTimeout: () => {},
+    document: {createElement: () => ({click() {}, remove() {}}),
+               body: {appendChild: () => {}}},
+  });
+  await exportFn();
+  assert(calls.length === 1, `made ${calls.length} request(s)`);
+  assert(JSON.parse(calls[0].body).passphrase === '12345678');
+}));
+
+suite.push(() => check('no shape is demanded of a passphrase', () => {
+  // No mandatory capital, digit or symbol anywhere in the flow.
+  const flow = code(SETTINGS_JS).slice(
+    code(SETTINGS_JS).indexOf('async function exportConfiguration'));
+  const body = flow.slice(0, flow.indexOf('\n}'));
+  // A rule would be a test against the value, not a word in a sentence --
+  // "letters, numbers, symbols and spaces are all fine" says the opposite of
+  // what matching the word "symbol" would suggest.
+  assert(!/passphrase\s*\.\s*match\(/.test(body),
+    'the page runs a pattern over the passphrase');
+  assert(!/\/\[.*\]\/\s*\.\s*test\(\s*passphrase/.test(body),
+    'the page tests the passphrase against a character class');
+  assert(!/must contain|at least one/i.test(body),
+    'the page demands particular characters');
+  // The only thing it may check is how long it is.
+  const checks = body.match(/if \(passphrase[^)]*\)/g) || [];
+  checks.forEach((check) => {
+    assert(/length|=== null/.test(check),
+      `the page checks something other than length: ${check}`);
+  });
+}));
 
 (async function run() {
   for (const scenario of suite) await scenario();

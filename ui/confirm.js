@@ -266,6 +266,10 @@
       suppressWrap.style.display = 'none';
     }
     backdrop.classList.remove('hidden');
+    // Above whatever is already open, for the same reason as the dialog in
+    // index.html: one shared z-index means document order decides, and
+    // document order is not a decision anybody made.
+    if (window.omniModalStack) window.omniModalStack.raise(backdrop);
 
     // Focus returns to whatever opened the dialog; without it, dismissing drops
     // the keyboard at the top of the document.
@@ -290,6 +294,7 @@
           boxWrap.style.display = 'none';
         }
         backdrop.classList.add('hidden');
+        if (window.omniModalStack) window.omniModalStack.release(backdrop);
         cancelBtn.style.display = '';
         okBtn.removeEventListener('click', onOk);
         cancelBtn.removeEventListener('click', onCancel);
