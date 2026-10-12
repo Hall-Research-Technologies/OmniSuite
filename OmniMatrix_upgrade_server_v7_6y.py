@@ -4546,6 +4546,44 @@ def _fd_diagnostics() -> dict:
     return info
 
 
+def _scan_context(ips) -> dict:
+    """What this machine looks like from the scan's point of view. Never raises.
+
+    Sends nothing: a UDP connect() only asks the routing table which local
+    address would be used. With the adapter list it separates "the target is on
+    a directly attached subnet" from "the target is routed", which is the
+    distinction a local-network permission block would follow.
+    """
+    ctx = {"target_count": len(ips)}
+    if not ips:
+        return ctx
+    ctx["first_target"], ctx["last_target"] = ips[0], ips[-1]
+    adapters = []
+    try:
+        for entry in _adapters_psutil(active_only=False):
+            adapters.append({k: entry.get(k) for k in ("name", "ip", "netmask", "cidr")})
+    except Exception as exc:
+        ctx["adapters_error"] = type(exc).__name__
+    ctx["adapters"] = adapters
+    try:
+        target = ipaddress.ip_address(ips[0])
+        ctx["first_target_on_attached_subnet"] = any(
+            a.get("cidr") and target in ipaddress.ip_network(a["cidr"], strict=False)
+            for a in adapters)
+    except Exception as exc:
+        ctx["subnet_check_error"] = type(exc).__name__
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect((ips[0], 9))
+            ctx["route_source_address"] = probe.getsockname()[0]
+        finally:
+            probe.close()
+    except Exception as exc:
+        ctx["route_source_error"] = _tcp_errno_label(exc)
+    return ctx
+
+
 class _ScanProbeStats:
     """Aggregated outcome of one scan's connection attempts, one count per address."""
 
@@ -4553,10 +4591,21 @@ class _ScanProbeStats:
         self._lock = threading.Lock()
         self.outcomes = collections.Counter()
         self.ws_errors = collections.Counter()
+        self._timing = {}
 
-    def record(self, outcome: str):
+    def record(self, outcome: str, elapsed=None):
         with self._lock:
             self.outcomes[outcome] += 1
+            if elapsed is not None:
+                ms = round(elapsed * 1000.0, 1)
+                low, high = self._timing.get(outcome, (ms, ms))
+                self._timing[outcome] = (min(low, ms), max(high, ms))
+
+    def timing_ms(self) -> dict:
+        """Fastest and slowest attempt per outcome: what tells an instant local
+        refusal from a network that took its time to say no."""
+        with self._lock:
+            return {k: {"min": lo, "max": hi} for k, (lo, hi) in self._timing.items()}
 
     def record_ws_error(self, exc_name: str):
         with self._lock:
@@ -7816,14 +7865,15 @@ def api_scan():
     stats = _ScanProbeStats()
     workers = min(96, max(8, len(ips)))
     def probe_ip(ip):
+        began = time.monotonic()
         try:
             # Quick TCP check first. Same ports, order and timeout as before; the
             # outcome is kept so a scan the OS refused is not read as an empty one.
             outcome = _tcp_probe_outcome(ip, [ws_port, 80, 443], timeout=0.4)
         except Exception as exc:
-            stats.record("probe_error:" + type(exc).__name__)
+            stats.record("probe_error:" + type(exc).__name__, time.monotonic() - began)
             return None
-        stats.record(outcome)
+        stats.record(outcome, time.monotonic() - began)
         if outcome != "open":
             return None
         try:
@@ -7844,14 +7894,20 @@ def api_scan():
     # operating system blocked as though it had searched the network. Nothing has
     # been merged or persisted yet, so a refused scan leaves the cache as it was.
     fds = _fd_diagnostics()
-    diagnostics = {"probe_outcomes": stats.snapshot(), "workers": workers, **fds}
+    diagnostics = {"probe_outcomes": stats.snapshot(), "probe_timing_ms": stats.timing_ms(),
+                   "workers": workers, "duration_s": round(time.time() - start_time, 3),
+                   **fds, **_scan_context(ips)}
     if stats.ws_errors:
         diagnostics["ws_errors"] = dict(stats.ws_errors)
     failure = None if raw_units else stats.verdict()
     if failure:
         message = _scan_failure_message(failure, fds)
-        log.warning("[SCAN] Refused locally: %s outcomes=%s fds=%s", message,
-                    diagnostics["probe_outcomes"], fds)
+        log.warning("[SCAN] Refused locally: %s outcomes=%s timing_ms=%s fds=%s context=%s",
+                    message, diagnostics["probe_outcomes"], diagnostics["probe_timing_ms"],
+                    fds, {k: diagnostics.get(k) for k in (
+                        "target_count", "first_target", "last_target", "duration_s",
+                        "first_target_on_attached_subnet", "route_source_address",
+                        "route_source_error")})
         return jsonify({"ok": False, "reason": "scan_blocked", "error": message,
                         "tested": len(ips), "reachable": 0,
                         "diagnostics": diagnostics}), 503
