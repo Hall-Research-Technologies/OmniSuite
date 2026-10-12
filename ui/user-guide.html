@@ -450,6 +450,14 @@
       <p>Range input is bounded before it is expanded, so an over-broad expression such as <code>10.0.0.0/8</code> is rejected immediately rather than being materialised. Range scanning is a discovery operation triggered by Scan; ordinary page polling never runs one.</p>
       <div class="warn">On macOS and Linux builds, adapter discovery depends on OS interface data. If the adapter list looks wrong, use the Targets box to enter the intended subnet manually.</div>
 
+      <h3>When a scan fails instead of finding nothing</h3>
+      <p>A scan that finds no devices and a scan that could not look are different results, and OmniSuite reports them differently.</p>
+      <ul>
+        <li><strong>&ldquo;The scan could not reach the network&rdquo;</strong> means the computer refused or could not attempt the connections before any device had the chance to answer. Nothing in the device list is changed. On macOS this is most often the <em>Local Network</em> permission: open System Settings &rarr; Privacy &amp; Security &rarr; Local Network and make sure OmniSuite is switched on, then scan again. The message also says if the cause was running out of open-file capacity.</li>
+        <li><strong>&ldquo;No scannable addresses were found in the targets&rdquo;</strong> means the Targets text was not understood, for example a range written with the full address on both sides. Use a single address, a range such as <code>192.168.100.1-254</code>, or CIDR such as <code>192.168.100.0/24</code>.</li>
+        <li>A scan that completes and finds <strong>0 devices</strong> genuinely looked and saw none: check the adapter, the cabling and the firewall.</li>
+      </ul>
+
       <h3 id="clear-assigned">Clear Units and assigned devices</h3>
       <p>While <a href="#remote-access">Remote Access</a> is on,
       <strong>Clear Units always asks first</strong> &mdash; whether or not

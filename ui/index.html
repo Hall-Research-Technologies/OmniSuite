@@ -2287,6 +2287,13 @@ $('#scan_btn').addEventListener('click', async () => {
       body: JSON.stringify({targets})
     });
     const data = await res.json();
+    if (!res.ok || data.ok === false) {
+      // A refused scan is a result with a reason, not "0 found". The server's
+      // sentence is shown as-is; it says whether the machine blocked the scan.
+      $('#scan_status').textContent = '❌ ' + (data.error || ('Scan failed (HTTP ' + res.status + ')'));
+      toast(data.error || 'Scan failed.', 'error');
+      return;
+    }
     $('#scan_status').innerHTML = `✅ ${data.reachable}/${data.tested} found`;
     await loadUnits(data.units || []);
     await loadScanResults();
