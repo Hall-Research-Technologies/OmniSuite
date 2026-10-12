@@ -153,15 +153,16 @@ def _is_release(version) -> bool:
 
 
 # ---- command line ----------------------------------------------------------
-def _git_is_ancestor(branch: str) -> bool:
+def _git_is_ancestor(branch: str, cwd=None) -> bool:
     """HEAD reachable from origin/<branch>. Unknown means no."""
+    cwd = cwd or ROOT
     ref = "origin/" + branch
     probe = subprocess.run(["git", "rev-parse", "--verify", "-q", ref],
-                           cwd=ROOT, capture_output=True, text=True)
+                           cwd=cwd, capture_output=True, text=True)
     if probe.returncode != 0:
         print("::error::cannot find %s to check ancestry; refusing" % ref)
         return False
-    result = subprocess.run(["git", "merge-base", "--is-ancestor", "HEAD", ref], cwd=ROOT)
+    result = subprocess.run(["git", "merge-base", "--is-ancestor", "HEAD", ref], cwd=cwd)
     return result.returncode == 0
 
 

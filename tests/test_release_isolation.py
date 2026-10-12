@@ -646,6 +646,52 @@ class ReleaseIdentityToolTests(unittest.TestCase):
         self.assertEqual(written, "")
 
 
+class BranchAncestryTests(unittest.TestCase):
+    """The one guard a real tag would exercise, run against a throwaway repository.
+
+    A tag made on the wrong line must be refused, and the only way to see that
+    without publishing is to build the situation: a release branch, a commit on
+    it, and a commit that is not.
+    """
+
+    def git(self, *args):
+        subprocess.run(["git", *args], cwd=self.repo, check=True, capture_output=True, text=True,
+                       env=dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
+                                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid"))
+
+    def head(self):
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.repo = folder.name
+        self.git("init", "-q", "-b", "main")
+        self.git("commit", "-q", "--allow-empty", "-m", "base")
+        self.base = self.head()
+        self.git("commit", "-q", "--allow-empty", "-m", "on the release branch")
+        self.on_branch = self.head()
+        # Stand in for the remote-tracking ref the workflow's full checkout provides.
+        self.git("update-ref", "refs/remotes/origin/release/x", self.on_branch)
+        self.git("checkout", "-q", "-b", "elsewhere", self.base)
+        self.git("commit", "-q", "--allow-empty", "-m", "on another line")
+
+    def test_a_commit_on_the_release_branch_is_accepted(self):
+        self.git("checkout", "-q", "--detach", self.on_branch)
+        self.assertTrue(tool._git_is_ancestor("release/x", cwd=self.repo))
+        self.git("checkout", "-q", "--detach", self.base)
+        self.assertTrue(tool._git_is_ancestor("release/x", cwd=self.repo),
+                        "history below the branch tip is on the branch")
+
+    def test_a_commit_on_another_line_is_refused(self):
+        self.assertFalse(tool._git_is_ancestor("release/x", cwd=self.repo))
+
+    def test_a_branch_that_cannot_be_found_is_refused_not_assumed(self):
+        self.git("checkout", "-q", "--detach", self.on_branch)
+        self.assertFalse(tool._git_is_ancestor("release/does-not-exist", cwd=self.repo))
+
+
 class WorkflowStructureTests(unittest.TestCase):
     """Source-level checks of the workflow, with comments removed first.
 
