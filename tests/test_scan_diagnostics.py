@@ -178,6 +178,69 @@ class ScanProbeBehaviourIsPreservedTests(base.ServerTestBase):
             self.assertIsInstance(srv._fd_diagnostics(), dict)
 
 
+class ScanContextTests(base.ServerTestBase):
+    """Enough context in one response to say why a scan found nothing."""
+
+    ADAPTER = {"name": "en0", "ip": "192.0.2.5", "netmask": "255.255.255.0",
+               "cidr": "192.0.2.0/24"}
+
+    def test_diagnostics_carry_counts_timing_duration_and_adapters(self):
+        with mock.patch.object(srv, "_adapters_psutil", return_value=[dict(self.ADAPTER)]):
+            with mock.patch.object(srv.socket, "create_connection",
+                                   side_effect=_raising(errno.EHOSTUNREACH)):
+                body = self.client.post("/api/scan",
+                                        json={"targets": "192.0.2.1-20"}).get_json()
+        d = body["diagnostics"]
+        self.assertEqual(d["target_count"], 20)
+        self.assertEqual((d["first_target"], d["last_target"]), ("192.0.2.1", "192.0.2.20"))
+        self.assertTrue(d["first_target_on_attached_subnet"])
+        self.assertEqual(d["adapters"][0]["name"], "en0")
+        self.assertIn("duration_s", d)
+        self.assertEqual(set(d["probe_timing_ms"]), {"EHOSTUNREACH"})
+        timing = d["probe_timing_ms"]["EHOSTUNREACH"]
+        self.assertLessEqual(timing["min"], timing["max"])
+
+    def test_an_off_subnet_target_is_marked_as_routed(self):
+        with mock.patch.object(srv, "_adapters_psutil", return_value=[dict(self.ADAPTER)]):
+            ctx = srv._scan_context(["198.51.100.1", "198.51.100.2"])
+        self.assertIs(ctx["first_target_on_attached_subnet"], False)
+
+    def test_context_never_raises_when_the_platform_cannot_answer(self):
+        with mock.patch.object(srv, "_adapters_psutil", side_effect=RuntimeError("no")):
+            ctx = srv._scan_context(["192.0.2.1"])
+        self.assertEqual(ctx["adapters_error"], "RuntimeError")
+        self.assertEqual(ctx["target_count"], 1)
+
+    def test_the_route_lookup_sends_nothing(self):
+        # A UDP connect() consults the routing table; it must never transmit.
+        sent = []
+
+        class Sock:
+            def __init__(self, *a, **k):
+                pass
+
+            def connect(self, addr):
+                sent.append(("connect", addr))
+
+            def getsockname(self):
+                return ("192.0.2.5", 40000)
+
+            def send(self, *a):
+                sent.append("send")
+
+            def sendto(self, *a):
+                sent.append("sendto")
+
+            def close(self):
+                pass
+
+        with mock.patch.object(srv.socket, "socket", Sock), \
+                mock.patch.object(srv, "_adapters_psutil", return_value=[]):
+            ctx = srv._scan_context(["192.0.2.1"])
+        self.assertEqual(ctx["route_source_address"], "192.0.2.5")
+        self.assertEqual(sent, [("connect", ("192.0.2.1", 9))])
+
+
 class EmptyTargetListTests(base.ServerTestBase):
     """Text that expands to no addresses is an error, not a scan of nothing."""
 
