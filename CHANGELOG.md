@@ -109,6 +109,10 @@ for the user-facing summary.
   rather than scanning zero addresses.
 - The file-descriptor limit and open count are reported read-only. The limit is
   never raised automatically.
+- Scan diagnostics also carry target count, scan duration, fastest and slowest
+  attempt per outcome, the active adapters, whether the first target is on an
+  attached subnet, and the local address the routing table would use. Nothing is
+  transmitted to learn this.
 - Windows discovery is unchanged: same ports, order and timeouts.
 
 ## V1.1.0 - 2026-09-17
