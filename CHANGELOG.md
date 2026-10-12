@@ -1,5 +1,8 @@
 # Changelog
 
+> This changelog belongs to the OmniSuite Plus line (`omnisuite-plus`). The other product
+> line keeps its own; see [DEVELOPMENT.md](DEVELOPMENT.md).
+
 ## V1.2.0 - unreleased
 
 Optional secure remote access, with administrator and user accounts and

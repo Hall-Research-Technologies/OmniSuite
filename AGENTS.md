@@ -1,5 +1,24 @@
 # OmniSuite development rules
 
+## Product lines and branches
+
+OmniSuite is maintained as **two distinct product lines**. Read
+[DEVELOPMENT.md](DEVELOPMENT.md) before branching, merging or releasing.
+
+| Line | Branch | Purpose |
+|---|---|---|
+| OmniSuite | `main` | The published stable product (currently V1.1.0). |
+| OmniSuite | `release/omnisuite-1.1.x` | Maintenance and 1.1.x releases of the original product. Created from tag `V1.1.0`. |
+| OmniSuite Plus | `omnisuite-plus` | Everything developed since V1.1.0. Evolves toward its own releases. |
+| OmniSuite Plus | `feature/*` | Individual features, branched from and merged back to `omnisuite-plus`. |
+
+- This checkout is on `omnisuite-plus` (OmniSuite Plus). You are on the **OmniSuite Plus** line. It carries everything developed since the published OmniSuite V1.1.0 and will have its own releases and maintenance lifecycle. Fixes to the published OmniSuite product are made on `release/omnisuite-1.1.x`, not here.
+- There is no generic `develop` branch.
+- **Never merge one product line into the other.** A fix that belongs in both is
+  evaluated and cherry-picked deliberately (`git cherry-pick -x`) after it is
+  validated on the line where it was made.
+- Do not rename, delete, reset or force-push `main`, `V1.1.0` or any release branch.
+
 ## Preserve the working application
 
 - This is an existing working application. Preserve existing behavior.
