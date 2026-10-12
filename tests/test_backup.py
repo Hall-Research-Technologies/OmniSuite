@@ -346,10 +346,22 @@ class TheContainerTests(BackupTestBase):
             omni_backup.unseal(self.sealed(), "")
 
     def test_a_flipped_bit_in_the_ciphertext_is_refused(self):
-        blob = bytearray(self.sealed())
-        blob[-20] ^= 0x01
+        """Flip a bit of the ciphertext itself, not of its base64 spelling.
+
+        The sealed body is base64 text and the key material is random, so flipping a
+        character of the text sometimes produced a byte that is not base64 at all.
+        That is correctly reported as a damaged file ("corrupt"), which made this
+        test pass or fail by chance -- and fail on the CI run that drew the unlucky
+        value. A flipped bit of the decoded ciphertext is always an authentication
+        failure.
+        """
+        import base64
+        magic, header_line, body = self.sealed().split(b"\n", 2)
+        raw = bytearray(base64.b64decode(body.strip()))
+        raw[-5] ^= 0x01
+        forged = b"\n".join([magic, header_line, base64.b64encode(bytes(raw))])
         with self.assertRaises(omni_backup.BackupError) as caught:
-            omni_backup.unseal(bytes(blob), PASSPHRASE)
+            omni_backup.unseal(forged, PASSPHRASE)
         self.assertEqual(caught.exception.reason, "cannot_decrypt")
 
     def test_an_edited_header_is_refused_because_it_is_authenticated(self):
