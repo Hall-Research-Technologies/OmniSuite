@@ -1,5 +1,8 @@
 # Changelog
 
+> This changelog belongs to the OmniSuite line (`release/omnisuite-1.1.x`). The other product
+> line keeps its own; see [DEVELOPMENT.md](DEVELOPMENT.md).
+
 ## V1.1.1 - unreleased (macOS discovery diagnostics)
 
 Maintenance release of OmniSuite on `release/omnisuite-1.1.x`. Not published:
