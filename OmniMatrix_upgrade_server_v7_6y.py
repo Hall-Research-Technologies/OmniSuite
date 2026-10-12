@@ -17,6 +17,8 @@ import websocket
 import requests
 import omni_usb_extender
 import omni_multiview
+import omni_product
+import omni_release
 
 try:
     import psutil
@@ -3579,7 +3581,12 @@ def api_scan_preferences():
 GITHUB_OWNER = "Hall-Research-Technologies"
 GITHUB_REPO = "omniSuite"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
-GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+# The release LIST, never `/releases/latest`. "Latest" is repository-wide, and this
+# repository publishes two independently maintained products to one releases
+# page, so it would offer each product the other's newest release. The product is
+# recognised from the tag and artifact names (omni_release), and the newest of
+# this product's releases is chosen here.
+GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases?per_page=100"
 
 # Several hours, not minutes. Nothing about a release changes quickly, and this
 # must never look like another polling loop.
@@ -3687,34 +3694,49 @@ def _platform_asset_key():
     return None
 
 
-def _select_platform_asset(assets):
-    """The asset matching this platform, or None."""
+def _select_platform_asset(assets, version=None):
+    """The asset matching this platform and this product, or None.
+
+    The name must be this product's artifact name exactly: the product prefix,
+    a version, and the platform tail. "OmniSuite-" is a prefix of
+    "OmniSuite-Plus-", so a loose suffix match would offer one product the
+    other's build. When `version` is given the version in the name must agree
+    with the release it came from.
+    """
     key = _platform_asset_key()
     if not key:
         return None
-    for asset in assets or []:
-        name = str((asset or {}).get("name") or "")
-        url = (asset or {}).get("browser_download_url")
+    product = omni_release.active_product()
+    if not isinstance(assets, list):
+        return None
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("name") or "")
+        url = asset.get("browser_download_url")
         if not name or not _is_official_release_url(url):
             continue
-        stem = name.lower()
-        # The suffix is matched on a token boundary so "x86_64" cannot be
-        # satisfied by "arm64" or the reverse.
-        if re.search(rf"[-_.]{re.escape(key)}\.(zip|tar\.gz|tgz)$", stem):
-            return {"name": name, "url": url, "size": (asset or {}).get("size"),
-                    "platform": key}
+        parsed = product.parse_asset(name)
+        if not parsed or parsed["platform"] != key:
+            continue
+        if version is not None and (omni_release.version_tuple(parsed["version"])
+                                    != omni_release.version_tuple(version)):
+            continue
+        return {"name": name, "url": url, "size": asset.get("size"),
+                "platform": key}
     return None
 
 
-def _fetch_latest_release():
-    """Ask GitHub for the latest normal release. Raises on any failure.
+def _fetch_release_feed():
+    """Ask GitHub for the published releases. Raises on any failure.
 
-    `/releases/latest` is used rather than the full list because GitHub already
-    excludes drafts and prereleases from it, so "the latest normal release" is
-    the endpoint's own definition rather than something reimplemented here.
+    The list is read, not the repository-wide "latest" endpoint (see GITHUB_RELEASES_API), and
+    drafts are already absent from an unauthenticated read. Whether a release
+    belongs to this product is decided afterwards from its tag and artifact
+    names, never from anything GitHub says about it.
     """
     response = requests.get(
-        GITHUB_LATEST_API,
+        GITHUB_RELEASES_API,
         timeout=UPDATE_CHECK_TIMEOUT,
         headers={"Accept": "application/vnd.github+json",
                  "User-Agent": f"OmniSuite/{_app_version()}"},
@@ -3758,31 +3780,29 @@ def _update_check(force=False):
         "asset_url": None,
         "checked_at": None,
         "source": "github",
+        "product": omni_product.PRODUCT_ID,
         "stale": False,
         "error_summary": None,
         # Kept so anything still reading the older name keeps working.
         "current_version": installed,
     }
     try:
-        payload = _fetch_latest_release()
-        tag = (payload or {}).get("tag_name") or (payload or {}).get("name")
-        if _version_tuple(tag) is None:
-            raise ValueError(f"unrecognised release tag {tag!r}")
-        # Drafts and prereleases should already be excluded by the endpoint;
-        # honour the flags anyway rather than trusting that silently.
-        if (payload or {}).get("draft") or (payload or {}).get("prerelease"):
-            raise LookupError("no normal release published")
-        html_url = (payload or {}).get("html_url")
-        result["latest_version"] = str(tag).strip()
+        feed = _fetch_release_feed()
+        # Only this product's releases are ever considered. Nothing is offered
+        # when the feed holds none, and that is UNABLE_TO_CHECK rather than
+        # "up to date": nothing was confirmed.
+        release, core = omni_release.select_release(feed, omni_release.active_product())
+        html_url = release.get("html_url")
+        result["latest_version"] = "V" + core
         # Strictly newer, and nothing else. A development build legitimately
         # ahead of the newest published release is CURRENT, not a failure and
         # not an update -- which is the whole reason this is a three-way state
         # and not a boolean.
-        result["update_available"] = _version_is_newer(tag, installed)
+        result["update_available"] = _version_is_newer(core, installed)
         if _is_official_release_url(html_url):
             result["release_url"] = html_url
         if result["update_available"]:
-            result["asset"] = _select_platform_asset((payload or {}).get("assets"))
+            result["asset"] = _select_platform_asset(release.get("assets"), core)
             result["asset_url"] = (result["asset"] or {}).get("url")
         result["status"] = UPDATE_AVAILABLE if result["update_available"] else UPDATE_CURRENT
     except Exception as exc:

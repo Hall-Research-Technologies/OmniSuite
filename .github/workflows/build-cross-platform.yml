@@ -10,17 +10,51 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: "Override version (example: V1.2.0)"
+        description: "Diagnostic build name, with a suffix (example: V1.2.0-diag1). Never publishes."
         required: false
         type: string
   push:
-    branches:
-      - main
     tags:
-      - "v*"
-      - "V*"
+      # Matched loosely on purpose. The identity job refuses anything that is not
+      # exactly plus-v<number>(.<number>)+, so a mistyped tag fails loudly instead
+      # of being silently ignored. OmniSuite's V* tags are not matched here.
+      - "plus-*"
 
 jobs:
+  # Decide what this run is before anything is built, and refuse to continue when
+  # that cannot be established. Two independently maintained products publish to
+  # one repository, so a tag, a branch and a version number are each checked
+  # against the product this commit belongs to. See tools/release_identity.py.
+  identity:
+    name: Release identity
+    runs-on: ubuntu-latest
+    outputs:
+      product: ${{ steps.resolve.outputs.product }}
+      release_version: ${{ steps.resolve.outputs.release_version }}
+      publish: ${{ steps.resolve.outputs.publish }}
+      notes_path: ${{ steps.resolve.outputs.notes_path }}
+    steps:
+      - name: Checkout (full history, for the branch-ancestry check)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # Event inputs reach the script through the environment, never by being
+      # interpolated into a shell command: a typed version is untrusted text.
+      - name: Resolve and verify the release identity
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          DISPATCH_VERSION: ${{ github.event.inputs.release_version }}
+        run: python tools/release_identity.py resolve
+
   # The full suite on every target that ships an artifact, not only on Linux.
   # A build that cannot pass its own platform's tests must not produce a
   # download for that platform.
@@ -31,6 +65,7 @@ jobs:
   # touch one.
   test:
     name: Tests (${{ matrix.label }})
+    needs: identity
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -101,7 +136,7 @@ jobs:
 
   build:
     name: Build (${{ matrix.artifact_name }})
-    needs: test
+    needs: [identity, test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -158,19 +193,15 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Resolve release version
+      - name: Use the verified release version
         id: version
         shell: bash
+        env:
+          VERIFIED_VERSION: ${{ needs.identity.outputs.release_version }}
         run: |
-          if [ -n "${{ github.event.inputs.release_version }}" ]; then
-            v="${{ github.event.inputs.release_version }}"
-          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            v="${GITHUB_REF_NAME}"
-          else
-            v="$(cat VERSION)"
-          fi
-          echo "release_version=${v}" >> "$GITHUB_OUTPUT"
-          echo "Using version: ${v}"
+          test -n "$VERIFIED_VERSION" || { echo "::error::no verified release version"; exit 1; }
+          echo "release_version=${VERIFIED_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Using version: ${VERIFIED_VERSION}"
 
       - name: Build and package
         env:
@@ -178,6 +209,11 @@ jobs:
           RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
         run: |
           python tools/build_release.py --suffix ${{ matrix.suffix }} --version "${{ steps.version.outputs.release_version }}"
+
+      - name: Check the artifact name belongs to this product
+        shell: bash
+        run: |
+          python tools/release_identity.py verify-assets --dir release --version "${{ steps.version.outputs.release_version }}"
 
       # `file` on the binary inside the artifact, checked against what this row
       # claims to be. A macOS job running on the wrong runner would otherwise
@@ -267,7 +303,7 @@ jobs:
       - name: Upload packaged release artifact
         uses: actions/upload-artifact@v5
         with:
-          name: release-${{ matrix.artifact_name }}
+          name: release-${{ needs.identity.outputs.product }}-${{ matrix.artifact_name }}
           path: |
             release/*.zip
             release/*.tar.gz
@@ -278,17 +314,26 @@ jobs:
     name: Publish GitHub Release
     # `needs: build` requires the WHOLE matrix to succeed, so a failure on any
     # declared target stops publication rather than shipping a partial set.
-    if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
-    needs: build
+    # Only an identity-verified tag publishes. A dispatch, or a push to a branch, never
+    # does, whatever its version says.
+    if: needs.identity.outputs.publish == 'true' && github.ref_type == 'tag'
+    needs: [identity, build]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
       - name: Download packaged artifacts
         uses: actions/download-artifact@v5
         with:
-          pattern: release-*
+          # Only this product's artifacts. The pattern names the product, so another
+          # product's run can never be collected into this release.
+          pattern: release-${{ needs.identity.outputs.product }}-*
           merge-multiple: true
           path: release-assets
 
@@ -305,50 +350,14 @@ jobs:
           cat SHA256SUMS.txt
           sha256sum -c SHA256SUMS.txt
 
-      # Every declared target must be present before anything is published, so a
-      # release can never be missing a platform the README promises.
-      - name: Require every declared artifact
+      # Every declared target must be present, and every file must be this
+      # product's, for this version, before anything is published.
+      - name: Verify every artifact belongs to this release
         run: |
-          set -euo pipefail
-          cd release-assets
-          missing=0
-          for pattern in "OmniSuite-*-Windows-x86_64.zip" \
-                         "OmniSuite-*-macOS-arm64.zip" \
-                         "OmniSuite-*-macOS-x86_64.zip" \
-                         "OmniSuite-*-Ubuntu-x86_64.tar.gz"; do
-            # shellcheck disable=SC2086
-            if ! ls $pattern >/dev/null 2>&1; then
-              echo "::error::missing release artifact: $pattern"
-              missing=1
-            fi
-          done
-          test "$missing" -eq 0
-          ls -la
-
-      # The notes belong to the version being published. This was a
-      # hard-coded filename, so a release of any other version would have gone
-      # out with V1.1.0's notes attached to it.
-      - name: Resolve release notes
-        id: notes
-        run: |
-          set -euo pipefail
-          if [ -n "${{ github.event.inputs.release_version }}" ]; then
-            v="${{ github.event.inputs.release_version }}"
-          elif [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
-            v="${GITHUB_REF_NAME}"
-          else
-            v="$(cat VERSION)"
-          fi
-          path="RELEASE_NOTES_${v}.md"
-          if [ ! -f "$path" ]; then
-            echo "::error::no release notes for ${v} (expected ${path})"
-            exit 1
-          fi
-          echo "path=${path}" >> "$GITHUB_OUTPUT"
-          echo "Publishing with ${path}"
+          python tools/release_identity.py verify-assets --dir release-assets --version "${{ needs.identity.outputs.release_version }}" --complete
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          body_path: ${{ steps.notes.outputs.path }}
+          body_path: ${{ needs.identity.outputs.notes_path }}
           files: release-assets/*

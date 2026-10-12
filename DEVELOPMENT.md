@@ -57,18 +57,45 @@ temporary files out of the other line's directory.
 
 ## Releases and tags
 
-- OmniSuite releases are tagged `V1.1.x` on `release/omnisuite-1.1.x`, and `main`
-  is then fast-forwarded to the published tag.
-- **Tag naming for OmniSuite Plus is not decided.** The release workflow
-  (`.github/workflows/build-cross-platform.yml`) publishes on any tag beginning
-  `V` or `v`, and the updater matches downloads by filename. Decide the Plus tag
-  and artifact naming, and pin it with a test, before the first Plus tag exists.
-- The workflow's push trigger is `main` and tags. A branch build, including a
-  diagnostic build, is started with **Run workflow** (`workflow_dispatch`) on that
-  branch with a `release_version` such as `V1.1.1-diag1`. Dispatch builds produce
-  downloadable run artifacts only; nothing is published without a tag.
-- Do not publish a release until its fix has been validated on real hardware and
-  approved.
+Each product has its own tag family, artifact prefix and workflow trigger. They are
+defined once, in `omni_release.py`, and enforced by the workflow before anything is
+built.
+
+| | OmniSuite | OmniSuite Plus |
+|---|---|---|
+| Release branch | `release/omnisuite-1.1.x` | `omnisuite-plus` |
+| Tag | `V1.1.1`, `V1.1.2`, ... | `plus-v1.2.0`, `plus-v1.2.1`, ... |
+| Artifact prefix | `OmniSuite-` | `OmniSuite-Plus-` |
+| Workflow trigger | tags `V*` / `v*`, push to `main` | tags `plus-*` |
+
+A tag must be exactly this product's form. `v1.1.1`, `V1.1.1-rc1`, `plus-V1.2.0` and
+the other product's tag are refused, not corrected.
+
+To publish a release (with approval):
+
+1. Finish on the release branch; `VERSION` holds the version being released.
+2. Add `RELEASE_NOTES_<version>.md` (for example `RELEASE_NOTES_V1.2.0.md`). The
+   workflow refuses a tag whose notes file does not exist.
+3. Update the User Guide and `CHANGELOG.md`, and run `python run_tests.py`.
+4. Rehearse with a **dispatch** of the workflow on that branch (see below).
+5. Create the tag on the release-branch commit. The identity job refuses it unless the
+   tag is this product's, agrees with `VERSION`, and the commit is on the release
+   branch; then the four platforms test, build and smoke-test, and the publish job
+   verifies every artifact against the product and version before releasing.
+6. OmniSuite only: fast-forward `main` to the published tag.
+
+Both lines publish to the same releases page. Do not mark one product's release as a
+prerelease to hide it from the other: identity is the tag, and the updater already
+ignores the other product's releases.
+
+### Diagnostic builds
+
+Run the workflow manually (Run workflow) on a branch and give `release_version` a
+suffix, for example `V1.2.0-diag1`. A dispatch never publishes, whatever the version says.
+A bare release version (`V1.2.0`) is refused, because the artifact would be named
+exactly like a release. The version may contain letters, digits, `.`, `_` and `-` only
+and must not name the product; the artifact prefix is added for you, giving for
+example `OmniSuite-Plus-V1.2.0-diag1-macOS-arm64.zip`.
 
 ## Every build
 
@@ -76,3 +103,5 @@ temporary files out of the other line's directory.
 - Review the User Guide (`ui/user-guide.html`). Update it in the same build if
   user-visible behaviour changed, or say "User Guide reviewed — no update required."
 - Update `CHANGELOG.md` for the line you are on. Each line keeps its own changelog.
+- Release rules are described in [ARCHITECTURE.md](ARCHITECTURE.md) and tested as described in
+  [TESTING.md](TESTING.md).

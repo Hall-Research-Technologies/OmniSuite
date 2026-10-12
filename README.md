@@ -77,10 +77,10 @@ Get the archive for your machine from the
 
 | Platform | Artifact |
 |---|---|
-| Windows x86-64 | `OmniSuite-V1.2.0-Windows-x86_64.zip` |
-| macOS Apple Silicon | `OmniSuite-V1.2.0-macOS-arm64.zip` |
-| macOS Intel | `OmniSuite-V1.2.0-macOS-x86_64.zip` |
-| Ubuntu Linux x86-64 | `OmniSuite-V1.2.0-Ubuntu-x86_64.tar.gz` |
+| Windows x86-64 | `OmniSuite-Plus-V1.2.0-Windows-x86_64.zip` |
+| macOS Apple Silicon | `OmniSuite-Plus-V1.2.0-macOS-arm64.zip` |
+| macOS Intel | `OmniSuite-Plus-V1.2.0-macOS-x86_64.zip` |
+| Ubuntu Linux x86-64 | `OmniSuite-Plus-V1.2.0-Ubuntu-x86_64.tar.gz` |
 
 Each release also carries `SHA256SUMS.txt`. To check a download:
 
@@ -88,7 +88,7 @@ Each release also carries `SHA256SUMS.txt`. To check a download:
 sha256sum -c SHA256SUMS.txt          # Linux / macOS
 ```
 ```powershell
-Get-FileHash .\OmniSuite-V1.2.0-Windows-x86_64.zip -Algorithm SHA256
+Get-FileHash .\OmniSuite-Plus-V1.2.0-Windows-x86_64.zip -Algorithm SHA256
 ```
 
 See **[Supported platforms](#supported-platforms)** below for what has actually

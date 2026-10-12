@@ -53,7 +53,24 @@ def _github_is_fenced(*args, **kwargs):
     raise OSError("no test may contact GitHub")
 
 
-srv._fetch_latest_release = _github_is_fenced
+srv._fetch_release_feed = _github_is_fenced
+
+import omni_release  # noqa: E402  (after the application, like the rest of this block)
+
+ARTIFACT_PREFIX = omni_release.active_product().artifact_prefix
+
+
+def _product_tag(tag):
+    """The active product's tag for a version written the legacy way (V1.2.3).
+
+    Anything that is not a version is returned untouched, so a malformed tag
+    stays malformed.
+    """
+    try:
+        return omni_release.active_product().tag_for(tag)
+    except omni_release.IdentityError:
+        return tag
+
 
 # Values observed on real hardware during physical testing.
 E4521_IP, E4521_HOST, E4521_USB_MAC, E4521_USB_IP = "192.0.2.141", "hw-omni-e4521-00002", "B8:98:B0:07:85:ED", "192.0.2.246"
@@ -342,8 +359,8 @@ class ServerTestBase(unittest.TestCase):
             "get": staticmethod(_no_log_fetch),
             "post": staticmethod(_no_log_fetch),
         }))
-        self.github_fetcher_before_stub = srv._fetch_latest_release
-        self.patch_srv("_fetch_latest_release", _no_github)
+        self.github_fetcher_before_stub = srv._fetch_release_feed
+        self.patch_srv("_fetch_release_feed", _no_github)
         with srv._update_check_lock:
             previous_update = dict(srv._update_check_cache)
             srv._update_check_cache["checked_at"] = 0.0
@@ -3921,7 +3938,15 @@ class ApplicationVersionTests(ServerTestBase):
     def test_the_release_build_reads_the_same_file(self):
         workflow = (Path(srv.__file__).resolve().parent
                     / ".github" / "workflows" / "build-cross-platform.yml").read_text(encoding="utf-8")
-        self.assertIn("cat VERSION", workflow)
+        # The workflow no longer reads the file itself: the identity job does, through
+        # tools/release_identity.py, and every later job uses what it decided. The
+        # property is the same -- the release is named from the VERSION file, in
+        # exactly one place -- so assert both halves of that.
+        guard = (Path(srv.__file__).resolve().parent / "tools" / "release_identity.py"
+                 ).read_text(encoding="utf-8")
+        self.assertIn('"VERSION"', guard)
+        self.assertIn("tools/release_identity.py resolve", workflow)
+        self.assertNotIn("cat VERSION", workflow)
 
 
 class WorkspaceDescriptionTests(ServerTestBase):
@@ -4127,10 +4152,12 @@ class UpdateCheckTests(ServerTestBase):
             if status in (403, 429):
                 raise RuntimeError("rate limited")
             response.raise_for_status()
-            return response.json()
-        self.patch_srv("_fetch_latest_release", fake_fetch)
+            body = response.json()
+            return [body] if isinstance(body, dict) else body
+        self.patch_srv("_fetch_release_feed", fake_fetch)
 
     def release(self, tag, draft=False, prerelease=False, assets=None):
+        tag = _product_tag(tag)
         return {"tag_name": tag, "draft": draft, "prerelease": prerelease,
                 "html_url": f"https://github.com/Hall-Research-Technologies/omniSuite/releases/tag/{tag}",
                 "assets": assets or []}
@@ -4258,10 +4285,10 @@ class UpdateCheckTests(ServerTestBase):
     # no longer ambiguous. ArtifactNamingTests holds these and the build script
     # together.
     ASSETS = [
-        {"name": f"OmniSuite-V1.0.8-{tail}", "size": 1,
+        {"name": f"{ARTIFACT_PREFIX}V1.0.8-{tail}", "size": 1,
          "browser_download_url":
              "https://github.com/Hall-Research-Technologies/omniSuite/releases/"
-             f"download/V1.0.8/OmniSuite-V1.0.8-{tail}"}
+             f"download/V1.0.8/{ARTIFACT_PREFIX}V1.0.8-{tail}"}
         for tail in ("Windows-x86_64.zip", "macOS-arm64.zip",
                      "macOS-x86_64.zip", "Ubuntu-x86_64.tar.gz")
     ]
@@ -4290,14 +4317,14 @@ class UpdateCheckTests(ServerTestBase):
         self.assertIsNone(self.asset_for("Linux", "aarch64"))
 
     def test_an_asset_url_outside_the_project_is_refused(self):
-        hostile = [{"name": "OmniSuite-V1.0.8-Windows-x86_64.zip",
-                    "browser_download_url": "https://evil.example/OmniSuite-V1.0.8-Windows-x86_64.zip"}]
+        hostile = [{"name": f"{ARTIFACT_PREFIX}V1.0.8-Windows-x86_64.zip",
+                    "browser_download_url": f"https://evil.example/{ARTIFACT_PREFIX}V1.0.8-Windows-x86_64.zip"}]
         self.patch_srv("platform", type("P", (), {
             "system": staticmethod(lambda: "Windows"), "machine": staticmethod(lambda: "AMD64")}))
         self.assertIsNone(srv._select_platform_asset(hostile))
 
     def test_only_this_repositorys_release_urls_are_returned(self):
-        self.stub_github({"tag_name": "V1.0.8", "draft": False, "prerelease": False,
+        self.stub_github({"tag_name": _product_tag("V1.0.8"), "draft": False, "prerelease": False,
                           "html_url": "https://evil.example/releases", "assets": []})
         body = self.check()
         self.assertEqual(body["release_url"], srv.GITHUB_RELEASES_URL,
@@ -4347,7 +4374,7 @@ class UpdateCheckTests(ServerTestBase):
 
     def test_no_credential_is_used(self):
         source = Path(srv.__file__).with_name("OmniMatrix_upgrade_server_v7_6y.py").read_text(encoding="utf-8")
-        block = source[source.index("def _fetch_latest_release"):]
+        block = source[source.index("def _fetch_release_feed"):]
         block = block[:block.index("def _update_check")]
         for forbidden in ("Authorization", "token", "GITHUB_TOKEN", "password"):
             self.assertNotIn(forbidden, block, forbidden)
@@ -5689,10 +5716,10 @@ class ArtifactNamingTests(ServerTestBase):
     """
 
     EXPECTED = {
-        "windows": "OmniSuite-{version}-Windows-x86_64.zip",
-        "arm64": "OmniSuite-{version}-macOS-arm64.zip",
-        "x86_64": "OmniSuite-{version}-macOS-x86_64.zip",
-        "linux": "OmniSuite-{version}-Ubuntu-x86_64.tar.gz",
+        "windows": "{prefix}{version}-Windows-x86_64.zip",
+        "arm64": "{prefix}{version}-macOS-arm64.zip",
+        "x86_64": "{prefix}{version}-macOS-x86_64.zip",
+        "linux": "{prefix}{version}-Ubuntu-x86_64.tar.gz",
     }
 
     def build_script(self):
@@ -5700,9 +5727,11 @@ class ArtifactNamingTests(ServerTestBase):
 
     def assets(self, version="V1.0.7"):
         base = "https://github.com/Hall-Research-Technologies/OmniSuite/releases/download/"
-        return [{"name": name.format(version=version), "size": 1,
-                 "browser_download_url": base + version + "/" + name.format(version=version)}
-                for name in self.EXPECTED.values()]
+        named = [name.format(prefix=ARTIFACT_PREFIX, version=version)
+                 for name in self.EXPECTED.values()]
+        return [{"name": filename, "size": 1,
+                 "browser_download_url": base + version + "/" + filename}
+                for filename in named]
 
     def test_the_build_script_publishes_exactly_these_names(self):
         script = self.build_script()
@@ -6701,10 +6730,11 @@ class UpdateAlertTests(ServerTestBase):
     def offer(self, tag):
         """Have GitHub offer this release."""
         def fetch(*args, **kwargs):
-            return {"tag_name": tag, "draft": False, "prerelease": False,
-                    "html_url": f"https://github.com/Hall-Research-Technologies/omniSuite/releases/tag/{tag}",
-                    "assets": []}
-        self.patch_srv("_fetch_latest_release", fetch)
+            product_tag = _product_tag(tag)
+            return [{"tag_name": product_tag, "draft": False, "prerelease": False,
+                     "html_url": f"https://github.com/Hall-Research-Technologies/omniSuite/releases/tag/{product_tag}",
+                     "assets": []}]
+        self.patch_srv("_fetch_release_feed", fetch)
         self._reset_update_cache()
 
     def check(self, force=False):
@@ -6733,7 +6763,7 @@ class UpdateAlertTests(ServerTestBase):
                  ("V1.0.7", "V1.0.8", srv.UPDATE_AVAILABLE),
                  ("V1.0.9", "V1.0.10", srv.UPDATE_AVAILABLE),
                  ("1.0.7", "V1.0.7", srv.UPDATE_CURRENT),
-                 ("V1.0.7", "v1.0.8", srv.UPDATE_AVAILABLE)]
+                 ("V1.0.7", "V1.0.8", srv.UPDATE_AVAILABLE)]
         for installed, latest, expected in cases:
             with self.subTest(installed=installed, latest=latest):
                 self.patch_srv("_app_version", lambda v=installed: v)
@@ -6759,7 +6789,7 @@ class UpdateAlertTests(ServerTestBase):
     def test_nothing_else_raises_it(self):
         self.offer("V0.0.1")
         self.assertFalse(self.check()["alert"], "CURRENT must not flash")
-        self.patch_srv("_fetch_latest_release",
+        self.patch_srv("_fetch_release_feed",
                        lambda *a, **k: (_ for _ in ()).throw(OSError("offline")))
         self._reset_update_cache()
         self.assertFalse(self.check()["alert"], "UNABLE_TO_CHECK must not flash")
