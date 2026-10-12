@@ -114,6 +114,9 @@ for the user-facing summary.
   attached subnet, and the local address the routing table would use. Nothing is
   transmitted to learn this.
 - Windows discovery is unchanged: same ports, order and timeouts.
+- Fixed the macOS Intel package, which started and then failed on
+  `import cryptography`: the dependency is held below version 49 on that
+  platform only, because later versions have no prebuilt Intel wheel.
 - A backup whose header asks for out-of-range encryption parameters is refused
   as damaged on every platform. On Python 3.12 for Windows it escaped as an
   unhandled error instead.
