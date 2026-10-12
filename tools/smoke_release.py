@@ -467,6 +467,17 @@ def local_network_problems(info: dict) -> list:
     return problems
 
 
+def macos_readme_problems(text) -> list:
+    """What is wrong with the first-launch instructions shipped beside the app."""
+    problems = []
+    if not isinstance(text, str) or not text.strip():
+        return ["the first-launch instructions are missing or empty"]
+    for needed in ("Open Anyway", "Privacy & Security", "Local Network", "official"):
+        if needed not in text:
+            problems.append(f"the first-launch instructions do not mention {needed!r}")
+    return problems
+
+
 def check_macos_bundle(binary: Path) -> list:
     """Read the packaged app's own Info.plist and signature. Returns problems.
 
@@ -536,6 +547,12 @@ def main() -> int:
             log(f"file: {arch.stdout.strip()}")
         if platform.system() == "Darwin":
             bundle_problems = check_macos_bundle(binary)
+            readme = Path(tmp) / "READ-ME-FIRST-macOS.txt"
+            try:
+                bundle_problems.extend(macos_readme_problems(
+                    readme.read_text(encoding="utf-8") if readme.exists() else None))
+            except Exception as exc:
+                bundle_problems.append(f"could not read the first-launch instructions: {type(exc).__name__}")
             if bundle_problems:
                 for item in bundle_problems:
                     log(f"FAIL -- {item}")

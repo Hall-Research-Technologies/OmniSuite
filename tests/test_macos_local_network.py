@@ -190,7 +190,7 @@ class PackagingHookTests(unittest.TestCase):
         events = []
         with mock.patch.object(build, "RELEASE_DIR", Path(folder.name) / "release"), \
                 mock.patch.object(build, "declare_local_network_usage",
-                                  side_effect=lambda app, usage: events.append(("declare", usage))), \
+                                  side_effect=lambda app, usage, name=None: events.append(("declare", usage))), \
                 mock.patch.object(build, "zip_macos_app",
                                   side_effect=lambda *a: events.append(("zip-mac",))), \
                 mock.patch.object(build, "zip_path", side_effect=lambda *a: events.append(("zip",))), \

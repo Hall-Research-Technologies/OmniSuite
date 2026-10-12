@@ -65,6 +65,13 @@ is validated on a Mac using the checklist in
 [docs/MACOS_LOCAL_NETWORK.md](docs/MACOS_LOCAL_NETWORK.md). `tools/mutate_local_network.py`
 breaks each rule on purpose and requires the suite to notice.
 
+`tests/scan_notice_test.js` runs the real `ui/scan-notice.js` against a DOM stub that has no
+`innerHTML`, so a regression to markup injection throws. It pins that the notice appears
+for a Local Network verdict and nothing else, that Retry Scan runs one scan, and that
+Open System Settings is offered only for a Mac server viewed from that Mac.
+`tests/test_macos_first_launch.py` holds the first-launch readme inside the zip, the
+display name, the product name in the blocked-scan answer, and the page wiring.
+
 ## Verifying a release without publishing it
 
 1. `python run_tests.py` on the release branch.

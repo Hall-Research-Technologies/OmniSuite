@@ -22,6 +22,19 @@ it is waiting for validation on a real Mac.
   attached subnet, and the local address the routing table would use. Nothing is
   transmitted to learn this.
 - Windows discovery is unchanged: same ports, order and timeouts.
+- macOS first launch: the zip now carries `READ-ME-FIRST-macOS.txt` beside the app, and
+  `docs/INSTALL_MACOS.md` explains how to approve an unsigned, un-notarized app under System
+  Settings > Privacy & Security > Open Anyway, to approve only a download from the official
+  releases page, and not to disable Gatekeeper or strip quarantine. The README and User
+  Guide no longer suggest right-click > Open. Developer ID signing and notarization are
+  documented as a future improvement. The smoke test fails a macOS build whose instructions
+  are missing.
+- A scan blocked by macOS Local Network permission now shows a notice under the Scan button
+  with plain-language steps, **Retry Scan**, and **Open System Settings** on a Mac used
+  directly. Ordinary empty scans never show it. The detailed diagnostics stay under Technical
+  details. The blocked-scan answer carries the product name.
+- The macOS bundle's display name is the product's own, so System Settings lists OmniSuite
+  Plus separately from OmniSuite.
 - macOS Local Network: the packaged app now declares why it needs local-network access
   (`NSLocalNetworkUsageDescription`, worded for the product), and the build signs the
   bundle again ad hoc after adding it. The smoke test reads the shipped `Info.plist`

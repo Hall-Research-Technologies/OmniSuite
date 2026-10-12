@@ -51,6 +51,7 @@
   <link rel="stylesheet" href="/ui/device-table.css?v=20260910-devicetable">
   <script src="/ui/appearance.js?v=20260910-appearance"></script>
 <script src="/ui/toast.js?v=20260911-toast"></script>
+<script src="/ui/scan-notice.js?v=20261012-scannotice"></script>
 <script src="/ui/device-log.js?v=20260911-devicelog" defer></script>
 <script src="/ui/settings.js?v=20260911-settings"></script>
 
@@ -180,6 +181,14 @@
     .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--spinner);border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px}
     @keyframes spin{to{transform:rotate(360deg)}}
     .pill{padding:4px 10px;border-radius:999px;background:var(--accent-strong);color:var(--fg);font-size:12px}
+    /* An actionable notice, not an error: an edge in the accent colour, no danger treatment. */
+    .scan-notice{margin-top:10px;padding:10px 14px;border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:6px;color:var(--fg);font-size:13px;line-height:1.5}
+    .scan-notice[hidden]{display:none}
+    .scan-notice p{margin:6px 0}
+    .scan-notice ol{margin:6px 0 8px;padding-left:22px}
+    .scan-notice .scan-notice-actions{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+    .scan-notice details{margin-top:6px;color:var(--muted)}
+    .scan-notice pre{margin:6px 0 0;white-space:pre-wrap;word-break:break-word;font-size:12px;color:var(--fg)}
     /* Tabs */
     .tabs{display:flex;gap:0;}
     .tab{padding:8px 16px;cursor:pointer;background:transparent;color:var(--muted);border:none;font-size:14px;font-weight:500;border-bottom:2px solid transparent;transition:all .16s;text-decoration:none;border-radius:6px 6px 0 0}
@@ -268,6 +277,8 @@
     <button id="clear_units_btn" class="btn secondary">🗑️ Clear Units</button>
     <span id="scan_status" class="small pill"></span>
   </div>
+  <!-- Shown only for a macOS Local Network verdict from the server. See scan-notice.js. -->
+  <div id="scan_permission_notice" class="scan-notice" hidden></div>
 </div>
 
 <!-- Firmware/Upgrade Control Bar -->
@@ -2149,6 +2160,8 @@ $('#scan_btn').addEventListener('click', async () => {
   const targets = targetsInput || $('#adapters').value;
   if (!targets) { toast('Select an adapter, or enter targets to scan.', 'error'); return; }
   $('#scan_status').innerHTML = '<span class="spinner"></span> Scanning...';
+  // A new scan retires the previous scan's notice; it comes back only if this one is blocked too.
+  if (window.OmniScanNotice) OmniScanNotice.hide();
 
   // Remember what was scanned so the next Scan covers the same space without
   // it being retyped, and so USB directed discovery has it too.
@@ -2168,6 +2181,12 @@ $('#scan_btn').addEventListener('click', async () => {
     if (!res.ok || data.ok === false) {
       // A refused scan is a result with a reason, not "0 found". The server's
       // sentence is shown as-is; it says whether the machine blocked the scan.
+      // The server says whether this is a Local Network permission problem; the page only
+      // presents that verdict. Any other refusal keeps the one-line status and a toast.
+      if (window.OmniScanNotice && OmniScanNotice.show(data)) {
+        $('#scan_status').textContent = '❌ Blocked by macOS Local Network permission';
+        return;
+      }
       $('#scan_status').textContent = '❌ ' + (data.error || ('Scan failed (HTTP ' + res.status + ')'));
       toast(data.error || 'Scan failed.', 'error');
       return;
@@ -2179,6 +2198,15 @@ $('#scan_btn').addEventListener('click', async () => {
     $('#scan_status').innerHTML = '❌ Error: ' + e.message;
   }
 });
+
+if (window.OmniScanNotice) {
+  OmniScanNotice.attach({
+    container: document.getElementById('scan_permission_notice'),
+    onRetry: () => $('#scan_btn').click(),
+    navigate: (url) => { window.location.href = url; },
+    env: { hostname: window.location.hostname, platform: navigator.platform || '' },
+  });
+}
 
 $('#targets_clear').addEventListener('click', () => {
   const input = $('#targets');

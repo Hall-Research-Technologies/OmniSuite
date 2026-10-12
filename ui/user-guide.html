@@ -280,12 +280,22 @@
         <li>A scan that completes and finds <strong>0 devices</strong> genuinely looked and saw none: check the adapter, the cabling and the firewall.</li>
       </ul>
 
+      <h3 id="macos-first-launch">macOS: first launch</h3>
+      <p>OmniSuite for macOS is not signed with an Apple Developer ID and is not notarized, so macOS blocks it the first time you open it. That is expected. <strong>Only approve OmniSuite if you downloaded it from the official project releases page</strong>; delete a copy that came from anywhere else.</p>
+      <ol>
+        <li>Unpack the zip by double-clicking it in Finder.</li>
+        <li>Open <strong>OmniSuite.app</strong>. macOS says it cannot verify the app. Click <strong>Done</strong>.</li>
+        <li>Open <strong>System Settings &rarr; Privacy &amp; Security</strong> and scroll to the <strong>Security</strong> section. Click <strong>Open Anyway</strong>, enter your password, then click <strong>Open</strong>. The button is only there for a while after the blocked attempt; open the app again if it is missing.</li>
+      </ol>
+      <p>Do not turn off Gatekeeper and do not run commands that remove the quarantine flag. You approve each downloaded copy once; a new download may ask again. The same steps are in the download as <code>READ-ME-FIRST-macOS.txt</code>. Signing with an Apple Developer ID and notarizing future releases is planned and will remove this step.</p>
+
       <h3 id="macos-local-network">macOS: Local Network access</h3>
       <p>Recent versions of macOS ask before an application may talk to devices on your local network. OmniSuite needs this to find and manage encoders, decoders and USB extenders, so the first time you scan, macOS shows a <em>Local Network</em> prompt for OmniSuite. <strong>Choose Allow.</strong></p>
       <ul>
         <li><strong>If you chose Don&rsquo;t Allow, or dismissed the prompt,</strong> scans of your local network fail straight away with &ldquo;The scan could not reach the network&rdquo; rather than finding nothing. To change it, open <strong>System Settings &rarr; Privacy &amp; Security &rarr; Local Network</strong>, switch <strong>OmniSuite</strong> on, and scan again.</li>
         <li><strong>If the prompt is still on screen</strong> while a scan runs, the scan fails the same way. Answer the prompt, then scan again.</li>
-        <li><strong>After you change the setting,</strong> scan again. If scans still fail, quit OmniSuite completely and reopen it.</li>
+        <li><strong>OmniSuite tells you when this is the problem.</strong> A notice appears under the Scan button explaining what happened, with a <strong>Retry Scan</strong> button and, on a Mac you are using directly, an <strong>Open System Settings</strong> button. A scan that completes and finds no devices does not show this notice.</li>
+        <li><strong>After you change the setting,</strong> choose <strong>Retry Scan</strong>. If scans still fail, quit OmniSuite completely and reopen it.</li>
         <li><strong>OmniSuite does not change this setting for you</strong> and does not reset it. It can only tell you where it is.</li>
         <li>OmniSuite downloads are not signed with an Apple developer certificate, so macOS may treat each new download as a different application and ask again after an update.</li>
         <li>The setting applies to this application only. Devices reached through a router on another subnet are not always affected by it, so a scan of another range can succeed while the local one fails.</li>
