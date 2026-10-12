@@ -88,6 +88,15 @@ Nothing is downloaded or installed by the check.
 
 ## Packaging
 
+On macOS the build adds `NSLocalNetworkUsageDescription` to the built app's
+`Info.plist` (the sentence macOS shows when it asks whether the app may reach
+devices on the local network), signs the bundle again ad hoc because the edit
+invalidates the signature, and verifies it. The smoke test reads the shipped plist
+and signature and fails the build if either is wrong. See
+[docs/MACOS_LOCAL_NETWORK.md](docs/MACOS_LOCAL_NETWORK.md) for the evidence and what
+is still unproven.
+
+
 `tools/build_release.py` names each artifact `<prefix><version>-<platform tail>`
 with the product's prefix. The platform tails are a contract with the updater's
 platform keys and with the guard; `tests/test_release_isolation.py` pins all

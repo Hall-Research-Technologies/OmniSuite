@@ -275,10 +275,22 @@
       <h3>When a scan fails instead of finding nothing</h3>
       <p>A scan that finds no devices and a scan that could not look are different results, and OmniSuite reports them differently.</p>
       <ul>
-        <li><strong>&ldquo;The scan could not reach the network&rdquo;</strong> means the computer refused or could not attempt the connections before any device had the chance to answer. Nothing in the device list is changed. On macOS this is most often the <em>Local Network</em> permission: open System Settings &rarr; Privacy &amp; Security &rarr; Local Network and make sure OmniSuite is switched on, then scan again. The message also says if the cause was running out of open-file capacity.</li>
+        <li><strong>&ldquo;The scan could not reach the network&rdquo;</strong> means the computer refused or could not attempt the connections before any device had the chance to answer. Nothing in the device list is changed. On macOS this is usually the <em>Local Network</em> permission &mdash; see <a href="#macos-local-network">macOS: Local Network access</a> below. The message also says if the cause was running out of open-file capacity, or, on Windows and Linux, that a firewall or security policy may be blocking OmniSuite.</li>
         <li><strong>&ldquo;No scannable addresses were found in the targets&rdquo;</strong> means the Targets text was not understood, for example a range written with the full address on both sides. Use a single address, a range such as <code>192.168.100.1-254</code>, or CIDR such as <code>192.168.100.0/24</code>.</li>
         <li>A scan that completes and finds <strong>0 devices</strong> genuinely looked and saw none: check the adapter, the cabling and the firewall.</li>
       </ul>
+
+      <h3 id="macos-local-network">macOS: Local Network access</h3>
+      <p>Recent versions of macOS ask before an application may talk to devices on your local network. OmniSuite needs this to find and manage encoders, decoders and USB extenders, so the first time you scan, macOS shows a <em>Local Network</em> prompt for OmniSuite. <strong>Choose Allow.</strong></p>
+      <ul>
+        <li><strong>If you chose Don&rsquo;t Allow, or dismissed the prompt,</strong> scans of your local network fail straight away with &ldquo;The scan could not reach the network&rdquo; rather than finding nothing. To change it, open <strong>System Settings &rarr; Privacy &amp; Security &rarr; Local Network</strong>, switch <strong>OmniSuite</strong> on, and scan again.</li>
+        <li><strong>If the prompt is still on screen</strong> while a scan runs, the scan fails the same way. Answer the prompt, then scan again.</li>
+        <li><strong>After you change the setting,</strong> scan again. If scans still fail, quit OmniSuite completely and reopen it.</li>
+        <li><strong>OmniSuite does not change this setting for you</strong> and does not reset it. It can only tell you where it is.</li>
+        <li>OmniSuite downloads are not signed with an Apple developer certificate, so macOS may treat each new download as a different application and ask again after an update.</li>
+        <li>The setting applies to this application only. Devices reached through a router on another subnet are not always affected by it, so a scan of another range can succeed while the local one fails.</li>
+      </ul>
+      <p>Windows and Linux do not have this permission; there, a refused scan usually means a firewall or security policy.</p>
 
       <h3>Clear Units</h3>
       <p>Scan results are merged into the existing list; rediscovering a device at a new address updates the existing row rather than adding a second one, because identity is the hardware MAC and not the IP address. Clear Units is the single reset:</p>

@@ -22,6 +22,16 @@ it is waiting for validation on a real Mac.
   attached subnet, and the local address the routing table would use. Nothing is
   transmitted to learn this.
 - Windows discovery is unchanged: same ports, order and timeouts.
+- macOS Local Network: the packaged app now declares why it needs local-network access
+  (`NSLocalNetworkUsageDescription`, worded for the product), and the build signs the
+  bundle again ad hoc after adding it. The smoke test reads the shipped `Info.plist`
+  and fails if the declaration is missing or the signature does not verify. The v1.1.0
+  package had no declaration. No Bonjour services are declared: the application does
+  not use Bonjour.
+- A refused scan on macOS now says what to do: allow OmniSuite under System Settings >
+  Privacy & Security > Local Network and scan again. Windows and Linux get firewall
+  wording instead. The 503 response carries a `likely_cause`, and the diagnostics carry
+  the platform. The User Guide gained a "macOS: Local Network access" section.
 - Release isolation: OmniSuite releases use V1.1.1 tags and
   `OmniSuite-` artifacts, and the release workflow decides identity before building.
   A tag that is not this product's, does not agree with `VERSION`, is not on `release/omnisuite-1.1.x`
