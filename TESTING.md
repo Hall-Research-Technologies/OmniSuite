@@ -55,6 +55,16 @@ anchors to each file's own line endings.
 
     python tools/mutate_release_isolation.py .
 
+## macOS Local Network checks
+
+`tests/test_macos_local_network.py` covers the usage-description edit and the signing
+commands the build issues (recorded, never run), the smoke check's reading of a bundle,
+the refusal wording on each platform, and allow / deny / revoke transitions. **macOS
+itself is simulated** there, by replacing the connection primitive; the real behaviour
+is validated on a Mac using the checklist in
+[docs/MACOS_LOCAL_NETWORK.md](docs/MACOS_LOCAL_NETWORK.md). `tools/mutate_local_network.py`
+breaks each rule on purpose and requires the suite to notice.
+
 ## Verifying a release without publishing it
 
 1. `python run_tests.py` on the release branch.

@@ -119,6 +119,16 @@ for the user-facing summary.
   A tag that is not this product's, does not agree with `VERSION`, is not on `omnisuite-plus`
   or has no release notes is refused. A manually dispatched build is a diagnostic build
   and never publishes. See [ARCHITECTURE.md](ARCHITECTURE.md).
+- macOS Local Network: the packaged app now declares why it needs local-network access
+  (`NSLocalNetworkUsageDescription`, worded for the product), and the build signs the
+  bundle again ad hoc after adding it. The smoke test reads the shipped `Info.plist`
+  and fails if the declaration is missing or the signature does not verify. The v1.1.0
+  package had no declaration. No Bonjour services are declared: the application does
+  not use Bonjour.
+- A refused scan on macOS now says what to do: allow OmniSuite under System Settings >
+  Privacy & Security > Local Network and scan again. Windows and Linux get firewall
+  wording instead. The 503 response carries a `likely_cause`, and the diagnostics carry
+  the platform. The User Guide gained a "macOS: Local Network access" section.
 - The in-app update check no longer uses the repository-wide latest release. It reads
   the release list and offers only OmniSuite Plus releases, chosen by highest version, and
   reports "unable to check" when none exists. Release tags must now be exactly

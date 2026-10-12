@@ -44,8 +44,11 @@ class Product:
     """One product line's identity. Immutable by convention."""
 
     def __init__(self, product_id: str, name: str, tag_prefix: str,
-                 artifact_prefix: str, release_branch: str):
+                 artifact_prefix: str, release_branch: str, local_network_usage: str = ""):
         self.id = product_id
+        # What macOS shows when it asks whether this app may reach devices on the
+        # local network. Written for the person looking at the prompt.
+        self.local_network_usage = local_network_usage
         self.name = name
         self.tag_prefix = tag_prefix
         self.artifact_prefix = artifact_prefix
@@ -90,10 +93,16 @@ class Product:
 
 
 PRODUCTS = {
-    "omnisuite": Product("omnisuite", "OmniSuite", "V", "OmniSuite-",
-                         "release/omnisuite-1.1.x"),
-    "omnisuite-plus": Product("omnisuite-plus", "OmniSuite Plus", "plus-v",
-                              "OmniSuite-Plus-", "omnisuite-plus"),
+    "omnisuite": Product(
+        "omnisuite", "OmniSuite", "V", "OmniSuite-", "release/omnisuite-1.1.x",
+        local_network_usage=(
+            "OmniSuite connects directly to Atlona OmniStream encoders, decoders and USB "
+            "extenders on your local network so it can find and manage them.")),
+    "omnisuite-plus": Product(
+        "omnisuite-plus", "OmniSuite Plus", "plus-v", "OmniSuite-Plus-", "omnisuite-plus",
+        local_network_usage=(
+            "OmniSuite Plus connects directly to Atlona OmniStream encoders, decoders and USB "
+            "extenders on your local network so it can find and manage them.")),
 }
 
 # A tag that begins with the first product's prefix in a different case is

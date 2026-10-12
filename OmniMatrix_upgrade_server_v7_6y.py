@@ -4821,22 +4821,46 @@ class _ScanProbeStats:
         return {"dominant": dominant, "blocked": sum(blocked.values()), "total": total}
 
 
-def _scan_failure_message(verdict: dict, fds: dict) -> str:
+_LOCAL_NETWORK_SUSPECTS = ("EPERM", "EACCES", "EHOSTUNREACH", "EHOSTDOWN", "ENETUNREACH")
+
+
+def _scan_likely_cause(dominant: str, system: str) -> str:
+    """A short machine-readable guess at why a scan was refused locally.
+
+    "Likely", not "proven": the same errors can have other causes, and the
+    macOS attribution is the leading explanation rather than a measured one.
+    """
+    if dominant in ("EMFILE", "ENFILE"):
+        return "descriptor_exhaustion"
+    if system == "Darwin" and dominant in _LOCAL_NETWORK_SUSPECTS:
+        return "local_network_permission"
+    if dominant in ("EPERM", "EACCES"):
+        return "blocked_by_firewall_or_policy"
+    return "no_route"
+
+
+def _scan_failure_message(verdict: dict, fds: dict, system: str = None) -> str:
+    system = platform.system() if system is None else system
     dominant = verdict["dominant"]
     base = ("The scan could not reach the network: %d of %d addresses failed "
             "immediately (%s) before any device could answer. This is not the same "
             "as finding no devices." % (verdict["blocked"], verdict["total"], dominant))
-    if dominant in ("EPERM", "EACCES"):
-        return base + (" The operating system refused the connections. On macOS, check "
-                       "that OmniSuite is allowed under System Settings > Privacy & "
-                       "Security > Local Network.")
-    if dominant in ("EMFILE", "ENFILE"):
+    cause = _scan_likely_cause(dominant, system)
+    if cause == "descriptor_exhaustion":
         limit = fds.get("fd_soft_limit")
         return base + (" The process ran out of file descriptors%s."
                        % (" (limit %s)" % limit if limit is not None else ""))
+    if cause == "local_network_permission":
+        # OmniSuite never changes this setting itself; it can only say where it is.
+        return base + (" On macOS this usually means Local Network access has not been "
+                       "allowed for OmniSuite. If a permission prompt is showing, choose "
+                       "Allow. Otherwise open System Settings > Privacy & Security > "
+                       "Local Network, switch OmniSuite on, and scan again.")
+    if cause == "blocked_by_firewall_or_policy":
+        return base + (" The operating system refused the connections. A firewall or "
+                       "endpoint-security policy may be blocking OmniSuite.")
     return base + (" The operating system reported no route to every address at once. "
-                   "Check that the selected adapter is connected to this subnet and, "
-                   "on macOS, that Local Network access is allowed for OmniSuite.")
+                   "Check that the selected adapter is connected to this subnet.")
 
 @app.route("/api/tcp_probe", methods=["POST"])
 def api_tcp_probe():
@@ -8129,6 +8153,7 @@ def api_scan():
     # been merged or persisted yet, so a refused scan leaves the cache as it was.
     fds = _fd_diagnostics()
     diagnostics = {"probe_outcomes": stats.snapshot(), "probe_timing_ms": stats.timing_ms(),
+                   "platform": {"system": platform.system(), "machine": platform.machine()},
                    "workers": workers, "duration_s": round(time.time() - start_time, 3),
                    **fds, **_scan_context(ips)}
     if stats.ws_errors:
@@ -8143,6 +8168,7 @@ def api_scan():
                         "first_target_on_attached_subnet", "route_source_address",
                         "route_source_error")})
         return jsonify({"ok": False, "reason": "scan_blocked", "error": message,
+                        "likely_cause": _scan_likely_cause(failure["dominant"], platform.system()),
                         "tested": len(ips), "reachable": 0,
                         "diagnostics": diagnostics}), 503
     if diagnostics["probe_outcomes"].keys() & _SCAN_LOCAL_BLOCK:

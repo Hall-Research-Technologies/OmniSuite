@@ -5,6 +5,7 @@ import os
 import platform
 import shutil
 import subprocess
+import plistlib
 import sys
 import tarfile
 import zipfile
@@ -211,6 +212,36 @@ def zip_macos_app(app_bundle: Path, target_zip: Path) -> None:
     zip_path(app_bundle, target_zip)
 
 
+def declare_local_network_usage(app_bundle: Path, usage: str) -> None:
+    """Add NSLocalNetworkUsageDescription to a built .app, then sign it again.
+
+    macOS asks the person before an app may reach devices on the local network,
+    and this is the sentence it shows. PyInstaller writes the bundle's Info.plist
+    without it, and its command line has no way to add one.
+
+    Editing Info.plist invalidates the ad-hoc signature PyInstaller applied, and
+    Apple Silicon will not run code whose signature does not verify, so the
+    bundle is signed again -- ad hoc, as before; no signing identity is involved
+    -- and the result is verified. A failure here fails the build: shipping a
+    bundle that will not launch is worse than shipping none.
+
+    No Bonjour service types are declared. The application does not use Bonjour
+    or mDNS; it opens direct TCP connections and sends UDP broadcasts, and
+    declaring services it never browses would describe behaviour it does not have.
+    """
+    if not usage.strip():
+        raise RuntimeError("no Local Network usage description for this product")
+    plist_path = app_bundle / "Contents" / "Info.plist"
+    with plist_path.open("rb") as handle:
+        info = plistlib.load(handle)
+    info["NSLocalNetworkUsageDescription"] = usage
+    with plist_path.open("wb") as handle:
+        plistlib.dump(info, handle)
+    run(["codesign", "--force", "--deep", "--sign", "-", str(app_bundle)])
+    run(["codesign", "--verify", "--deep", "--strict", str(app_bundle)])
+    print(f"[build] Local Network usage description declared in {plist_path}")
+
+
 def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
     data_sep = ";" if os.name == "nt" else ":"
     onefile = suffix == "windows"
@@ -350,6 +381,8 @@ def package_release(dist_path: Path, suffix: str, version: str) -> Path:
         app_bundle = dist_path / "OmniSuite.app"
         if not app_bundle.exists():
             raise RuntimeError(f"Expected build output not found: {app_bundle}")
+        declare_local_network_usage(
+            app_bundle, omni_release.active_product().local_network_usage)
         zip_macos_app(app_bundle, artifact)
         return artifact
 

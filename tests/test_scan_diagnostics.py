@@ -61,7 +61,8 @@ class ScanBlockedLocallyTests(base.ServerTestBase):
         self.assertFalse(srv.SCAN_RESULTS.exists())
 
     def test_permission_failures_name_the_macos_privacy_setting(self):
-        body = self._scan(RANGE, _raising(errno.EPERM)).get_json()
+        with mock.patch.object(srv.platform, "system", return_value="Darwin"):
+            body = self._scan(RANGE, _raising(errno.EPERM)).get_json()
         self.assertIn("Local Network", body["error"])
 
     def test_descriptor_exhaustion_names_the_limit_and_is_not_raised(self):

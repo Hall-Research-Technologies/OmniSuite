@@ -513,6 +513,47 @@ def run(binary: Path, expected_version: str, scope: Path | None = None) -> int:
     return report(failures)
 
 
+def local_network_problems(info: dict) -> list:
+    """What is wrong with a macOS bundle's Local Network declaration, if anything."""
+    problems = []
+    usage = info.get("NSLocalNetworkUsageDescription")
+    if not isinstance(usage, str) or not usage.strip():
+        problems.append("Info.plist has no NSLocalNetworkUsageDescription, so macOS shows "
+                        "its Local Network prompt with no explanation of why")
+    return problems
+
+
+def check_macos_bundle(binary: Path) -> list:
+    """Read the packaged app's own Info.plist and signature. Returns problems.
+
+    This looks at the artifact that will be shipped, not at what the build
+    intended: the declaration is only worth anything if it is in the file a person
+    downloads. The plist and the signature details are printed so the CI log is the
+    evidence of what a given build carried.
+    """
+    import plistlib
+    problems = []
+    plist_path = binary.parent.parent / "Info.plist"
+    try:
+        with plist_path.open("rb") as handle:
+            info = plistlib.load(handle)
+    except Exception as exc:
+        return [f"could not read {plist_path}: {type(exc).__name__}"]
+    for key in ("CFBundleIdentifier", "CFBundleName", "CFBundleShortVersionString",
+                "NSLocalNetworkUsageDescription", "NSBonjourServices"):
+        log(f"Info.plist {key} = {info.get(key)!r}")
+    problems.extend(local_network_problems(info))
+    app = binary.parent.parent.parent
+    if shutil.which("codesign"):
+        for args in (["-dvv", str(app)], ["--verify", "--deep", "--strict", str(app)]):
+            result = subprocess.run(["codesign", *args], capture_output=True, text=True)
+            for line in ((result.stdout or "") + (result.stderr or "")).strip().splitlines()[:12]:
+                log("codesign " + args[0] + ": " + line)
+            if args[0] == "--verify" and result.returncode != 0:
+                problems.append("the bundle's signature does not verify")
+    return problems
+
+
 def report(failures: list[str]) -> int:
     if failures:
         log(f"FAIL -- {len(failures)} problem(s):")
@@ -549,6 +590,12 @@ def main() -> int:
         if platform.system() != "Windows" and shutil.which("file"):
             arch = subprocess.run(["file", str(binary)], capture_output=True, text=True)
             log(f"file: {arch.stdout.strip()}")
+        if platform.system() == "Darwin":
+            bundle_problems = check_macos_bundle(binary)
+            if bundle_problems:
+                for item in bundle_problems:
+                    log(f"FAIL -- {item}")
+                return 1
         try:
             return run(binary, expected, scope=Path(tmp))
         finally:
