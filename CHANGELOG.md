@@ -1,5 +1,21 @@
 # Changelog
 
+## V1.1.1 - unreleased (macOS discovery diagnostics)
+
+Maintenance release of OmniSuite on `release/omnisuite-1.1.x`. Not published:
+it is waiting for validation on a real Mac.
+
+- A scan that the operating system refused is now reported as a failed scan
+  with a reason, instead of "0 found". Connection attempts are classified once
+  per address (open, refused, timed out, or the local error such as EPERM,
+  EACCES, EHOSTUNREACH, ENETUNREACH, EMFILE) and returned in `diagnostics`.
+- A refused scan leaves the device cache and scan results untouched.
+- Targets that expand to no addresses are refused with `no_valid_targets`
+  rather than scanning zero addresses.
+- The file-descriptor limit and open count are reported read-only. The limit is
+  never raised automatically.
+- Windows discovery is unchanged: same ports, order and timeouts.
+
 ## V1.1.0 - 2026-09-17
 
 Multiview: a decoder can show several encoders at once as a saved, editable

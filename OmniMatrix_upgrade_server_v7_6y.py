@@ -4,6 +4,8 @@
 # All imports below here
 import os, sys, threading, urllib.request, webbrowser, logging, time, json, re, subprocess, socket, ssl, csv, tempfile, traceback, platform, io, zipfile, uuid
 import copy
+import errno
+import collections
 import urllib.parse
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, send_from_directory, Response
@@ -4455,6 +4457,146 @@ def _tcp_probe(ip: str, ports, timeout: float=0.4) -> bool:
             continue
     return False
 
+
+# ---------------- scan transport diagnostics ----------------
+# A scan that finds nothing is ordinarily an empty network. A scan that finds
+# nothing because the operating system refused every connection before a packet
+# left the machine is a different fact, and used to be reported identically:
+# every error below was swallowed and the result was "0 found".
+#
+# These classify the failure of one connection attempt. They are additive --
+# _tcp_probe above is unchanged and still serves every other caller -- and they
+# only observe; nothing here retries, paces or raises a limit.
+#
+# Errors that mean this machine would not or could not attempt the connection,
+# as opposed to a device that did not answer. EHOSTUNREACH and EHOSTDOWN belong
+# here only when they arrive immediately: a real unanswered ARP takes time, so a
+# "no route" that returns in microseconds was decided locally.
+_SCAN_LOCAL_BLOCK = frozenset({"EPERM", "EACCES", "ENETUNREACH", "EMFILE", "ENFILE",
+                               "ENOBUFS", "EHOSTUNREACH", "EHOSTDOWN"})
+_SCAN_IMMEDIATE_SECS = 0.25
+# A verdict needs a population. One typed address that does not answer is an
+# ordinary result, not evidence about the machine. Hardware-dependent: these two
+# numbers are chosen, not measured, and are marked for validation on a Mac.
+_SCAN_VERDICT_MIN_PROBES = 8
+_SCAN_VERDICT_BLOCKED_SHARE = 0.9
+
+
+def _tcp_errno_label(exc) -> str:
+    code = getattr(exc, "errno", None)
+    if code is None:
+        return "other:" + type(exc).__name__
+    name = errno.errorcode.get(code)
+    if not name:
+        return "errno:%s" % code
+    # Windows reports the same conditions under WSA-prefixed names.
+    return name[3:] if name.startswith("WSA") else name
+
+
+def _classify_tcp_error(exc, elapsed: float) -> str:
+    if isinstance(exc, socket.timeout):
+        return "timeout"
+    label = _tcp_errno_label(exc)
+    if label == "ETIMEDOUT":
+        return "timeout"
+    if label in ("ECONNREFUSED", "ECONNRESET", "ECONNABORTED"):
+        return "refused"       # something answered, so the network is working
+    if label in ("EHOSTUNREACH", "EHOSTDOWN") and elapsed >= _SCAN_IMMEDIATE_SECS:
+        return "unreachable_delayed"
+    return label
+
+
+def _outcome_rank(kind: str) -> int:
+    # Which port's result describes the address. Evidence that the network was
+    # actually consulted outranks a local failure.
+    return {"refused": 0, "timeout": 1, "unreachable_delayed": 2}.get(kind, 3)
+
+
+def _tcp_probe_outcome(ip: str, ports, timeout: float = 0.4) -> str:
+    """Same ports, order and timeout as _tcp_probe, but says why it failed."""
+    best = None
+    for p in ports:
+        began = time.monotonic()
+        try:
+            with socket.create_connection((ip, p), timeout=timeout):
+                return "open"
+        except Exception as exc:
+            kind = _classify_tcp_error(exc, time.monotonic() - began)
+            if best is None or _outcome_rank(kind) < _outcome_rank(best):
+                best = kind
+    return best or "none"
+
+
+def _fd_diagnostics() -> dict:
+    """File-descriptor limit and use, read only. Never raises and never changes it."""
+    info = {}
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        info["fd_soft_limit"] = soft
+        info["fd_hard_limit"] = hard
+    except Exception:
+        pass                      # not available on Windows; absence is the answer
+    for path in ("/dev/fd", "/proc/self/fd"):
+        try:
+            info["fd_open"] = len(os.listdir(path))
+            break
+        except OSError:
+            continue
+    return info
+
+
+class _ScanProbeStats:
+    """Aggregated outcome of one scan's connection attempts, one count per address."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.outcomes = collections.Counter()
+        self.ws_errors = collections.Counter()
+
+    def record(self, outcome: str):
+        with self._lock:
+            self.outcomes[outcome] += 1
+
+    def record_ws_error(self, exc_name: str):
+        with self._lock:
+            self.ws_errors[exc_name] += 1
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return dict(self.outcomes)
+
+    def verdict(self):
+        """A failure description when the scan was refused locally, else None."""
+        with self._lock:
+            counts = dict(self.outcomes)
+        total = sum(counts.values())
+        if total < _SCAN_VERDICT_MIN_PROBES or counts.get("open"):
+            return None
+        blocked = {k: v for k, v in counts.items() if k in _SCAN_LOCAL_BLOCK}
+        if sum(blocked.values()) < total * _SCAN_VERDICT_BLOCKED_SHARE:
+            return None
+        dominant = max(blocked, key=blocked.get)
+        return {"dominant": dominant, "blocked": sum(blocked.values()), "total": total}
+
+
+def _scan_failure_message(verdict: dict, fds: dict) -> str:
+    dominant = verdict["dominant"]
+    base = ("The scan could not reach the network: %d of %d addresses failed "
+            "immediately (%s) before any device could answer. This is not the same "
+            "as finding no devices." % (verdict["blocked"], verdict["total"], dominant))
+    if dominant in ("EPERM", "EACCES"):
+        return base + (" The operating system refused the connections. On macOS, check "
+                       "that OmniSuite is allowed under System Settings > Privacy & "
+                       "Security > Local Network.")
+    if dominant in ("EMFILE", "ENFILE"):
+        limit = fds.get("fd_soft_limit")
+        return base + (" The process ran out of file descriptors%s."
+                       % (" (limit %s)" % limit if limit is not None else ""))
+    return base + (" The operating system reported no route to every address at once. "
+                   "Check that the selected adapter is connected to this subnet and, "
+                   "on macOS, that Local Network access is allowed for OmniSuite.")
+
 @app.route("/api/tcp_probe", methods=["POST"])
 def api_tcp_probe():
     data = request.get_json(silent=True) or {}
@@ -7652,6 +7794,16 @@ def api_scan():
         ips = _expand_targets(targets)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
+    if not ips:
+        # _expand_targets drops any token it does not recognise, so text such as
+        # "10.0.0.1-10.0.0.20" used to expand to nothing and "scan" zero addresses
+        # in no time, which reads exactly like an empty network. Say so instead.
+        log.warning("[SCAN] No scannable addresses in targets %r", targets[:200])
+        return jsonify({"ok": False, "reason": "no_valid_targets",
+                        "error": "No scannable addresses were found in the targets. "
+                                 "Use a single address, a range such as 192.0.2.1-254, "
+                                 "or CIDR such as 192.0.2.0/24.",
+                        "tested": 0, "reachable": 0}), 400
     user = app.config['USERNAME']; pwd = app.config['PASSWORD']
     ws_port = app.config['WS_PORT']; ws_path = app.config['WS_PATH']
     timeout = app.config['TIMEOUT']
@@ -7661,21 +7813,50 @@ def api_scan():
 
     # Single-phase probe: combine TCP + WS in one threaded pass
     raw_units = []
+    stats = _ScanProbeStats()
+    workers = min(96, max(8, len(ips)))
     def probe_ip(ip):
         try:
-            # Quick TCP check first
-            if not _tcp_probe(ip, [ws_port, 80, 443], timeout=0.4):
-                return None
+            # Quick TCP check first. Same ports, order and timeout as before; the
+            # outcome is kept so a scan the OS refused is not read as an empty one.
+            outcome = _tcp_probe_outcome(ip, [ws_port, 80, 443], timeout=0.4)
+        except Exception as exc:
+            stats.record("probe_error:" + type(exc).__name__)
+            return None
+        stats.record(outcome)
+        if outcome != "open":
+            return None
+        try:
             # If reachable, do WS probe
             return _probe_one(ip, user, pwd, ws_port, ws_path, timeout)
-        except Exception:
+        except Exception as exc:
+            stats.record_ws_error(type(exc).__name__)
+            log.debug("[SCAN] %s - WebSocket probe raised %s", ip, type(exc).__name__)
             return None
     
-    with ThreadPoolExecutor(max_workers=min(96, max(8, len(ips)))) as ex:
+    with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = {ex.submit(probe_ip, ip): ip for ip in ips}
         for fut in as_completed(futs):
             res = fut.result()
             if res: raw_units.append(res)
+
+    # Say what the connection attempts did, once, and refuse to present a scan the
+    # operating system blocked as though it had searched the network. Nothing has
+    # been merged or persisted yet, so a refused scan leaves the cache as it was.
+    fds = _fd_diagnostics()
+    diagnostics = {"probe_outcomes": stats.snapshot(), "workers": workers, **fds}
+    if stats.ws_errors:
+        diagnostics["ws_errors"] = dict(stats.ws_errors)
+    failure = None if raw_units else stats.verdict()
+    if failure:
+        message = _scan_failure_message(failure, fds)
+        log.warning("[SCAN] Refused locally: %s outcomes=%s fds=%s", message,
+                    diagnostics["probe_outcomes"], fds)
+        return jsonify({"ok": False, "reason": "scan_blocked", "error": message,
+                        "tested": len(ips), "reachable": 0,
+                        "diagnostics": diagnostics}), 503
+    if diagnostics["probe_outcomes"].keys() & _SCAN_LOCAL_BLOCK:
+        log.info("[SCAN] Connection outcomes: %s fds=%s", diagnostics["probe_outcomes"], fds)
     
     # Deduplicate by MAC
     seen = set(); units = []; omitted = 0
@@ -7800,7 +7981,7 @@ def api_scan():
              hostname_pop, len(merged), 100*hostname_pop/len(merged) if merged else 0,
              type_pop, len(merged), 100*type_pop/len(merged) if merged else 0)
 
-    return jsonify({"ok": True, "units": merged, "encoders": encoders, "decoders": decoders, "tested": len(ips), "reachable": len(raw_units), "omitted": omitted, "added": max(0,len(merged)-len(existing))})
+    return jsonify({"ok": True, "units": merged, "encoders": encoders, "decoders": decoders, "tested": len(ips), "reachable": len(raw_units), "omitted": omitted, "added": max(0,len(merged)-len(existing)), "diagnostics": diagnostics})
 
 # --- unified scan results retrieval
 @app.route("/api/scan_results", methods=["GET"])
