@@ -212,7 +212,7 @@ def zip_macos_app(app_bundle: Path, target_zip: Path) -> None:
     zip_path(app_bundle, target_zip)
 
 
-def declare_local_network_usage(app_bundle: Path, usage: str) -> None:
+def declare_local_network_usage(app_bundle: Path, usage: str, display_name: str = None) -> None:
     """Add NSLocalNetworkUsageDescription to a built .app, then sign it again.
 
     macOS asks the person before an app may reach devices on the local network,
@@ -235,11 +235,94 @@ def declare_local_network_usage(app_bundle: Path, usage: str) -> None:
     with plist_path.open("rb") as handle:
         info = plistlib.load(handle)
     info["NSLocalNetworkUsageDescription"] = usage
+    if display_name:
+        # What System Settings lists under Local Network. Without this both
+        # products appear as "OmniSuite" and cannot be told apart.
+        info["CFBundleDisplayName"] = display_name
+        info["CFBundleName"] = display_name
     with plist_path.open("wb") as handle:
         plistlib.dump(info, handle)
     run(["codesign", "--force", "--deep", "--sign", "-", str(app_bundle)])
     run(["codesign", "--verify", "--deep", "--strict", str(app_bundle)])
     print(f"[build] Local Network usage description declared in {plist_path}")
+
+
+MACOS_README_NAME = "READ-ME-FIRST-macOS.txt"
+
+_MACOS_README = """{title}
+{rule}
+
+{name} is not signed or notarized by Apple, so macOS blocks it the first time
+you open it. That is expected. This page shows how to approve it.
+
+BEFORE YOU APPROVE ANYTHING
+  Only approve {name} if you downloaded it from the official project releases
+  page:
+
+      {url}
+
+  The file name should start with "{prefix}". If it came from anywhere else,
+  delete it. Each release also lists SHA-256 checksums in SHA256SUMS.txt. To
+  check yours, open Terminal in the folder with both files and run
+  shasum -a 256 followed by your zip file's name, then compare the result with
+  the matching line in SHA256SUMS.txt.
+
+FIRST LAUNCH
+  1. Double-click the zip in Finder to unpack it. Use Finder: some other unzip
+     tools damage the app.
+  2. Move OmniSuite.app to your Applications folder if you like.
+  3. Open OmniSuite.app. macOS says it cannot verify the app. Click Done. Do not
+     click Move to Trash.
+  4. Open System Settings, then Privacy & Security. Scroll down to the
+     Security section. It says "OmniSuite" was blocked and shows an
+     Open Anyway button. Click Open Anyway, enter your password, then
+     click Open.
+     The button is only there for a while after the blocked attempt. If you do
+     not see it, open the app again and look again.
+  On macOS 14 (Sonoma) and earlier you can also Control-click the app and
+  choose Open.
+
+  You only need to do this once for each copy you download. A new download may
+  ask again.
+
+LOCAL NETWORK ACCESS
+  The first time {name} looks for devices, macOS asks whether it may find and
+  connect to devices on your local network. Choose Allow.
+
+  If you chose Don't Allow, scans will report that they could not reach the
+  network. To fix it, open System Settings, then Privacy & Security, then
+  Local Network, switch on {name}, and scan again.
+
+WHAT NOT TO DO
+  Do not turn off Gatekeeper, and do not run commands that remove the
+  quarantine flag. Approve this one app, once, and only if it came from the
+  official releases page above.
+
+LATER
+  Future releases are intended to be signed with an Apple Developer ID and
+  notarized, which will remove the Open Anyway step.
+
+More help is in the User Guide: open Settings, or visit /help while {name} is
+running.
+"""
+
+
+def macos_readme_text(product) -> str:
+    """The first-launch instructions that travel inside the macOS download."""
+    title = f"{product.name} for macOS - read this first"
+    return _MACOS_README.format(
+        title=title, rule="=" * len(title), name=product.name,
+        url=omni_release.RELEASES_URL, prefix=product.artifact_prefix)
+
+
+def add_macos_readme(target_zip: Path, product) -> None:
+    """Add the first-launch instructions beside the app, inside the zip.
+
+    Appended to the archive that already exists rather than staged beside the app,
+    so the bundle's symlinks and permissions are never copied or rewritten.
+    """
+    with zipfile.ZipFile(target_zip, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(MACOS_README_NAME, macos_readme_text(product))
 
 
 def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
@@ -381,9 +464,10 @@ def package_release(dist_path: Path, suffix: str, version: str) -> Path:
         app_bundle = dist_path / "OmniSuite.app"
         if not app_bundle.exists():
             raise RuntimeError(f"Expected build output not found: {app_bundle}")
-        declare_local_network_usage(
-            app_bundle, omni_release.active_product().local_network_usage)
+        product = omni_release.active_product()
+        declare_local_network_usage(app_bundle, product.local_network_usage, product.name)
         zip_macos_app(app_bundle, artifact)
+        add_macos_readme(artifact, product)
         return artifact
 
     bundle_dir = dist_path / "OmniSuite"

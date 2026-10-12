@@ -8169,6 +8169,7 @@ def api_scan():
                         "route_source_error")})
         return jsonify({"ok": False, "reason": "scan_blocked", "error": message,
                         "likely_cause": _scan_likely_cause(failure["dominant"], platform.system()),
+                        "app_name": omni_release.active_product().name,
                         "tested": len(ips), "reachable": 0,
                         "diagnostics": diagnostics}), 503
     if diagnostics["probe_outcomes"].keys() & _SCAN_LOCAL_BLOCK:

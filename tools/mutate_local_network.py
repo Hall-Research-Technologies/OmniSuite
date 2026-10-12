@@ -44,13 +44,46 @@ MUTATIONS = [
     ("the product description is blank", "omni_release.py",
      '"OmniSuite connects directly to Atlona OmniStream encoders, decoders and USB "',
      '"OmniSuite "'),
+    ("the first-launch instructions are not added to the zip", "tools/build_release.py",
+     "        add_macos_readme(artifact, product)", "        pass"),
+    ("the instructions tell people to strip quarantine", "tools/build_release.py",
+     "  Do not turn off Gatekeeper, and do not run commands that remove the",
+     "  Run xattr -d com.apple.quarantine, and do not run commands that remove the"),
+    ("the display name is never set", "tools/build_release.py",
+     "    if display_name:", "    if False:"),
+    ("the smoke check stops requiring phrases", "tools/smoke_release.py",
+     '    for needed in ("Open Anyway", "Privacy & Security", "Local Network", "official"):',
+     "    for needed in ():"),
+    ("the blocked-scan answer loses the product name", SERVER,
+     '                        "app_name": omni_release.active_product().name,', ""),
+    ("the notice shows for any blocked cause", "ui/scan-notice.js",
+     "    return body.likely_cause === 'local_network_permission' ? 'local_network_permission' : null;",
+     "    return body.likely_cause ? 'local_network_permission' : null;"),
+    ("Open System Settings is offered to remote browsers", "ui/scan-notice.js",
+     "      LOCAL_HOSTS.indexOf(hostname) !== -1 &&", ""),
+    ("Open System Settings is offered for any server", "ui/scan-notice.js",
+     "    return !!platform && platform.system === 'Darwin';", "    return true;"),
+    ("Retry Scan does not run a scan", "ui/scan-notice.js",
+     "        state.onRetry();", "        void 0;"),
+    ("the diagnostics are dropped from the notice", "ui/scan-notice.js",
+     "    box.appendChild(details);", "    void 0;"),
+    ("the page forgets to retire the old notice", "ui/index.html",
+     "  if (window.OmniScanNotice) OmniScanNotice.hide();", ""),
+    ("the page never presents the verdict", "ui/index.html",
+     "if (window.OmniScanNotice && OmniScanNotice.show(data)) {", "if (false) {"),
 ]
 
 
 def run_suite():
     proc = subprocess.run([sys.executable, "-m", "unittest", "tests.test_macos_local_network",
-                           "tests.test_scan_diagnostics"], cwd=str(root), capture_output=True, text=True)
-    return proc.returncode
+                           "tests.test_macos_first_launch", "tests.test_scan_diagnostics"],
+                          cwd=str(root), capture_output=True, text=True)
+    if proc.returncode:
+        return proc.returncode
+    # The page and the notice module are JavaScript; their tests are run the way run_tests.py runs them.
+    node = subprocess.run(["node", "tests/scan_notice_test.js"], cwd=str(root),
+                          capture_output=True, text=True)
+    return node.returncode
 
 
 assert run_suite() == 0, "suite must be green first"

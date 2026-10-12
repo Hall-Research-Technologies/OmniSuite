@@ -94,11 +94,12 @@ with an Apple Developer ID certificate. That is a business and infrastructure
 decision, not a code change, and is deliberately not attempted here. Until then each
 new download may prompt again.
 
-Both products share the bundle identifier `OmniSuite` and the display name
-`OmniSuite`, so a machine with both installed will list two indistinguishable
-entries under Local Network. Giving them distinct names would change identity
-relative to every published build, so it is recorded here as a decision for the
-maintainers rather than made silently.
+Both products share the bundle identifier `OmniSuite`. The build now sets the display
+name and bundle name to the product's own (`OmniSuite` or `OmniSuite Plus`) so that
+System Settings lists them separately; the identifier, executable and app file name
+are unchanged because the launcher and smoke test find the app by them. Whether System
+Settings actually lists the Plus build under its display name is part of the validation
+below.
 
 ## Validation on a real Mac
 
@@ -127,6 +128,18 @@ Do not reset any permission automatically. Use a Mac, and for each product line
    record whether the prompt appears again.
 8. **V1.1.0.** If the original machine still has V1.1.0, record what it does on a
    first scan with access off, on, and after Don't Allow.
+
+9. **The notice.** With access off, scan. Confirm the notice appears under the Scan
+   button with the product's name, the System Settings path, **Retry Scan** and **Open
+   System Settings**, and that Technical details holds the diagnostics. Press **Open
+   System Settings** and record whether it opens Privacy & Security, whether it lands on
+   Local Network, and what Safari or Chrome asks first. If it is unreliable, the button
+   should be removed (the manual path is always shown).
+10. **Retry.** Switch access on and press **Retry Scan**; confirm the notice clears and
+    devices appear. Scan a genuinely empty range and confirm **no** notice appears.
+11. **Gatekeeper.** On a clean Mac, follow `READ-ME-FIRST-macOS.txt` from the zip: record
+    whether Open Anyway appears where it says, and how long it stays available.
+12. **Names.** Confirm System Settings lists the Plus build as "OmniSuite Plus".
 
 Send back, for steps 3 to 6: the `diagnostics` object, the message shown, and what
 System Settings listed.

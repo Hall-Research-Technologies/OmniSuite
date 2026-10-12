@@ -76,7 +76,9 @@ To publish a release (with approval):
 1. Finish on the release branch; `VERSION` holds the version being released.
 2. Add `RELEASE_NOTES_<version>.md` (for example `RELEASE_NOTES_V1.2.0.md`). The
    workflow refuses a tag whose notes file does not exist.
-3. Update the User Guide and `CHANGELOG.md`, and run `python run_tests.py`.
+3. Update the User Guide and `CHANGELOG.md`, and run `python run_tests.py`. If the release
+   includes macOS builds, the release notes link to [docs/INSTALL_MACOS.md](docs/INSTALL_MACOS.md)
+   and say that macOS will ask for approval under Privacy & Security -> Open Anyway.
 4. Rehearse with a **dispatch** of the workflow on that branch (see below).
 5. Create the tag on the release-branch commit. The identity job refuses it unless the
    tag is this product's, agrees with `VERSION`, and the commit is on the release

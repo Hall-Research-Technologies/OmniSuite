@@ -30,6 +30,9 @@ from __future__ import annotations
 import re
 from typing import Iterable, Optional
 
+# Where releases are published, and the only place a download should come from.
+RELEASES_URL = "https://github.com/Hall-Research-Technologies/OmniSuite/releases"
+
 # One to three further numeric parts after the major: V1.0, V1.1.0, V0.9.1.1.
 _NUMERIC = r"(\d+(?:\.\d+){1,3})"
 

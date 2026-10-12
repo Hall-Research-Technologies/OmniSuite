@@ -189,3 +189,12 @@ with a different one.
 The full User Guide is in **Settings › User Guide**, and covers Remote Access
 setup, certificates, accounts and permissions, what each message means, and
 troubleshooting.
+
+## Installing on macOS
+
+OmniSuite Plus for macOS is not signed with an Apple Developer ID and is not notarized, so
+macOS asks you to approve it the first time: open System Settings -> Privacy & Security and
+choose **Open Anyway**. Only approve a download from the official releases page. macOS also
+asks for Local Network access the first time you scan; choose Allow. Full steps are in
+[docs/INSTALL_MACOS.md](docs/INSTALL_MACOS.md) and in `READ-ME-FIRST-macOS.txt` inside the
+zip.
