@@ -101,9 +101,11 @@ been tested on each one — the levels are not the same.
 1. **Download** the archive for your platform and extract it.
 2. **Launch OmniSuite.**
    - Windows: run `OmniSuite.exe`.
-   - macOS: open `OmniSuite.app`. It is **not signed or notarised**, so the
-     first launch needs right-click → Open (see
-     [Supported platforms](#supported-platforms)).
+   - macOS: open `OmniSuite.app`. It is **not signed or notarised**, so macOS
+     blocks the first launch; approve it under **System Settings → Privacy &
+     Security → Open Anyway**. Step by step, and what to check before you
+     approve it: [docs/INSTALL_MACOS.md](docs/INSTALL_MACOS.md). The same text is
+     in the zip as `READ-ME-FIRST-macOS.txt`.
    - Ubuntu: run `./OmniSuite/OmniSuite` from a desktop session.
 3. A small launcher window appears and **your browser opens** on the OmniSuite
    interface. OmniSuite serves on `127.0.0.1:8080`, or the next free port if
@@ -224,7 +226,11 @@ devices. Treat those platforms as ready to try, not as field-proven.
   a tool that flattens them leaves the app unable to load its own Python
   framework. It is **not code signed, not Developer ID signed, and not
   notarised**, so Gatekeeper will refuse a normal double-click on first launch.
-  Right-click the app → **Open**, then confirm.
+  Approve it under **System Settings → Privacy & Security → Open Anyway**, only
+  for a download from the official releases page; see
+  [docs/INSTALL_MACOS.md](docs/INSTALL_MACOS.md). macOS also asks for **Local
+  Network** access the first time you scan; choose Allow. Developer ID signing and
+  notarization are a planned improvement.
 - **Ubuntu** — a `tar.gz` containing an `OmniSuite` directory; run the
   `OmniSuite` executable inside it. It needs a **desktop session**: the launcher
   is a graphical window and there is **no headless mode**. CI smoke-tests the

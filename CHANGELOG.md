@@ -1,24 +1,54 @@
 # Changelog
 
-## V1.1.1 - unreleased (macOS discovery diagnostics)
+## V1.1.1 - unreleased
 
-Maintenance release of OmniSuite on `release/omnisuite-1.1.x`. Not published:
-it is waiting for validation on a real Mac.
+A maintenance release about scanning on macOS. See [RELEASE_NOTES_V1.1.1.md](RELEASE_NOTES_V1.1.1.md)
+for the user-facing summary. It makes a blocked scan visible and explains how to fix it; it does not
+claim to have fixed the original report until that is confirmed on real hardware.
 
-- A scan that the operating system refused is now reported as a failed scan
-  with a reason, instead of "0 found". Connection attempts are classified once
-  per address (open, refused, timed out, or the local error such as EPERM,
-  EACCES, EHOSTUNREACH, ENETUNREACH, EMFILE) and returned in `diagnostics`.
-- A refused scan leaves the device cache and scan results untouched.
-- Targets that expand to no addresses are refused with `no_valid_targets`
-  rather than scanning zero addresses.
-- The file-descriptor limit and open count are reported read-only. The limit is
-  never raised automatically.
-- Scan diagnostics also carry target count, scan duration, fastest and slowest
-  attempt per outcome, the active adapters, whether the first target is on an
-  attached subnet, and the local address the routing table would use. Nothing is
-  transmitted to learn this.
-- Windows discovery is unchanged: same ports, order and timeouts.
+### Scanning
+
+- A scan the operating system refuses is now reported as a failed scan with a reason, instead of
+  "0 found", and leaves the device list untouched. Each address's connection result is classified
+  once (open, refused, timed out, or a local error such as no route or permission denied) and
+  returned in `diagnostics` with the target count, duration, active adapters and file-descriptor
+  limit. Nothing is raised or retried automatically. A scan that completes and finds nothing is
+  still an ordinary empty result.
+- Targets that expand to no addresses, such as a range written with the full address on both
+  sides, are refused with an explanation instead of scanning nothing.
+- A blocked scan says what to do. On macOS it points at System Settings > Privacy & Security >
+  Local Network; on Windows and Linux it says a firewall or security policy may be blocking
+  OmniSuite. Device Info shows a notice for the macOS case with **Retry Scan** and, on a Mac
+  used directly, **Open System Settings**. Ordinary empty scans never show it.
+- Windows and Linux discovery is unchanged: same ports, order and timeouts.
+
+### macOS
+
+- The app now declares why it needs local-network access (`NSLocalNetworkUsageDescription`), so
+  macOS can explain its Local Network prompt. The build signs the bundle again ad hoc after adding
+  it, and the smoke test reads the shipped `Info.plist` and signature. No Bonjour services are
+  declared: the application does not use Bonjour. The bundle identifier is unchanged.
+- The macOS download carries `READ-ME-FIRST-macOS.txt`, and `docs/INSTALL_MACOS.md` explains how to
+  approve an unsigned, un-notarized app under System Settings > Privacy & Security > Open Anyway,
+  to approve only a download from the official releases page, and not to disable Gatekeeper.
+  Developer ID signing and notarization are documented as a future improvement.
+- The first-run "Network Access Required" notice now also covers macOS Local Network access. A Mac
+  that acknowledged the earlier wording sees it once more; Windows and Linux installations do not.
+
+### Updates and releases
+
+- The in-app update check reads the release list and offers the newest release by version number,
+  and reports "unable to check" when none is found. Release tags must be exactly
+  `V<number>.<number>[.<number>]`. Installed V1.1.0 applications keep working: the same repository,
+  tag form and artifact names are used.
+- The release workflow decides identity before building and refuses a tag that is not
+  `V<number>...`, disagrees with `VERSION`, is not on the release branch, or has no release notes.
+  A manually dispatched build is a diagnostic build and never publishes.
+
+### Documentation
+
+- User Guide: a "macOS: first launch" section and a "macOS: Local Network access" section, and a
+  new "When a scan fails instead of finding nothing" section.
 
 ## V1.1.0 - 2026-09-17
 

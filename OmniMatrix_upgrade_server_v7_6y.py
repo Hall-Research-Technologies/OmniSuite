@@ -16,6 +16,8 @@ import websocket
 import requests
 import omni_usb_extender
 import omni_multiview
+import omni_product
+import omni_release
 
 try:
     import psutil
@@ -3203,6 +3205,11 @@ NOTICE_ACK = DATA_DIR / "notice_ack.json"
 # Every notice this store may record. An unknown name is refused rather than
 # written, so a typo on a page cannot silently create a notice nothing displays.
 NOTICE_IDS = ("network_access",)
+# The wording of a notice changes sometimes. An acknowledgement records which
+# revision it covered, so advice that is genuinely new can be shown once without
+# re-asking everyone who has already read the old advice. Revision 2 of
+# network_access added macOS Local Network access, which matters only on a Mac.
+NOTICE_REVISIONS = {"network_access": 2}
 # The release the operator has already been alerted about. Stored here rather
 # than in UI_PREFS because Reset Appearance deletes that file wholesale, and
 # having the icon start flashing again because someone changed a colour would be
@@ -3244,9 +3251,25 @@ def _write_notice_ack(state):
             pass
 
 
-def _notice_acknowledged(notice_id):
+def _notice_acknowledged(notice_id, system=None):
+    """Has this installation read the CURRENT advice? Revision-aware.
+
+    An acknowledgement from before revisions existed covers revision 1. A newer
+    revision re-asks only where the new advice applies: the macOS paragraph does
+    not apply to Windows or Linux, so those installations are not asked again.
+    """
     entry = _read_notice_ack().get(notice_id)
-    return bool(isinstance(entry, dict) and entry.get("acknowledged"))
+    if not (isinstance(entry, dict) and entry.get("acknowledged")):
+        return False
+    try:
+        covered = int(entry.get("revision") or 1)
+    except (TypeError, ValueError):
+        covered = 1
+    current = NOTICE_REVISIONS.get(notice_id, 1)
+    if covered >= current:
+        return True
+    system = platform.system() if system is None else system
+    return not (notice_id == "network_access" and system == "Darwin")
 
 
 def _acknowledged_update_version():
@@ -3315,9 +3338,12 @@ def api_notices():
     for notice_id in NOTICE_IDS:
         entry = state.get(notice_id)
         entry = entry if isinstance(entry, dict) else {}
-        notices[notice_id] = {"acknowledged": bool(entry.get("acknowledged")),
-                              "acknowledged_at": entry.get("acknowledged_at")}
-    return jsonify({"ok": True, "notices": notices})
+        notices[notice_id] = {"acknowledged": _notice_acknowledged(notice_id),
+                              "acknowledged_at": entry.get("acknowledged_at"),
+                              "revision": NOTICE_REVISIONS.get(notice_id, 1)}
+    # The product name is data for the dialog, which is one static file.
+    return jsonify({"ok": True, "notices": notices,
+                    "app_name": omni_release.active_product().name})
 
 
 @app.route("/api/notices/ack", methods=["POST"])
@@ -3336,6 +3362,7 @@ def api_notices_ack():
     with _notice_ack_lock:
         state = _read_notice_ack()
         state[notice_id] = {"acknowledged": True,
+                            "revision": NOTICE_REVISIONS.get(notice_id, 1),
                             "acknowledged_at": time.strftime("%Y-%m-%d %H:%M:%S")}
         _write_notice_ack(state)
     return jsonify({"ok": True, "notice": notice_id, "acknowledged": True})
@@ -3404,10 +3431,15 @@ def api_scan_preferences():
 # of it, puts the version comparison and the cache in one place, and means all
 # four pages see the same answer instead of each asking separately.
 
-GITHUB_OWNER = "Hall-Research-Technologies"
-GITHUB_REPO = "omniSuite"
+# The product reads its OWN release repository (omni_release): the one releases are
+# published to, and the one installed V1.1.0 apps already read.
+GITHUB_OWNER, GITHUB_REPO = omni_release.active_product().release_repo.split("/", 1)
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
-GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+# The release LIST rather than the repository-wide "latest" release. Whether a release
+# is one this product should offer is decided from its tag and artifact names
+# (omni_release), never from anything GitHub says about it, and the newest is chosen
+# by version number rather than by creation date.
+GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases?per_page=100"
 
 # Several hours, not minutes. Nothing about a release changes quickly, and this
 # must never look like another polling loop.
@@ -3515,34 +3547,49 @@ def _platform_asset_key():
     return None
 
 
-def _select_platform_asset(assets):
-    """The asset matching this platform, or None."""
+def _select_platform_asset(assets, version=None):
+    """The asset matching this platform and this product, or None.
+
+    The name must be this product's artifact name exactly: the product prefix,
+    a version, and the platform tail. A loose suffix match would offer a build
+    from some other artifact family that happens to end the same way. When
+    `version` is given the version in the name must agree with the release it
+    came from.
+    """
     key = _platform_asset_key()
     if not key:
         return None
-    for asset in assets or []:
-        name = str((asset or {}).get("name") or "")
-        url = (asset or {}).get("browser_download_url")
+    product = omni_release.active_product()
+    if not isinstance(assets, list):
+        return None
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("name") or "")
+        url = asset.get("browser_download_url")
         if not name or not _is_official_release_url(url):
             continue
-        stem = name.lower()
-        # The suffix is matched on a token boundary so "x86_64" cannot be
-        # satisfied by "arm64" or the reverse.
-        if re.search(rf"[-_.]{re.escape(key)}\.(zip|tar\.gz|tgz)$", stem):
-            return {"name": name, "url": url, "size": (asset or {}).get("size"),
-                    "platform": key}
+        parsed = product.parse_asset(name)
+        if not parsed or parsed["platform"] != key:
+            continue
+        if version is not None and (omni_release.version_tuple(parsed["version"])
+                                    != omni_release.version_tuple(version)):
+            continue
+        return {"name": name, "url": url, "size": asset.get("size"),
+                "platform": key}
     return None
 
 
-def _fetch_latest_release():
-    """Ask GitHub for the latest normal release. Raises on any failure.
+def _fetch_release_feed():
+    """Ask GitHub for the published releases. Raises on any failure.
 
-    `/releases/latest` is used rather than the full list because GitHub already
-    excludes drafts and prereleases from it, so "the latest normal release" is
-    the endpoint's own definition rather than something reimplemented here.
+    The list is read, not the repository-wide "latest" endpoint (see GITHUB_RELEASES_API), and
+    drafts are already absent from an unauthenticated read. Whether a release
+    belongs to this product is decided afterwards from its tag and artifact
+    names, never from anything GitHub says about it.
     """
     response = requests.get(
-        GITHUB_LATEST_API,
+        GITHUB_RELEASES_API,
         timeout=UPDATE_CHECK_TIMEOUT,
         headers={"Accept": "application/vnd.github+json",
                  "User-Agent": f"OmniSuite/{_app_version()}"},
@@ -3586,31 +3633,29 @@ def _update_check(force=False):
         "asset_url": None,
         "checked_at": None,
         "source": "github",
+        "product": omni_product.PRODUCT_ID,
         "stale": False,
         "error_summary": None,
         # Kept so anything still reading the older name keeps working.
         "current_version": installed,
     }
     try:
-        payload = _fetch_latest_release()
-        tag = (payload or {}).get("tag_name") or (payload or {}).get("name")
-        if _version_tuple(tag) is None:
-            raise ValueError(f"unrecognised release tag {tag!r}")
-        # Drafts and prereleases should already be excluded by the endpoint;
-        # honour the flags anyway rather than trusting that silently.
-        if (payload or {}).get("draft") or (payload or {}).get("prerelease"):
-            raise LookupError("no normal release published")
-        html_url = (payload or {}).get("html_url")
-        result["latest_version"] = str(tag).strip()
+        feed = _fetch_release_feed()
+        # Only this product's releases are ever considered. Nothing is offered
+        # when the feed holds none, and that is UNABLE_TO_CHECK rather than
+        # "up to date": nothing was confirmed.
+        release, core = omni_release.select_release(feed, omni_release.active_product())
+        html_url = release.get("html_url")
+        result["latest_version"] = "V" + core
         # Strictly newer, and nothing else. A development build legitimately
         # ahead of the newest published release is CURRENT, not a failure and
         # not an update -- which is the whole reason this is a three-way state
         # and not a boolean.
-        result["update_available"] = _version_is_newer(tag, installed)
+        result["update_available"] = _version_is_newer(core, installed)
         if _is_official_release_url(html_url):
             result["release_url"] = html_url
         if result["update_available"]:
-            result["asset"] = _select_platform_asset((payload or {}).get("assets"))
+            result["asset"] = _select_platform_asset(release.get("assets"), core)
             result["asset_url"] = (result["asset"] or {}).get("url")
         result["status"] = UPDATE_AVAILABLE if result["update_available"] else UPDATE_CURRENT
     except Exception as exc:
@@ -4629,22 +4674,46 @@ class _ScanProbeStats:
         return {"dominant": dominant, "blocked": sum(blocked.values()), "total": total}
 
 
-def _scan_failure_message(verdict: dict, fds: dict) -> str:
+_LOCAL_NETWORK_SUSPECTS = ("EPERM", "EACCES", "EHOSTUNREACH", "EHOSTDOWN", "ENETUNREACH")
+
+
+def _scan_likely_cause(dominant: str, system: str) -> str:
+    """A short machine-readable guess at why a scan was refused locally.
+
+    "Likely", not "proven": the same errors can have other causes, and the
+    macOS attribution is the leading explanation rather than a measured one.
+    """
+    if dominant in ("EMFILE", "ENFILE"):
+        return "descriptor_exhaustion"
+    if system == "Darwin" and dominant in _LOCAL_NETWORK_SUSPECTS:
+        return "local_network_permission"
+    if dominant in ("EPERM", "EACCES"):
+        return "blocked_by_firewall_or_policy"
+    return "no_route"
+
+
+def _scan_failure_message(verdict: dict, fds: dict, system: str = None) -> str:
+    system = platform.system() if system is None else system
     dominant = verdict["dominant"]
     base = ("The scan could not reach the network: %d of %d addresses failed "
             "immediately (%s) before any device could answer. This is not the same "
             "as finding no devices." % (verdict["blocked"], verdict["total"], dominant))
-    if dominant in ("EPERM", "EACCES"):
-        return base + (" The operating system refused the connections. On macOS, check "
-                       "that OmniSuite is allowed under System Settings > Privacy & "
-                       "Security > Local Network.")
-    if dominant in ("EMFILE", "ENFILE"):
+    cause = _scan_likely_cause(dominant, system)
+    if cause == "descriptor_exhaustion":
         limit = fds.get("fd_soft_limit")
         return base + (" The process ran out of file descriptors%s."
                        % (" (limit %s)" % limit if limit is not None else ""))
+    if cause == "local_network_permission":
+        # OmniSuite never changes this setting itself; it can only say where it is.
+        return base + (" On macOS this usually means Local Network access has not been "
+                       "allowed for OmniSuite. If a permission prompt is showing, choose "
+                       "Allow. Otherwise open System Settings > Privacy & Security > "
+                       "Local Network, switch OmniSuite on, and scan again.")
+    if cause == "blocked_by_firewall_or_policy":
+        return base + (" The operating system refused the connections. A firewall or "
+                       "endpoint-security policy may be blocking OmniSuite.")
     return base + (" The operating system reported no route to every address at once. "
-                   "Check that the selected adapter is connected to this subnet and, "
-                   "on macOS, that Local Network access is allowed for OmniSuite.")
+                   "Check that the selected adapter is connected to this subnet.")
 
 @app.route("/api/tcp_probe", methods=["POST"])
 def api_tcp_probe():
@@ -7895,6 +7964,7 @@ def api_scan():
     # been merged or persisted yet, so a refused scan leaves the cache as it was.
     fds = _fd_diagnostics()
     diagnostics = {"probe_outcomes": stats.snapshot(), "probe_timing_ms": stats.timing_ms(),
+                   "platform": {"system": platform.system(), "machine": platform.machine()},
                    "workers": workers, "duration_s": round(time.time() - start_time, 3),
                    **fds, **_scan_context(ips)}
     if stats.ws_errors:
@@ -7909,6 +7979,8 @@ def api_scan():
                         "first_target_on_attached_subnet", "route_source_address",
                         "route_source_error")})
         return jsonify({"ok": False, "reason": "scan_blocked", "error": message,
+                        "likely_cause": _scan_likely_cause(failure["dominant"], platform.system()),
+                        "app_name": omni_release.active_product().name,
                         "tested": len(ips), "reachable": 0,
                         "diagnostics": diagnostics}), 503
     if diagnostics["probe_outcomes"].keys() & _SCAN_LOCAL_BLOCK:

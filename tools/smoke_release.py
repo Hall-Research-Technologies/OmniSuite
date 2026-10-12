@@ -457,6 +457,80 @@ def run(binary: Path, expected_version: str, scope: Path | None = None) -> int:
     return report(failures)
 
 
+def local_network_problems(info: dict) -> list:
+    """What is wrong with a macOS bundle's Local Network declaration, if anything."""
+    problems = []
+    usage = info.get("NSLocalNetworkUsageDescription")
+    if not isinstance(usage, str) or not usage.strip():
+        problems.append("Info.plist has no NSLocalNetworkUsageDescription, so macOS shows "
+                        "its Local Network prompt with no explanation of why")
+    return problems
+
+
+def macos_readme_problems(text) -> list:
+    """What is wrong with the first-launch instructions shipped beside the app."""
+    problems = []
+    if not isinstance(text, str) or not text.strip():
+        return ["the first-launch instructions are missing or empty"]
+    for needed in ("Open Anyway", "Privacy & Security", "Local Network", "official"):
+        if needed not in text:
+            problems.append(f"the first-launch instructions do not mention {needed!r}")
+    return problems
+
+
+def identity_problems(info: dict) -> list:
+    """The bundle must carry this product's own identity.
+
+    macOS keys an app's permissions on its identity, so a bundle with the wrong identifier
+    would be a different application to it.
+    """
+    here = Path(__file__).resolve().parents[1]
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+    import omni_release
+    product = omni_release.active_product()
+    problems = []
+    if info.get("CFBundleIdentifier") != product.bundle_identifier:
+        problems.append("CFBundleIdentifier is %r, expected %r for %s"
+                        % (info.get("CFBundleIdentifier"), product.bundle_identifier, product.name))
+    if info.get("CFBundleDisplayName") != product.name:
+        problems.append("CFBundleDisplayName is %r, expected %r"
+                        % (info.get("CFBundleDisplayName"), product.name))
+    return problems
+
+
+def check_macos_bundle(binary: Path) -> list:
+    """Read the packaged app's own Info.plist and signature. Returns problems.
+
+    This looks at the artifact that will be shipped, not at what the build
+    intended: the declaration is only worth anything if it is in the file a person
+    downloads. The plist and the signature details are printed so the CI log is the
+    evidence of what a given build carried.
+    """
+    import plistlib
+    problems = []
+    plist_path = binary.parent.parent / "Info.plist"
+    try:
+        with plist_path.open("rb") as handle:
+            info = plistlib.load(handle)
+    except Exception as exc:
+        return [f"could not read {plist_path}: {type(exc).__name__}"]
+    for key in ("CFBundleIdentifier", "CFBundleName", "CFBundleShortVersionString",
+                "NSLocalNetworkUsageDescription", "NSBonjourServices"):
+        log(f"Info.plist {key} = {info.get(key)!r}")
+    problems.extend(local_network_problems(info))
+    problems.extend(identity_problems(info))
+    app = binary.parent.parent.parent
+    if shutil.which("codesign"):
+        for args in (["-dvv", str(app)], ["--verify", "--deep", "--strict", str(app)]):
+            result = subprocess.run(["codesign", *args], capture_output=True, text=True)
+            for line in ((result.stdout or "") + (result.stderr or "")).strip().splitlines()[:12]:
+                log("codesign " + args[0] + ": " + line)
+            if args[0] == "--verify" and result.returncode != 0:
+                problems.append("the bundle's signature does not verify")
+    return problems
+
+
 def report(failures: list[str]) -> int:
     if failures:
         log(f"FAIL -- {len(failures)} problem(s):")
@@ -493,6 +567,18 @@ def main() -> int:
         if platform.system() != "Windows" and shutil.which("file"):
             arch = subprocess.run(["file", str(binary)], capture_output=True, text=True)
             log(f"file: {arch.stdout.strip()}")
+        if platform.system() == "Darwin":
+            bundle_problems = check_macos_bundle(binary)
+            readme = Path(tmp) / "READ-ME-FIRST-macOS.txt"
+            try:
+                bundle_problems.extend(macos_readme_problems(
+                    readme.read_text(encoding="utf-8") if readme.exists() else None))
+            except Exception as exc:
+                bundle_problems.append(f"could not read the first-launch instructions: {type(exc).__name__}")
+            if bundle_problems:
+                for item in bundle_problems:
+                    log(f"FAIL -- {item}")
+                return 1
         try:
             return run(binary, expected, scope=Path(tmp))
         finally:

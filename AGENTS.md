@@ -1,5 +1,46 @@
 # OmniSuite development rules
 
+## Branches
+
+| Branch | Purpose |
+|---|---|
+| `main` | The published stable release (currently V1.1.0). |
+| `release/omnisuite-1.1.x` | Maintenance and 1.1.x releases. Created from tag `V1.1.0`. |
+| `feature/*` | Individual features and fixes. |
+
+- Do not rename, delete, reset or force-push `main`, `V1.1.0` or any release branch.
+- Do not create a production tag or publish a release without approval.
+- Read [DEVELOPMENT.md](DEVELOPMENT.md) before branching or releasing.
+
+## Release identity
+
+A GitHub release does not say what it is, so identity is something this project has to
+establish. `omni_release.py` is the single definition; `omni_product.py` names the product.
+
+- Tag `V1.1.1`; artifacts `OmniSuite-V1.1.1-<platform>`.
+- A tag is never repaired. `v1.1.1`, `V1.1.1-rc1` and a tag with a trailing newline are not
+  release tags; a release that had to be fixed to be understood was not understood. Match
+  with `\Z`, never `$`.
+- The prerelease flag is a channel, not an identity. It decides whether a build is offered;
+  it never decides what a release is.
+- The updater reads the release list and offers the newest release whose tag and artifact
+  names are this product's, by highest number rather than feed order. Nothing compatible is
+  UNABLE_TO_CHECK, never "up to date".
+- Installed V1.1.0 applications read this repository's "latest" release and cannot be
+  changed. What is published must keep working with them; `tests/test_release_compatibility.py`
+  runs their update check, frozen verbatim, against what the build produces.
+- The workflow decides identity before anything is built (`tools/release_identity.py`) and
+  fails closed: the tag must be this product's, agree with `VERSION`, sit on the release
+  branch, and have release notes for its version. A dispatch or a branch push is a diagnostic
+  build that cannot publish and must carry a suffix.
+- The dispatched version is untrusted text: it reaches the guard through the environment and
+  is never interpolated into a shell command.
+- Publish collects only this product's artifacts and verifies every file against the product
+  and version.
+- Customer-facing material (README, changelog, release notes, installer documentation, the
+  User Guide, workflow text) describes OmniSuite only. A test enforces it.
+- Do not create a production tag or publish a release without approval.
+
 ## Preserve the working application
 
 - This is an existing working application. Preserve existing behavior.

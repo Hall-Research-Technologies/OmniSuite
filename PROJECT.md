@@ -1,5 +1,17 @@
 # OmniSuite architecture and USB extender plan
 
+## Branches
+
+| Branch | Purpose |
+|---|---|
+| `main` | The published stable release (currently V1.1.0). |
+| `release/omnisuite-1.1.x` | Maintenance and 1.1.x releases. Created from tag `V1.1.0`. |
+| `feature/*` | Individual features and fixes. |
+
+- Do not rename, delete, reset or force-push `main`, `V1.1.0` or any release branch.
+- Do not create a production tag or publish a release without approval.
+- Read [DEVELOPMENT.md](DEVELOPMENT.md) before branching or releasing.
+
 ## Product purpose
 
 OmniSuite is a local Atlona by Hall Research OmniStream device and firmware manager with an A/V matrix, a configuration workspace, a USB matrix for compatible OmniStream endpoints, and device maintenance controls. The active application is a threaded Flask server in `OmniMatrix_upgrade_server_v7_6y.py` serving static HTML and JavaScript from `ui/matrix`.
@@ -2836,14 +2848,18 @@ newer one exists. It is deliberately not a dependency: the application
 discovers, scans, routes and upgrades with no Internet at all, and every failure
 in this path is reported as "unable to check" and affects nothing else.
 
-    repository   Hall-Research-Technologies/omniSuite
-    endpoint     https://api.github.com/repos/.../releases/latest
-    releases     https://github.com/Hall-Research-Technologies/omniSuite/releases
+    repository   Hall-Research-Technologies/OmniSuite
+    endpoint     https://api.github.com/repos/.../releases?per_page=100
+    releases     https://github.com/Hall-Research-Technologies/OmniSuite/releases
 
-`/releases/latest` is used rather than the full list because GitHub already
-excludes drafts and prereleases from it, so "the latest normal release" is the
-endpoint's own definition rather than something reimplemented here. The release
-TAG is what is compared; asset filenames are never used to decide a version.
+The release LIST is read, not the repository-wide "latest" release. Installed V1.1.0
+applications still read "latest", so releases are published to this repository with the same
+tag form and artifact names. Which releases this product offers is decided from tag and
+artifact names (`omni_release`): the tag must be exactly `V<number>.<number>[.<number>]`,
+drafts and prereleases are not offered, and the newest is chosen by version number rather
+than by creation date. If none qualifies the answer is "unable to check", never "up to
+date". The release TAG is what is compared; asset filenames decide only which download is
+offered.
 
 The comparison is numeric, not lexical. `_version_tuple()` accepts an optional
 leading `V` or `v`, pads to three components so `1.0` equals `1.0.0`, and

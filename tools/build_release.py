@@ -5,12 +5,16 @@ import os
 import platform
 import shutil
 import subprocess
+import plistlib
 import sys
 import tarfile
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+import omni_release  # noqa: E402
 ENTRY = ROOT / "OmniMatrix_upgrade_server_v7_6y.py"
 LAUNCHER = ROOT / "app_launcher.py"
 VERSION_FILE = ROOT / "VERSION"
@@ -208,6 +212,125 @@ def zip_macos_app(app_bundle: Path, target_zip: Path) -> None:
     zip_path(app_bundle, target_zip)
 
 
+def declare_local_network_usage(app_bundle: Path, usage: str, display_name: str = None,
+                                bundle_identifier: str = None) -> None:
+    """Add NSLocalNetworkUsageDescription to a built .app, then sign it again.
+
+    macOS asks the person before an app may reach devices on the local network,
+    and this is the sentence it shows. PyInstaller writes the bundle's Info.plist
+    without it, and its command line has no way to add one.
+
+    Editing Info.plist invalidates the ad-hoc signature PyInstaller applied, and
+    Apple Silicon will not run code whose signature does not verify, so the
+    bundle is signed again -- ad hoc, as before; no signing identity is involved
+    -- and the result is verified. A failure here fails the build: shipping a
+    bundle that will not launch is worse than shipping none.
+
+    No Bonjour service types are declared. The application does not use Bonjour
+    or mDNS; it opens direct TCP connections and sends UDP broadcasts, and
+    declaring services it never browses would describe behaviour it does not have.
+    """
+    if not usage.strip():
+        raise RuntimeError("no Local Network usage description for this product")
+    plist_path = app_bundle / "Contents" / "Info.plist"
+    with plist_path.open("rb") as handle:
+        info = plistlib.load(handle)
+    info["NSLocalNetworkUsageDescription"] = usage
+    if display_name:
+        # What System Settings lists under Local Network. Without this both
+        # products appear as "OmniSuite" and cannot be told apart.
+        info["CFBundleDisplayName"] = display_name
+        info["CFBundleName"] = display_name
+    if bundle_identifier:
+        # What macOS keys the app's permissions on. Distinct per product, so two
+        # products on one Mac keep separate Local Network permissions. OmniSuite's is
+        # its existing "OmniSuite", so setting it changes nothing for it.
+        info["CFBundleIdentifier"] = bundle_identifier
+    with plist_path.open("wb") as handle:
+        plistlib.dump(info, handle)
+    run(["codesign", "--force", "--deep", "--sign", "-", str(app_bundle)])
+    run(["codesign", "--verify", "--deep", "--strict", str(app_bundle)])
+    print(f"[build] Local Network usage description declared in {plist_path}")
+
+
+MACOS_README_NAME = "READ-ME-FIRST-macOS.txt"
+
+_MACOS_README = """{title}
+{rule}
+
+{name} is not signed or notarized by Apple, so macOS blocks it the first time
+you open it. That is expected. This page shows how to approve it.
+
+BEFORE YOU APPROVE ANYTHING
+  Only approve {name} if you downloaded it from the official project releases
+  page:
+
+      {url}
+
+  The file name should start with "{prefix}". If it came from anywhere else,
+  delete it. Each release also lists SHA-256 checksums in SHA256SUMS.txt. To
+  check yours, open Terminal in the folder with both files and run
+  shasum -a 256 followed by your zip file's name, then compare the result with
+  the matching line in SHA256SUMS.txt.
+
+FIRST LAUNCH
+  1. Double-click the zip in Finder to unpack it. Use Finder: some other unzip
+     tools damage the app.
+  2. Move OmniSuite.app to your Applications folder if you like.
+  3. Open OmniSuite.app. macOS says it cannot verify the app. Click Done. Do not
+     click Move to Trash.
+  4. Open System Settings, then Privacy & Security. Scroll down to the
+     Security section. It says "OmniSuite" was blocked and shows an
+     Open Anyway button. Click Open Anyway, enter your password, then
+     click Open.
+     The button is only there for a while after the blocked attempt. If you do
+     not see it, open the app again and look again.
+  On macOS 14 (Sonoma) and earlier you can also Control-click the app and
+  choose Open.
+
+  You only need to do this once for each copy you download. A new download may
+  ask again.
+
+LOCAL NETWORK ACCESS
+  The first time {name} looks for devices, macOS asks whether it may find and
+  connect to devices on your local network. Choose Allow.
+
+  If you chose Don't Allow, scans will report that they could not reach the
+  network. To fix it, open System Settings, then Privacy & Security, then
+  Local Network, switch on {name}, and scan again.
+
+WHAT NOT TO DO
+  Do not turn off Gatekeeper, and do not run commands that remove the
+  quarantine flag. Approve this one app, once, and only if it came from the
+  official releases page above.
+
+LATER
+  Future releases are intended to be signed with an Apple Developer ID and
+  notarized, which will remove the Open Anyway step.
+
+More help is in the User Guide: open Settings, or visit /help while {name} is
+running.
+"""
+
+
+def macos_readme_text(product) -> str:
+    """The first-launch instructions that travel inside the macOS download."""
+    title = f"{product.name} for macOS - read this first"
+    return _MACOS_README.format(
+        title=title, rule="=" * len(title), name=product.name,
+        url=product.releases_url, prefix=product.artifact_prefix)
+
+
+def add_macos_readme(target_zip: Path, product) -> None:
+    """Add the first-launch instructions beside the app, inside the zip.
+
+    Appended to the archive that already exists rather than staged beside the app,
+    so the bundle's symlinks and permissions are never copied or rewritten.
+    """
+    with zipfile.ZipFile(target_zip, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(MACOS_README_NAME, macos_readme_text(product))
+
+
 def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
     data_sep = ";" if os.name == "nt" else ":"
     onefile = suffix == "windows"
@@ -322,16 +445,18 @@ def resolve_suffix(cli_suffix: str | None) -> str:
 # name here without changing that matcher would offer someone the wrong
 # download, so ArtifactNamingTests pins the two together.
 ARTIFACT_NAMES = {
-    "windows": "OmniSuite-{version}-Windows-x86_64.zip",
-    "arm64": "OmniSuite-{version}-macOS-arm64.zip",
-    "x86_64": "OmniSuite-{version}-macOS-x86_64.zip",
-    "linux": "OmniSuite-{version}-Ubuntu-x86_64.tar.gz",
+    "windows": "{prefix}{version}-Windows-x86_64.zip",
+    "arm64": "{prefix}{version}-macOS-arm64.zip",
+    "x86_64": "{prefix}{version}-macOS-x86_64.zip",
+    "linux": "{prefix}{version}-Ubuntu-x86_64.tar.gz",
 }
 
 
 def package_release(dist_path: Path, suffix: str, version: str) -> Path:
     RELEASE_DIR.mkdir(parents=True, exist_ok=True)
-    artifact = RELEASE_DIR / ARTIFACT_NAMES[suffix].format(version=version)
+    # The prefix is the product's. See omni_release for the identity.
+    artifact = RELEASE_DIR / ARTIFACT_NAMES[suffix].format(
+        prefix=omni_release.active_product().artifact_prefix, version=version)
 
     if suffix == "windows":
         windows_exe = dist_path / "OmniSuite.exe"
@@ -344,7 +469,11 @@ def package_release(dist_path: Path, suffix: str, version: str) -> Path:
         app_bundle = dist_path / "OmniSuite.app"
         if not app_bundle.exists():
             raise RuntimeError(f"Expected build output not found: {app_bundle}")
+        product = omni_release.active_product()
+        declare_local_network_usage(app_bundle, product.local_network_usage, product.name,
+                                    product.bundle_identifier)
         zip_macos_app(app_bundle, artifact)
+        add_macos_readme(artifact, product)
         return artifact
 
     bundle_dir = dist_path / "OmniSuite"

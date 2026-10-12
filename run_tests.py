@@ -37,7 +37,7 @@ TESTS = ROOT / "tests"
 JS_SUITES = ("usb_render_smoke.js", "usb_filter_test.js", "lldp_topology_test.js",
              "sticky_observers_test.js", "mirror_scroll_test.js", "device_log_test.js",
              "appearance_theme_test.js", "multiview_ui_test.js",
-             "matrix_multiview_test.js")
+             "matrix_multiview_test.js", "scan_notice_test.js")
 
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(TESTS))

@@ -23,7 +23,7 @@ const SETTINGS_MODAL_HTML = `
         <div class="update-actions">
           <button id="cfg_update_check" class="btn small secondary" type="button">Check Now</button>
           <a id="cfg_release_link" class="btn small secondary" target="_blank" rel="noopener noreferrer"
-             href="https://github.com/Hall-Research-Technologies/omniSuite/releases">Releases</a>
+             href="#" hidden>Releases</a>
           <a id="cfg_asset_link" class="btn small" target="_blank" rel="noopener noreferrer" hidden>Download</a>
         </div>
       </div>
@@ -168,13 +168,16 @@ const NETWORK_NOTICE_HTML = `
 <div id="notice_backdrop" class="modal-backdrop notice-backdrop">
   <div class="modal notice-modal" role="dialog" aria-modal="true" aria-labelledby="notice_title">
     <h3 id="notice_title">Network Access Required</h3>
-    <p class="notice-text">OmniSuite communicates directly with devices on the network.
+    <p class="notice-text"><span data-app-name>OmniSuite</span> communicates directly with devices on the network.
        Your operating system or security software may block discovery and device
        communication.</p>
-    <p class="notice-text">If prompted by your firewall, allow network access for OmniSuite
+    <p class="notice-text">If prompted by your firewall, allow network access for <span data-app-name>OmniSuite</span>
        on the networks where you manage AV devices.</p>
     <p class="notice-text">Depending on your environment, an application firewall exception
        or a temporary/system policy exception may be required.</p>
+    <p class="notice-text" id="notice_macos"><strong>On macOS,</strong> the first scan also asks for
+       Local Network access. Choose Allow. If you chose Don’t Allow, open System Settings →
+       Privacy &amp; Security → Local Network and switch on <span data-app-name>OmniSuite</span>.</p>
     <div class="modal-buttons">
       <button id="notice_guide" class="btn secondary" type="button" style="margin-right:auto;">User Guide</button>
       <button id="notice_continue" class="btn" type="button">Continue</button>
@@ -658,7 +661,9 @@ async function applyAppVersion() {
 // Nothing is ever downloaded or installed from here. The buttons open the
 // official releases page, and the server only ever hands back URLs it has
 // validated as belonging to this project's repository.
-const RELEASES_URL = 'https://github.com/Hall-Research-Technologies/omniSuite/releases';
+// The releases page is this product's own and comes from the server (release_url), which
+// always returns one, including when the check failed. There is no address written here:
+// The address belongs to the product, not to this file.
 
 // The four states the dialog can show. CHECKING is ours alone -- the server
 // never returns it, because a server that is answering has finished checking.
@@ -693,7 +698,7 @@ function renderUpdateStatus(data) {
 
   // The releases link is always usable, including when the check failed -- that
   // is the whole point of it being a link and not just a status message.
-  if (release) release.href = RELEASES_URL;
+  if (release && data && data.release_url) { release.href = data.release_url; release.hidden = false; }
   if (asset) { asset.hidden = true; asset.removeAttribute('href'); }
 
   const status = (data && data.status) || UPDATE_STATES.UNABLE_TO_CHECK;
@@ -800,11 +805,13 @@ async function checkForUpdates(force) {
 // nothing flashes on a page whose notice has already been acknowledged.
 async function showFirstRunNotice() {
   let notice = null;
+  let appName = '';
   try {
     const res = await fetch('/api/notices');
     if (!res.ok) return;
     const data = await res.json();
     notice = (data && data.notices && data.notices.network_access) || null;
+    appName = (data && data.app_name) || '';
   } catch (err) {
     // Unreadable is not "unacknowledged". Guessing the other way would show the
     // notice on every load, which is the one behaviour it must never have.
@@ -816,6 +823,10 @@ async function showFirstRunNotice() {
   const guideBtn = document.getElementById('notice_guide');
   const continueBtn = document.getElementById('notice_continue');
   if (!backdrop || !continueBtn) return;
+  // The product's own name, as data from the server rather than text written into this file.
+  if (appName) {
+    backdrop.querySelectorAll('[data-app-name]').forEach((el) => { el.textContent = appName; });
+  }
 
   if (guideBtn) {
     guideBtn.addEventListener('click', (e) => {
