@@ -19,6 +19,42 @@ OmniSuite is maintained as **two distinct product lines**. Read
   validated on the line where it was made.
 - Do not rename, delete, reset or force-push `main`, `V1.1.0` or any release branch.
 
+## Release identity
+
+OmniSuite and OmniSuite Plus publish to one GitHub repository and one releases
+page, so identity is something this project has to establish, not something
+GitHub can tell it. `omni_release.py` is the single definition and is identical
+on both lines; `omni_product.py` is the one file that differs.
+
+- Tags: OmniSuite `V1.1.1`; OmniSuite Plus `plus-v1.2.0`. Artifacts:
+  `OmniSuite-V1.1.1-<platform>` and `OmniSuite-Plus-V1.2.0-<platform>`.
+- A tag is never repaired. `v1.1.1`, `V1.1.1-rc1`, `plus-V1.2.0` and a tag with a
+  trailing newline are not release tags; a release that had to be fixed to be
+  understood was not understood. Match with `\Z`, never `$`.
+- Never use GitHub's repository-wide `releases/latest` for anything. It would
+  offer each product the other's newest release.
+- The prerelease flag is a channel, not an identity. It decides whether a build
+  is offered; it never decides which product a release is.
+- The updater reads the release list and offers only its own product's newest
+  release, by highest number rather than feed order. Nothing compatible is
+  UNABLE_TO_CHECK, never "up to date".
+- The workflow decides identity before anything is built (`tools/release_identity.py`)
+  and fails closed: the tag must be this product's, agree with `VERSION`, sit on
+  this product's release branch, and have release notes for its version. A
+  dispatch or a branch push is a diagnostic build and can never publish.
+- A dispatched build must carry a suffix (`V1.1.1-diag1`) so it cannot be
+  mistaken for a release artifact. The version is untrusted text: it reaches the
+  guard through the environment and is never interpolated into a shell command.
+- Publish collects only `release-<product>-*` artifacts and verifies every file
+  against the product and version. Artifacts are never gathered by a bare
+  `release-*` pattern.
+- Do not edit `omni_product.py` to "match" the other line, and do not cherry-pick
+  a change to it. If a cherry-pick brings a different `PRODUCT_ID` into a line,
+  the tests fail on purpose.
+- A change to a release rule is made on both lines and verified against both
+  identities; `tests/test_release_isolation.py` is identical on both.
+- Do not create a production tag or publish a release without approval.
+
 ## Preserve the working application
 
 - This is an existing working application. Preserve existing behavior.

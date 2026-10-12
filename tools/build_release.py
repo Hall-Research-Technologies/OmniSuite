@@ -11,6 +11,9 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+import omni_release  # noqa: E402
 ENTRY = ROOT / "OmniMatrix_upgrade_server_v7_6y.py"
 LAUNCHER = ROOT / "app_launcher.py"
 VERSION_FILE = ROOT / "VERSION"
@@ -322,16 +325,19 @@ def resolve_suffix(cli_suffix: str | None) -> str:
 # name here without changing that matcher would offer someone the wrong
 # download, so ArtifactNamingTests pins the two together.
 ARTIFACT_NAMES = {
-    "windows": "OmniSuite-{version}-Windows-x86_64.zip",
-    "arm64": "OmniSuite-{version}-macOS-arm64.zip",
-    "x86_64": "OmniSuite-{version}-macOS-x86_64.zip",
-    "linux": "OmniSuite-{version}-Ubuntu-x86_64.tar.gz",
+    "windows": "{prefix}{version}-Windows-x86_64.zip",
+    "arm64": "{prefix}{version}-macOS-arm64.zip",
+    "x86_64": "{prefix}{version}-macOS-x86_64.zip",
+    "linux": "{prefix}{version}-Ubuntu-x86_64.tar.gz",
 }
 
 
 def package_release(dist_path: Path, suffix: str, version: str) -> Path:
     RELEASE_DIR.mkdir(parents=True, exist_ok=True)
-    artifact = RELEASE_DIR / ARTIFACT_NAMES[suffix].format(version=version)
+    # The prefix is the product's, so OmniSuite and OmniSuite Plus artifacts can
+    # never share a name. See omni_release for the two identities.
+    artifact = RELEASE_DIR / ARTIFACT_NAMES[suffix].format(
+        prefix=omni_release.active_product().artifact_prefix, version=version)
 
     if suffix == "windows":
         windows_exe = dist_path / "OmniSuite.exe"

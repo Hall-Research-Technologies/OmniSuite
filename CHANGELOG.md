@@ -22,6 +22,17 @@ it is waiting for validation on a real Mac.
   attached subnet, and the local address the routing table would use. Nothing is
   transmitted to learn this.
 - Windows discovery is unchanged: same ports, order and timeouts.
+- Release isolation: OmniSuite releases use V1.1.1 tags and
+  `OmniSuite-` artifacts, and the release workflow decides identity before building.
+  A tag that is not this product's, does not agree with `VERSION`, is not on `release/omnisuite-1.1.x`
+  or has no release notes is refused. A manually dispatched build is a diagnostic build
+  and never publishes. See [ARCHITECTURE.md](ARCHITECTURE.md).
+- The in-app update check no longer uses the repository-wide latest release. It reads
+  the release list and offers only OmniSuite releases, chosen by highest version, and
+  reports "unable to check" when none exists. Release tags must now be exactly
+  `V<number>.<number>[.<number>]`; a lowercase `v` is no longer accepted.
+- The release workflow passes a dispatched version through the environment rather
+  than interpolating it into a shell command.
 
 ## V1.1.0 - 2026-09-17
 
