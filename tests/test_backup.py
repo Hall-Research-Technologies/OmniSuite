@@ -418,6 +418,19 @@ class TheContainerTests(BackupTestBase):
             omni_backup.unseal(forged, PASSPHRASE)
         self.assertEqual(caught.exception.reason, "corrupt")
 
+    def test_every_way_scrypt_can_refuse_a_header_is_the_modules_own_error(self):
+        """Which exception an out-of-range parameter raises depends on the
+        interpreter: Python 3.12 on Windows raises TypeError, others raise
+        ValueError or OverflowError. All of them must surface as BackupError."""
+        from unittest import mock
+        sealed = self.sealed()           # sealed for real, before scrypt is stubbed
+        for exc in (ValueError("n"), OverflowError("n"), MemoryError(), TypeError("n")):
+            with self.subTest(raised=type(exc).__name__):
+                with mock.patch.object(omni_backup.hashlib, "scrypt", side_effect=exc):
+                    with self.assertRaises(omni_backup.BackupError) as caught:
+                        omni_backup.unseal(sealed, PASSPHRASE)
+                self.assertEqual(caught.exception.reason, "corrupt")
+
     def test_a_supported_older_format_is_migrated(self):
         payload = {"sections": {"accounts": {"users": []}}}
         migrated = omni_backup.migrate(payload, {"format": 1})

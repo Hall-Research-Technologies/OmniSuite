@@ -114,6 +114,9 @@ for the user-facing summary.
   attached subnet, and the local address the routing table would use. Nothing is
   transmitted to learn this.
 - Windows discovery is unchanged: same ports, order and timeouts.
+- A backup whose header asks for out-of-range encryption parameters is refused
+  as damaged on every platform. On Python 3.12 for Windows it escaped as an
+  unhandled error instead.
 
 ## V1.1.0 - 2026-09-17
 

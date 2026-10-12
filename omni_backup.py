@@ -292,9 +292,12 @@ def unseal(blob: bytes, passphrase: str) -> tuple:
             p=int(kdf.get("p") or SCRYPT_P),
             dklen=int(kdf.get("dklen") or KEY_BYTES),
             maxmem=64 * 1024 * 1024)
-    except (ValueError, OverflowError, MemoryError):
+    except (ValueError, OverflowError, MemoryError, TypeError):
         # A header claiming absurd scrypt parameters is a damaged or hostile
-        # file, not a reason to try to allocate it.
+        # file, not a reason to try to allocate it. Which exception an
+        # out-of-range value raises depends on the interpreter and platform:
+        # Python 3.12 on Windows raises TypeError for a value that does not fit
+        # a C unsigned int, where other builds raise ValueError or OverflowError.
         raise BackupError("corrupt", "This backup file's header is damaged.")
 
     try:
