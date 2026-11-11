@@ -19,6 +19,10 @@
     .matrix-loading-spinner{width:40px;height:40px;border:4px solid rgba(255,255,255,0.2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 20px;}
     @keyframes spin{to{transform:rotate(360deg)}}
   </style>
+  <script src="/ui/csrf.js"></script>
+  <script src="/ui/modal-stack.js"></script>
+  <script src="/ui/confirm.js?v=20260915-confirm"></script>
+  <script src="/ui/adminnav.js"></script>
   <script src="/ui/diagnostics.js?v=20260911-diag"></script>
 <link rel="stylesheet" href="/ui/templates.css?v=20260910-templates">
 <link rel="stylesheet" href="/ui/settings.css?v=20260911-settings">
@@ -129,5 +133,6 @@
     </div>
   </div>
 
-  <script src="/ui/matrix/matrix.js?v=20260821-codec-route"></script>
+  <script src="/ui/matrix-prep.js?v=20261031-prep"></script>
+  <script src="/ui/matrix/matrix.js?v=20261031-prepared"></script>
 </body>

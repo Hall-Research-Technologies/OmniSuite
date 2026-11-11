@@ -115,6 +115,40 @@ def install() -> None:
             return 111                      # ECONNREFUSED, the way a probe reads it
 
     socket.socket = FencedSocket
+
+    # A name has to be resolved before anything can connect to it, and a lookup
+    # is itself a packet to a resolver on the Internet. Literal addresses and
+    # loopback pass untouched; any other name is refused and recorded, so a test
+    # that would have asked DNS where a firmware or release server lives fails
+    # here rather than quietly succeeding on a networked workstation.
+    _real_getaddrinfo = socket.getaddrinfo
+
+    def _is_literal(host):
+        import ipaddress
+        try:
+            ipaddress.ip_address(str(host).strip("[]"))
+            return True
+        except ValueError:
+            return False
+
+    def fenced_getaddrinfo(host, *args, **kwargs):
+        if host is None or is_loopback(host) or _is_literal(host):
+            return _real_getaddrinfo(host, *args, **kwargs)
+        attempts[("dns", str(host))] += 1
+        raise FenceError("the test fence blocked a name lookup for %s" % host)
+
+    socket.getaddrinfo = fenced_getaddrinfo
+
+    # An operation that must not be sent to a unit that is not answering asks one bounded TCP connect
+    # first (omni_liveness). The fence would refuse that connect like any other, and every test that
+    # routes through the real engine would then see its fixture unit "offline". The probe is therefore
+    # answered here -- every address answers -- and a test that wants a unit offline says so through
+    # the liveness record or by replacing this answer. The transport fence above is untouched.
+    try:
+        import omni_liveness
+        omni_liveness.set_probe_override(lambda ip: True)
+    except ImportError:                     # pragma: no cover - run from outside the repository
+        pass
     _installed = True
 
 

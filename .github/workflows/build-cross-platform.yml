@@ -3,24 +3,69 @@ name: Build OmniSuite Cross Platform
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
+# Read only. Publication does not use this token: the release is created in the release
+# repository with the dedicated RELEASE_PUBLISH_TOKEN, and nothing else here writes to the
+# repository. A step that is compromised in a build job therefore cannot change repository
+# contents.
 permissions:
-  contents: write
+  contents: read
 
 on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: "Override version (example: V1.1.0)"
+        description: "Diagnostic build name, with a suffix (example: V1.2.0-diag1). Never publishes."
         required: false
         type: string
   push:
-    branches:
-      - main
     tags:
-      - "v*"
+      # Matched loosely on purpose. The identity job refuses anything that is not
+      # exactly V<number>(.<number>)+, so a mistyped tag fails loudly instead of
+      # being silently ignored.
       - "V*"
+      - "v*"
 
 jobs:
+  # Decide what this run is before anything is built, and refuse to continue when
+  # that cannot be established. Two independently maintained products publish to
+  # one repository, so a tag, a branch and a version number are each checked
+  # against the product this commit belongs to. See tools/release_identity.py.
+  identity:
+    name: Release identity
+    # Workflows run only in the repository named by the repository variable
+    # OMNI_CI_REPOSITORY; in any other repository this job is skipped, and every later job
+    # needs it. An unset variable skips everything.
+    if: github.repository == vars.OMNI_CI_REPOSITORY
+    runs-on: ubuntu-latest
+    outputs:
+      product: ${{ steps.resolve.outputs.product }}
+      release_version: ${{ steps.resolve.outputs.release_version }}
+      publish: ${{ steps.resolve.outputs.publish }}
+      notes_path: ${{ steps.resolve.outputs.notes_path }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      release_repo: ${{ steps.resolve.outputs.release_repo }}
+    steps:
+      - name: Checkout (full history, for the branch-ancestry check)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # Event inputs reach the script through the environment, never by being
+      # interpolated into a shell command: a typed version is untrusted text.
+      - name: Resolve and verify the release identity
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          DISPATCH_VERSION: ${{ github.event.inputs.release_version }}
+        run: python tools/release_identity.py resolve
+
   # The full suite on every target that ships an artifact, not only on Linux.
   # A build that cannot pass its own platform's tests must not produce a
   # download for that platform.
@@ -31,6 +76,7 @@ jobs:
   # touch one.
   test:
     name: Tests (${{ matrix.label }})
+    needs: identity
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -67,7 +113,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-lock.txt
 
       - name: Run every suite, and prove the tests reached no hardware
         shell: bash
@@ -101,7 +147,7 @@ jobs:
 
   build:
     name: Build (${{ matrix.artifact_name }})
-    needs: test
+    needs: [identity, test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -155,22 +201,18 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
+          pip install -r requirements-lock.txt
+          pip install pyinstaller==6.22.3 pyinstaller-hooks-contrib==2026.9
 
-      - name: Resolve release version
+      - name: Use the verified release version
         id: version
         shell: bash
+        env:
+          VERIFIED_VERSION: ${{ needs.identity.outputs.release_version }}
         run: |
-          if [ -n "${{ github.event.inputs.release_version }}" ]; then
-            v="${{ github.event.inputs.release_version }}"
-          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            v="${GITHUB_REF_NAME}"
-          else
-            v="$(cat VERSION)"
-          fi
-          echo "release_version=${v}" >> "$GITHUB_OUTPUT"
-          echo "Using version: ${v}"
+          test -n "$VERIFIED_VERSION" || { echo "::error::no verified release version"; exit 1; }
+          echo "release_version=${VERIFIED_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Using version: ${VERIFIED_VERSION}"
 
       - name: Build and package
         env:
@@ -178,6 +220,27 @@ jobs:
           RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
         run: |
           python tools/build_release.py --suffix ${{ matrix.suffix }} --version "${{ steps.version.outputs.release_version }}"
+
+      - name: Check the artifact name belongs to this product
+        shell: bash
+        run: |
+          python tools/release_identity.py verify-assets --dir release --version "${{ steps.version.outputs.release_version }}"
+
+      # What is inside the package, not only what it is called: licence and notices present, and
+      # no test, tool, firmware, key, configuration, report, retired-product name, lab address or
+      # build-machine path. Fails closed.
+      #
+      # A run that cannot publish (a dispatch rehearsal such as V1.2.0-diag1) is inspected as a
+      # diagnostic build, so it runs the same content checks and reaches the smoke test. A run
+      # that can publish is inspected strictly; the publish job below never passes the flag.
+      - name: Inspect the package contents
+        shell: bash
+        env:
+          CAN_PUBLISH: ${{ needs.identity.outputs.publish }}
+        run: |
+          flag=""
+          if [ "$CAN_PUBLISH" != "true" ]; then flag="--diagnostic"; fi
+          python tools/inspect_release.py $(find release -maxdepth 1 \( -name "*.zip" -o -name "*.tar.gz" \)) --version "${{ steps.version.outputs.release_version }}" $flag
 
       # `file` on the binary inside the artifact, checked against what this row
       # claims to be. A macOS job running on the wrong runner would otherwise
@@ -267,7 +330,7 @@ jobs:
       - name: Upload packaged release artifact
         uses: actions/upload-artifact@v5
         with:
-          name: release-${{ matrix.artifact_name }}
+          name: release-${{ needs.identity.outputs.product }}-${{ matrix.artifact_name }}
           path: |
             release/*.zip
             release/*.tar.gz
@@ -278,17 +341,26 @@ jobs:
     name: Publish GitHub Release
     # `needs: build` requires the WHOLE matrix to succeed, so a failure on any
     # declared target stops publication rather than shipping a partial set.
-    if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V')
-    needs: build
+    # Only an identity-verified tag publishes. A dispatch, or a push to a branch, never
+    # does, whatever its version says.
+    if: needs.identity.outputs.publish == 'true' && github.ref_type == 'tag'
+    needs: [identity, build]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
       - name: Download packaged artifacts
         uses: actions/download-artifact@v5
         with:
-          pattern: release-*
+          # Only this product's artifacts. The pattern names the product, so another
+          # product's run can never be collected into this release.
+          pattern: release-${{ needs.identity.outputs.product }}-*
           merge-multiple: true
           path: release-assets
 
@@ -299,34 +371,48 @@ jobs:
         run: |
           set -euo pipefail
           cd release-assets
-          cat *.sha256 > SHA256SUMS.txt
+          # Strip any carriage return: sha256sum reads one as part of the file name.
+          cat *.sha256 | tr -d '\r' > SHA256SUMS.txt
           rm -f *.sha256
           echo "--- SHA256SUMS.txt ---"
           cat SHA256SUMS.txt
           sha256sum -c SHA256SUMS.txt
 
-      # Every declared target must be present before anything is published, so a
-      # release can never be missing a platform the README promises.
-      - name: Require every declared artifact
+      # Every declared target must be present, and every file must be this
+      # product's, for this version, before anything is published.
+      - name: Verify every artifact belongs to this release
         run: |
-          set -euo pipefail
-          cd release-assets
-          missing=0
-          for pattern in "OmniSuite-*-Windows-x86_64.zip" \
-                         "OmniSuite-*-macOS-arm64.zip" \
-                         "OmniSuite-*-macOS-x86_64.zip" \
-                         "OmniSuite-*-Ubuntu-x86_64.tar.gz"; do
-            # shellcheck disable=SC2086
-            if ! ls $pattern >/dev/null 2>&1; then
-              echo "::error::missing release artifact: $pattern"
-              missing=1
-            fi
-          done
-          test "$missing" -eq 0
-          ls -la
+          python tools/release_identity.py verify-assets --dir release-assets --version "${{ needs.identity.outputs.release_version }}" --complete
+
+      - name: Inspect every package once more before a release exists
+        run: |
+          python tools/inspect_release.py $(find release-assets -maxdepth 1 \( -name "*.zip" -o -name "*.tar.gz" \)) --version "${{ needs.identity.outputs.release_version }}"
+
+      - name: Require the release token
+        env:
+          RELEASE_PUBLISH_TOKEN: ${{ secrets.RELEASE_PUBLISH_TOKEN }}
+        run: |
+          test -n "$RELEASE_PUBLISH_TOKEN" || { echo "::error::RELEASE_PUBLISH_TOKEN is not configured"; exit 1; }
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          body_path: RELEASE_NOTES_V1.1.0.md
+          # The release repository (release_repo in omni_release.py) is not the repository
+          # this workflow runs in: binaries are published there with a dedicated token, and
+          # installed applications read that repository. The token is required, so a run
+          # without it stops here rather than publishing anywhere.
+          repository: ${{ needs.identity.outputs.release_repo }}
+          token: ${{ secrets.RELEASE_PUBLISH_TOKEN }}
+          tag_name: ${{ needs.identity.outputs.tag }}
+          # The tag was verified to sit on the release branch; name the commit explicitly so a
+          # tag that does not yet exist in the release repository cannot be created on whatever
+          # its default branch happens to be.
+          target_commitish: ${{ github.sha }}
+          body_path: ${{ needs.identity.outputs.notes_path }}
           files: release-assets/*
+          fail_on_unmatched_files: true
+          # NEVER public automatically. The release is created as a draft; a person inspects the
+          # artifacts and SHA256SUMS.txt and publishes it deliberately. Installed applications
+          # read published releases only, so a draft is invisible to the updater.
+          draft: true
+          prerelease: false

@@ -42,11 +42,11 @@ logging.getLogger("omni_usb_extender").setLevel(logging.CRITICAL)
 
 
 
-HOST_MAC = "00:1B:13:02:81:E0"
+HOST_MAC = "00:1B:13:FA:CF:E0"
 
-DEVICE_MAC = "00:1B:13:02:81:E1"
+DEVICE_MAC = "00:1B:13:FA:CF:E1"
 
-OTHER_HOST_MAC = "00:1B:13:02:81:E2"
+OTHER_HOST_MAC = "00:1B:13:FA:CF:E2"
 
 IMPOSTOR_MAC = "00:AA:BB:CC:DD:EE"
 
@@ -242,7 +242,7 @@ class ProtocolTests(unittest.TestCase):
 
     def test_mac_range_and_network_validation(self):
 
-        self.assertEqual(usb.normalize_mac("001b.1302.81e0"), HOST_MAC)
+        self.assertEqual(usb.normalize_mac("001b.13fa.cfe0"), HOST_MAC)
 
         self.assertEqual(usb.parse_ranges(["192.168.1.1-192.168.1.2", "10.1.1.0/30"]),
 
@@ -250,7 +250,7 @@ class ProtocolTests(unittest.TestCase):
 
         self.assertEqual(usb.network_relation("192.168.1.50", "255.255.255.0", "192.168.1.40"), "LOCAL")
 
-        self.assertEqual(usb.network_relation("192.168.1.50", "255.255.255.0", "192.168.100.25"), "OFF_NET")
+        self.assertEqual(usb.network_relation("192.168.1.50", "255.255.255.0", "198.18.100.25"), "OFF_NET")
 
 
 
@@ -473,15 +473,25 @@ class QueryFieldParsingTests(unittest.TestCase):
 
 #
 
+# The addresses below are bench addresses on purpose, and are the one
+# place in the suite where that is correct. They are not targets -- the
+# fence blocks every non-loopback transport -- they are values DECODED
+# from the captured bytes a few lines down, and the assertions check what
+# the parser produces from those exact bytes. Rewriting them to a
+# documentation range would mean either editing the capture, which is
+# forging evidence, or asserting that the parser turns one address into
+# another, which is a test that lies. A parser needs exact captured
+# fixtures, and that rule wins here.
+#
 # Ground truth established from the devices themselves, because Basic Device
 
 # Information reports the local MAC alongside that device's own IP address:
 
 #
 
-#   192.168.100.128  MAC 00:1B:13:04:E9:6E  role byte 0x00  two peers   -> AT-OMNI-311 (LEX/host)
+#   198.18.100.128  MAC 00:1B:13:FA:CE:22  role byte 0x00  two peers   -> AT-OMNI-311 (LEX/host)
 
-#   192.168.100.127  MAC 00:1B:13:04:6A:EA  role byte 0x01  one peer    -> AT-OMNI-324 (REX/device)
+#   198.18.100.127  MAC 00:1B:13:FA:CE:11  role byte 0x01  one peer    -> AT-OMNI-324 (REX/device)
 
 #
 
@@ -489,43 +499,43 @@ class QueryFieldParsingTests(unittest.TestCase):
 
 # and a device cannot have two local MACs. Its peers are exactly the .127 unit
 
-# and the integrated D4511 endpoint B8:98:B0:07:85:C7 it is routed to.
+# and the integrated D4511 endpoint B8:98:B0:FA:CD:C7 it is routed to.
 
 CAPTURED = {
     "basic_324":
-        "2F03F4A2000000030001001B13046AEAC0A8647F000341746C6F6E612055534220322E3020457874656E6465"
+        "2F03F4A2000000030001001B13FACE11c612647F000341746C6F6E612055534220322E3020457874656E6465"
         "72000000000000000000555342204F766572204E6574776F726B00000000000000000000000000000000312E"
         "392E3400000000000000",
     "basic_311":
-        "2F03F4A2000000030001001B1304E96EC0A86480000341746C6F6E612055534220322E3020457874656E6465"
+        "2F03F4A2000000030001001B13FACE22c6126480000341746C6F6E612055534220322E3020457874656E6465"
         "72000000000000000000555342204F766572204E6574776F726B00000000000000000000000000000000312E"
         "392E3400000000000000",
     "extended_324":
-        "2F03F4A200000003030101001B1304E96E",
+        "2F03F4A200000003030101001B13FACE22",
     "extended_311":
-        "2F03F4A200000003030100001B13046AEAB898B00785C7",
+        "2F03F4A200000003030100001B13FACE11B898B0FACDC7",
     "full_config_324":
-        "2F03F4A200000003030E010001000000001B13046AEA0000001B1304E96E0000000000000000000000000000"
-        "0000000000000000000000000000000000000000000017F9C0A8647FFFFFFF00C0A86401C0A864010700089D"
+        "2F03F4A200000003030E010001000000001B13FACE110000001B13FACE220000000000000000000000000000"
+        "0000000000000000000000000000000000000000000017F9c612647FFFFFFF00c6126401c61264010700089D"
         "0001000541746C6F6E612055534220322E3020457874656E646572000000000000000000555342204F766572"
         "204E6574776F726B0000000000000000312E392E34000000312E392E3400000061000580",
     "link_324":
-        "2F03F4A20000000303100100000000000000001B1304E96E0000000000000000000000000000000000000000"
+        "2F03F4A20000000303100100000000000000001B13FACE220000000000000000000000000000000000000000"
         "00000000000000000000000000000000",
     "link_311":
-        "2F03F4A20000000303100101000000000000001B13046AEAB898B00785C70000000000000000000000000000"
+        "2F03F4A20000000303100101000000000000001B13FACE11B898B0FACDC70000000000000000000000000000"
         "00000000000000000000000000000000",
     "link_324_unlinked":
-        "2F03F4A20000000303100200000000000000001B130550500000000000000000000000000000000000000000"
+        "2F03F4A20000000303100200000000000000001B13FACE440000000000000000000000000000000000000000"
         "00000000000000000000000000000000",
     "extended_324_b":
-        "2F03F4A200000003030101001B13055050",
+        "2F03F4A200000003030101001B13FACE44",
     "basic_324_b":
-        "2F03F4A2000000030001001B130517E9C0A86486000341746C6F6E612055534220322E3020457874656E6465"
+        "2F03F4A2000000030001001B13FACE33c6126486000341746C6F6E612055534220322E3020457874656E6465"
         "72000000000000000000555342204F766572204E6574776F726B00000000000000000000000000000000312E"
         "392E3400000000000000",
     "link_311_five_peers":
-        "2F03F4A20000000103100101010101000000001B13046AEAB898B00785C7001B130517E9B898B0078587B898"
+        "2F03F4A20000000103100101010101000000001B13FACE11B898B0FACDC7001B13FACE33B898B0FACD87B898"
         "B00785C1000000000000000000000000",
     "topology_empty":
         "2F03F4A2000000030308",
@@ -550,9 +560,9 @@ class CapturedHardwareBasicTests(unittest.TestCase):
 
         parsed = usb.parse_query_response(captured("basic_324"))
 
-        self.assertEqual(parsed["mac"], "00:1B:13:04:6A:EA")
+        self.assertEqual(parsed["mac"], "00:1B:13:FA:CE:11")
 
-        self.assertEqual(parsed["ip"], "192.168.100.127")
+        self.assertEqual(parsed["ip"], "198.18.100.127")
 
         self.assertEqual(parsed["vendor"], "Atlona USB 2.0 Extender")
 
@@ -566,9 +576,9 @@ class CapturedHardwareBasicTests(unittest.TestCase):
 
         parsed = usb.parse_query_response(captured("basic_311"))
 
-        self.assertEqual(parsed["mac"], "00:1B:13:04:E9:6E")
+        self.assertEqual(parsed["mac"], "00:1B:13:FA:CE:22")
 
-        self.assertEqual(parsed["ip"], "192.168.100.128")
+        self.assertEqual(parsed["ip"], "198.18.100.128")
 
         self.assertEqual(parsed["firmware"], "1.9.4")
 
@@ -634,9 +644,9 @@ class CapturedHardwareExtendedTests(unittest.TestCase):
 
         host = usb.parse_advanced_query_response(captured("extended_311"))
 
-        self.assertEqual(host["paired_macs"], ["00:1B:13:04:6A:EA", "B8:98:B0:07:85:C7"])
+        self.assertEqual(host["paired_macs"], ["00:1B:13:FA:CE:11", "B8:98:B0:FA:CD:C7"])
 
-        self.assertNotIn("00:1B:13:04:E9:6E", host["paired_macs"], "that is the host's own MAC")
+        self.assertNotIn("00:1B:13:FA:CE:22", host["paired_macs"], "that is the host's own MAC")
 
 
 
@@ -644,7 +654,7 @@ class CapturedHardwareExtendedTests(unittest.TestCase):
 
         device = usb.parse_advanced_query_response(captured("extended_324"))
 
-        self.assertEqual(device["paired_macs"], ["00:1B:13:04:E9:6E"])
+        self.assertEqual(device["paired_macs"], ["00:1B:13:FA:CE:22"])
 
 
 
@@ -672,15 +682,15 @@ class CapturedHardwareFullConfigurationTests(unittest.TestCase):
 
     def test_identity_and_network(self):
 
-        self.assertEqual(self.parsed["mac"], "00:1B:13:04:6A:EA")
+        self.assertEqual(self.parsed["mac"], "00:1B:13:FA:CE:11")
 
-        self.assertEqual(self.parsed["ip"], "192.168.100.127")
+        self.assertEqual(self.parsed["ip"], "198.18.100.127")
 
         self.assertEqual(self.parsed["subnet_mask"], "255.255.255.0")
 
-        self.assertEqual(self.parsed["gateway"], "192.168.100.1")
+        self.assertEqual(self.parsed["gateway"], "198.18.100.1")
 
-        self.assertEqual(self.parsed["dhcp_server"], "192.168.100.1")
+        self.assertEqual(self.parsed["dhcp_server"], "198.18.100.1")
 
 
 
@@ -698,7 +708,7 @@ class CapturedHardwareFullConfigurationTests(unittest.TestCase):
 
     def test_peer_slots_ignore_the_unused_zero_entries(self):
 
-        self.assertEqual(self.parsed["paired_macs"], ["00:1B:13:04:E9:6E"])
+        self.assertEqual(self.parsed["paired_macs"], ["00:1B:13:FA:CE:22"])
 
         self.assertNotIn("00:00:00:00:00:00", self.parsed["paired_macs"])
 
@@ -744,7 +754,7 @@ class CapturedHardwareLinkStatusTests(unittest.TestCase):
 
         self.assertEqual(parsed["link_state"], "LINKED")
 
-        self.assertEqual(parsed["link_peer_macs"], ["00:1B:13:04:6A:EA", "B8:98:B0:07:85:C7"])
+        self.assertEqual(parsed["link_peer_macs"], ["00:1B:13:FA:CE:11", "B8:98:B0:FA:CD:C7"])
 
 
 
@@ -752,7 +762,7 @@ class CapturedHardwareLinkStatusTests(unittest.TestCase):
 
         parsed = usb.parse_link_status(captured("link_324"))
 
-        self.assertEqual(parsed["link_peer_macs"], ["00:1B:13:04:E9:6E"])
+        self.assertEqual(parsed["link_peer_macs"], ["00:1B:13:FA:CE:22"])
 
 
 
@@ -867,7 +877,7 @@ class CapturedUnlinkedStateTests(unittest.TestCase):
     def test_a_not_linked_device_still_reports_its_configured_peer(self):
         """So the peer list is the configured set, not evidence of a live link."""
         parsed = usb.parse_link_status(captured("link_324_unlinked"))
-        self.assertEqual(parsed["link_peer_macs"], ["00:1B:13:05:50:50"])
+        self.assertEqual(parsed["link_peer_macs"], ["00:1B:13:FA:CE:44"])
 
     def test_an_unobserved_flag_is_unknown_rather_than_not_linked(self):
         body = bytearray(captured("link_324_unlinked")[10:])
@@ -883,12 +893,12 @@ class CapturedUnlinkedStateTests(unittest.TestCase):
         ext = usb.parse_advanced_query_response(captured("extended_324_b"))
         self.assertEqual(ext["device_type_code"], 0x01)
         self.assertEqual(ext["device_type"], usb.DEVICE_MODEL)
-        self.assertEqual(ext["paired_macs"], ["00:1B:13:05:50:50"])
+        self.assertEqual(ext["paired_macs"], ["00:1B:13:FA:CE:44"])
 
     def test_the_third_unit_reports_its_own_identity_and_firmware(self):
         basic = usb.parse_query_response(captured("basic_324_b"))
-        self.assertEqual(basic["mac"], "00:1B:13:05:17:E9")
-        self.assertEqual(basic["ip"], "192.168.100.134")
+        self.assertEqual(basic["mac"], "00:1B:13:FA:CE:33")
+        self.assertEqual(basic["ip"], "198.18.100.134")
         self.assertEqual(basic["firmware"], "1.9.4")
 
     def test_the_product_id_never_selects_a_model(self):
@@ -1012,7 +1022,7 @@ class MalformedPacketTests(unittest.TestCase):
 
         parsed = usb.parse_link_status(usb.packet(1, usb.LINK_STATUS_RESPONSE, bytes(body[:17])), 1)
 
-        self.assertEqual(parsed["link_peer_macs"], ["00:1B:13:04:6A:EA"])
+        self.assertEqual(parsed["link_peer_macs"], ["00:1B:13:FA:CE:11"])
 
 
 
@@ -1054,7 +1064,7 @@ class MalformedPacketTests(unittest.TestCase):
 
         parsed = usb.parse_full_configuration(usb.packet(1, usb.FULL_CONFIG_RESPONSE, body), 1)
 
-        self.assertEqual(parsed["mac"], "00:1B:13:04:6A:EA")
+        self.assertEqual(parsed["mac"], "00:1B:13:FA:CE:11")
 
 
 
@@ -2649,11 +2659,11 @@ class DeviceOperationTests(unittest.TestCase):
 
     def test_dhcp_static_packets_and_static_validation(self):
 
-        self.assertEqual(usb.build_ip_dhcp(3, HOST_MAC).hex(), "2f03f4a2000000030306001b130281e0")
+        self.assertEqual(usb.build_ip_dhcp(3, HOST_MAC).hex(), "2f03f4a2000000030306001b13facfe0")
 
         self.assertEqual(usb.build_ip_static(3, HOST_MAC, "192.168.1.44", "255.255.255.0", "192.168.1.1").hex(),
 
-                         "2f03f4a2000000030307001b130281e0c0a8012cffffff00c0a80101")
+                         "2f03f4a2000000030307001b13facfe0c0a8012cffffff00c0a80101")
 
         self.assertEqual(usb.validate_static_network("192.168.1.44", "255.255.255.0", "192.168.1.1"),
 
@@ -2673,11 +2683,11 @@ class DeviceOperationTests(unittest.TestCase):
 
             service = make_service(folder)
 
-            network = FakeNetwork().add("192.168.100.25", HOST_MAC, 0)
+            network = FakeNetwork().add("198.18.100.25", HOST_MAC, 0)
 
             service._exchange = network.exchange
 
-            service.discover_ip("192.168.100.25", IFACE_IP, IFACE_MASK)
+            service.discover_ip("198.18.100.25", IFACE_IP, IFACE_MASK)
 
             network.add("192.168.1.255", HOST_MAC, 0)   # broadcast target ACKs
 

@@ -8,7 +8,7 @@ OmniSuite runs on the management PC, talks to each device directly, and presents
 one inventory: discovery, configuration, A/V routing, USB routing, firmware,
 diagnostics and reporting.
 
-**Version: V1.1.0**
+**Version: V1.2.0**
 
 ---
 
@@ -46,27 +46,28 @@ diagnostics and reporting.
 - **Inventory export** to a two-sheet XLSX workbook, and a **TS Dump** JSON file
   for support with passwords masked.
 - **Encrypted device logs** collected on request for manufacturer Engineering.
+- **Remote Access** (off until an administrator turns it on) — reach OmniSuite from a phone, tablet
+  or laptop, with administrator and user accounts. A User routes only the equipment assigned to them,
+  through **Standard routing** or a **User Matrix** (AV, Video and Audio), and can route to a **Display
+  Group** of displays in one action. Optional passwordless **direct access links** per account.
+- **Backup and restore** — one passphrase-encrypted file holds the configuration that makes an
+  installation yours, and a restore is all-or-nothing.
+- **Firmware availability** — reports whether Hall Research has published newer firmware for each model.
+  It never downloads or installs anything.
 - **Appearance** — light and dark, ten colour presets, four layouts.
-- **Update notification** — OmniSuite tells you when a newer release exists. It
-  never downloads or installs anything for you.
+- **Update notification** — OmniSuite may contact GitHub at startup to check whether a
+  newer OmniSuite version is available, and tells you when one exists. It never downloads or
+  installs anything for you. A separate, optional firmware check reads Hall Research's public
+  product pages (see the User Guide, "What OmniSuite contacts on the Internet").
 
 ---
 
 ## Screenshots
 
-| | |
-|---|---|
-| **Device Info** — the fleet, with frozen identity columns and per-row actions | **Configure** — encoder, decoder and USB settings |
-| ![Device Info](docs/images/device-info.png) | ![Configure](docs/images/configure.png) |
-| **A/V Matrix** — encoders to decoders, with AV / Video / Audio modes | **USB Matrix** — LEX hosts to REX devices |
-| ![A/V Matrix](docs/images/av-matrix.png) | ![USB Matrix](docs/images/usb-matrix.png) |
-| **Multiview** — the workspace: sources on the left, the canvas, and the display output above it | **Multiview on air** — a layout showing on a decoder, with its windows live |
-| ![Multiview workspace](docs/images/multiview-workspace.png) | ![Multiview live](docs/images/multiview-live.png) |
-| **Settings** — version, credentials, appearance, and who publishes it | **Device Log** — the Engineering notice shown before any log is collected |
-| ![Settings](docs/images/settings.png) | ![Device log warning](docs/images/device-log-warning.png) |
-
-The bundled [User Guide](ui/user-guide.html) is also
-[pictured](docs/images/user-guide.png).
+Screenshots are not included in this release. The earlier set predated the Device Manager rename and the
+Remote Access screens, and showed a laboratory's own device addresses, so they would have described a
+product that no longer matches this one. The bundled [User Guide](ui/user-guide.html) describes every page
+as it is.
 
 ---
 
@@ -77,10 +78,10 @@ Get the archive for your machine from the
 
 | Platform | Artifact |
 |---|---|
-| Windows x86-64 | `OmniSuite-V1.1.0-Windows-x86_64.zip` |
-| macOS Apple Silicon | `OmniSuite-V1.1.0-macOS-arm64.zip` |
-| macOS Intel | `OmniSuite-V1.1.0-macOS-x86_64.zip` |
-| Ubuntu Linux x86-64 | `OmniSuite-V1.1.0-Ubuntu-x86_64.tar.gz` |
+| Windows x86-64 | `OmniSuite-V1.2.0-Windows-x86_64.zip` |
+| macOS Apple Silicon | `OmniSuite-V1.2.0-macOS-arm64.zip` |
+| macOS Intel | `OmniSuite-V1.2.0-macOS-x86_64.zip` |
+| Ubuntu Linux x86-64 | `OmniSuite-V1.2.0-Ubuntu-x86_64.tar.gz` |
 
 Each release also carries `SHA256SUMS.txt`. To check a download:
 
@@ -88,7 +89,7 @@ Each release also carries `SHA256SUMS.txt`. To check a download:
 sha256sum -c SHA256SUMS.txt          # Linux / macOS
 ```
 ```powershell
-Get-FileHash .\OmniSuite-V1.1.0-Windows-x86_64.zip -Algorithm SHA256
+Get-FileHash .\OmniSuite-V1.2.0-Windows-x86_64.zip -Algorithm SHA256
 ```
 
 See **[Supported platforms](#supported-platforms)** below for what has actually
@@ -101,13 +102,17 @@ been tested on each one — the levels are not the same.
 1. **Download** the archive for your platform and extract it.
 2. **Launch OmniSuite.**
    - Windows: run `OmniSuite.exe`.
-   - macOS: open `OmniSuite.app`. It is **not signed or notarised**, so the
-     first launch needs right-click → Open (see
-     [Supported platforms](#supported-platforms)).
+   - macOS: open `OmniSuite.app`. It is **not signed or notarised**, so macOS
+     blocks the first launch; approve it under **System Settings → Privacy &
+     Security → Open Anyway**. Step by step, and what to check before you
+     approve it: [docs/INSTALL_MACOS.md](docs/INSTALL_MACOS.md). The same text is
+     in the zip as `READ-ME-FIRST-macOS.txt`.
    - Ubuntu: run `./OmniSuite/OmniSuite` from a desktop session.
 3. A small launcher window appears and **your browser opens** on the OmniSuite
    interface. OmniSuite serves on `127.0.0.1:8080`, or the next free port if
-   8080 is taken — the launcher shows and logs the address it chose.
+   8080 is taken — the launcher shows and logs the address it chose. If you
+   want the same address every time, ask for a fixed port (see
+   [Local application port](#local-application-port)).
 4. **Allow OmniSuite through the firewall** if your system prompts you. It talks
    to devices directly, so a blocked process and an empty network look identical
    in the UI.
@@ -160,6 +165,85 @@ configured route is not evidence that USB traffic is flowing.
 
 ---
 
+## Local application port
+
+By default OmniSuite chooses its own local port at start (8080, or the next free one), so the address
+can differ between runs. In **Settings › Local Application Port**, on the OmniSuite computer, you can
+tick **Use a fixed TCP port** (1024-65535) and **Save and Restart**; from then on OmniSuite binds
+exactly that port.
+
+A fixed port is never silently replaced. If something else holds it when OmniSuite starts, the
+launcher says **Server could not start** and offers **Retry**, **Start on Alternate Port** (for this
+session only; the fixed port is left as it was), **Change Fixed Port** (saved only once the new port has
+actually been bound) and **Exit**. A damaged setting never stops OmniSuite starting: the file is set
+aside and OmniSuite returns to automatic. The setting belongs to the computer, so a backup does not
+carry it, and it has nothing to do with Remote Access, which has its own port.
+
+---
+
+## Remote Access
+
+Normally OmniSuite answers only on the computer it runs on. **Remote Access** adds a second listener,
+bound to the network adapter an administrator picks, so other devices can sign in. It is **off on a new
+installation and stays off when you upgrade**. The first administrator is created at the OmniSuite
+computer; there is no default password.
+
+- **Transport.** A first-time setup starts on **HTTP**, labelled as not encrypted, and OmniSuite asks you
+  to confirm it. **HTTPS** is the recommended choice once a certificate exists. Your choice is kept; OmniSuite
+  never switches transport on its own, never falls back from HTTPS to HTTP if the certificate cannot be
+  used (Remote Access simply does not start and says why), and does not listen on plain HTTP while HTTPS is
+  on. Use HTTP only on a network you trust.
+- **Certificates.** Choose **Create certificate** (OmniSuite makes one) or **Use my own files**. A
+  generated certificate uses the computer's Windows name as its name, is issued by *Hall Research* for
+  *OmniSuite*, is valid for the computer name and the chosen adapter's address, and lasts **three
+  calendar years**. Browsers warn about it once, because nobody outside your building vouches for it;
+  the connection is encrypted either way. Settings says whether a certificate is *active*, a *custom
+  certificate is active*, or a *certificate is required*, and never says *trusted*. A certificate made by
+  an earlier build keeps the name and validity it had; it is not replaced automatically.
+- **Accounts.** Administrators can do everything. A User can only route, and only the sources,
+  displays and Display Groups assigned to them. Permissions are enforced on the server for every
+  request, at the moment it runs.
+- **Routing for Users.** Each account gets **Standard routing** (choose a source and a display, press
+  Route), the **User Matrix** (sources across the top, displays and groups down the side, with AV, Video
+  and Audio modes), or both.
+- **Display Groups.** A named set of displays that receive the same source; each display is routed and
+  checked in turn, a failure does not stop the others, and nothing is rolled back. A group is not a
+  Multiview and is its own permission.
+- **Direct access links.** An optional passwordless address for one non-administrator account, off by
+  default. Treat the address like a password.
+- **Activity.** Administrators can review sign-ins, refusals, routing and account changes.
+
+Remote Access is for your own network. Do not expose OmniSuite to the internet or a guest network.
+Details are in the User Guide and in
+[docs/REMOTE_ACCESS_ARCHITECTURE.md](docs/REMOTE_ACCESS_ARCHITECTURE.md).
+
+---
+
+## Backup and restore
+
+**Settings › Backup and Restore**, at the OmniSuite computer only, writes accounts and permissions,
+device names, Display Groups, Multiview layouts, device sign-in details and scan settings to one file
+encrypted with a passphrase you choose (at least 8 characters; it cannot be recovered). A restore shows
+what is in the file before it changes anything, and then either completes or puts everything back.
+
+- A restore is **authoritative for what the backup covers**: an account, group or name on this
+  computer that the backup does not carry is removed. A section the backup never looked at is left alone.
+- The HTTPS certificate and key, the Activity log, scan results and the local port are never restored,
+  and on a different computer you choose the network adapter and firmware folder again.
+- Anyone signed in as an account the restore removes or changes is **signed out**; an account that comes
+  back unchanged stays signed in. The summary names them before you press Restore.
+
+---
+
+## Firmware availability
+
+Once after it starts, and then every seven days, OmniSuite reads what Hall Research has published and
+shows **Up to Date**, **Available** or **Unknown** (with the reason) per model, in Settings and beside the
+version on Device Info. It runs in the background, works without an internet connection (keeping the last
+good answer), and only reports.
+
+---
+
 ## Device logs
 
 Each OmniStream encoder and decoder can build a diagnostic bundle for the
@@ -189,6 +273,11 @@ troubleshooting. Open it from Settings › User Guide, from the navigation, or a
 ---
 
 ## Supported platforms
+
+The four platforms are exactly those the release workflow tests and builds, each on its own runner:
+Windows x86-64 (`windows-latest`), Ubuntu x86-64 (`ubuntu-latest`), macOS Apple Silicon
+(`macos-latest`) and macOS Intel (`macos-15-intel`), with Python 3.12 and Node 20. The runtime is the
+pinned Python 3.12 stack in `requirements-lock.txt`.
 
 These levels are deliberately distinct. A release artifact that builds and starts
 is not the same as one exercised against real hardware.
@@ -224,7 +313,11 @@ devices. Treat those platforms as ready to try, not as field-proven.
   a tool that flattens them leaves the app unable to load its own Python
   framework. It is **not code signed, not Developer ID signed, and not
   notarised**, so Gatekeeper will refuse a normal double-click on first launch.
-  Right-click the app → **Open**, then confirm.
+  Approve it under **System Settings → Privacy & Security → Open Anyway**, only
+  for a download from the official releases page; see
+  [docs/INSTALL_MACOS.md](docs/INSTALL_MACOS.md). macOS also asks for **Local
+  Network** access the first time you scan; choose Allow. Developer ID signing and
+  notarization are a planned improvement.
 - **Ubuntu** — a `tar.gz` containing an `OmniSuite` directory; run the
   `OmniSuite` executable inside it. It needs a **desktop session**: the launcher
   is a graphical window and there is **no headless mode**. CI smoke-tests the
@@ -238,7 +331,7 @@ devices. Treat those platforms as ready to try, not as field-proven.
 
 ## Version
 
-**V1.1.0.** `VERSION` in this repository is the single source of truth; Settings
+**V1.2.0.** `VERSION` in this repository is the single source of truth; Settings
 reports what the running build was made from, the User Guide states the version
 it describes, and the release artifacts take their names from it.
 
@@ -250,6 +343,11 @@ it describes, and the release artifacts take their names from it.
 |---|---|
 | Multiview | A decoder occasionally leaves one window black after a layout change even though the configuration is correct and the stream is arriving. OmniSuite detects this and reports which window rather than claiming success. Showing another Multiview and returning clears it. This is decoder firmware behaviour and is not fixed by this release. |
 | Multiview | A decoder with Video Wall enabled cannot run Multiview, and Fast Switching prevents it on the affected 1xx family. OmniSuite reports the reason and does not turn either feature off for you. |
+| Certificates | A certificate OmniSuite creates is self-signed, so each browser warns the first time; supply your organisation's certificate to avoid it. A certificate created by an earlier build is not migrated automatically and keeps its original name and validity. |
+| Remote Access | A first-time setup starts on HTTP, which is not encrypted. Choose HTTPS once a certificate exists. Remote Access is for your own network, not the internet. |
+| Performance | One long soak saw the median time of local route calls rise with how long OmniSuite had been running. It has not been reproduced as a defect and is under investigation; an opt-in diagnostic records the numbers. |
+| Memory | A long-running process has been measured growing by roughly 2.5 MB per hour after a forced collection. The cause has not been identified; restarting OmniSuite returns it to its starting size. |
+| Platforms | Only Windows has been used against physical hardware. The Windows and macOS downloads are not code signed. |
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
@@ -301,6 +399,12 @@ convenience and does not override it; where the two differ, LICENSE governs.
 
 OmniSuite bundles third-party libraries, each under its own licence and
 copyright, listed in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The Hall licence covers
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), with their licence texts in
+[`third_party_licenses/`](third_party_licenses). Every download carries `LICENSE`,
+the notices and those texts beside the application. The Hall licence covers
 Hall-owned OmniSuite code only; those components stay under their own licences,
-and Hall Research Technologies LLC claims no ownership of them.
+and Hall Research Technologies LLC claims no ownership of them. One of them,
+pystray, is licensed under the LGPL-3.0: its unmodified source is in
+[`third_party/pystray-0.19.5/`](third_party/pystray-0.19.5) and travels with every
+download, and [REBUILD.md](REBUILD.md) explains how to rebuild OmniSuite with your own
+copy of it (section 11A of the licence preserves that right).

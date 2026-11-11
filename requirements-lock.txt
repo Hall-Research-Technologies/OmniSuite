@@ -1,0 +1,40 @@
+# Reproducible runtime set for every build and every test run.
+#
+# requirements.txt is the human-edited list of what OmniSuite uses. This file is
+# what it resolved to on Python 3.12 when the dependency audit was made, with the
+# transitive packages pinned too, so that what is tested is what is built and a
+# release no longer depends on whatever each package published that morning.
+# Regenerate it deliberately (resolve requirements.txt in a clean environment,
+# read the audit, run the full suite, commit the result); never edit one pin alone.
+#
+# Hashes are not required here: the macOS, Linux and Windows builds resolve
+# different wheels, and per-platform hashes are a separate piece of work.
+blinker==1.9.0
+certifi==2026.10.23
+cffi==2.1.1
+charset-normalizer==3.5.2
+click==8.5.0
+# cryptography 49 and later publish no prebuilt wheel for Intel macOS (see
+# requirements.txt for the failure that causes); 48.0.1 is the last that does.
+cryptography==50.0.2 ; sys_platform != "darwin" or platform_machine != "x86_64"
+cryptography==48.0.1 ; sys_platform == "darwin" and platform_machine == "x86_64"
+et-xmlfile==2.0.0
+flask==3.1.3
+idna==3.20
+itsdangerous==2.2.0
+jinja2==3.1.6
+markdown-it-py==4.2.0
+markupsafe==3.0.4
+mdurl==0.1.2
+openpyxl==3.1.5
+pillow==13.0.0
+psutil==7.2.2
+pycparser==3.12
+pygments==2.21.0
+pystray==0.19.5
+requests==2.34.2
+rich==15.0.0
+six==1.17.0
+urllib3==2.8.0
+websocket-client==1.9.2
+werkzeug==3.1.9

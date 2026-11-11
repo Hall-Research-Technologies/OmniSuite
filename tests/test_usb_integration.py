@@ -53,14 +53,31 @@ def _github_is_fenced(*args, **kwargs):
     raise OSError("no test may contact GitHub")
 
 
-srv._fetch_latest_release = _github_is_fenced
+srv._fetch_release_feed = _github_is_fenced
+
+import omni_release  # noqa: E402  (after the application, like the rest of this block)
+
+ARTIFACT_PREFIX = omni_release.active_product().artifact_prefix
+
+
+def _product_tag(tag):
+    """The active product's tag for a version written the legacy way (V1.2.3).
+
+    Anything that is not a version is returned untouched, so a malformed tag
+    stays malformed.
+    """
+    try:
+        return omni_release.active_product().tag_for(tag)
+    except omni_release.IdentityError:
+        return tag
+
 
 # Values observed on real hardware during physical testing.
-E4521_IP, E4521_HOST, E4521_USB_MAC, E4521_USB_IP = "192.0.2.141", "hw-omni-e4521-00002", "B8:98:B0:07:85:ED", "192.0.2.246"
-D4511_IP, D4511_HOST, D4511_USB_MAC, D4511_USB_IP = "192.0.2.32", "hw-omni-d4511-085c6", "B8:98:B0:07:85:C7", "192.0.2.108"
+E4521_IP, E4521_HOST, E4521_USB_MAC, E4521_USB_IP = "192.0.2.141", "hw-omni-e4521-00001", "B8:98:B0:FA:CE:ED", "192.0.2.246"
+D4511_IP, D4511_HOST, D4511_USB_MAC, D4511_USB_IP = "192.0.2.32", "hw-omni-d4511-0a0c6", "B8:98:B0:FA:CD:C7", "192.0.2.108"
 # Observed hardware: the AT-OMNI-311 (LEX/host) is .128, the AT-OMNI-324 (REX/device) is .127.
-OMNI311_MAC, OMNI311_IP = "00:1B:13:04:E9:6E", "192.0.2.128"
-OMNI324_MAC, OMNI324_IP = "00:1B:13:04:6A:EA", "192.0.2.127"
+OMNI311_MAC, OMNI311_IP = "00:1B:13:FA:CE:22", "192.0.2.128"
+OMNI324_MAC, OMNI324_IP = "00:1B:13:FA:CE:11", "192.0.2.127"
 # Every command that changes device state. A test may read from a stubbed
 # transport; it may never write to one that could be a real device.
 USB_MUTATING_COMMANDS = {usb.PAIR, usb.UNPAIR, usb.UNPAIR_ALL, usb.IP_DHCP,
@@ -127,9 +144,9 @@ _fence.install()
 assert _fence.installed(), "the hardware fence is not installed"
 
 # The full observed bench system.
-E4521B_IP, E4521B_HOST, E4521B_USB_MAC, E4521B_USB_IP = "192.0.2.143", "hw-omni-e4521-0856c", "B8:98:B0:07:85:6D", "192.0.2.194"
-D4511B_IP, D4511B_HOST, D4511B_USB_MAC, D4511B_USB_IP = "192.0.2.151", "hw-omni-d4511-08586", "B8:98:B0:07:85:87", "192.0.2.250"
-D4511C_IP, D4511C_HOST, D4511C_USB_MAC, D4511C_USB_IP = "192.0.2.152", "hw-omni-d4511-085c0", "B8:98:B0:07:85:C1", "192.0.2.248"
+E4521B_IP, E4521B_HOST, E4521B_USB_MAC, E4521B_USB_IP = "192.0.2.143", "hw-omni-e4521-0a06c", "B8:98:B0:FA:CE:6D", "192.0.2.194"
+D4511B_IP, D4511B_HOST, D4511B_USB_MAC, D4511B_USB_IP = "192.0.2.151", "hw-omni-d4511-00001", "B8:98:B0:FA:CD:87", "192.0.2.250"
+D4511C_IP, D4511C_HOST, D4511C_USB_MAC, D4511C_USB_IP = "192.0.2.152", "hw-omni-d4511-0a0c0", "B8:98:B0:FA:CD:C1", "192.0.2.248"
 
 CACHE_UNITS = [
     {"ip": E4521_IP, "hostname": E4521_HOST, "model": "hw-omni-e4521", "role": "encoder",
@@ -342,8 +359,8 @@ class ServerTestBase(unittest.TestCase):
             "get": staticmethod(_no_log_fetch),
             "post": staticmethod(_no_log_fetch),
         }))
-        self.github_fetcher_before_stub = srv._fetch_latest_release
-        self.patch_srv("_fetch_latest_release", _no_github)
+        self.github_fetcher_before_stub = srv._fetch_release_feed
+        self.patch_srv("_fetch_release_feed", _no_github)
         with srv._update_check_lock:
             previous_update = dict(srv._update_check_cache)
             srv._update_check_cache["checked_at"] = 0.0
@@ -529,7 +546,7 @@ class ParentCorrelationTests(ServerTestBase):
 
     def test_correlation_is_exact_mac_not_heuristic(self):
         """Neighbouring addresses and near-miss MACs must not correlate."""
-        near_mac = "B8:98:B0:07:85:EE"          # one nibble from the E4521's USB MAC
+        near_mac = "B8:98:B0:FA:CD:EE"          # one nibble from the E4521's USB MAC
         self.seed((near_mac, "192.0.2.142", 0))   # and adjacent to the E4521's IP
         self.assertFalse(self.by_mac(near_mac)["integrated"])
         self.assertEqual(self.by_mac(near_mac)["parent_ip"], "")
@@ -594,7 +611,7 @@ class ClearAndRediscoverTests(ServerTestBase):
     def test_clear_units_clears_the_discovered_usb_inventory(self):
         self.seed((E4521_USB_MAC, E4521_USB_IP, 0), (OMNI311_MAC, OMNI311_IP, 0))
         self.assertEqual(self.client.get("/api/usb_extenders").get_json()["online_count"], 2)
-        response = self.client.post("/api/clear_units")
+        response = self.client.post("/api/clear_units", json={})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["usb_cleared"], 2)
         body = self.client.get("/api/usb_extenders").get_json()
@@ -608,7 +625,7 @@ class ClearAndRediscoverTests(ServerTestBase):
         derive an endpoint from. The fixture pins _load_cache, so this states the
         production end state explicitly."""
         self.seed((E4521_USB_MAC, E4521_USB_IP, 0), (OMNI311_MAC, OMNI311_IP, 0))
-        self.client.post("/api/clear_units")
+        self.client.post("/api/clear_units", json={})
         self._patch_cache([])
         body = self.client.get("/api/usb_extenders").get_json()
         self.assertEqual(body["devices"], [])
@@ -618,7 +635,7 @@ class ClearAndRediscoverTests(ServerTestBase):
         """It was never discovered over UDP, so forgetting discovery cannot
         un-know it: the parent still reports it."""
         self.seed((OMNI311_MAC, OMNI311_IP, 0))
-        self.client.post("/api/clear_units")
+        self.client.post("/api/clear_units", json={})
         derived = [d for d in self.client.get("/api/usb_extenders").get_json()["devices"]
                    if d.get("discovery_source") == "parent_derived"]
         self.assertTrue(derived, "a parent-known endpoint is still known")
@@ -629,7 +646,7 @@ class ClearAndRediscoverTests(ServerTestBase):
     def test_cleared_devices_do_not_reappear_from_persistence(self):
         self.seed((OMNI311_MAC, OMNI311_IP, 0))
         state_file = self.service.state_file
-        self.client.post("/api/clear_units")
+        self.client.post("/api/clear_units", json={})
         reloaded = usb.ExtenderDiscoveryService(state_file, persist_debounce=0)
         self.assertEqual(reloaded.state()["devices"], [], "cleared inventory must not survive a reload")
 
@@ -638,13 +655,13 @@ class ClearAndRediscoverTests(ServerTestBase):
         self.service.set_ranges(["192.0.2.1-192.0.2.20"])
         sent = []
         self.service._exchange = lambda *a, **k: sent.append(a) or (_ for _ in ()).throw(AssertionError("no packet may be sent"))
-        self.client.post("/api/clear_units")
+        self.client.post("/api/clear_units", json={})
         self.assertEqual(sent, [], "clear must not touch any device")
         self.assertEqual(self.service.state()["ranges"], ["192.0.2.1-192.0.2.20"])
 
     def test_devices_return_after_rediscovery(self):
         self.seed((OMNI311_MAC, OMNI311_IP, 0))
-        self.client.post("/api/clear_units")
+        self.client.post("/api/clear_units", json={})
         self.assertEqual(self.client.get("/api/usb_extenders").get_json()["online_count"], 0)
         self.seed((OMNI311_MAC, OMNI311_IP, 0))
         self.assertEqual(self.client.get("/api/usb_extenders").get_json()["online_count"], 1)
@@ -652,7 +669,7 @@ class ClearAndRediscoverTests(ServerTestBase):
     def test_clear_units_still_removes_the_encoder_decoder_artefacts(self):
         for name in ("CACHE", "SCAN_RESULTS", "CSV_VIEW"):
             getattr(srv, name).write_text("{}", encoding="utf-8")
-        self.assertEqual(self.client.post("/api/clear_units").status_code, 200)
+        self.assertEqual(self.client.post("/api/clear_units", json={}).status_code, 200)
         for name in ("CACHE", "SCAN_RESULTS", "CSV_VIEW"):
             self.assertFalse(getattr(srv, name).exists(), f"{name} must still be cleared")
 
@@ -1348,15 +1365,15 @@ class GenericCorrelationTests(ServerTestBase):
     identically without any code change.
     """
 
-    # The complete observed system, including the 192.168.200.x subnet.
+    # The complete observed system, including the 198.18.200.x subnet.
     LIVE = [
         # (parent_ip, hostname, model, usb_type, usb_mac, usb_ip, expected_model, expected_role)
-        ("192.0.2.141", "hw-omni-e4521-00002", "hw-omni-e4521", "LEX", "B8:98:B0:07:85:ED", "192.0.2.246", "HW-OMNI-E4521", "LEX"),
-        ("192.0.2.143", "hw-omni-e4521-0856c", "hw-omni-e4521", "LEX", "B8:98:B0:07:85:6D", "192.0.2.194", "HW-OMNI-E4521", "LEX"),
-        ("192.0.2.32", "hw-omni-d4511-085c6", "hw-omni-d4511", "REX", "B8:98:B0:07:85:C7", "192.0.2.108", "HW-OMNI-D4511", "REX"),
-        ("192.0.2.151", "hw-omni-d4511-08586", "hw-omni-d4511", "REX", "B8:98:B0:07:85:87", "192.0.2.250", "HW-OMNI-D4511", "REX"),
-        ("192.0.2.152", "hw-omni-d4511-085c0", "hw-omni-d4511", "REX", "B8:98:B0:07:85:C1", "192.0.2.248", "HW-OMNI-D4511", "REX"),
-        ("192.168.200.154", "hw-omni-d4511-08578", "hw-omni-d4511", "REX", "B8:98:B0:07:85:79", "192.168.200.66", "HW-OMNI-D4511", "REX"),
+        ("192.0.2.141", "hw-omni-e4521-00001", "hw-omni-e4521", "LEX", "B8:98:B0:FA:CE:ED", "192.0.2.246", "HW-OMNI-E4521", "LEX"),
+        ("192.0.2.143", "hw-omni-e4521-0a06c", "hw-omni-e4521", "LEX", "B8:98:B0:FA:CE:6D", "192.0.2.194", "HW-OMNI-E4521", "LEX"),
+        ("192.0.2.32", "hw-omni-d4511-0a0c6", "hw-omni-d4511", "REX", "B8:98:B0:FA:CD:C7", "192.0.2.108", "HW-OMNI-D4511", "REX"),
+        ("192.0.2.151", "hw-omni-d4511-00001", "hw-omni-d4511", "REX", "B8:98:B0:FA:CD:87", "192.0.2.250", "HW-OMNI-D4511", "REX"),
+        ("192.0.2.152", "hw-omni-d4511-0a0c0", "hw-omni-d4511", "REX", "B8:98:B0:FA:CD:C1", "192.0.2.248", "HW-OMNI-D4511", "REX"),
+        ("198.18.200.154", "hw-omni-d4511-0a078", "hw-omni-d4511", "REX", "B8:98:B0:FA:CD:79", "198.18.200.66", "HW-OMNI-D4511", "REX"),
     ]
 
     # Deliberately unlike the live examples: different RFC1918 block, different
@@ -1422,7 +1439,7 @@ class GenericCorrelationTests(ServerTestBase):
     def test_runtime_usb_icron_observation_resolves_without_a_usb_rescan(self):
         """T0 unconfirmed -> T1 integrated, purely from later parent information."""
         self.build(self.LIVE, associate=False)
-        target_mac = self.LIVE[-1][4]          # the 192.168.200.x decoder
+        target_mac = self.LIVE[-1][4]          # the 198.18.200.x decoder
         self.assertEqual(self.by_mac(target_mac)["classification"], "UNCONFIRMED")
         # Parent information arrives later from the authoritative usb_icron read.
         for parent_ip, _host, _model, role, mac, usb_ip, _em, _er in self.LIVE:
@@ -1488,13 +1505,13 @@ class NoHardcodedDeviceConstantsTests(unittest.TestCase):
 
     LIVE_VALUES = [
         "192.0.2.141", "192.0.2.143", "192.0.2.32", "192.0.2.151",
-        "192.0.2.152", "192.168.200.154", "192.0.2.246", "192.0.2.194",
-        "192.0.2.108", "192.0.2.250", "192.0.2.248", "192.168.200.66",
+        "192.0.2.152", "198.18.200.154", "192.0.2.246", "192.0.2.194",
+        "192.0.2.108", "192.0.2.250", "192.0.2.248", "198.18.200.66",
         "192.0.2.127", "192.0.2.128",
-        "B8:98:B0:07:85:ED", "B8:98:B0:07:85:6D", "B8:98:B0:07:85:C7", "B8:98:B0:07:85:87",
-        "B8:98:B0:07:85:C1", "B8:98:B0:07:85:79", "00:1B:13:04:E9:6E", "00:1B:13:04:6A:EA",
-        "hw-omni-e4521-00002", "hw-omni-e4521-0856c", "hw-omni-d4511-085c6",
-        "hw-omni-d4511-08586", "hw-omni-d4511-085c0", "hw-omni-d4511-08578",
+        "B8:98:B0:FA:CE:ED", "B8:98:B0:FA:CE:6D", "B8:98:B0:FA:CD:C7", "B8:98:B0:FA:CD:87",
+        "B8:98:B0:FA:CD:C1", "B8:98:B0:FA:CD:79", "00:1B:13:FA:CE:22", "00:1B:13:FA:CE:11",
+        "hw-omni-e4521-00001", "hw-omni-e4521-0a06c", "hw-omni-d4511-0a0c6",
+        "hw-omni-d4511-00001", "hw-omni-d4511-0a0c0", "hw-omni-d4511-0a078",
     ]
 
     def test_no_live_device_value_appears_in_production_code(self):
@@ -1588,7 +1605,7 @@ class BenchInputValidationTests(ServerTestBase):
         self.assertIn("not a valid MAC address", malformed.get_json()["error"])
 
     def test_invalid_macs_still_fail_closed(self):
-        for bad in ("not-a-mac", "00:1B:13:04:E9", "00:1B:13:04:E9:6", "00:1B:13:04:E9:6E:FF", "zz:zz:zz:zz:zz:zz", 12345):
+        for bad in ("not-a-mac", "00:1B:13:FA:CE", "00:1B:13:FA:CE:2", "00:1B:13:FA:CE:22:FF", "zz:zz:zz:zz:zz:zz", 12345):
             response = self.client.post(self.PATH, json={"host_mac": bad, "device_mac": self.device})
             self.assertEqual(response.status_code, 400, f"{bad!r} -> {response.get_json()}")
 
@@ -1618,25 +1635,25 @@ class CanonicalMacNormalizerTests(unittest.TestCase):
     """There is one MAC parser, and every malformed input raises ProtocolError."""
 
     def test_valid_forms_normalize_identically(self):
-        expected = "00:1B:13:04:E9:6E"
-        for form in ("00:1B:13:04:E9:6E", "00:1b:13:04:e9:6e", "00-1B-13-04-E9-6E",
-                     "001B1304E96E", "001b.1304.e96e", " 00:1B:13:04:E9:6E "):
+        expected = "00:1B:13:FA:CE:22"
+        for form in ("00:1B:13:FA:CE:22", "00:1b:13:fa:ce:22", "00-1B-13-FA-CE-22",
+                     "001B13FACE22", "001b.13fa.ce22", " 00:1B:13:FA:CE:22 "):
             self.assertEqual(usb.normalize_mac(form), expected, form)
 
     def test_bytes_input_is_accepted(self):
-        self.assertEqual(usb.normalize_mac(bytes.fromhex("001B1304E96E")), "00:1B:13:04:E9:6E")
+        self.assertEqual(usb.normalize_mac(bytes.fromhex("001B13FACE22")), "00:1B:13:FA:CE:22")
 
     def test_malformed_input_raises_protocol_error_not_value_error(self):
         # ProtocolError subclasses ValueError, so callers that catch only
         # ProtocolError previously let an odd hex digit count escape as a crash.
-        for bad in ("not-a-mac", "00:1B:13:04:E9:6", "abc", "", "zz", "00:1B:13:04:E9:6E:FF", None, 12345):
+        for bad in ("not-a-mac", "00:1B:13:FA:CE:2", "abc", "", "zz", "00:1B:13:FA:CE:22:FF", None, 12345):
             with self.assertRaises(usb.ProtocolError, msg=repr(bad)):
                 usb.normalize_mac(bad)
 
     def test_device_lookup_fails_closed_on_malformed_mac(self):
         with tempfile.TemporaryDirectory() as folder:
             service = usb.ExtenderDiscoveryService(Path(folder) / "s.json", persist_debounce=0)
-            for bad in ("not-a-mac", "00:1B:13:04:E9:6"):
+            for bad in ("not-a-mac", "00:1B:13:FA:CE:2"):
                 self.assertIsNone(service.device(bad), bad)
 
 
@@ -2653,15 +2670,15 @@ class IntegratedIcronNetworkTests(ServerTestBase):
     """
 
     ICRON = {"name": "icron", "type": "icron", "dhcpmode": "dhcp",
-             "ipaddress": "192.168.200.66", "subnetmask": "255.255.255.0",
-             "gateway": "192.168.200.1", "macaddress": "B8:98:B0:07:85:79"}
-    ETH1 = {"name": "eth1", "dhcpmode": "dhcp", "ipaddress": "192.168.200.154",
-            "subnetmask": "255.255.255.0", "gateway": "192.168.200.1",
-            "macaddress": "B8:98:B0:07:85:78", "linkspeed": 1000}
+             "ipaddress": "198.18.200.66", "subnetmask": "255.255.255.0",
+             "gateway": "198.18.200.1", "macaddress": "B8:98:B0:FA:CD:79"}
+    ETH1 = {"name": "eth1", "dhcpmode": "dhcp", "ipaddress": "198.18.200.154",
+            "subnetmask": "255.255.255.0", "gateway": "198.18.200.1",
+            "macaddress": "B8:98:B0:FA:CD:78", "linkspeed": 1000}
 
     def setUp(self):
         super().setUp()
-        self._patch_cache([{"ip": "192.168.200.154", "hostname": "hw-omni-d4511-08578",
+        self._patch_cache([{"ip": "198.18.200.154", "hostname": "hw-omni-d4511-0a078",
                             "model": "hw-omni-d4511", "role": "decoder",
                             "usb_type": "REX", "usb_mac": self.ICRON["macaddress"]}])
         self.seed((self.ICRON["macaddress"], self.ICRON["ipaddress"], 1))
@@ -2690,11 +2707,11 @@ class IntegratedIcronNetworkTests(ServerTestBase):
 
     # ---- read ----
     def test_reads_the_icron_interface_from_the_parent_net_config(self):
-        current = srv._omnistream_icron_network_get("192.168.200.154")
+        current = srv._omnistream_icron_network_get("198.18.200.154")
         self.assertEqual(current["mode"], "dhcp")
-        self.assertEqual(current["ipaddress"], "192.168.200.66")
+        self.assertEqual(current["ipaddress"], "198.18.200.66")
         self.assertEqual(current["subnetmask"], "255.255.255.0")
-        self.assertEqual(current["gateway"], "192.168.200.1")
+        self.assertEqual(current["gateway"], "198.18.200.1")
         self.assertEqual(current["macaddress"], self.ICRON["macaddress"])
         self.assertEqual(current["source"], "parent_net_config")
 
@@ -2703,8 +2720,8 @@ class IntegratedIcronNetworkTests(ServerTestBase):
         self.assertEqual(r.status_code, 200)
         body = r.get_json()
         self.assertEqual(body["kind"], "integrated")
-        self.assertEqual(body["parent_ip"], "192.168.200.154")
-        self.assertEqual(body["ipaddress"], "192.168.200.66")
+        self.assertEqual(body["parent_ip"], "198.18.200.154")
+        self.assertEqual(body["ipaddress"], "198.18.200.66")
         self.assertNotEqual(body["ipaddress"], body["parent_ip"], "USB IP is not the parent device IP")
 
     def test_modes_match_the_parent_web_application(self):
@@ -2731,14 +2748,14 @@ class IntegratedIcronNetworkTests(ServerTestBase):
 
     def test_static_carries_address_mask_and_gateway(self):
         self.sent.clear()
-        r = self.apply(mode="static", address="192.168.200.90",
-                       netmask="255.255.255.0", gateway="192.168.200.1")
+        r = self.apply(mode="static", address="198.18.200.90",
+                       netmask="255.255.255.0", gateway="198.18.200.1")
         self.assertEqual(r.status_code, 200)
         entry = self.net_writes()[0]["config_set"]["config"][0]
         self.assertEqual(entry["dhcpmode"], "static")
-        self.assertEqual(entry["ipaddress"], "192.168.200.90")
+        self.assertEqual(entry["ipaddress"], "198.18.200.90")
         self.assertEqual(entry["subnetmask"], "255.255.255.0")
-        self.assertEqual(entry["gateway"], "192.168.200.1")
+        self.assertEqual(entry["gateway"], "198.18.200.1")
 
     def test_the_whole_interface_object_is_returned_not_a_fragment(self):
         self.apply(mode="dhcp")
@@ -2759,8 +2776,8 @@ class IntegratedIcronNetworkTests(ServerTestBase):
                 return {"error": False}          # ACK, but state never changes
             return original(url, payload, timeout)
         srv._ws_send_recv = stubborn
-        r = self.apply(mode="static", address="192.168.200.90",
-                       netmask="255.255.255.0", gateway="192.168.200.1")
+        r = self.apply(mode="static", address="198.18.200.90",
+                       netmask="255.255.255.0", gateway="198.18.200.1")
         self.assertEqual(r.get_json()["status"], "command_accepted_unverified")
         self.assertFalse(r.get_json()["verified"])
 
@@ -2768,13 +2785,13 @@ class IntegratedIcronNetworkTests(ServerTestBase):
     def test_integrated_never_uses_the_standalone_udp_ip_commands(self):
         for mode in ("broadcast", "dhcp", "disabled"):
             self.apply(mode=mode)
-        self.apply(mode="static", address="192.168.200.90", netmask="255.255.255.0", gateway="192.168.200.1")
+        self.apply(mode="static", address="198.18.200.90", netmask="255.255.255.0", gateway="198.18.200.1")
         self.assertEqual(self.udp, [], "no standalone IPDHCP/IPStatic may be sent to an integrated endpoint")
 
     def test_a_client_supplied_parent_cannot_redirect_the_write(self):
         r = self.apply(mode="dhcp", parent_ip="10.9.9.9", parent_hostname="evil")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.get_json()["parent_ip"], "192.168.200.154",
+        self.assertEqual(r.get_json()["parent_ip"], "198.18.200.154",
                          "the parent is resolved server-side from the USB MAC")
 
     def test_a_mac_that_does_not_belong_to_the_parent_fails_closed(self):
@@ -2790,9 +2807,9 @@ class IntegratedIcronNetworkTests(ServerTestBase):
         self.assertEqual(self.net_writes(), [])
 
     def test_malformed_static_values_are_refused_without_writing(self):
-        for payload in ({"address": "999.1.1.1", "netmask": "255.255.255.0", "gateway": "192.168.200.1"},
-                        {"address": "192.168.200.90", "netmask": "255.0.255.0", "gateway": "192.168.200.1"},
-                        {"address": "192.168.200.90", "netmask": "255.255.255.0", "gateway": "10.0.0.1"}):
+        for payload in ({"address": "999.1.1.1", "netmask": "255.255.255.0", "gateway": "198.18.200.1"},
+                        {"address": "198.18.200.90", "netmask": "255.0.255.0", "gateway": "198.18.200.1"},
+                        {"address": "198.18.200.90", "netmask": "255.255.255.0", "gateway": "10.0.0.1"}):
             self.sent.clear()
             r = self.apply(mode="static", **payload)
             self.assertEqual(r.status_code, 400, payload)
@@ -2800,7 +2817,7 @@ class IntegratedIcronNetworkTests(ServerTestBase):
 
     def test_an_address_change_updates_identity_without_duplicating_inventory(self):
         before = len(self.service.state()["devices"])
-        self.state["icron"]["ipaddress"] = "192.168.200.90"
+        self.state["icron"]["ipaddress"] = "198.18.200.90"
         self.apply(mode="dhcp")
         self.assertEqual(len(self.service.state()["devices"]), before,
                          "identity is the canonical MAC; a new address must not create a second endpoint")
@@ -3921,7 +3938,15 @@ class ApplicationVersionTests(ServerTestBase):
     def test_the_release_build_reads_the_same_file(self):
         workflow = (Path(srv.__file__).resolve().parent
                     / ".github" / "workflows" / "build-cross-platform.yml").read_text(encoding="utf-8")
-        self.assertIn("cat VERSION", workflow)
+        # The workflow no longer reads the file itself: the identity job does, through
+        # tools/release_identity.py, and every later job uses what it decided. The
+        # property is the same -- the release is named from the VERSION file, in
+        # exactly one place -- so assert both halves of that.
+        guard = (Path(srv.__file__).resolve().parent / "tools" / "release_identity.py"
+                 ).read_text(encoding="utf-8")
+        self.assertIn('"VERSION"', guard)
+        self.assertIn("tools/release_identity.py resolve", workflow)
+        self.assertNotIn("cat VERSION", workflow)
 
 
 class WorkspaceDescriptionTests(ServerTestBase):
@@ -4127,10 +4152,12 @@ class UpdateCheckTests(ServerTestBase):
             if status in (403, 429):
                 raise RuntimeError("rate limited")
             response.raise_for_status()
-            return response.json()
-        self.patch_srv("_fetch_latest_release", fake_fetch)
+            body = response.json()
+            return [body] if isinstance(body, dict) else body
+        self.patch_srv("_fetch_release_feed", fake_fetch)
 
     def release(self, tag, draft=False, prerelease=False, assets=None):
+        tag = _product_tag(tag)
         return {"tag_name": tag, "draft": draft, "prerelease": prerelease,
                 "html_url": f"https://github.com/Hall-Research-Technologies/omniSuite/releases/tag/{tag}",
                 "assets": assets or []}
@@ -4258,10 +4285,10 @@ class UpdateCheckTests(ServerTestBase):
     # no longer ambiguous. ArtifactNamingTests holds these and the build script
     # together.
     ASSETS = [
-        {"name": f"OmniSuite-V1.0.8-{tail}", "size": 1,
+        {"name": f"{ARTIFACT_PREFIX}V1.0.8-{tail}", "size": 1,
          "browser_download_url":
              "https://github.com/Hall-Research-Technologies/omniSuite/releases/"
-             f"download/V1.0.8/OmniSuite-V1.0.8-{tail}"}
+             f"download/V1.0.8/{ARTIFACT_PREFIX}V1.0.8-{tail}"}
         for tail in ("Windows-x86_64.zip", "macOS-arm64.zip",
                      "macOS-x86_64.zip", "Ubuntu-x86_64.tar.gz")
     ]
@@ -4290,14 +4317,14 @@ class UpdateCheckTests(ServerTestBase):
         self.assertIsNone(self.asset_for("Linux", "aarch64"))
 
     def test_an_asset_url_outside_the_project_is_refused(self):
-        hostile = [{"name": "OmniSuite-V1.0.8-Windows-x86_64.zip",
-                    "browser_download_url": "https://evil.example/OmniSuite-V1.0.8-Windows-x86_64.zip"}]
+        hostile = [{"name": f"{ARTIFACT_PREFIX}V1.0.8-Windows-x86_64.zip",
+                    "browser_download_url": f"https://evil.example/{ARTIFACT_PREFIX}V1.0.8-Windows-x86_64.zip"}]
         self.patch_srv("platform", type("P", (), {
             "system": staticmethod(lambda: "Windows"), "machine": staticmethod(lambda: "AMD64")}))
         self.assertIsNone(srv._select_platform_asset(hostile))
 
     def test_only_this_repositorys_release_urls_are_returned(self):
-        self.stub_github({"tag_name": "V1.0.8", "draft": False, "prerelease": False,
+        self.stub_github({"tag_name": _product_tag("V1.0.8"), "draft": False, "prerelease": False,
                           "html_url": "https://evil.example/releases", "assets": []})
         body = self.check()
         self.assertEqual(body["release_url"], srv.GITHUB_RELEASES_URL,
@@ -4347,7 +4374,7 @@ class UpdateCheckTests(ServerTestBase):
 
     def test_no_credential_is_used(self):
         source = Path(srv.__file__).with_name("OmniMatrix_upgrade_server_v7_6y.py").read_text(encoding="utf-8")
-        block = source[source.index("def _fetch_latest_release"):]
+        block = source[source.index("def _fetch_release_feed"):]
         block = block[:block.index("def _update_check")]
         for forbidden in ("Authorization", "token", "GITHUB_TOKEN", "password"):
             self.assertNotIn(forbidden, block, forbidden)
@@ -4389,7 +4416,9 @@ class UpdateCheckTests(ServerTestBase):
     # ---- the dialog ----
     def test_settings_offers_the_official_releases_page_unconditionally(self):
         module = Path(srv.__file__).resolve().parent.joinpath("ui", "settings.js").read_text(encoding="utf-8")
-        self.assertIn("https://github.com/Hall-Research-Technologies/omniSuite/releases", module)
+        # The address comes from the server (it is the product's own), never from this file.
+        self.assertNotIn("github.com/Hall-Research-Technologies", module)
+        self.assertIn("data.release_url", module)
         self.assertIn("cfg_update_check", module)
         self.assertIn("cfg_release_link", module)
 
@@ -4691,10 +4720,11 @@ class ButtonHierarchyTests(ServerTestBase):
                                  "set_ntp_confirm", "slate_upload_btn", "slate_apply_btn",
                                  "confirm_ok"]),
                          f"unexpected primary set: {sorted(primary)}")
-        for utility in ("clear_units_btn", "sync_passwords_btn", "set_ntp_btn",
+        for utility in ("sync_passwords_btn", "set_ntp_btn",
                         "slate_manager_btn", "export_units_btn"):
             self.assertIn(utility, secondary, f"{utility} should not be accent-filled")
-        self.assertEqual(sorted(danger), sorted(["reboot_btn", "remove_btn",
+        # Clear Units empties the inventory, so it is destructive like the others.
+        self.assertEqual(sorted(danger), sorted(["clear_units_btn", "reboot_btn", "remove_btn",
                                                  "set_ntp_confirm_reboot", "slate_delete_btn"]))
 
     def test_the_matrix_pages_have_no_accent_filled_helper(self):
@@ -4802,8 +4832,22 @@ class NativeDialogTests(ServerTestBase):
         # It fires only when the dialog's own elements are absent, and a caller
         # that must not degrade passes requireDialog.
         self.assertIn("if (!backdrop || !okBtn || !cancelBtn) {", block)
-        self.assertIn("if (options.requireDialog) return Promise.resolve(false);", block)
+        # `field` joined requireDialog rather than replacing it, which widens
+        # what refuses: a dialog asking for a passphrase cannot degrade to a
+        # browser box either, because that box takes no input and the only one
+        # that does shows what is typed in the clear.
+        self.assertIn(
+            "if (options.requireDialog || options.field) return Promise.resolve(false);",
+            block)
         self.assertIn('id="confirm_backdrop"', page, "the markup is present, so it never fires")
+
+    def test_a_dialog_that_asks_for_something_never_degrades(self):
+        """The fallback must not hand a credential prompt to the browser."""
+        page = self.source("index.html")
+        block = page[page.index("function omniConfirm("):]
+        fallback = block[:block.index("\n  }\n")]
+        self.assertIn("options.field", fallback,
+                      "a field request can reach the browser's own dialog")
 
     # ---- 13. a required confirmation was never downgraded ----
     def test_the_destructive_actions_still_confirm(self):
@@ -5675,10 +5719,10 @@ class ArtifactNamingTests(ServerTestBase):
     """
 
     EXPECTED = {
-        "windows": "OmniSuite-{version}-Windows-x86_64.zip",
-        "arm64": "OmniSuite-{version}-macOS-arm64.zip",
-        "x86_64": "OmniSuite-{version}-macOS-x86_64.zip",
-        "linux": "OmniSuite-{version}-Ubuntu-x86_64.tar.gz",
+        "windows": "{prefix}{version}-Windows-x86_64.zip",
+        "arm64": "{prefix}{version}-macOS-arm64.zip",
+        "x86_64": "{prefix}{version}-macOS-x86_64.zip",
+        "linux": "{prefix}{version}-Ubuntu-x86_64.tar.gz",
     }
 
     def build_script(self):
@@ -5686,9 +5730,11 @@ class ArtifactNamingTests(ServerTestBase):
 
     def assets(self, version="V1.0.7"):
         base = "https://github.com/Hall-Research-Technologies/OmniSuite/releases/download/"
-        return [{"name": name.format(version=version), "size": 1,
-                 "browser_download_url": base + version + "/" + name.format(version=version)}
-                for name in self.EXPECTED.values()]
+        named = [name.format(prefix=ARTIFACT_PREFIX, version=version)
+                 for name in self.EXPECTED.values()]
+        return [{"name": filename, "size": 1,
+                 "browser_download_url": base + version + "/" + filename}
+                for filename in named]
 
     def test_the_build_script_publishes_exactly_these_names(self):
         script = self.build_script()
@@ -5862,7 +5908,7 @@ class DeviceLogTests(ServerTestBase):
     `requests` is replaced with one that fails the test.
     """
 
-    PATH = "/debug/hw-omni-e4521-00002-debug.vdf"
+    PATH = "/debug/hw-omni-e4521-00001-debug.vdf"
 
     def setUp(self):
         super().setUp()
@@ -6019,8 +6065,8 @@ class DeviceLogTests(ServerTestBase):
                 self.assertIsNone(srv._safe_device_log_path(hostile))
 
     def test_an_ordinary_device_path_is_accepted_unchanged(self):
-        for good in (self.PATH, "/debug/at-omni-111-04553-debug.vdf",
-                     "/debug/wd-omni-121-07548-debug.vdf"):
+        for good in (self.PATH, "/debug/at-omni-111-00001-debug.vdf",
+                     "/debug/wd-omni-121-00001-debug.vdf"):
             self.assertEqual(srv._safe_device_log_path(good), good)
 
     def test_the_url_is_built_against_the_device_we_asked(self):
@@ -6033,8 +6079,8 @@ class DeviceLogTests(ServerTestBase):
 
     # ---- 82. filename sanitization ----
     def test_the_filename_identifies_the_device(self):
-        name = srv._device_log_filename("hw-omni-e4521-00002", "192.0.2.10", "20260911-120000")
-        self.assertEqual(name, "hw-omni-e4521-00002_192.0.2.10_20260911-120000.vdf")
+        name = srv._device_log_filename("hw-omni-e4521-00001", "192.0.2.10", "20260911-120000")
+        self.assertEqual(name, "hw-omni-e4521-00001_192.0.2.10_20260911-120000.vdf")
 
     def test_the_filename_is_writable_on_all_three_platforms(self):
         hostile = {
@@ -6256,7 +6302,7 @@ class UsbColumnSemanticsTests(ServerTestBase):
 
     def test_the_cell_states_the_role_and_no_bare_number(self):
         block = self.cell()
-        self.assertIn('<span class="usb-pill">${label}</span>', block)
+        self.assertIn('<span class="usb-pill">${escapeHtml(label)}</span>', block)
         self.assertNotIn("found_count", block,
                          "a subnet-wide count must not sit beside one device")
         self.assertNotIn("${label} \u00b7 ${peers}", block)
@@ -6282,7 +6328,7 @@ class UsbColumnSemanticsTests(ServerTestBase):
         found_devices. Conflating any two of them is the defect this replaces."""
         cfg = {
             "type": "LEX",
-            "macaddress": "B8:98:B0:07:85:ED",
+            "macaddress": "B8:98:B0:FA:CE:ED",
             "ipaddress": "198.51.100.5",
             "paired_devices": {"AA": {"linked": True}, "BB": {"linked": False}, "CC": {}},
             "found_devices": {str(i): {} for i in range(8)},
@@ -6687,10 +6733,11 @@ class UpdateAlertTests(ServerTestBase):
     def offer(self, tag):
         """Have GitHub offer this release."""
         def fetch(*args, **kwargs):
-            return {"tag_name": tag, "draft": False, "prerelease": False,
-                    "html_url": f"https://github.com/Hall-Research-Technologies/omniSuite/releases/tag/{tag}",
-                    "assets": []}
-        self.patch_srv("_fetch_latest_release", fetch)
+            product_tag = _product_tag(tag)
+            return [{"tag_name": product_tag, "draft": False, "prerelease": False,
+                     "html_url": f"https://github.com/Hall-Research-Technologies/omniSuite/releases/tag/{product_tag}",
+                     "assets": []}]
+        self.patch_srv("_fetch_release_feed", fetch)
         self._reset_update_cache()
 
     def check(self, force=False):
@@ -6719,7 +6766,7 @@ class UpdateAlertTests(ServerTestBase):
                  ("V1.0.7", "V1.0.8", srv.UPDATE_AVAILABLE),
                  ("V1.0.9", "V1.0.10", srv.UPDATE_AVAILABLE),
                  ("1.0.7", "V1.0.7", srv.UPDATE_CURRENT),
-                 ("V1.0.7", "v1.0.8", srv.UPDATE_AVAILABLE)]
+                 ("V1.0.7", "V1.0.8", srv.UPDATE_AVAILABLE)]
         for installed, latest, expected in cases:
             with self.subTest(installed=installed, latest=latest):
                 self.patch_srv("_app_version", lambda v=installed: v)
@@ -6745,7 +6792,7 @@ class UpdateAlertTests(ServerTestBase):
     def test_nothing_else_raises_it(self):
         self.offer("V0.0.1")
         self.assertFalse(self.check()["alert"], "CURRENT must not flash")
-        self.patch_srv("_fetch_latest_release",
+        self.patch_srv("_fetch_release_feed",
                        lambda *a, **k: (_ for _ in ()).throw(OSError("offline")))
         self._reset_update_cache()
         self.assertFalse(self.check()["alert"], "UNABLE_TO_CHECK must not flash")
@@ -6890,8 +6937,8 @@ class RouteIdentityContractTests(ServerTestBase):
                 usb.normalize_mac(address)
 
     def test_legitimate_mac_forms_are_still_accepted(self):
-        for form in ("00:1B:13:04:E9:6E", "00-1b-13-04-e9-6e", "001b1304e96e", "001b.1304.e96e"):
-            self.assertEqual(usb.normalize_mac(form), "00:1B:13:04:E9:6E", form)
+        for form in ("00:1B:13:FA:CE:22", "00-1b-13-fa-ce-22", "001b13face22", "001b.13fa.ce22"):
+            self.assertEqual(usb.normalize_mac(form), "00:1B:13:FA:CE:22", form)
 
     def test_a_route_request_carrying_an_address_is_refused_as_invalid(self):
         r = self.client.post("/api/usb_route/pair",
@@ -6902,7 +6949,7 @@ class RouteIdentityContractTests(ServerTestBase):
 
     def test_the_fabricated_mac_from_the_field_report_is_unroutable(self):
         r = self.client.post("/api/usb_route/pair",
-                             json={"lex_mac": OMNI311_MAC, "rex_mac": "19:21:68:10:01:52"})
+                             json={"lex_mac": OMNI311_MAC, "rex_mac": "19:20:21:52:00:00"})
         self.assertEqual(r.status_code, 404)
         self.assertEqual(r.get_json()["status"], "unknown_endpoint")
         self.assertEqual(self.transmitted, [], "an unknown endpoint must never be addressed")
@@ -7584,7 +7631,7 @@ class SwitchWarningAcknowledgementTests(ServerTestBase):
 
     def clear(self):
         """The operator's Clear Units, plus the store the fixture stands in for."""
-        reply = self.client.post("/api/clear_units")
+        reply = self.client.post("/api/clear_units", json={})
         self._patch_cache([])
         return reply
 
@@ -7945,7 +7992,7 @@ class UsbIdentityReconciliationTests(ServerTestBase):
     def test_a_usb_endpoint_that_moves_keeps_one_record_at_its_new_address(self):
         self.service.discover_ip(OMNI311_IP, IFACE_IP, IFACE_MASK)
         self.assertEqual(self.service.device(OMNI311_MAC)["ip"], OMNI311_IP)
-        moved = "192.168.150.203"
+        moved = "198.18.150.203"
         self.net.endpoints[moved] = dict(self.net.endpoints[OMNI311_IP])
         self.service.discover_ip(moved, IFACE_IP, IFACE_MASK)
         records = [d for d in self.service.state()["devices"]
@@ -7955,7 +8002,7 @@ class UsbIdentityReconciliationTests(ServerTestBase):
 
     def test_the_inventory_shows_it_once_at_the_new_address(self):
         self.service.discover_ip(OMNI311_IP, IFACE_IP, IFACE_MASK)
-        moved = "192.168.150.203"
+        moved = "198.18.150.203"
         self.net.endpoints[moved] = dict(self.net.endpoints[OMNI311_IP])
         self.service.discover_ip(moved, IFACE_IP, IFACE_MASK)
         rows = [d for d in srv._usb_extender_view()["devices"]
@@ -8160,7 +8207,7 @@ class DaisyWarningLifecycleTests(ServerTestBase):
         self.discover(self.units)
         self.dismiss("daisy_chain")
         self.dismiss("multi_switch")
-        self.client.post("/api/clear_units")
+        self.client.post("/api/clear_units", json={})
         self._patch_cache([])
         self.discover(self.units)
         self.assertTrue(self.daisy_would_show())
@@ -8452,14 +8499,14 @@ class RouteSubnetEligibilityTests(unittest.TestCase):
         """Not the parent's management address: the USB link lives on the Icron
         network, and the two are routinely different."""
         srv._usb_net_config[srv._norm_usb_mac("AA:BB:CC:00:00:99")] = {
-            "ipaddress": "192.168.200.62", "subnetmask": "255.255.255.0"}
+            "ipaddress": "198.18.200.62", "subnetmask": "255.255.255.0"}
         self.addCleanup(lambda: srv._usb_net_config.pop(srv._norm_usb_mac("AA:BB:CC:00:00:99"), None))
         integrated = {"kind": "integrated", "usb_mac": "AA:BB:CC:00:00:99",
                       "classification": "INTEGRATED", "online": True, "pairing_eligible": True,
                       # The parent is managed here; the USB endpoint is not.
                       "ip": "192.0.2.141", "usb_ip": "192.0.2.141"}
         address, mask = srv._usb_endpoint_network(integrated)
-        self.assertEqual((address, mask), ("192.168.200.62", "255.255.255.0"))
+        self.assertEqual((address, mask), ("198.18.200.62", "255.255.255.0"))
         self.assertEqual(self.check(integrated, self.entry("standalone", "192.0.2.135",
                                                            "255.255.255.0")),
                          "NETWORK_MISMATCH")
@@ -8834,8 +8881,10 @@ class ConfigureTableTests(ServerTestBase):
         """A transparent sticky cell lets the scrolling columns show through it."""
         css = self.source("ui", "templates.css")
         block = css[css.index("/* ------------------------------------------------ frozen identity columns */"):]
-        self.assertIn("background: var(--surface-raised)", block)
-        self.assertIn("background: var(--surface-elevated)", block)
+        # Layered over the opaque page surface (see tests/test_sticky_opaque.py).
+        self.assertIn("background-color: var(--surface);", block)
+        self.assertIn("linear-gradient(var(--surface-raised), var(--surface-raised))", block)
+        self.assertIn("linear-gradient(var(--surface-elevated), var(--surface-elevated))", block)
         self.assertIn("z-index", block)
         literals = re.findall(r"background:\s*(#[0-9a-fA-F]{3,6})", block)
         self.assertEqual(literals, [], f"frozen cells name colours directly: {literals}")
@@ -9212,11 +9261,11 @@ class ScanTargetUnificationTests(ServerTestBase):
 
     def test_saving_scan_targets_configures_usb_directed_discovery(self):
         reply = self.client.post("/api/scan_preferences",
-                                 json={"scan_targets": "192.168.150.10-192.168.150.20"})
+                                 json={"scan_targets": "198.18.150.10-198.18.150.20"})
         body = reply.get_json()
         self.assertTrue(body["ok"])
         self.assertIsNone(body["usb_ranges_error"])
-        self.assertEqual(self.service.state()["ranges"], ["192.168.150.10-192.168.150.20"],
+        self.assertEqual(self.service.state()["ranges"], ["198.18.150.10-198.18.150.20"],
                          "the same routed network drives USB discovery without being entered twice")
 
     def test_the_saved_targets_come_back(self):
@@ -10281,13 +10330,13 @@ class FirstRunNoticeTests(ServerTestBase):
     # ---- what must never reset it ----
     def test_clear_units_does_not_reset_it(self):
         self.ack()
-        self.assertEqual(self.client.post("/api/clear_units").status_code, 200)
+        self.assertEqual(self.client.post("/api/clear_units", json={}).status_code, 200)
         self.assertTrue(self.acknowledged(),
                         "ending the inventory's life says nothing about a notice the operator read")
 
     def test_clearing_the_usb_inventory_does_not_reset_it(self):
         self.ack()
-        self.assertEqual(self.client.post("/api/usb_extenders/clear").status_code, 200)
+        self.assertEqual(self.client.post("/api/usb_extenders/clear", json={}).status_code, 200)
         self.assertTrue(self.acknowledged())
 
     def test_reset_appearance_does_not_reset_it(self):
@@ -10355,7 +10404,12 @@ class FirstRunNoticeTests(ServerTestBase):
         """One decision, one control: no separate 'don't show again' checkbox."""
         module = Path(srv.__file__).resolve().parent.joinpath("ui", "settings.js").read_text(encoding="utf-8")
         self.assertIn("/api/notices/ack", module)
-        self.assertNotIn("type=\"checkbox\"", module)
+        # Bounded to the notice itself. Settings has a tick box of its own now (the
+        # fixed local port) and it is not part of this decision.
+        start = module.index("const NETWORK_NOTICE_HTML = `")
+        notice = module[start:module.index("`;", start + 30)]
+        self.assertIn("notice_continue", notice)
+        self.assertNotIn("type=\"checkbox\"", notice)
         self.assertNotIn("Don't show again", module)
 
     def test_the_user_guide_button_opens_help_in_a_new_tab(self):

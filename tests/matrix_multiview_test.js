@@ -4,7 +4,7 @@
  * A decoder that is compositing a Multiview is not showing any single encoder,
  * but its ip_input1 still holds whatever it last watched -- so without this the
  * matrix draws a video crosspoint for a picture nobody is looking at. Routing a
- * conventional source to such a decoder is still allowed, and warns first.
+ * conventional source to such a decoder is still allowed, and asks nothing.
  *
  * This loads ui/matrix/matrix.js into a tolerant DOM stub and drives the real
  * functions. The stub answers anything the page asks of the DOM, because the
@@ -82,6 +82,8 @@ function makeContext() {
     querySelectorAll() { return []; },
     querySelector() { return null; },
     addEventListener() {},
+    dataset: {},
+    rows: [],
     classList: {add() {}, remove() {}, toggle() {}, contains() { return false; }},
     style: {},
     closest() { return null; },
@@ -164,11 +166,6 @@ const COMPOSING = Object.assign({}, PLAIN, {
   ip: '192.0.2.11', host: 'dec-mv',
   multiview_active: true, multiview_name: 'multiviewLive'});
 
-function withConfirm(context, answer) {
-  const calls = [];
-  context.omniConfirm = async (options) => { calls.push(options); return answer; };
-  return calls;
-}
 
 async function main() {
   console.log('A/V Matrix Multiview awareness');
@@ -232,101 +229,66 @@ async function main() {
            'the compositing decoder was shown as routed to an encoder');
   });
 
-  // ---- the warning ---------------------------------------------------------
-  await check('the first route is warned about, and Continue proceeds', async () => {
+  // ---- a route asks nothing -------------------------------------------------
+  //
+  // A normal A/V route means single view, so putting a source on a display that
+  // is compositing IS the instruction. The server reads the decoder and leaves
+  // the Multiview inside the same verified transaction; this page asks nothing,
+  // sends no answer, and keeps no preference for a question that no longer
+  // exists. These tests dispatch the real click handler rather than reading its
+  // text.
+  async function clickRoute(c, decoder) {
+    const posts = [];
+    let asked = 0;
+    c.omniConfirm = async () => { asked++; return true; };
+    c.fetch = async (url, init) => {
+      posts.push({url, body: init && init.body ? JSON.parse(init.body) : null});
+      return {ok: true, status: 200, text: async () => JSON.stringify({ok: true})};
+    };
+    vm.runInContext('lastState = ' + JSON.stringify({
+      encoders: [ENCODER], decoders: [PLAIN, COMPOSING],
+      _rawEncoders: [ENCODER], _rawDecoders: [PLAIN, COMPOSING]}), c);
+    const attrs = {'data-dec': decoder.ip, 'data-enc': ENCODER.ip};
+    const cell = {getAttribute: (k) => attrs[k]};
+    await c.onMatrixCellClick(cell, {stopPropagation() {}}, tolerant('table'));
+    return {posts: posts.filter(x => x.url === '/api/route'), asked};
+  }
+
+  await check('routing to a compositing decoder asks nothing and sends one plain route',
+              async () => {
     const c = makeContext();
-    const calls = withConfirm(c, {ok: true, suppress: false});
-    const proceed = await c.confirmMultiviewExit(COMPOSING, 'multiviewLive');
-    assert(proceed === true, 'Continue did not allow the route');
-    assert(calls.length === 1, `omniConfirm called ${calls.length} times`);
-    assert(/Multiview is active/.test(calls[0].title), calls[0].title);
-    assert(/exit Multiview/i.test(calls[0].message), calls[0].message);
-    assert(/kept/i.test(calls[0].message), 'the warning does not say it is kept');
-    assert(calls[0].suppressLabel, 'no "do not show again" was offered');
+    const {posts, asked} = await clickRoute(c, COMPOSING);
+    assert(asked === 0, 'the operator was asked about a route they had just chosen');
+    assert(posts.length === 1, 'expected exactly one route request, got ' + posts.length);
+    assert(posts[0].body.decoder === COMPOSING.ip && posts[0].body.encoder === ENCODER.ip
+           && posts[0].body.mode === 'av', JSON.stringify(posts[0].body));
+    assert(!('exit_multiview' in posts[0].body),
+           'the request carries an answer to a question nobody is asked');
   });
 
-  await check('Cancel stops the route', async () => {
+  await check('routing to an ordinary decoder is the same request', async () => {
     const c = makeContext();
-    withConfirm(c, {ok: false, suppress: false});
-    assert((await c.confirmMultiviewExit(COMPOSING, 'multiviewLive')) === false);
+    const {posts, asked} = await clickRoute(c, PLAIN);
+    assert(asked === 0 && posts.length === 1, `asked ${asked}, posts ${posts.length}`);
+    assert(Object.keys(posts[0].body).sort().join() === 'decoder,encoder,mode',
+           JSON.stringify(posts[0].body));
   });
 
-  await check('Cancel remembers nothing, so the next route asks again', async () => {
+  await check('a route writes no preference for the retired question', async () => {
     const c = makeContext();
-    const calls = withConfirm(c, {ok: false, suppress: false});
-    await c.confirmMultiviewExit(COMPOSING, 'multiviewLive');
-    assert(c.sessionStorage.getItem('matrix_multiview_exit_acknowledged') === null,
-           'cancelling was recorded as an acknowledgement');
-    await c.confirmMultiviewExit(COMPOSING, 'multiviewLive');
-    assert(calls.length === 2, 'the second route was not warned about');
+    await clickRoute(c, COMPOSING);
+    assert(c.sessionStorage._map.size === 0 && c.localStorage._map.size === 0,
+           'the route left a preference behind');
   });
 
-  await check('the second route in the same session is not warned about', async () => {
-    const c = makeContext();
-    const calls = withConfirm(c, {ok: true, suppress: false});
-    assert((await c.confirmMultiviewExit(COMPOSING, 'multiviewLive')) === true);
-    assert((await c.confirmMultiviewExit(COMPOSING, 'multiviewLive')) === true);
-    assert(calls.length === 1, `the warning appeared ${calls.length} times`);
-  });
-
-  await check('the acknowledgement is session-scoped, not permanent', async () => {
-    const c = makeContext();
-    withConfirm(c, {ok: true, suppress: false});
-    await c.confirmMultiviewExit(COMPOSING, 'multiviewLive');
-    assert(c.sessionStorage.getItem('matrix_multiview_exit_acknowledged') === 'true',
-           'nothing was remembered for the session');
-    assert(c.localStorage.getItem('matrix_multiview_exit_suppressed') === null,
-           'one acknowledgement suppressed the warning for ever');
-  });
-
-  await check('a page refresh does not bring the warning back', async () => {
-    // A refresh re-runs the script against storage that survives it. Reloading
-    // the source into that same session storage is exactly that.
-    const first = makeContext();
-    withConfirm(first, {ok: true, suppress: false});
-    await first.confirmMultiviewExit(COMPOSING, 'multiviewLive');
-    const after = makeContext();
-    first.sessionStorage._map.forEach((v, k) => after.sessionStorage.setItem(k, v));
-    const calls = withConfirm(after, {ok: true, suppress: false});
-    assert((await after.confirmMultiviewExit(COMPOSING, 'multiviewLive')) === true);
-    assert(calls.length === 0, 'the refresh reset the acknowledgement');
-  });
-
-  await check('a genuinely new session is warned again', async () => {
-    const c = makeContext();          // fresh session storage, nothing carried
-    const calls = withConfirm(c, {ok: true, suppress: false});
-    await c.confirmMultiviewExit(COMPOSING, 'multiviewLive');
-    assert(calls.length === 1, 'a new session was not warned');
-  });
-
-  await check('do-not-show-again is remembered beyond the session', async () => {
-    const c = makeContext();
-    withConfirm(c, {ok: true, suppress: true});
-    await c.confirmMultiviewExit(COMPOSING, 'multiviewLive');
-    assert(c.localStorage.getItem('matrix_multiview_exit_suppressed') === 'true',
-           'the preference was not stored');
-    const next = makeContext();       // a new session, with the preference kept
-    next.localStorage.setItem('matrix_multiview_exit_suppressed', 'true');
-    const calls = withConfirm(next, {ok: true, suppress: false});
-    assert((await next.confirmMultiviewExit(COMPOSING, 'multiviewLive')) === true);
-    assert(calls.length === 0, 'the suppressed warning came back');
-  });
-
-  await check('storage that refuses to answer means asking, not assuming', async () => {
-    const c = makeContext();
-    c.sessionStorage.getItem = () => { throw new Error('storage disabled'); };
-    c.localStorage.getItem = () => { throw new Error('storage disabled'); };
-    const calls = withConfirm(c, {ok: true, suppress: false});
-    await c.confirmMultiviewExit(COMPOSING, 'multiviewLive');
-    assert(calls.length === 1,
-           'a browser with storage disabled silently skipped the warning');
-  });
-
-  // ---- the consent travels with the request --------------------------------
-  await check('the route request carries the operator consent', () => {
+  await check('the page keeps no trace of the retired confirmation', () => {
     const source = fs.readFileSync(SOURCE, 'utf8');
-    assert(/exit_multiview:\s*!!decoderMultiview\(/.test(source),
-           'the route request does not carry exit_multiview');
+    assert(!/confirmMultiviewExit|multiviewWarningSuppressed|rememberMultiviewWarning/
+           .test(source), 'the retired confirmation helpers are still defined');
+    assert(!/matrix_multiview_exit/.test(source),
+           'the page still reads a preference for a question that no longer exists');
+    assert(!/exit_multiview|omniMultiviewExit/.test(source),
+           'the route request still carries an answer nobody is asked for');
   });
 
   console.log(failures.length

@@ -82,7 +82,7 @@ body.compact .video-wall-config-card{padding:10px;width:min(92vw,340px)}
 .configure-section{ margin:0 0 16px; }
 .configure-section .header{ display:flex; align-items:center; justify-content:flex-start; gap:8px; user-select:none; margin-bottom:8px; width:auto; flex-wrap:wrap; }
 .configure-section .header h3{ margin:0; font-size:1.1em; font-weight:600; }
-.matrix-wrap{ width:max-content; margin-left:auto; margin-right:auto; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:8px; overflow:auto; max-width:96vw; max-height:70vh; }
+.matrix-wrap{ width:max-content; margin-left:auto; margin-right:auto; box-sizing:border-box; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:8px; overflow:auto; max-width:96vw; max-height:70vh; }
 .matrix-filter-row{display:flex;gap:24px;margin:18px auto 8px;align-items:center;justify-content:center;flex-wrap:wrap;width:max-content;max-width:96vw}
 .matrix{ border-collapse:collapse; }
 .matrix th, .matrix td{ border:1px solid var(--border); padding:4px 4px; text-align:center; background:var(--table); }
@@ -104,6 +104,10 @@ body.compact .video-wall-config-card{padding:10px;width:min(92vw,340px)}
 .cell.codec-blocked{opacity:.35;cursor:not-allowed}
 .cell.codec-blocked .radio-wrap{pointer-events:none}
 .cell.codec-blocked input{cursor:not-allowed}
+.cell.offline-blocked{opacity:.35;cursor:not-allowed}
+.cell.offline-blocked .radio-wrap{pointer-events:none}
+.cell.offline-blocked input{cursor:not-allowed}
+.offline-badge{display:inline-block;margin-top:2px;padding:0 6px;border:1px solid var(--state-error-text);border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.04em;color:var(--state-error-text)}
 .radio-wrap{
   position:relative;
   display:inline-block;
@@ -214,43 +218,48 @@ body.compact .mirror-scroll::-webkit-scrollbar{ height:10px; }
 .codec-ok{background:#14532d;color:#bbf7d0}
 .codec-bad{background:#7f1d1d;color:#fecaca}
 .codec-select{min-width:130px;max-width:170px}
-.codec-warning{margin:10px 12px;padding:8px 10px;border:1px solid rgba(248,113,113,.45);border-radius:8px;background:rgba(127,29,29,.35);color:#fecaca;font-weight:600}
+.codec-warning{margin:10px 12px;padding:8px 10px;border:1px solid color-mix(in srgb,var(--state-error) 45%,transparent 55%);border-radius:8px;background:color-mix(in srgb,var(--state-error) 14%,transparent 86%);color:var(--state-error-text);font-weight:600}
 .codec-warning.hidden{display:none!important}
 
-/* Sticky Headers */
+/* Sticky Headers. A sticky cell pins to the scrollport's content edge but the
+   container clips at its padding edge, so the pin is offset by the padding
+   (--mx-pad) or the grid scrolls through the gutter. The corner pins on both
+   axes, otherwise it scrolls away while the header row stays. */
+.matrix-wrap{ --mx-pad:8px }
+body.compact .matrix-wrap{ --mx-pad:6px }
 .matrix.sticky-enabled th.enc-head{ 
   position:sticky; 
-  top:0; 
+  top:calc(-1 * var(--mx-pad, 8px)); 
   z-index:10; 
   background:var(--table); 
   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
 .matrix.sticky-enabled th.row-head{ 
   position:sticky; 
-  left:0; 
+  left:calc(-1 * var(--mx-pad, 8px)); 
   z-index:9; 
   background:var(--table); 
   box-shadow: 2px 0 4px rgba(0,0,0,0.1);
 }
 .matrix.sticky-enabled tr:first-child th.row-head{ 
+  top:calc(-1 * var(--mx-pad, 8px)); 
   z-index:11; 
   box-shadow: 2px 2px 4px rgba(0,0,0,0.1);
 }
+/* The select-all cell and the "Decoders \ Encoders" label are two row-head cells in one
+   corner. Only the label is a frozen column: every decoder row's own checkbox cell is an
+   ordinary cell that scrolls away sideways. Pinned at the same left as the label, the
+   select-all box sat underneath it as soon as the grid was scrolled. It keeps its vertical
+   pin and scrolls away horizontally like the checkboxes below it -- no width is assumed. */
+.matrix.sticky-enabled th.row-head.select-all-head{ left:auto; }
 
 /* .toast is defined in ui/templates.css so every page has one and it
    follows the active preset. */
 
-.confirm-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:60000}
-.confirm-backdrop.hidden{display:none!important}
-.confirm-card{width:min(95vw,520px);background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px;color:var(--text);box-shadow:0 18px 50px rgba(0,0,0,.38)}
-.confirm-card h3{margin:0 0 8px;font-size:17px}
-.confirm-message{color:var(--muted);line-height:1.45;margin-bottom:12px}
-.confirm-summary{border:1px solid var(--border);border-radius:8px;background:var(--panel-2);padding:10px;margin:10px 0}
-.confirm-summary-row{display:flex;justify-content:space-between;gap:16px;padding:3px 0;font-size:13px}
-.confirm-summary-row span:first-child{color:var(--muted)}
-.confirm-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
-.confirm-cancel{background:var(--panel-2)}
-.confirm-danger{background:#e5534b}
+/* The confirmation dialog's presentation lives in ui/confirm.js, with the
+   markup it styles. It used to live here, so the dialog was a dialog only on
+   pages that loaded this stylesheet -- on /admin/users it measured as
+   position:static, transparent, unpadded and full width. */
 
 .hover-preview{
   position:fixed;
@@ -317,7 +326,7 @@ body.compact .mirror-scroll::-webkit-scrollbar{ height:10px; }
 .encoder-output-close,.encoder-encoding-close{background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px}
 .encoder-output-body{padding:10px 14px;overflow:auto;display:grid;grid-template-columns:repeat(2,minmax(420px,1fr));gap:12px;align-items:start}
 .encoder-output-loading,.encoder-output-error,.encoder-output-empty{padding:12px;color:var(--muted)}
-.encoder-output-error{color:#fca5a5}
+.encoder-output-error{color:var(--state-error-text)}
 .encoder-output-session{border:1px solid var(--border);border-radius:8px;margin-bottom:0;background:var(--table)}
 .encoder-output-session-title{width:100%;display:block;text-align:left;background:var(--panel-2);color:var(--text);border:0;border-radius:8px 8px 0 0;padding:8px 10px;font-weight:600}
 .encoder-output-session.collapsed .encoder-output-session-body{display:none}
@@ -349,16 +358,12 @@ body.compact .mirror-scroll::-webkit-scrollbar{ height:10px; }
   display:inline-block; margin-top:3px; padding:1px 5px;
   font-size:9px; font-weight:700; letter-spacing:.06em;
   border-radius:4px; white-space:nowrap;
-  color:var(--accent); border:1px solid var(--accent);
-  background:color-mix(in srgb, var(--accent) 12%, transparent);
+  color:var(--link-text); border:1px solid var(--accent);
+  background:color-mix(in srgb, var(--accent) 12%, transparent 88%);
 }
 tr.dec-multiview .row-head{cursor:help;}
 /* The video radios on that row are all unselected; dim them so the row reads
  * as "not routed here" rather than "we forgot to draw one". */
 tr.dec-multiview .radio-wrap input[type="radio"]{opacity:.35;}
 
-/* The optional "do not show again" line in a confirmation. */
-.confirm-suppress{
-  display:flex; align-items:center; gap:8px;
-  margin-top:10px; font-size:12px; color:var(--muted);
-}
+

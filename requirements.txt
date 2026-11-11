@@ -6,3 +6,14 @@ Pillow
 pystray
 psutil
 openpyxl
+# Remote-access TLS: generating a self-signed certificate when a site
+# has none. A supplied certificate needs only the standard library;
+# this is what makes first-time HTTPS setup possible for an installer
+# who has no certificate of their own.
+cryptography
+# cryptography 49 and later publish no prebuilt wheel for Intel macOS. pip then
+# builds it from source against whatever OpenSSL the machine has, and the
+# packaged app's bundled libssl does not match it: the app starts and then
+# fails on `import cryptography` (Symbol not found: _SSL_get0_group_name).
+# Every other platform stays on the latest release.
+cryptography<49 ; sys_platform == "darwin" and platform_machine == "x86_64"

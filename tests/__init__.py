@@ -16,4 +16,16 @@ from . import _fence
 os.environ.setdefault("OMNI_DATA_DIR",
                       tempfile.mkdtemp(prefix="omnisuite-tests-"))
 
+# The firmware availability check reads hallresearch.com. No test may reach it,
+# so the application is told not to arm it at all -- rather than armed and then
+# blocked by the fence, which would still be an attempt.
+os.environ["OMNI_FIRMWARE_CHECK"] = "0"
+
 _fence.install()
+
+# The adapter list is remembered for a few seconds in production. In a suite
+# that would answer one test with another test's adapters, so it is off here;
+# tests of the cache itself turn it on for their own span and put this back.
+import omni_adapters  # noqa: E402  (after the fence, like every other import)
+
+omni_adapters.CACHE_TTL = 0.0

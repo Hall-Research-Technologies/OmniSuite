@@ -1,5 +1,21 @@
 # OmniSuite architecture and USB extender plan
 
+## Branches
+
+| Branch | Purpose |
+|---|---|
+| `omnisuite-unified` | The single OmniSuite development line. |
+| `main` | The published release (V1.1.0 until the consolidated product is published). Not moved without approval. |
+| `release/omnisuite-1.1.x` | Maintenance of the published V1.1.0, only if a V1.1.x fix is needed. |
+| `feature/*` | Individual features and fixes, branched from `omnisuite-unified`. |
+
+- Do not rename, delete, reset or force-push `main`, `V1.1.0` or any release branch.
+- Do not create a production tag or publish a release without approval.
+- Publishing source is a separate decision from building it, because a branch's history is part
+  of what it publishes. Never push a development branch to the public repository; a release is
+  published as a reviewed snapshot commit.
+- Read [DEVELOPMENT.md](DEVELOPMENT.md) before branching or releasing.
+
 ## Product purpose
 
 OmniSuite is a local Atlona by Hall Research OmniStream device and firmware manager with an A/V matrix, a configuration workspace, a USB matrix for compatible OmniStream endpoints, and device maintenance controls. The active application is a threaded Flask server in `OmniMatrix_upgrade_server_v7_6y.py` serving static HTML and JavaScript from `ui/matrix`.
@@ -220,8 +236,8 @@ mode are never overwritten; the association only adds `integrated`, `parent_ip`,
 
 | USB MAC | Model | USB role | Device IP | Hostname | USB IP |
 | --- | --- | --- | --- | --- | --- |
-| B8:98:B0:07:85:ED | HW-OMNI-E4521 | USB Host / LEX | 192.168.100.141 | hw-omni-e4521-00002 | 192.168.100.246 |
-| B8:98:B0:07:85:C7 | HW-OMNI-D4511 | USB Device / REX | 192.168.100.32 | hw-omni-d4511-085c6 | 192.168.100.108 |
+| B8:98:B0:FA:CE:ED | HW-OMNI-E4521 | USB Host / LEX | 198.51.100.141 | hw-omni-e4521-00001 | 198.51.100.246 |
+| B8:98:B0:FA:CE:01 | HW-OMNI-D4511 | USB Device / REX | 198.51.100.32 | hw-omni-d4511-00011 | 198.51.100.108 |
 
 The Device Info USB count counts online endpoints once per canonical MAC. State is
 already keyed by MAC, so an endpoint that is also correlated to a parent is never
@@ -498,8 +514,8 @@ proven:
 | AT-OMNI-311 to AT-OMNI-324 | Verified | **Verified** — physically tested in the five-peer topology |
 
 The two verifications came from the operator running USB peripherals across the
-five-peer topology on the AT-OMNI-311 at `192.168.100.135`
-(`00:1B:13:05:50:50`), which held two standalone AT-OMNI-324 and three integrated
+five-peer topology on the AT-OMNI-311 at `198.51.100.135`
+(`00:1B:13:FA:CE:02`), which held two standalone AT-OMNI-324 and three integrated
 D4511 peers at once. That single physical test covers both `311 -> 324` and
 `311 -> D4511`, because both families were carrying traffic in it.
 
@@ -510,20 +526,20 @@ upgrades it, and a working Pair never has.
 documented model remains `HOST_PEER_LIMIT = 7`; five is simply how many peers
 have been proven to carry USB simultaneously.
 
-**AT-OMNI-311 to D4511, on authorised hardware.** The D4511 at `192.168.100.32`
-was released from its `usb_icron` owner `192.168.100.143` through the established
+**AT-OMNI-311 to D4511, on authorised hardware.** The D4511 at `198.51.100.32`
+was released from its `usb_icron` owner `198.51.100.143` through the established
 `/api/usb_unpair` path that owns that relationship, then routed from the
-AT-OMNI-311 at `192.168.100.128` through `POST /api/usb_route/pair` -- the same
+AT-OMNI-311 at `198.51.100.128` through `POST /api/usb_route/pair` -- the same
 endpoint a Matrix click uses. Both endpoints ACKed `0x302`, and a fresh Advanced
 Query of both agreed on the first attempt:
 
 ```
-AT-OMNI-311 .128   peers = ['00:1B:13:04:6A:EA', 'B8:98:B0:07:85:C7']
-D4511 .32          peers = ['00:1B:13:04:E9:6E']
+AT-OMNI-311 .128   peers = ['00:1B:13:FA:CE:03', 'B8:98:B0:FA:CE:01']
+D4511 .32          peers = ['00:1B:13:FA:CE:04']
 ```
 
 The route was left active for the operator's physical USB test. Its predecessor
-(`192.168.100.143 -> 192.168.100.32`) is recorded for restoration. The E4521 at
+(`198.51.100.143 -> 198.51.100.32`) is recorded for restoration. The E4521 at
 `.143` kept its other two REX peers throughout; no unrelated route was touched.
 
 A first attempt was rolled back by the test harness on a false negative: it
@@ -534,7 +550,7 @@ endpoints. The rollback itself behaved correctly, clearing both endpoints.
 
 The original standalone route was freed for the test and restored afterwards;
 restoration was confirmed by reading both endpoints (`routed=True`, owner
-`00:1B:13:04:E9:6E`), and both integrated endpoints were left with empty tables.
+`00:1B:13:FA:CE:04`), and both integrated endpoints were left with empty tables.
 
 `USB_ROUTE_DATA_PLANE_VERIFIED` is a separate table from `USB_ROUTE_CAPABILITY`
 for exactly this reason: enabling a route and having evidence that USB traffic
@@ -590,7 +606,7 @@ route is rendered active only after a fresh read of both endpoints agrees.
 ## Routing identity is a MAC; the axis key is not
 
 A Matrix cell click failed with `404` and
-`rex_mac 19:21:68:10:01:52 has not been discovered`. That MAC belongs to no
+`rex_mac 19:20:21:52:00:00 has not been discovered`. That MAC belongs to no
 device. It was manufactured from an address.
 
 `usb_key` is a **display and index key**: the OmniStream control IP for an
@@ -645,13 +661,13 @@ route into the D4511 at `.32`:
 
 ```
 immediately after the Pair
-  UDP Advanced Query   peers = ['00:1B:13:04:E9:6E']
+  UDP Advanced Query   peers = ['00:1B:13:FA:CE:04']
   usb_icron            paired_devices = {}
 
 several minutes later
-  UDP Advanced Query   peers = ['00:1B:13:04:E9:6E']
-  usb_icron            paired_devices = {"00:1B:13:04:E9:6E": {
-                           "ipaddress": "192.168.100.128",
+  UDP Advanced Query   peers = ['00:1B:13:FA:CE:04']
+  usb_icron            paired_devices = {"00:1B:13:FA:CE:04": {
+                           "ipaddress": "198.51.100.128",
                            "linked": true, "paired": true}}
 ```
 
@@ -749,12 +765,12 @@ of evidence fix the mapping:
 
 1. Basic Device Information reports a unit's local MAC together with that unit's
    own IP address, which anchors identity without relying on any label. The unit
-   at `.128` is `00:1B:13:04:E9:6E`; the unit at `.127` is `00:1B:13:04:6A:EA`.
+   at `.128` is `00:1B:13:FA:CE:04`; the unit at `.127` is `00:1B:13:FA:CE:03`.
 2. `.128` answers byte[10] `0x00` and lists **two** peers. Only a host carries
    several peers (`HOST_PEER_LIMIT` 7 against `DEVICE_PEER_LIMIT` 1), and nothing
    has two local MACs — so the trailing six-byte groups are peers, and `.128` is
    the host.
-3. The integrated D4511 at `.32`, which is a REX, names `00:1B:13:04:E9:6E` as
+3. The integrated D4511 at `.32`, which is a REX, names `00:1B:13:FA:CE:04` as
    its peer. A REX's peer is a host, so that MAC is a host, so `0x00` is the host.
 
 A third physical unit (`.134`, byte[10] `0x01`, one host peer) agrees. Product ID
@@ -857,11 +873,11 @@ settled that:
 
 | Endpoint | Address | Response | Decoded |
 | --- | --- | --- | --- |
-| E4521 integrated LEX | `192.168.100.246` | 0x0310, 50-byte body | no peer slot in use |
-| D4511 integrated REX | `192.168.100.248` | 0x0310, 50-byte body | `LINKED` to `00:1B:13:05:50:50` |
-| D4511 integrated REX | `192.168.100.108` | 0x0310, 50-byte body | `LINKED` to `00:1B:13:05:50:50` |
-| E4521 LEX, routed subnet | `192.168.200.62` | 0x0310, 50-byte body | `NOT_LINKED` to `B8:98:B0:07:85:87` |
-| D4511 REX, routed subnet | `192.168.200.66` | 0x0310, 50-byte body | `NOT_LINKED` to `B8:98:B0:07:85:E7` |
+| E4521 integrated LEX | `198.51.100.246` | 0x0310, 50-byte body | no peer slot in use |
+| D4511 integrated REX | `198.51.100.248` | 0x0310, 50-byte body | `LINKED` to `00:1B:13:FA:CE:02` |
+| D4511 integrated REX | `198.51.100.108` | 0x0310, 50-byte body | `LINKED` to `00:1B:13:FA:CE:02` |
+| E4521 LEX, routed subnet | `203.0.113.62` | 0x0310, 50-byte body | `NOT_LINKED` to `B8:98:B0:FA:CE:05` |
+| D4511 REX, routed subnet | `203.0.113.66` | 0x0310, 50-byte body | `NOT_LINKED` to `B8:98:B0:FA:CE:06` |
 
 Every one answered, with the same seven-slot layout the existing parser already
 decodes, and each identified itself with the expected MAC on the preceding Query.
@@ -917,7 +933,7 @@ an integrated D4511). Its Link Status listed **both**, matching the configured s
 exactly:
 
 ```
-0101 000000000000 001B13046AEA B898B00785C7 0000...
+0101 000000000000 001B13FACE11 B898B0FACDC7 0000...
 ```
 
 So Link Status reports multiple peer slots and does **not** single out an active
@@ -1030,8 +1046,8 @@ present in one surface and absent from another.
 | Parent `usb_icron` / `net` | discover and refresh **integrated** endpoints | anywhere the parent is reachable |
 
 **Directed unicast UDP is routable, and was measured to be.** From a host whose
-only interface is on 192.168.100.0/24, Basic, Extended, Full Configuration and
-Link Status all answered from Icron endpoints on 192.168.200.0/24 in 1.5-3 ms.
+only interface is on 198.51.100.0/24, Basic, Extended, Full Configuration and
+Link Status all answered from Icron endpoints on 203.0.113.0/24 in 1.5-3 ms.
 The transport limitation was broadcast scope, never UDP. **No verified TCP control
 transport exists for the AT-OMNI-311/324**, and none was invented: unicast UDP
 already crosses subnets, so speculative TCP would add risk and prove nothing.
@@ -1052,7 +1068,7 @@ parent observation (`liveness_source: usb_icron`), exactly as it does for a
 discovered one.
 
 Verified live on a cold backend: the first request after a restart was to
-Configure, and it returned all three endpoints behind routed 192.168.200.x
+Configure, and it returned all three endpoints behind routed 198.18.200.x
 parents. The Matrix and Configure canonical MAC sets agreed exactly, 12 and 12,
 with nothing missing in either direction. **Opening a page is not required to
 repair backend state**; a startup task refreshes known endpoints by directed
@@ -1181,14 +1197,14 @@ triggered by Scan, never part of liveness.
 ### A worked example: a moved endpoint
 
 An AT-OMNI-324 was physically moved to another network. Scan had not found it,
-for three compounding reasons: `192.168.150.0/24` was not configured; the Scan
+for three compounding reasons: `192.0.2.0/24` was not configured; the Scan
 path would not have scanned it if it were; and the device was persisted by MAC at
 its old address, which nothing re-probed once it went quiet.
 
 With the network configured, the directed range scan found it in **0.36 s** --
-at `192.168.150.46`, not the address it was believed to be at, because it uses
+at `192.0.2.46`, not the address it was believed to be at, because it uses
 DHCP. It reconciled onto the existing record by canonical MAC: one row, the new
-address, no duplicate, and no stale row at `192.168.100.127`. Its model and REX
+address, no duplicate, and no stale row at `198.51.100.127`. Its model and REX
 role were unchanged by the move, it reported `network_relation: OFF_NET` while
 `online: true` and `pairing_eligible: true`, and after an OmniSuite restart with
 no range scan at all it came back online through directed known-device polling.
@@ -1264,12 +1280,12 @@ time and verified from both sides after every addition.
 
 | | Endpoint | Type |
 | --- | --- | --- |
-| LEX | `00:1B:13:05:50:50` (AT-OMNI-311) | standalone host |
-| REX 1 | `00:1B:13:04:6A:EA` | standalone AT-OMNI-324 |
-| REX 2 | `B8:98:B0:07:85:C7` | integrated D4511 |
-| REX 3 | `00:1B:13:05:17:E9` | standalone AT-OMNI-324 |
-| REX 4 | `B8:98:B0:07:85:87` | integrated D4511 |
-| REX 5 | `B8:98:B0:07:85:C1` | integrated D4511 |
+| LEX | `00:1B:13:FA:CE:02` (AT-OMNI-311) | standalone host |
+| REX 1 | `00:1B:13:FA:CE:03` | standalone AT-OMNI-324 |
+| REX 2 | `B8:98:B0:FA:CE:01` | integrated D4511 |
+| REX 3 | `00:1B:13:FA:CE:07` | standalone AT-OMNI-324 |
+| REX 4 | `B8:98:B0:FA:CE:05` | integrated D4511 |
+| REX 5 | `B8:98:B0:FA:CE:08` | integrated D4511 |
 
 All five were held simultaneously, each REX independently named the host, no
 addition displaced an earlier peer, and the membership is **mixed**: adding or
@@ -1375,12 +1391,12 @@ store behind it, with Device Info as its input.
 Verified end to end on hardware, entering the network only once:
 
 ```
-scan_targets = "192.168.200.60-192.168.200.70"   saved in Device Info
-  -> /api/usb_extenders/ranges  ["192.168.200.60-192.168.200.70"]
+scan_targets = "203.0.113.60-203.0.113.70"   saved in Device Info
+  -> /api/usb_extenders/ranges  ["203.0.113.60-203.0.113.70"]
   -> Scan dispatch with no USB-specific body: started ["local","ranges"], 11 targets
-  -> directed unicast answered by  .62 B8:98:B0:07:85:E7
-                                   .63 B8:98:B0:07:85:C5
-                                   .66 B8:98:B0:07:85:79
+  -> directed unicast answered by  .62 B8:98:B0:FA:CE:06
+                                   .63 B8:98:B0:FA:CE:09
+                                   .66 B8:98:B0:FA:CE:0A
   -> all three recorded, discovery_source udp_discovery, relation Routed
 ```
 
@@ -1488,8 +1504,8 @@ another switch" -- a false alarm of exactly the kind this feature must not raise
 A neighbour is recognised as one of our own devices only by exact identity: its
 advertised management address matching a discovered unit's address, or its
 chassis ID matching a discovered unit's MAC. Never by name similarity -- the
-neighbour called itself `hw-omni-e4521-856c` while the unit is
-`hw-omni-e4521-0856c`, and the MACs differ by one because they are different
+neighbour called itself `hw-omni-e4521-0000a` while the unit is
+`hw-omni-e4521-00011`, and the MACs differ by one because they are different
 interfaces on the same box. The chain is then followed to whatever that device
 reports, so a chained unit is attributed to the switch it actually hangs off. A
 chain that cannot be resolved -- the device in front was never discovered, or the
@@ -1573,9 +1589,9 @@ close control.
 
 ### Measured on the bench
 
-15 discovered devices across two subnets, `192.168.100.0/24` and
-`192.168.200.0/24`, all resolving to the same Cisco Catalyst chassis
-`50:1c:b0:d5:86:80` -- 14 attached directly and one (`192.168.100.141`)
+15 discovered devices across two subnets, `198.51.100.0/24` and
+`203.0.113.0/24`, all resolving to the same Cisco Catalyst chassis
+`00:00:5e:00:53:01` -- 14 attached directly and one (`198.51.100.141`)
 daisy-chained behind another OmniStream unit. One switch, so **no warning is
 shown**: the correct negative case, and neither the routed subnet nor the daisy
 chain implies a second switch.
@@ -1754,8 +1770,8 @@ is worth saying once. Fewer chained devices never re-notifies.
 
 ### Measured on the bench
 
-`192.168.100.141` reports `192.168.100.143` as its LLDP neighbour -- one
-OmniStream unit behind another -- and resolves to Catalyst `50:1c:b0:d5:86:80`.
+`198.51.100.141` reports `198.51.100.143` as its LLDP neighbour -- one
+OmniStream unit behind another -- and resolves to Catalyst `00:00:5e:00:53:01`.
 The page showed the advisory, marked that row's MAC cell "Daisy chained via" the
 unit in front, and its hover read "Daisy chained through &lt;unit&gt; (address)"
 above "Upstream switch: Switch". Dismissing hid the banner, stored the
@@ -1800,8 +1816,8 @@ endpoint check, which still runs before anything is written.
 | standalone AT-OMNI-311/324 | the unit's own reported address and mask (UDP Full Configuration) |
 | integrated E4521/D4511 | the **Icron interface** as the parent `net` API reports it |
 
-An E4521 managed on `192.168.100.x` whose Icron endpoint sits on
-`192.168.200.0/24` belongs, for pairing purposes, to `192.168.200.0/24`. The
+An E4521 managed on `198.18.100.x` whose Icron endpoint sits on
+`203.0.113.0/24` belongs, for pairing purposes, to `203.0.113.0/24`. The
 parent's management address is never used for this.
 
 Masks are used as given; nothing assumes /24. Both endpoints must resolve to the
@@ -2203,7 +2219,7 @@ text. `USB_CELL_TEXT` maps each state to a short label and a secondary detail:
 | `STALE` | Pairing state stale |
 
 Configure > USB shows standalone pairing as peer identity plus an explicit age
-("Paired devices: 1 / AT-OMNI-324 — 192.168.100.127 / Updated just now"), or
+("Paired devices: 1 / AT-OMNI-324 — 198.51.100.127 / Updated just now"), or
 "Pairing state stale — Last confirmed 2 min ago" when it has aged out, so a stale
 peer is never presented as current. Integrated endpoints stay authoritative from
 `usb_icron` and show its current peer count.
@@ -2311,7 +2327,7 @@ reads. A single unreachable parent costs its own 3.02s timeout and affects no
 other parent.
 
 Verified against live hardware: before enrichment the endpoint showed no mode; after
-enrichment it showed `STATIC` with `192.168.100.246 / 255.255.255.0 / 192.168.100.1`,
+enrichment it showed `STATIC` with `198.51.100.246 / 255.255.255.0 / 198.51.100.1`,
 `network_config_source=parent_net`, matching the parent exactly. A change made in the
 parent web UI is picked up on the next refresh with no rediscovery or restart.
 
@@ -2632,15 +2648,15 @@ behaviour and was left alone.
 Recorded by a probe that blocks every mutating opcode at the transport, so the
 reading cannot alter what it is reading. Eight USB endpoints answered:
 
-    host  00:1B:13:05:50:50  192.168.100.135  fw 1.9.4   5 peers
-      peer 00:1B:13:04:6A:EA  192.168.100.138  fw 1.9.4   (standalone)
-      peer 00:1B:13:05:17:E9  192.168.100.134  fw 1.9.4   (standalone)
-      peer B8:98:B0:07:85:87  192.168.100.250  fw 1.9.4   (integrated)
-      peer B8:98:B0:07:85:C1  192.168.100.248  fw 2.0.9   (integrated)
-      peer B8:98:B0:07:85:C7  192.168.100.108  fw 2.0.9   (integrated)
+    host  00:1B:13:FA:CE:02  198.51.100.135  fw 1.9.4   5 peers
+      peer 00:1B:13:FA:CE:03  198.51.100.138  fw 1.9.4   (standalone)
+      peer 00:1B:13:FA:CE:07  198.51.100.134  fw 1.9.4   (standalone)
+      peer B8:98:B0:FA:CE:05  198.51.100.250  fw 1.9.4   (integrated)
+      peer B8:98:B0:FA:CE:08  198.51.100.248  fw 2.0.9   (integrated)
+      peer B8:98:B0:FA:CE:01  198.51.100.108  fw 2.0.9   (integrated)
 
-    unpaired  00:1B:13:04:E9:6E  192.168.100.128  fw 1.9.4
-    unpaired  B8:98:B0:07:85:ED  192.168.100.246  fw 2.0.9
+    unpaired  00:1B:13:FA:CE:04  198.51.100.128  fw 1.9.4
+    unpaired  B8:98:B0:FA:CE:ED  198.51.100.246  fw 2.0.9
 
 Each of the five peers reports the host back, so the tables are reciprocal and
 consistent. Zero mutating commands were attempted by the probe, and the
@@ -2649,8 +2665,8 @@ changed it.
 
 Two differences from the constants used as test fixtures are worth recording,
 because the fixtures were written from an earlier reading and the hardware has
-since moved: the host of the five-peer set is `00:1B:13:05:50:50` at .135, not
-`00:1B:13:04:E9:6E`, and the standalone AT-OMNI-324 now answers at .138 rather
+since moved: the host of the five-peer set is `00:1B:13:FA:CE:02` at .135, not
+`00:1B:13:FA:CE:04`, and the standalone AT-OMNI-324 now answers at .138 rather
 than .127. The fixtures are internally consistent and the suite does not depend
 on these addresses being current, so they were left as they are rather than
 edited to chase DHCP.
@@ -2836,14 +2852,18 @@ newer one exists. It is deliberately not a dependency: the application
 discovers, scans, routes and upgrades with no Internet at all, and every failure
 in this path is reported as "unable to check" and affects nothing else.
 
-    repository   Hall-Research-Technologies/omniSuite
-    endpoint     https://api.github.com/repos/.../releases/latest
-    releases     https://github.com/Hall-Research-Technologies/omniSuite/releases
+    repository   Hall-Research-Technologies/OmniSuite
+    endpoint     https://api.github.com/repos/.../releases?per_page=100
+    releases     https://github.com/Hall-Research-Technologies/OmniSuite/releases
 
-`/releases/latest` is used rather than the full list because GitHub already
-excludes drafts and prereleases from it, so "the latest normal release" is the
-endpoint's own definition rather than something reimplemented here. The release
-TAG is what is compared; asset filenames are never used to decide a version.
+The release LIST is read, not the repository-wide "latest" release. Installed V1.1.0
+applications still read "latest", so releases are published to this repository with the same
+tag form and artifact names. Which releases this product offers is decided from tag and
+artifact names (`omni_release`): the tag must be exactly `V<number>.<number>[.<number>]`,
+drafts and prereleases are not offered, and the newest is chosen by version number rather
+than by creation date. If none qualifies the answer is "unable to check", never "up to
+date". The release TAG is what is compared; asset filenames decide only which download is
+offered.
 
 The comparison is numeric, not lexical. `_version_tuple()` accepts an optional
 leading `V` or `v`, pads to three components so `1.0` equals `1.0.0`, and
@@ -2951,7 +2971,7 @@ Two defects, both found by investigating the hardware before touching code.
 parent, it returns `2.0.9`, while the parent's OmniStream firmware is `2.1.2`.
 `_record_usb_association()` took five fields from that reply and dropped it. The
 only other source for USB firmware was the UDP Basic Query, and this endpoint
-does not answer UDP at all: a directed `discover_ip` to `192.168.100.194` times
+does not answer UDP at all: a directed `discover_ip` to `198.51.100.194` times
 out, while its sibling at `.246` answers with the same `2.0.9`. With neither
 source the field stayed empty, and the inventory correctly refused to substitute
 the parent's version rather than state one the module does not have.
@@ -2991,7 +3011,7 @@ specific to the USB association path.
 Verified on the bench, without Clear Units. Before: all five integrated
 endpoints reported an empty USB firmware. After one ordinary Scan: every one
 reported its own version with source `usb_icron` -- `2.0.9` for four of them and
-`1.9.4` for `B8:98:B0:07:85:87`, which matches what that endpoint reports over
+`1.9.4` for `B8:98:B0:FA:CE:05`, which matches what that endpoint reports over
 UDP, so these are per-device values and not a constant. The parent's `2.1.2` is
 untouched on every row.
 
@@ -3049,7 +3069,7 @@ standalone row on Configure > USB and the USB Matrix reads HW-OMNI-311/324, and
 no page contains the string `AT-OMNI-311` or `AT-OMNI-324` anywhere in its
 rendered text, while `/api/usb_extenders` still reports `udp_reported_type`
 `AT-OMNI-311` / `AT-OMNI-324`, the roles are still `USB Host / LEX` and
-`USB Device / REX`, and the five peers on `00:1B:13:04:E9:6E` are unchanged.
+`USB Device / REX`, and the five peers on `00:1B:13:FA:CE:04` are unchanged.
 
 The naive change is caught. Globally replacing `AT-OMNI-311` / `AT-OMNI-324`
 through `omni_usb_extender.py` and the server -- 35 occurrences -- fails five
@@ -3396,7 +3416,7 @@ Verified live against the real dialog, recording every backend request:
 | Click Log | 0 | dialog shown, `role="dialog"`, `aria-modal="true"`, focus on Cancel |
 | Cancel | 0 | dialog closed, button back to "Log", enabled |
 | Escape | 0 | dialog closed |
-| OK | **1** | one download, `hw-omni-d4511-085c6_<ip>_<stamp>.vdf` |
+| OK | **1** | one download, `hw-omni-d4511-0a0c6_<ip>_<stamp>.vdf` |
 | Six clicks during the download | still 1 | button `...`, disabled, `aria-busy`, **44 px in both states** |
 | Click Log again | -- | the notice is shown again |
 
@@ -4420,7 +4440,7 @@ only for deciding which decoders are in a group.
 
 ## Multiview: Phase 8C — what may be retried, and what a refusal means
 
-The reported failure -- "Encoder hw-omni-e4521-00002 did not answer" -- was
+The reported failure -- "Encoder hw-omni-e4521-00001 did not answer" -- was
 accurate. That encoder answers none of five TCP probes; it is switched off. What
 was wrong was the shape of the answer: a device that was not there came back as
 400, the same code as a request that cannot be built, so the page could only say
@@ -4609,7 +4629,7 @@ happened to be in the right state.
 
 ### What the bench proved first
 
-Nothing was implemented until the decoder had been asked. On 192.168.100.32:
+Nothing was implemented until the decoder had been asked. On 198.51.100.32:
 
 | question | answer |
 |---|---|
@@ -4863,6 +4883,185 @@ or no-longer-capable decoder is dropped, and a deleted Multiview clears only
 itself. Nothing about the devices is cached and nothing is written to a device
 to remember a view.
 
+
+
+## Remote access: role-based routing over the network
+
+Full architecture, including what the original plan got wrong, is in
+`docs/REMOTE_ACCESS_ARCHITECTURE.md`. What belongs here is the shape.
+
+OmniSuite answers only on the computer it runs on until an administrator turns
+Remote Access on. Trust is a property of **which listener accepted the
+connection**, never of an address a request claims: every listener is tagged at
+the point it is bound (`omni_remote.serve_tagged`), and the tag lives in a WSGI
+environ key, `omni.listener`, whose dot no HTTP header can produce. An untagged
+request is local, because the only thing that can produce one is an in-process
+caller.
+
+Every route carries a classification in `omni_access.ROUTES` —
+PUBLIC / AUTHENTICATED / USER / ADMIN / LOCAL\_ONLY — and a route nobody
+classified is LOCAL\_ONLY, the most restrictive answer available. A fence turns
+an unclassified route into a test failure, so the default protects the route
+somebody adds rather than being relied upon.
+
+A restricted account never receives the administrative model with the
+unauthorised parts hidden in the browser. Its payloads are **projections**:
+built field by field from named fields, with tests asserting the key sets are
+equal rather than merely contained.
+
+### Transport
+
+HTTPS is the default. A certificate is either supplied by the site or generated
+locally; without one, remote access **does not start**, and there is no
+automatic downgrade and no HTTP listener alongside it — a redirect would have
+to accept a sign-in before it could protect it. Plaintext exists for a closed
+bench and requires an explicit acknowledgement in the request body.
+
+`cryptography` is declared for generation only. Measured: 11.2 MB on a 33.5 MB
+executable, 9.9 MB of it the Rust extension. Declared anyway, because without
+generation an installer with no certificate of their own stays on plain HTTP,
+which defeats the point.
+
+### Concurrency
+
+Two mechanisms, deliberately separate. **Resource locks** serialize operations
+touching the same hardware — per resource, acquired in sorted order, bounded
+wait, `ResourceBusy` surfacing as 409. There is no ownership and no lease: the
+rule is last successful authorized operation wins, so a browser that closed can
+never leave a classroom display unusable. The **state cache** handles reads,
+with a TTL, single-flight, and a generation counter and epoch that order an
+in-flight read against a writer's invalidation.
+
+Measured live, two Users routing one display simultaneously: both verified,
+serialized, 2.3 s and 4.1 s, no deadlock, every lock released, and the display
+restored to its captured source and verified.
+
+Measured for traffic: A/V 1 client 0 device reads / 10 clients 0; USB 4 and 4;
+Multiview 3 and 3. Ratio 1.0x — extra browsers cost the hardware nothing.
+
+### What hardening measured
+
+Twenty-six deliberate defects in the security predicates
+(`tools/mutate_security.py`); eighteen caught first time, eight survivors all
+controls nobody was watching rather than holes in the product, now all caught.
+A V1.1.0 data directory opens under this build without a file being rewritten
+and without acquiring an account or a certificate. The packaged Windows binary
+was driven through the whole remote-access lifecycle
+(`tools/smoke_remote.py`), including generating a certificate from inside the
+onefile package — which is the part that proves the Rust extension was
+collected.
+
+### Device-reported location
+
+The right way to tell two displays with the same friendly name apart is the
+device's own **location**, and it is now used. OmniStream carries `location`
+and `description` in `systeminfo.config`, which every probe already fetches and
+every cached unit already holds, so reading them costs no device round trip and
+writes nothing back.
+
+An administrator sees Location as its own column and a description as secondary
+text under the device name. A repeated friendly name is resolved by location
+first, description second, hostname last -- so a site that fills in its rooms
+gets *Front Display — Room 101* rather than a hostname. A unit cached before
+the field was read still answers, because the value is taken from the record's
+own `systeminfo` when no promoted field is present; no rescan is required.
+
+The restricted projection gains **no new field**. Location is used to build a
+name and is never shipped separately, so what a restricted account receives is
+exactly as narrow as it was.
+
+**None of it is identity.** A friendly name belongs to OmniSuite; location and
+description belong to the equipment; permissions, aliases, routing and
+Multiview approval are keyed to normalised hardware identity and are unchanged
+by any of them. `MetadataIsNotIdentityTests` is the fence around that, and a
+mutation that lets an address reach a user-visible name is caught.
+
+### One operator action, one audit entry
+
+Every account-management action was recorded twice: the store knew *what*
+changed and to whom but not who did it, and the API knew *who* but named the
+event after the verb in the request body and identified the account by an
+opaque id. The store keeps the event and receives the actor; the API records
+nothing of its own. An internal caller still produces a record with no actor,
+which is the truthful account of something nobody did through the interface.
+Bootstrap keeps its own more specific event and suppresses the generic one.
+
+No event name is built by concatenation any more. That is how `user.set_enabled`
+and `user.delete` came to have no label at all: a name assembled at the call
+site appears nowhere as a literal, so nobody writing the label map from the
+literals could see it.
+
+### Authorisation after the lock wait
+
+A lock is a wait, and an administrator can disable an account or take a display
+away during one. All four user operations now check before the wait -- so a
+request that was never going to be allowed does not queue for a lock -- and
+again immediately before the device write. The audit entry moved inside the
+lock with it, so a route that never happened is no longer recorded as one.
+
+Measured: a User whose display is withdrawn while their request is queued is
+refused with 403 and writes nothing; one whose account is disabled gets 401.
+The Multiview equivalent is held structurally and by mutation rather than end
+to end, because its gate reads the decoder first and a fenced test cannot reach
+one.
+
+### Installation settings are administrative
+
+`ui_preferences.json` and `notice_ack.json` are one file per installation, not
+one per account. Their endpoints were AUTHENTICATED, which was right while the
+only authenticated caller was the local operator and became wrong once
+restricted Users existed: a signed-in classroom account could restyle the
+administrator's interface and dismiss their update alert. All are
+administrative now, except *reading* the theme, which the User Guide needs at
+`/help`.
+
+That required the classification to answer per method. `METHOD_ROUTES` is
+deliberately tiny and may only ever narrow a rule, never widen it -- a rule
+that needs an entry is usually a rule that should have been two.
+
+## The local application port
+
+Two listeners, and this concerns only the first. The LOCAL listener is started by the launcher
+(`app_launcher.py`) on 127.0.0.1; the Remote Access listener is separate, on an adapter address,
+and is not touched by any of this.
+
+- **Automatic is the default and is unchanged.** `app_launcher` searches 8080 upward (100 ports)
+  exactly as before. With a fixed port configured the launcher binds that port and nothing else.
+- **The choice** is `local_port.json` in the data folder (`local_port_mode` = automatic | fixed,
+  `configured_local_fixed_port`), owned by `omni_local_port.py`. It is not `config.json`, which
+  maps field for field onto device settings, and it is not in `remote_access.json`. Writes are
+  atomic and serialized (unique temp, fsync, `os.replace`, one lock); a malformed file is
+  quarantined and degrades to automatic; nothing in it can stop the launcher starting.
+- **Persist only after the bind.** `PortSupervisor.persist_after_bind` refuses unless the port is the
+  one now serving, so the order is enforced rather than remembered. The temporary alternate port
+  is never persisted.
+- **The bind is authoritative; probes are advisory.** On Windows, Werkzeug's server shares its port
+  (a second one binds to a port the first is already listening on), and a failed bind is a
+  `SystemExit` rather than an `OSError`. `bind_listener` therefore asks whether something already
+  accepts connections on the port, and turns Werkzeug's exit into `PortUnavailable`.
+- **Recovery is in the launcher.** A fixed-port conflict shows Retry, Start on Alternate Port,
+  Change Fixed Port and Exit, in the native launcher, so it never depends on a browser.
+- **Save and Restart is a real restart.** The launcher shuts down its listener, stops the Remote
+  Access listener (the new process restores it itself), releases the data-folder lock, and only
+  then starts the replacement with `OMNI_RESTARTED=1` and `PYINSTALLER_RESET_ENVIRONMENT=1`. A
+  restarted process waits briefly for the single-instance lock and retries its port for a few
+  seconds; any other second copy is refused at once, as before.
+- **Local-only.** The five `/api/local_port...` routes are `LOCAL_ONLY` in the route table; the
+  server answers "not available in this run" when no launcher registered a supervisor.
+- **Not in backups.** A port is a fact about the computer it was chosen on; `omni_backup.SECTIONS`
+  has no entry for it (`tests/test_local_port.py` pins that).
+- **Remote Access default port.** Unchanged: when no port is saved it still follows `OMNI_PORT`,
+  which the launcher sets to the local port actually bound.
+- **Not validated on hardware:** nothing here touches a device.
+
+## Certificate wording
+
+`ui/settings.js` (between its own markers) derives one `certificateKind` from the server's
+description of the certificate -- `self_signed`, `custom` or `required` -- and every certificate
+sentence and the Security selector's HTTPS entry are built from it, never from the selected
+transport. The server adds `usable`, asked of the same loader the listener uses, so a certificate
+whose key is missing or belongs to another cannot read as active. A supplied certificate is never
+judged against the adapter. Nothing says trusted.
 
 ## Build and publish gate
 

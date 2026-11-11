@@ -4,9 +4,14 @@
 # All imports below here
 import os, sys, threading, urllib.request, webbrowser, logging, time, json, re, subprocess, socket, ssl, csv, tempfile, traceback, platform, io, zipfile, uuid
 import copy
+import errno
+import hashlib
+import collections
 import urllib.parse
+import urllib.request
 from pathlib import Path
-from flask import Flask, request, jsonify, send_file, send_from_directory, Response
+from flask import Flask, request, jsonify, send_file, send_from_directory, Response, g
+from html import escape as _html_escape
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import ipaddress
 
@@ -14,11 +19,37 @@ import websocket
 import requests
 import omni_usb_extender
 import omni_multiview
+import omni_product
+import omni_release
+import omni_liveness
 
 try:
     import psutil
 except Exception:
     psutil = None
+
+# The remote-access subsystem. Policy (omni_access), mechanism
+# (omni_remote), accounts (omni_users) and enforcement (omni_gate) are separate
+# modules so the trust decision stays reviewable in one place.
+import omni_access
+import omni_aliases
+import omni_groups
+import omni_inventory
+import omni_firmware
+import omni_backup
+import omni_local_port
+import omni_destinations
+import omni_gate
+import omni_locks
+import omni_projection
+import omni_remote
+import omni_remote_api
+import omni_statecache
+import omni_adapters
+import omni_tls
+import omni_users
+import omni_routediag
+import omni_requests
 
 # Import matrix logic for unified scanning
 try:
@@ -59,7 +90,11 @@ CSV_VIEW = CWD / "units_view.csv"
 PORT = int(os.getenv("OMNI_PORT", "8080"))
 log = logging.getLogger("omni_upgrade")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-_cache_io_lock = threading.RLock()
+# One lock for units_cache.json across both modules: the matrix logic module's
+# readers and writers use this same object, because a replace that races an
+# unlocked open is a Windows sharing violation for one of the two.
+_cache_io_lock = (getattr(omni_matrix_logic, "_cache_write_lock", None)
+                  or threading.RLock())
 _usb_route_lock = threading.RLock()
 
 
@@ -100,7 +135,8 @@ app = Flask(__name__)
 # --- Global error handler for full traceback logging ---
 # Fields that must never reach the log, whatever a caller puts in the body.
 _AUDIT_SECRET_FIELDS = {"password", "passwd", "pwd", "new_password", "username",
-                        "user", "token", "secret", "fallback_password"}
+                        "user", "token", "secret", "fallback_password", "passphrase",
+                        "authorization", "cookie", "csrf", "credentials", "key"}
 
 
 def _audited(operation):
@@ -117,7 +153,8 @@ def _audited(operation):
     """
     def decorate(view):
         def wrapper(*args, **kwargs):
-            body = request.get_json(silent=True) or {}
+            body = request.get_json(silent=True)
+            body = body if isinstance(body, dict) else {}
             detail = {k: v for k, v in body.items()
                       if k.lower() not in _AUDIT_SECRET_FIELDS} if isinstance(body, dict) else {}
             # A GET-shaped operation carries its subject in the query string, so
@@ -139,6 +176,22 @@ def _audited(operation):
         wrapper.__doc__ = view.__doc__
         return wrapper
     return decorate
+
+
+BadRequestBody = omni_requests.BadRequestBody
+
+
+def _json_dict(required=False):
+    """The JSON object in the request body: one parser for every JSON endpoint.
+
+    The rules, and why, are in omni_requests.
+    """
+    return omni_requests.json_object(request, required)
+
+
+@app.errorhandler(BadRequestBody)
+def handle_bad_request_body(error):
+    return jsonify({"ok": False, "reason": "bad_request_body", "error": error.message}), 400
 
 
 @app.errorhandler(Exception)
@@ -309,6 +362,14 @@ except Exception as e:
     HAS_MATRIX = False
     omni_matrix_logic = None
 
+# The route primitives, for the per-plane outcome names. Imported beside the
+# logic module rather than reached through its private alias, so the names the
+# route response reports cannot drift away from the ones that produce them.
+try:
+    import omni_matrix
+except Exception:
+    omni_matrix = None
+
 # Endpoint to reload encoders/decoders from cache file (must be after app is created)
 @app.route("/api/reload_cache", methods=["POST"])
 def api_reload_cache():
@@ -369,6 +430,14 @@ def start_background_startup_tasks():
         _startup_threads.append(thread)
         thread.start()
 
+    # Firmware availability: one check shortly after launch, then every seven
+    # days, on a timer rather than a thread that sleeps -- nothing here blocks
+    # startup, discovery or a request. The test package sets
+    # OMNI_FIRMWARE_CHECK=0 so no automated test can reach Hall Research.
+    if os.environ.get("OMNI_FIRMWARE_CHECK") != "0":
+        _firmware_checker.enable_network(lambda slug: omni_firmware.fetch_product(slug))
+        _firmware_checker.arm(first=True)
+
 
 _startup_tasks_started = False
 _startup_threads = []
@@ -416,12 +485,17 @@ def await_startup_tasks(timeout=15.0):
     that caller today; an orderly shutdown would be the other one.
     """
     deadline = time.monotonic() + float(timeout)
-    for thread in list(_startup_threads):
+    # A startup thread can itself register another (the startup verification
+    # launches the cache sweep), so a single pass over a snapshot would return
+    # while that newer worker is still running. Repeat until nothing is alive.
+    while True:
+        pending = [thread for thread in list(_startup_threads) if thread.is_alive()]
+        if not pending:
+            return True
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            break
-        thread.join(remaining)
-    return not any(thread.is_alive() for thread in list(_startup_threads))
+            return False
+        pending[0].join(remaining)
 
 
 # ---------------- CSV helpers ----------------
@@ -541,6 +615,61 @@ def _reconcile_discovered_units(existing, fresh):
             continue
         take(unit)
     return merged
+
+def _dedupe_by_identity(raw_units):
+    """(units, omitted): first answer per canonical MAC; unidentified ones all kept.
+
+    Canonical, as routing and reconciliation compare it: "AA-BB-.." and "aa:bb:.."
+    are one device, and a bare strip().lower() says they are two.
+    """
+    seen, units, omitted = set(), [], 0
+    for u in raw_units:
+        mac = _device_identity(u)
+        if mac and mac in seen:
+            omitted += 1
+            continue
+        if mac:
+            seen.add(mac)
+        units.append(u)
+    return units, omitted
+
+
+def _inherit_cached_fields(u, existing):
+    """Borrow learned presentation fields from the cached record for the same unit.
+
+    Identity first; an address match is allowed only for a record that has no
+    identity, and only against a cached record that has none either.
+    """
+    mac = _device_identity(u)
+    if not u.get("timezone"):
+        # Identity first, and an address match only for a record that has no
+        # identity to match on. The disjunction below used to let a record
+        # that merely shared an address win over the one with the same MAC,
+        # and it copies a whole systeminfo blob.
+        matched = next((old for old in existing
+                        if mac and _device_identity(old) == mac), None)
+        if matched is None and not mac:
+            # A record with no identity borrows from an address match only if
+            # that cached record has none either. Otherwise it is a unit whose
+            # MAC could not be read answering where a known unit used to be,
+            # and it must not inherit that unit's timezone, system info or
+            # link speed.
+            matched = next((old for old in existing
+                            if old.get("ip") == u.get("ip") and not _device_identity(old)), None)
+        if matched:
+            if matched.get("timezone") and not u.get("timezone"):
+                u["timezone"] = matched.get("timezone")
+            if matched.get("active_timezone") and not u.get("active_timezone"):
+                u["active_timezone"] = matched.get("active_timezone")
+            if matched.get("ntp_server") and not u.get("ntp_server"):
+                u["ntp_server"] = matched.get("ntp_server")
+            if matched.get("details", {}).get("timezone") and not u.get("details", {}).get("timezone"):
+                u.setdefault("details", {})["timezone"] = matched.get("details", {}).get("timezone")
+            if matched.get("details", {}).get("systeminfo") and not u.get("details", {}).get("systeminfo"):
+                u.setdefault("details", {})["systeminfo"] = matched.get("details", {}).get("systeminfo")
+            if matched.get("linkspeed") is not None and u.get("linkspeed") is None:
+                u["linkspeed"] = matched.get("linkspeed")
+
 
 def _units_for_export():
     units = _load_cache()
@@ -717,19 +846,46 @@ def _stream_csv_from_units(units):
             yield ",".join(esc(x) for x in row) + "\r\n"
     return Response(gen(), mimetype="text/csv", headers={"Content-Disposition":"attachment; filename=units_view.csv"})
 
+def _quarantine_cache_file(reason):
+    """Move a malformed units_cache.json aside so it can be inspected.
+
+    Same treatment as scan_results.json and as the matrix logic module's loader:
+    the bad copy is evidence, and leaving it in place makes every caller fail on
+    it again. Called with the cache lock held.
+    """
+    try:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        target = CACHE.with_name(f"{CACHE.stem}.corrupt-{stamp}{CACHE.suffix}")
+        os.replace(CACHE, target)
+        log.warning("[CACHE] units_cache.json was malformed (%s); quarantined as %s",
+                    type(reason).__name__, target.name)
+    except Exception as e:
+        log.warning("[CACHE] Could not quarantine malformed units_cache.json: %s", e)
+
+
 def _load_cache():
     """Load devices from scan_results.json (new format) or units_cache.json (legacy)"""
     try:
-        with _cache_io_lock:
+        # Both files this merge reads, in the fixed order (cache, then scan
+        # results), so one call sees a pair that no writer is half way through
+        # replacing. The matrix logic module's loader takes the same two.
+        with _cache_io_lock, _scan_results_lock:
             cache_units = []
             # Try legacy format first (units_cache.json) - for testing
+            d = None
             if CACHE.exists():
-                with open(CACHE, "r", encoding="utf-8") as f:
-                    d = json.load(f)
+                try:
+                    with open(CACHE, "r", encoding="utf-8") as f:
+                        d = json.load(f)
+                except (ValueError, UnicodeDecodeError) as e:
+                    # Unparseable will not start parsing: move it aside once
+                    # and degrade to the scan results (or empty).
+                    _quarantine_cache_file(e)
+                    d = None
                 if isinstance(d, list) and d:
                     log.debug("[CACHE] Loaded %d units from units_cache.json (list format)", len(d))
                     cache_units = d
-                elif isinstance(d, dict) and "units" in d and d["units"]:
+                elif isinstance(d, dict) and isinstance(d.get("units"), list) and d["units"]:
                     log.debug("[CACHE] Loaded %d units from units_cache.json (dict format)", len(d["units"]))
                     cache_units = d["units"]
             if cache_units:
@@ -756,10 +912,28 @@ def _load_cache():
                                 ip = unit.get("ip")
                                 if not ip:
                                     continue
-                                merged = dict(by_ip.get(ip, {}))
-                                merged.update(unit)
-                                by_ip[ip] = merged
-                            merged_units = list(by_ip.values())
+                                base = dict(by_ip.get(ip, {}))
+                                # A scan row at this address that belongs to a
+                                # different device must not lend its fields to
+                                # the cached one: the result would carry one
+                                # device's identity and another's details.
+                                if (_device_identity(base) and _device_identity(unit)
+                                        and _device_identity(base) != _device_identity(unit)):
+                                    base = {}
+                                base.update(unit)
+                                by_ip[ip] = base
+                            # One identity, one row, even if a store carries the
+                            # same device at two addresses: the first row wins.
+                            # (A scan row for a MAC the cache holds elsewhere was
+                            # already dropped above, so the cache's row is first.)
+                            preferred = {}
+                            for address, row in by_ip.items():
+                                identity = _device_identity(row)
+                                if identity:
+                                    preferred.setdefault(identity, address)
+                            merged_units = [row for address, row in by_ip.items()
+                                            if not _device_identity(row)
+                                            or preferred.get(_device_identity(row)) == address]
                             if len(merged_units) > len(cache_units):
                                 log.info("[CACHE] Merged %d cache units with scan_results to %d units", len(cache_units), len(merged_units))
                             return merged_units
@@ -777,17 +951,28 @@ def _load_cache():
         log.warning("_load_cache failed: %s", e)
     return []
 
-def _save_cache(units):
+def _save_cache(units) -> bool:
+    """Atomically replace units_cache.json: unique temp file, fsync, os.replace,
+    under the one lock both modules share. Returns whether it was written; a
+    failure is logged with the error and never hidden."""
+    tmp_path = None
     try:
         with _cache_io_lock:
-            tmp_path = CACHE.with_suffix(CACHE.suffix + ".tmp")
+            tmp_path = _atomic_tmp_path(CACHE)
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(units, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, CACHE)
+        return True
     except Exception as e:
-        log.info("save cache failed: %s", e)
+        log.warning("save cache failed: %s", e)
+        try:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return False
 
 
 # scan_results.json is written from several code paths (scan, polling, hostname
@@ -797,7 +982,83 @@ def _save_cache(units):
 # write left the file permanently truncated. Route every read and write through
 # these helpers so the file is written atomically under one lock and a malformed
 # file degrades gracefully instead of propagating corrupt data.
-_scan_results_lock = threading.RLock()
+_scan_results_lock = (getattr(omni_matrix_logic, "_scan_results_lock", None)
+                      or threading.RLock())
+
+# Which "life" of the inventory a scan belongs to. Clear Units moves it on, under
+# the cache and scan-results locks, once it has removed anything. A scan that
+# began before that must not write what it found afterwards: it would hand the
+# operator back the units they had just cleared. It checks the number under the
+# same two locks it writes under, so the clear and the scan's write are ordered
+# rather than raced.
+_inventory_generation = 0
+
+
+def _inventory_generation_now() -> int:
+    return _inventory_generation
+
+
+def _bump_inventory_generation() -> int:
+    global _inventory_generation
+    with _cache_io_lock, _scan_results_lock:
+        _inventory_generation += 1
+        return _inventory_generation
+
+
+def _apply_snapshot_to_cache(snapshot, baseline, generation, label="CACHE") -> bool:
+    """Write what a background pass learned, without writing back what it held.
+
+    A pass that reads the whole cache, spends seconds asking devices about each
+    unit and then saved the whole list back undid everything that happened in
+    between: Clear Units and Remove Selected came back, and so did any change a
+    scan or a poll had made. The pass holds a *snapshot* and a *baseline* (a copy
+    taken with it); this applies only the fields that differ between the two onto
+    the cache as it is now.
+
+    `generation` is the inventory's life when the snapshot was taken. It is
+    compared under the two locks the clear and the scan write under, so the two
+    are ordered rather than raced. A clear since then discards the result: it
+    describes units the operator removed. Returns True when something was written.
+    """
+    def key_of(unit):
+        return _device_identity(unit) or (unit or {}).get("ip") or ""
+
+    def apply(snap, base, current):
+        changed = False
+        for name, value in snap.items():
+            if name in base and base[name] == value:
+                continue
+            if (isinstance(value, dict) and isinstance(base.get(name), dict)
+                    and isinstance(current.get(name), dict)):
+                changed = apply(value, base[name], current[name]) or changed
+            elif current.get(name) != value:
+                current[name] = value
+                changed = True
+        return changed
+
+    with _cache_io_lock, _scan_results_lock:
+        if _inventory_generation_now() != generation:
+            log.info("[%s] result discarded: the inventory was cleared while it was being collected", label)
+            return False
+        learned = []
+        for snap, base in zip(snapshot or [], baseline or []):
+            if isinstance(snap, dict) and isinstance(base, dict) and key_of(snap):
+                learned.append((key_of(snap), snap, base))
+        if not learned:
+            return False
+        current_units = _load_cache() or []
+        by_key = {}
+        for unit in current_units:
+            if isinstance(unit, dict) and key_of(unit):
+                by_key.setdefault(key_of(unit), unit)
+        changed = False
+        for key, snap, base in learned:
+            current = by_key.get(key)
+            if current is not None:
+                changed = apply(snap, base, current) or changed
+        if changed:
+            _save_cache(current_units)
+        return changed
 
 
 def _atomic_tmp_path(target: Path) -> Path:
@@ -2247,10 +2508,15 @@ def _verify_cache_in_background():
         with _cache_io_lock:
             _cache_verification_in_progress = False
 
+    # Which life of the inventory this sweep belongs to, read before the snapshot.
+    sweep_generation = _inventory_generation_now()
     cached_units = _load_cache()
     if not cached_units:
         release()
         return
+    # What the snapshot looked like when it was taken: only what the sweep
+    # changes relative to this is written back, see _apply_snapshot_to_cache.
+    baseline_units = copy.deepcopy(cached_units)
 
     cached_ips = [u.get("ip") for u in cached_units if u.get("ip")]
     if not cached_ips:
@@ -2273,6 +2539,7 @@ def _verify_cache_in_background():
                 ip = cached_unit.get("ip")
                 if not ip:
                     return None
+                answered = False
                 try:
                     # Get device-specific password from cache, fall back to default if not stored
                     pwd = cached_unit.get("password") or default_pwd
@@ -2289,7 +2556,12 @@ def _verify_cache_in_background():
                                 if attempt < 2:
                                     time.sleep(0.5)
                                     continue
+                                # A reply that carries an error is still a unit that answered.
+                                _liveness.record(ip, bool(resp), "verify")
+                                answered = bool(resp)
                                 return None
+                            answered = True
+                            _liveness.record(ip, True, "verify")
                             
                             cfg = (resp or {}).get("config") or {}
                             
@@ -2354,6 +2626,10 @@ def _verify_cache_in_background():
                                 continue
                             raise
                 except Exception as e:
+                    # No reply at all, after every attempt: the sweep has seen this unit not answer. A
+                    # failure after it did answer (a field that would not parse) says nothing about it.
+                    if not answered:
+                        _liveness.record(ip, False, "verify")
                     return None
             
             # Verify in parallel with thread pool, fail fast on timeouts
@@ -2386,7 +2662,8 @@ def _verify_cache_in_background():
             # Save updated cache
             if updated_count > 0:
                 try:
-                    _save_cache(cached_units)
+                    _apply_snapshot_to_cache(cached_units, baseline_units,
+                                             sweep_generation, "VERIFY")
                 except Exception as e:
                     log.warning(f"[VERIFY_CACHE] Failed to save cache: {e}")
         
@@ -2398,6 +2675,13 @@ def _verify_cache_in_background():
     
     # Run verification in background thread (don't block the request)
     thread = threading.Thread(target=do_verify, daemon=True)
+    # Recorded where `await_startup_tasks()` looks, like the startup refreshes: this
+    # sweep is launched by a request (/api/cache when the cache is stale) and reads
+    # `_ws_send_recv` through the module global when it fires, so a caller about to
+    # rebind that name must be able to let it finish. Finished workers are dropped
+    # so a sweep every few minutes does not grow the list for the life of the process.
+    _startup_threads[:] = [t for t in _startup_threads if t.is_alive()]
+    _startup_threads.append(thread)
     thread.start()
 
 
@@ -2406,33 +2690,258 @@ def _verify_cache_in_background():
 @app.route("/__health")
 def __health(): return "ok", 200
 
+# --------------- remote access UI entry ----------------
+def _send_ui_page(*parts):
+    """Serve a UI page, or say plainly that the build is missing it."""
+    page = ASSET_DIR.joinpath("ui", *parts)
+    if page.exists():
+        return send_file(str(page), mimetype="text/html")
+    return f"<h1>{parts[-1]} not found</h1>", 404
+
+
+class _RedactDirectAccessToken(logging.Filter):
+    """Rewrite a Direct Access token out of anything about to be logged.
+
+    The token is a bearer credential in a URL path, so the request log would
+    otherwise hold a working passwordless link to somebody's account -- in a
+    file, on the operator's disk, for as long as the log is kept.
+
+    A filter rather than a log level: the request line is genuinely useful and
+    the token is the only part of it that must not be there. Installed on the
+    logger at import, so it holds however the application was started rather
+    than only when a particular entry point remembers to set a level.
+
+    A short prefix is left in place. It cannot be redeemed and it is enough to
+    tell two attempts apart in a log, which is the only reason anybody would
+    read these lines.
+    """
+
+    #: Matches the path wherever it appears -- werkzeug writes a request line,
+    #: an error line and a few others, and they do not share a format.
+    PATTERN = re.compile(r"(/access/)([A-Za-z0-9_\-]{4})[A-Za-z0-9_\-]+")
+
+    def filter(self, record):
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        if "/access/" not in message:
+            return True
+        # Collapse args into the already-formatted message: rewriting the
+        # format string alone would leave the token in record.args.
+        record.msg = self.PATTERN.sub(r"\1\2...redacted", message)
+        record.args = ()
+        return True
+
+
+def _install_token_redaction():
+    """On the werkzeug logger and the root, so nothing routes around it."""
+    redactor = _RedactDirectAccessToken()
+    for name in ("werkzeug", ""):
+        logger = logging.getLogger(name)
+        if not any(isinstance(f, _RedactDirectAccessToken)
+                   for f in logger.filters):
+            logger.addFilter(redactor)
+        # A filter on a logger is not consulted for records that arrive from a
+        # child logger, so it goes on the handlers as well.
+        for handler in logger.handlers:
+            if not any(isinstance(f, _RedactDirectAccessToken)
+                       for f in handler.filters):
+                handler.addFilter(redactor)
+
+
+_install_token_redaction()
+
+
+#: Browser security headers, on every response, decided in one place.
+#:
+#: OmniSuite sent none of these before. That was raised by a console full of
+#: `Unrecognized feature: 'attribution-reporting'` and three more like it --
+#: which, measured against the running server, OmniSuite was not sending: the
+#: response carried no Permissions-Policy header at all. Those directives are
+#: Chrome's Privacy Sandbox features and the errors come from something else in
+#: that browser injecting a header, an extension or an enterprise policy.
+#:
+#: So the fix is not to remove a directive OmniSuite never had. It is to say
+#: deliberately what OmniSuite's policy IS, naming only features that have been
+#: in the specification for years, so the header is correct, the intent is
+#: reviewable, and any remaining console error is demonstrably not ours.
+#:
+#: Content-Security-Policy is deliberately absent. The pages carry inline
+#: scripts and styles throughout, so a policy strict enough to be worth having
+#: would break them and one loose enough to pass would be decoration. That is a
+#: piece of work with its own testing, not a line to add here.
+SECURITY_HEADERS = {
+    # Do not guess at a content type. The one header of these that has
+    # prevented a real class of attack for twenty years.
+    "X-Content-Type-Options": "nosniff",
+    # Nothing frames OmniSuite, and a routing control surface inside somebody
+    # else's page is only ever clickjacking.
+    "X-Frame-Options": "DENY",
+    # A Direct Access link is a bearer credential in a path. Without this, a
+    # click from that page to anywhere external would put it in a Referer
+    # header. `strict-origin-when-cross-origin` would still send the origin;
+    # there is nothing here that needs a referrer at all.
+    "Referrer-Policy": "no-referrer",
+    # Three features, all long-standing, none of which any OmniSuite page uses.
+    # Deliberately short: a directive a browser does not recognise is a console
+    # error, which is the thing that started this.
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+}
+
+
+@app.after_request
+def _security_headers(response):
+    for header, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(header, value)
+    # What an account may see or do is read from the server every time and is
+    # never something a browser or an intermediary may answer from a copy.
+    if request.path.startswith(("/api/", "/access/")):
+        response.headers.setdefault("Cache-Control", "no-store, private")
+    return response
+
+
+@app.after_request
+def _state_the_remote_navigation(response):
+    """Say, in the page itself, whether Remote Access is on.
+
+    The Remote Access tab used to be added by a script after a request to
+    /api/remote_access, so on every navigation it was missing for the length of
+    that round trip and everything after it in the bar shifted when it arrived.
+    The answer is known when the page is served, so it is served WITH the page:
+    the shell draws the tab from the first frame and nothing has to be asked.
+    """
+    try:
+        if (response.mimetype != "text/html" or response.status_code != 200
+                or request.method != "GET"):
+            return response
+        response.direct_passthrough = False
+        body = response.get_data(as_text=True)
+        if "/ui/adminnav.js" not in body or "<head>" not in body:
+            return response
+        flag = "1" if remote_access_enabled() else "0"
+        who = getattr(getattr(g, "principal", None), "username", "") or ""
+        response.set_data(body.replace(
+            "<head>",
+            '<head><meta name="omni-remote-access" content="%s">'
+            '<meta name="omni-signed-in" content="%s">' % (flag, _html_escape(who)),
+            1))
+    except Exception:
+        # A page that loads without the hint falls back to asking, as before.
+        pass
+    return response
+
+
+#: JSON keys that carry a device credential. A remote caller is never sent one.
+_CREDENTIAL_KEYS = frozenset({"password", "fallback_password"})
+
+
+def _without_credentials(value):
+    """`value` with every credential blanked, however deeply nested.
+
+    The key stays and its value becomes "": the shape of an answer is part of the API,
+    and a page that reads `unit.password` must find an empty string, not a missing key.
+    """
+    if isinstance(value, dict):
+        return {k: ("" if k in _CREDENTIAL_KEYS else _without_credentials(v))
+                for k, v in value.items()}
+    if isinstance(value, list):
+        return [_without_credentials(v) for v in value]
+    return value
+
+
+@app.after_request
+def _no_device_credentials_remotely(response):
+    """No response to a network-facing listener carries a device password.
+
+    The scan record, the unit cache and a number of device-proxy results hold the
+    per-device password the scan used, and the routes that return them are
+    administrative -- which an administrator signed in from another computer
+    legitimately reaches. Removing the field at each route fixes the routes that
+    exist today; removing it here, once, from every JSON answer on that boundary (blanked, the key kept),
+    fixes the one somebody adds next. The local operator's responses are untouched,
+    so nothing the application does on its own computer changes.
+    """
+    try:
+        if (omni_remote.is_local_request(request.environ)
+                or response.direct_passthrough
+                or response.mimetype != "application/json"):
+            return response
+        body = json.loads(response.get_data(as_text=True))
+    except (ValueError, TypeError):
+        return response
+    response.set_data(json.dumps(_without_credentials(body),
+                                 separators=(",", ":")) + "\n")
+    return response
+
+
+@app.route("/favicon.ico")
+def favicon():
+    """The icon every browser asks for, whether or not a page links to one.
+
+    Without this, opening OmniSuite in a browser produced a failed request on
+    every page load -- visible in the console of a customer's machine and
+    exactly the kind of thing that makes a product look unfinished. The asset
+    already existed; nothing was serving it at the path browsers actually ask
+    for.
+
+    Public by classification, because an unauthenticated sign-in page needs it
+    and an icon carries nothing.
+    """
+    icon = ASSET_DIR / "ui" / "favicon.ico"
+    if icon.exists():
+        resp = send_file(str(icon), mimetype="image/x-icon")
+        # It never changes within a build, and it is requested constantly.
+        resp.headers["Cache-Control"] = "public, max-age=86400"
+        return resp
+    return "", 404
+
+
+@app.route("/login")
+def login_page():
+    """The remote sign-in page. Public, and the only page that is."""
+    return _send_ui_page("login.html")
+
+
+@app.route("/user")
+def user_page():
+    """The restricted routing shell."""
+    return _send_ui_page("user", "index.html")
+
+
+@app.route("/admin/users")
+def admin_users_page():
+    """User management, for administrators."""
+    return _send_ui_page("admin", "users.html")
+
+
 # --------------- matrix UI entry ----------------
 @app.route("/matrix")
 def matrix_index():
     idx = ASSET_DIR / "ui" / "matrix" / "index.html"
     if idx.exists():
-        return send_file(str(idx), mimetype="text/html; charset=utf-8")
+        return send_file(str(idx), mimetype="text/html")
     return "<h1>Matrix UI not found</h1>", 404
 
 @app.route("/matrix/configure")
 def matrix_configure():
     idx = ASSET_DIR / "ui" / "matrix" / "configure.html"
     if idx.exists():
-        return send_file(str(idx), mimetype="text/html; charset=utf-8")
+        return send_file(str(idx), mimetype="text/html")
     return "<h1>Configure UI not found</h1>", 404
 
 @app.route("/matrix/usb")
 def usb_matrix_index():
     idx = ASSET_DIR / "ui" / "matrix" / "usb.html"
     if idx.exists():
-        return send_file(str(idx), mimetype="text/html; charset=utf-8")
+        return send_file(str(idx), mimetype="text/html")
     return "<h1>USB Matrix UI not found</h1>", 404
 
 @app.route("/matrix/multiview")
 def multiview_index():
     idx = ASSET_DIR / "ui" / "matrix" / "multiview.html"
     if idx.exists():
-        return send_file(str(idx), mimetype="text/html; charset=utf-8")
+        return send_file(str(idx), mimetype="text/html")
     return "<h1>Multiview UI not found</h1>", 404
 
 @app.route("/license")
@@ -2472,7 +2981,7 @@ def user_guide():
     except Exception:
         # A guide that renders with the token still in it is better than no
         # guide at all.
-        resp = send_file(str(idx), mimetype="text/html; charset=utf-8")
+        resp = send_file(str(idx), mimetype="text/html")
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         return resp
     resp = Response(body, mimetype="text/html")
@@ -2483,7 +2992,7 @@ def user_guide():
 def index():
     idx = ASSET_DIR / "ui" / "index.html"
     if idx.exists():
-        resp = send_file(str(idx), mimetype="text/html; charset=utf-8")
+        resp = send_file(str(idx), mimetype="text/html")
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         return resp
     return "<h1>Omni Upgrade Server</h1><p>UI not found (ui/index.html). Backend API available.</p>"
@@ -2637,16 +3146,46 @@ def _adapters_route_print():
         except Exception: pass
     return out
 
+def _mark_preferred_adapter(rows):
+    """Say which of these adapters to start on, without reordering anything.
+
+    The scan list is built from several parsers that know nothing about
+    hardware, so the kind is looked up by address in the richer enumeration.
+    Additive: a row it cannot place simply carries no preference, and the page
+    falls back to its first entry exactly as before. A saved selection is the
+    page's to honour and is never overridden here.
+    """
+    try:
+        known = {a.get("address"): a for a in omni_adapters.enumerate_adapters()}
+    except Exception as exc:
+        log.info("[ADAPTERS] default ranking unavailable: %s", type(exc).__name__)
+        return rows
+    best = omni_adapters.preferred_adapter(list(known.values()))
+    out = []
+    for row in rows or []:
+        row = dict(row)
+        match = known.get(row.get("ip"))
+        row["kind"] = (match or {}).get("kind") or ""
+        row["preferred"] = bool(best and match
+                                and match.get("address") == best.get("address"))
+        out.append(row)
+    return out
+
+
 @app.route("/api/adapters", methods=["GET"])
 def api_adapters():
     include_all = request.args.get("all") in ("1","true","yes")
+    # The preference lookup below reuses a recent enumeration; `refresh=1` asks
+    # the system again.
+    if request.args.get("refresh") in ("1", "true", "yes"):
+        omni_adapters.invalidate_cache()
     try:
         res = _adapters_windows(active_only=not include_all)
         if not res: res = _adapters_psutil(active_only=not include_all)
         if not res: res = _adapters_ip_addr(active_only=not include_all)
         if not res: res = _adapters_ifconfig(active_only=not include_all)
         if not res: res = _adapters_route_print()
-        return jsonify({"ok": True, "adapters": res})
+        return jsonify({"ok": True, "adapters": _mark_preferred_adapter(res)})
     except Exception as e:
         return jsonify({"ok": True, "adapters": [], "note": f"error: {e}"}), 200
 
@@ -3147,7 +3686,8 @@ def api_ui_preferences():
                         "preset": prefs.get("preset") if prefs.get("preset") in UI_PRESETS else "default",
                         "light_background": light if _valid_ui_color(light) else UI_LIGHT_BACKGROUND_DEFAULT,
                         "templates": list(UI_TEMPLATES), "presets": list(UI_PRESETS)})
-    data = request.get_json(silent=True) or {}
+    data = _json_dict(required=True)
+    omni_requests.require_any(data, ("template", "preset", "light_background"))
     prefs = _read_ui_preferences()
     if "template" in data:
         template = str(data.get("template") or "").strip().lower()
@@ -3178,6 +3718,7 @@ def api_ui_preferences():
 @app.route("/api/ui_preferences/reset", methods=["POST"])
 def api_ui_preferences_reset():
     """Restore the default look. Appearance only -- nothing operational."""
+    _json_dict()          # the page sends no body; one that is present must be an object
     try:
         with _ui_prefs_lock:
             if UI_PREFS.exists():
@@ -3201,6 +3742,11 @@ NOTICE_ACK = DATA_DIR / "notice_ack.json"
 # Every notice this store may record. An unknown name is refused rather than
 # written, so a typo on a page cannot silently create a notice nothing displays.
 NOTICE_IDS = ("network_access",)
+# The wording of a notice changes sometimes. An acknowledgement records which
+# revision it covered, so advice that is genuinely new can be shown once without
+# re-asking everyone who has already read the old advice. Revision 2 of
+# network_access added macOS Local Network access, which matters only on a Mac.
+NOTICE_REVISIONS = {"network_access": 2}
 # The release the operator has already been alerted about. Stored here rather
 # than in UI_PREFS because Reset Appearance deletes that file wholesale, and
 # having the icon start flashing again because someone changed a colour would be
@@ -3242,9 +3788,25 @@ def _write_notice_ack(state):
             pass
 
 
-def _notice_acknowledged(notice_id):
+def _notice_acknowledged(notice_id, system=None):
+    """Has this installation read the CURRENT advice? Revision-aware.
+
+    An acknowledgement from before revisions existed covers revision 1. A newer
+    revision re-asks only where the new advice applies: the macOS paragraph does
+    not apply to Windows or Linux, so those installations are not asked again.
+    """
     entry = _read_notice_ack().get(notice_id)
-    return bool(isinstance(entry, dict) and entry.get("acknowledged"))
+    if not (isinstance(entry, dict) and entry.get("acknowledged")):
+        return False
+    try:
+        covered = int(entry.get("revision") or 1)
+    except (TypeError, ValueError):
+        covered = 1
+    current = NOTICE_REVISIONS.get(notice_id, 1)
+    if covered >= current:
+        return True
+    system = platform.system() if system is None else system
+    return not (notice_id == "network_access" and system == "Darwin")
 
 
 def _acknowledged_update_version():
@@ -3281,7 +3843,7 @@ def api_update_ack():
     version only -- a later release re-arms it -- and changes nothing about what
     Settings reports.
     """
-    data = request.get_json(silent=True) or {}
+    data = _json_dict(required=True)
     version = str(data.get("version") or "").strip()
     if _version_tuple(version) is None:
         return jsonify({"ok": False, "error": "a release version is required"}), 400
@@ -3313,9 +3875,12 @@ def api_notices():
     for notice_id in NOTICE_IDS:
         entry = state.get(notice_id)
         entry = entry if isinstance(entry, dict) else {}
-        notices[notice_id] = {"acknowledged": bool(entry.get("acknowledged")),
-                              "acknowledged_at": entry.get("acknowledged_at")}
-    return jsonify({"ok": True, "notices": notices})
+        notices[notice_id] = {"acknowledged": _notice_acknowledged(notice_id),
+                              "acknowledged_at": entry.get("acknowledged_at"),
+                              "revision": NOTICE_REVISIONS.get(notice_id, 1)}
+    # The product name is data for the dialog, which is one static file.
+    return jsonify({"ok": True, "notices": notices,
+                    "app_name": omni_release.active_product().name})
 
 
 @app.route("/api/notices/ack", methods=["POST"])
@@ -3326,7 +3891,7 @@ def api_notices_ack():
     notices acknowledged at once cannot each apply their change to their own copy
     and have the last save discard the other.
     """
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     notice_id = str(data.get("notice") or "").strip()
     if notice_id not in NOTICE_IDS:
         return jsonify({"ok": False,
@@ -3334,6 +3899,7 @@ def api_notices_ack():
     with _notice_ack_lock:
         state = _read_notice_ack()
         state[notice_id] = {"acknowledged": True,
+                            "revision": NOTICE_REVISIONS.get(notice_id, 1),
                             "acknowledged_at": time.strftime("%Y-%m-%d %H:%M:%S")}
         _write_notice_ack(state)
     return jsonify({"ok": True, "notice": notice_id, "acknowledged": True})
@@ -3349,7 +3915,8 @@ def api_scan_preferences():
     """
     if request.method == "GET":
         return jsonify({"ok": True, **_read_scan_preferences()})
-    data = request.get_json(silent=True) or {}
+    data = _json_dict(required=True)
+    omni_requests.require_any(data, ("interface_ip", "scan_expression", "subnet_mask", "scan_targets"))
     interface_ip = str(data.get("interface_ip") or "").strip()
     if interface_ip:
         try:
@@ -3402,10 +3969,15 @@ def api_scan_preferences():
 # of it, puts the version comparison and the cache in one place, and means all
 # four pages see the same answer instead of each asking separately.
 
-GITHUB_OWNER = "Hall-Research-Technologies"
-GITHUB_REPO = "omniSuite"
+# The product reads its OWN release repository (omni_release): the one releases are
+# published to, and the one installed V1.1.0 apps already read.
+GITHUB_OWNER, GITHUB_REPO = omni_release.active_product().release_repo.split("/", 1)
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
-GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+# The release LIST rather than the repository-wide "latest" release. Whether a release
+# is one this product should offer is decided from its tag and artifact names
+# (omni_release), never from anything GitHub says about it, and the newest is chosen
+# by version number rather than by creation date.
+GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases?per_page=100"
 
 # Several hours, not minutes. Nothing about a release changes quickly, and this
 # must never look like another polling loop.
@@ -3513,34 +4085,49 @@ def _platform_asset_key():
     return None
 
 
-def _select_platform_asset(assets):
-    """The asset matching this platform, or None."""
+def _select_platform_asset(assets, version=None):
+    """The asset matching this platform and this product, or None.
+
+    The name must be this product's artifact name exactly: the product prefix,
+    a version, and the platform tail. A loose suffix match would offer a build
+    from some other artifact family that happens to end the same way. When
+    `version` is given the version in the name must agree with the release it
+    came from.
+    """
     key = _platform_asset_key()
     if not key:
         return None
-    for asset in assets or []:
-        name = str((asset or {}).get("name") or "")
-        url = (asset or {}).get("browser_download_url")
+    product = omni_release.active_product()
+    if not isinstance(assets, list):
+        return None
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("name") or "")
+        url = asset.get("browser_download_url")
         if not name or not _is_official_release_url(url):
             continue
-        stem = name.lower()
-        # The suffix is matched on a token boundary so "x86_64" cannot be
-        # satisfied by "arm64" or the reverse.
-        if re.search(rf"[-_.]{re.escape(key)}\.(zip|tar\.gz|tgz)$", stem):
-            return {"name": name, "url": url, "size": (asset or {}).get("size"),
-                    "platform": key}
+        parsed = product.parse_asset(name)
+        if not parsed or parsed["platform"] != key:
+            continue
+        if version is not None and (omni_release.version_tuple(parsed["version"])
+                                    != omni_release.version_tuple(version)):
+            continue
+        return {"name": name, "url": url, "size": asset.get("size"),
+                "platform": key}
     return None
 
 
-def _fetch_latest_release():
-    """Ask GitHub for the latest normal release. Raises on any failure.
+def _fetch_release_feed():
+    """Ask GitHub for the published releases. Raises on any failure.
 
-    `/releases/latest` is used rather than the full list because GitHub already
-    excludes drafts and prereleases from it, so "the latest normal release" is
-    the endpoint's own definition rather than something reimplemented here.
+    The list is read, not the repository-wide "latest" endpoint (see GITHUB_RELEASES_API), and
+    drafts are already absent from an unauthenticated read. Whether a release
+    belongs to this product is decided afterwards from its tag and artifact
+    names, never from anything GitHub says about it.
     """
     response = requests.get(
-        GITHUB_LATEST_API,
+        GITHUB_RELEASES_API,
         timeout=UPDATE_CHECK_TIMEOUT,
         headers={"Accept": "application/vnd.github+json",
                  "User-Agent": f"OmniSuite/{_app_version()}"},
@@ -3584,31 +4171,29 @@ def _update_check(force=False):
         "asset_url": None,
         "checked_at": None,
         "source": "github",
+        "product": omni_product.PRODUCT_ID,
         "stale": False,
         "error_summary": None,
         # Kept so anything still reading the older name keeps working.
         "current_version": installed,
     }
     try:
-        payload = _fetch_latest_release()
-        tag = (payload or {}).get("tag_name") or (payload or {}).get("name")
-        if _version_tuple(tag) is None:
-            raise ValueError(f"unrecognised release tag {tag!r}")
-        # Drafts and prereleases should already be excluded by the endpoint;
-        # honour the flags anyway rather than trusting that silently.
-        if (payload or {}).get("draft") or (payload or {}).get("prerelease"):
-            raise LookupError("no normal release published")
-        html_url = (payload or {}).get("html_url")
-        result["latest_version"] = str(tag).strip()
+        feed = _fetch_release_feed()
+        # Only this product's releases are ever considered. Nothing is offered
+        # when the feed holds none, and that is UNABLE_TO_CHECK rather than
+        # "up to date": nothing was confirmed.
+        release, core = omni_release.select_release(feed, omni_release.active_product())
+        html_url = release.get("html_url")
+        result["latest_version"] = "V" + core
         # Strictly newer, and nothing else. A development build legitimately
         # ahead of the newest published release is CURRENT, not a failure and
         # not an update -- which is the whole reason this is a three-way state
         # and not a boolean.
-        result["update_available"] = _version_is_newer(tag, installed)
+        result["update_available"] = _version_is_newer(core, installed)
         if _is_official_release_url(html_url):
             result["release_url"] = html_url
         if result["update_available"]:
-            result["asset"] = _select_platform_asset((payload or {}).get("assets"))
+            result["asset"] = _select_platform_asset(release.get("assets"), core)
             result["asset_url"] = (result["asset"] or {}).get("url")
         result["status"] = UPDATE_AVAILABLE if result["update_available"] else UPDATE_CURRENT
     except Exception as exc:
@@ -3663,6 +4248,17 @@ def api_update_check():
 def api_config():
     if request.method == "GET":
         include_password = request.args.get("include_password", "0") in ("1", "true")
+        # The device passwords are shown only to the machine itself. The route
+        # is an administrator route, and an administrator may be signed in from
+        # the network; being an administrator is not a reason to read a device
+        # credential back. Refused rather than ignored, so the caller is told
+        # why instead of receiving a blank it might mistake for "no password".
+        if include_password and not omni_remote.is_local_request(request.environ):
+            return jsonify({
+                "ok": False,
+                "error": "Device passwords can only be shown on the computer "
+                         "running OmniSuite.",
+            }), 403
         return jsonify({
             "ok": True,
             "username": app.config.get('USERNAME', 'admin'),
@@ -3675,14 +4271,53 @@ def api_config():
             "app_version": _app_version(),
         })
     
-    data = request.get_json(silent=True) or {}
-    app.config['USERNAME'] = data.get("username","admin")
-    app.config['PASSWORD'] = data.get("password","password")
-    app.config['FALLBACK_PASSWORD'] = data.get("fallback_password","Atlona")
-    app.config['WS_PORT'] = int(data.get("ws_port",80))
-    app.config['TIMEOUT'] = float(data.get("timeout",4.5))
-    app.config['UPLOAD_CONCURRENCY'] = int(data.get("concurrency", 6))
-    app.config['FIRMWARE_PATH'] = data.get("firmware_path", "")
+    # A save has to say something: an empty or malformed body is refused, not read as
+    # "save the current settings".
+    data = _json_dict(required=True)
+    omni_requests.require_any(data, ("username", "password", "fallback_password", "ws_port",
+                                     "timeout", "concurrency", "firmware_path"))
+    # A save that omits a setting leaves it as it is. Reading "absent" as "reset to the
+    # default" meant a partial save (a remote administrator's page sends only what it
+    # shows) silently replaced the username and the firmware folder.
+    #
+    # Every value is checked before anything is assigned, so a bad one cannot leave the
+    # configuration half-changed, and a non-finite timeout cannot persist and stop every
+    # device read.
+    try:
+        ws_port = int(data.get("ws_port", app.config.get('WS_PORT', 80)))
+        timeout = float(data.get("timeout", app.config.get('TIMEOUT', 4.5)))
+        concurrency = int(data.get("concurrency", app.config.get('UPLOAD_CONCURRENCY', 6)))
+    except (TypeError, ValueError, OverflowError):
+        return jsonify({"ok": False, "error": "port, timeout and concurrency must be numbers"}), 400
+    if not 1 <= ws_port <= 65535:
+        return jsonify({"ok": False, "error": "port must be between 1 and 65535"}), 400
+    if not (timeout == timeout and 0 < timeout <= 120):
+        return jsonify({"ok": False, "error": "timeout must be between 0 and 120 seconds"}), 400
+    if not 1 <= concurrency <= 64:
+        return jsonify({"ok": False, "error": "concurrency must be between 1 and 64"}), 400
+    firmware_path = data.get("firmware_path", app.config.get('FIRMWARE_PATH', ''))
+    if not isinstance(firmware_path, str):
+        return jsonify({"ok": False, "error": "firmware folder must be text"}), 400
+    if (firmware_path != app.config.get('FIRMWARE_PATH', '')
+            and not omni_remote.is_local_request(request.environ)):
+        # A folder on the host's own disk is chosen on the host. Letting a signed-in
+        # remote session name one would let it point firmware upload at any directory,
+        # configuration and account files included.
+        return jsonify({"ok": False,
+                        "error": "The firmware folder can only be changed on the computer "
+                                 "running OmniSuite."}), 403
+    app.config['USERNAME'] = str(data.get("username", app.config.get('USERNAME', 'admin')))
+    # A save that does not carry the device passwords leaves them as they are. A remote
+    # administrator is never shown them (see the GET above), so their page has nothing to
+    # send; reading "absent" as "reset to the defaults" would overwrite the real passwords
+    # with 'password' and 'Atlona' every time they saved an unrelated setting.
+    app.config['PASSWORD'] = data.get("password") or app.config.get('PASSWORD', 'password')
+    app.config['FALLBACK_PASSWORD'] = (data.get("fallback_password")
+                                       or app.config.get('FALLBACK_PASSWORD', 'Atlona'))
+    app.config['WS_PORT'] = ws_port
+    app.config['TIMEOUT'] = timeout
+    app.config['UPLOAD_CONCURRENCY'] = concurrency
+    app.config['FIRMWARE_PATH'] = firmware_path
     # Save to file
     _save_config({
         "username": app.config['USERNAME'],
@@ -3698,7 +4333,7 @@ def api_config():
 
 @app.route("/api/sync_passwords", methods=["POST"])
 def api_sync_passwords():
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     target = (data.get("target") or "").strip().lower()
     if target not in ("primary", "fallback"):
         return jsonify({"ok": False, "error": "target must be 'primary' or 'fallback'"}), 400
@@ -3871,7 +4506,7 @@ def api_sync_passwords():
 @app.route("/api/ntp_profile", methods=["POST"])
 def api_ntp_profile():
     """Fetch timezone options/current timezone from a reachable unit."""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     requested_ips = data.get("ips") or []
 
     cache_devices = _load_cache() or []
@@ -3965,7 +4600,7 @@ def api_ntp_profile():
 @app.route("/api/set_ntp", methods=["POST"])
 def api_set_ntp():
     """Set timezone (and optional NTP server) for selected or all units."""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     scope = (data.get("scope") or "selected").strip().lower()
     requested_ips = data.get("ips") or []
     timezone = (data.get("timezone") or "").strip()
@@ -4455,9 +5090,222 @@ def _tcp_probe(ip: str, ports, timeout: float=0.4) -> bool:
             continue
     return False
 
+
+# ---------------- scan transport diagnostics ----------------
+# A scan that finds nothing is ordinarily an empty network. A scan that finds
+# nothing because the operating system refused every connection before a packet
+# left the machine is a different fact, and used to be reported identically:
+# every error below was swallowed and the result was "0 found".
+#
+# These classify the failure of one connection attempt. They are additive --
+# _tcp_probe above is unchanged and still serves every other caller -- and they
+# only observe; nothing here retries, paces or raises a limit.
+#
+# Errors that mean this machine would not or could not attempt the connection,
+# as opposed to a device that did not answer. EHOSTUNREACH and EHOSTDOWN belong
+# here only when they arrive immediately: a real unanswered ARP takes time, so a
+# "no route" that returns in microseconds was decided locally.
+_SCAN_LOCAL_BLOCK = frozenset({"EPERM", "EACCES", "ENETUNREACH", "EMFILE", "ENFILE",
+                               "ENOBUFS", "EHOSTUNREACH", "EHOSTDOWN"})
+_SCAN_IMMEDIATE_SECS = 0.25
+# A verdict needs a population. One typed address that does not answer is an
+# ordinary result, not evidence about the machine. Hardware-dependent: these two
+# numbers are chosen, not measured, and are marked for validation on a Mac.
+_SCAN_VERDICT_MIN_PROBES = 8
+_SCAN_VERDICT_BLOCKED_SHARE = 0.9
+
+
+def _tcp_errno_label(exc) -> str:
+    code = getattr(exc, "errno", None)
+    if code is None:
+        return "other:" + type(exc).__name__
+    name = errno.errorcode.get(code)
+    if not name:
+        return "errno:%s" % code
+    # Windows reports the same conditions under WSA-prefixed names.
+    return name[3:] if name.startswith("WSA") else name
+
+
+def _classify_tcp_error(exc, elapsed: float) -> str:
+    if isinstance(exc, socket.timeout):
+        return "timeout"
+    label = _tcp_errno_label(exc)
+    if label == "ETIMEDOUT":
+        return "timeout"
+    if label in ("ECONNREFUSED", "ECONNRESET", "ECONNABORTED"):
+        return "refused"       # something answered, so the network is working
+    if label in ("EHOSTUNREACH", "EHOSTDOWN") and elapsed >= _SCAN_IMMEDIATE_SECS:
+        return "unreachable_delayed"
+    return label
+
+
+def _outcome_rank(kind: str) -> int:
+    # Which port's result describes the address. Evidence that the network was
+    # actually consulted outranks a local failure.
+    return {"refused": 0, "timeout": 1, "unreachable_delayed": 2}.get(kind, 3)
+
+
+def _tcp_probe_outcome(ip: str, ports, timeout: float = 0.4) -> str:
+    """Same ports, order and timeout as _tcp_probe, but says why it failed."""
+    best = None
+    for p in ports:
+        began = time.monotonic()
+        try:
+            with socket.create_connection((ip, p), timeout=timeout):
+                return "open"
+        except Exception as exc:
+            kind = _classify_tcp_error(exc, time.monotonic() - began)
+            if best is None or _outcome_rank(kind) < _outcome_rank(best):
+                best = kind
+    return best or "none"
+
+
+def _fd_diagnostics() -> dict:
+    """File-descriptor limit and use, read only. Never raises and never changes it."""
+    info = {}
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        info["fd_soft_limit"] = soft
+        info["fd_hard_limit"] = hard
+    except Exception:
+        pass                      # not available on Windows; absence is the answer
+    for path in ("/dev/fd", "/proc/self/fd"):
+        try:
+            info["fd_open"] = len(os.listdir(path))
+            break
+        except OSError:
+            continue
+    return info
+
+
+def _scan_context(ips) -> dict:
+    """What this machine looks like from the scan's point of view. Never raises.
+
+    Sends nothing: a UDP connect() only asks the routing table which local
+    address would be used. With the adapter list it separates "the target is on
+    a directly attached subnet" from "the target is routed", which is the
+    distinction a local-network permission block would follow.
+    """
+    ctx = {"target_count": len(ips)}
+    if not ips:
+        return ctx
+    ctx["first_target"], ctx["last_target"] = ips[0], ips[-1]
+    adapters = []
+    try:
+        for entry in _adapters_psutil(active_only=False):
+            adapters.append({k: entry.get(k) for k in ("name", "ip", "netmask", "cidr")})
+    except Exception as exc:
+        ctx["adapters_error"] = type(exc).__name__
+    ctx["adapters"] = adapters
+    try:
+        target = ipaddress.ip_address(ips[0])
+        ctx["first_target_on_attached_subnet"] = any(
+            a.get("cidr") and target in ipaddress.ip_network(a["cidr"], strict=False)
+            for a in adapters)
+    except Exception as exc:
+        ctx["subnet_check_error"] = type(exc).__name__
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect((ips[0], 9))
+            ctx["route_source_address"] = probe.getsockname()[0]
+        finally:
+            probe.close()
+    except Exception as exc:
+        ctx["route_source_error"] = _tcp_errno_label(exc)
+    return ctx
+
+
+class _ScanProbeStats:
+    """Aggregated outcome of one scan's connection attempts, one count per address."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.outcomes = collections.Counter()
+        self.ws_errors = collections.Counter()
+        self._timing = {}
+
+    def record(self, outcome: str, elapsed=None):
+        with self._lock:
+            self.outcomes[outcome] += 1
+            if elapsed is not None:
+                ms = round(elapsed * 1000.0, 1)
+                low, high = self._timing.get(outcome, (ms, ms))
+                self._timing[outcome] = (min(low, ms), max(high, ms))
+
+    def timing_ms(self) -> dict:
+        """Fastest and slowest attempt per outcome: what tells an instant local
+        refusal from a network that took its time to say no."""
+        with self._lock:
+            return {k: {"min": lo, "max": hi} for k, (lo, hi) in self._timing.items()}
+
+    def record_ws_error(self, exc_name: str):
+        with self._lock:
+            self.ws_errors[exc_name] += 1
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return dict(self.outcomes)
+
+    def verdict(self):
+        """A failure description when the scan was refused locally, else None."""
+        with self._lock:
+            counts = dict(self.outcomes)
+        total = sum(counts.values())
+        if total < _SCAN_VERDICT_MIN_PROBES or counts.get("open"):
+            return None
+        blocked = {k: v for k, v in counts.items() if k in _SCAN_LOCAL_BLOCK}
+        if sum(blocked.values()) < total * _SCAN_VERDICT_BLOCKED_SHARE:
+            return None
+        dominant = max(blocked, key=blocked.get)
+        return {"dominant": dominant, "blocked": sum(blocked.values()), "total": total}
+
+
+_LOCAL_NETWORK_SUSPECTS = ("EPERM", "EACCES", "EHOSTUNREACH", "EHOSTDOWN", "ENETUNREACH")
+
+
+def _scan_likely_cause(dominant: str, system: str) -> str:
+    """A short machine-readable guess at why a scan was refused locally.
+
+    "Likely", not "proven": the same errors can have other causes, and the
+    macOS attribution is the leading explanation rather than a measured one.
+    """
+    if dominant in ("EMFILE", "ENFILE"):
+        return "descriptor_exhaustion"
+    if system == "Darwin" and dominant in _LOCAL_NETWORK_SUSPECTS:
+        return "local_network_permission"
+    if dominant in ("EPERM", "EACCES"):
+        return "blocked_by_firewall_or_policy"
+    return "no_route"
+
+
+def _scan_failure_message(verdict: dict, fds: dict, system: str = None) -> str:
+    system = platform.system() if system is None else system
+    dominant = verdict["dominant"]
+    base = ("The scan could not reach the network: %d of %d addresses failed "
+            "immediately (%s) before any device could answer. This is not the same "
+            "as finding no devices." % (verdict["blocked"], verdict["total"], dominant))
+    cause = _scan_likely_cause(dominant, system)
+    if cause == "descriptor_exhaustion":
+        limit = fds.get("fd_soft_limit")
+        return base + (" The process ran out of file descriptors%s."
+                       % (" (limit %s)" % limit if limit is not None else ""))
+    if cause == "local_network_permission":
+        # OmniSuite never changes this setting itself; it can only say where it is.
+        return base + (" On macOS this usually means Local Network access has not been "
+                       "allowed for OmniSuite. If a permission prompt is showing, choose "
+                       "Allow. Otherwise open System Settings > Privacy & Security > "
+                       "Local Network, switch OmniSuite on, and scan again.")
+    if cause == "blocked_by_firewall_or_policy":
+        return base + (" The operating system refused the connections. A firewall or "
+                       "endpoint-security policy may be blocking OmniSuite.")
+    return base + (" The operating system reported no route to every address at once. "
+                   "Check that the selected adapter is connected to this subnet.")
+
 @app.route("/api/tcp_probe", methods=["POST"])
 def api_tcp_probe():
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ip = (data.get("ip") or "").strip()
     timeout_ms = int(data.get("timeout_ms", 400))
     if not ip: return jsonify({"ok": False, "error": "ip required"}), 400
@@ -4468,7 +5316,7 @@ def api_tcp_probe():
 
 @app.route("/api/ping", methods=["POST"])
 def api_ping():
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ip = (data.get("ip") or "").strip()
     timeout_ms = int(data.get("timeout_ms", 400))
     if not ip: return jsonify({"ok": False, "error": "ip required"}), 400
@@ -4488,7 +5336,7 @@ def _ws_send_recv(url: str, payload: dict, timeout: float):
         sslopt = None
         if url.startswith("wss://") and not app.config['WS_STRICT']:
             sslopt = {"cert_reqs": ssl.CERT_NONE}
-        ws = websocket.create_connection(url, timeout=timeout, sslopt=sslopt)
+        ws = websocket.create_connection(url, timeout=timeout, sslopt=sslopt, redirect_limit=0)
         ws.send(json.dumps(payload))
         raw = ws.recv()
         try:
@@ -4503,53 +5351,95 @@ def _ws_send_recv(url: str, payload: dict, timeout: float):
         except Exception:
             pass
 
+#: How a device's working credential was arrived at. Names only, never
+#: values: this is what makes "is that unit on the vendor default?" a question
+#: the application can answer without anybody printing a password.
+CRED_DEVICE = "device"          # a credential recorded for this device
+CRED_CONFIGURED = "configured"  # config.json / OMNI_PASS
+CRED_FALLBACK = "fallback"      # config.json fallback / OMNI_FALLBACK_PASS
+CRED_UNKNOWN = "unknown"
+
+#: identity of the last credential proven to work, per address. Names only.
+_credential_source: dict = {}
+
+
+def _classify_credential(pwd: str, device_pwd: str = None) -> str:
+    """Which credential is this, by name? Never returns or logs the value."""
+    if not pwd:
+        return CRED_UNKNOWN
+    if device_pwd and pwd == device_pwd:
+        return CRED_DEVICE
+    if pwd == app.config.get('PASSWORD', ''):
+        return CRED_CONFIGURED
+    if pwd == app.config.get('FALLBACK_PASSWORD', ''):
+        return CRED_FALLBACK
+    return CRED_UNKNOWN
+
+
+def _remember_credential_source(ip: str, pwd: str, device_pwd: str = None):
+    source = _classify_credential(pwd, device_pwd)
+    previous = _credential_source.get(ip)
+    _credential_source[ip] = source
+    if source == CRED_FALLBACK and previous != CRED_FALLBACK:
+        # Worth a line at WARNING exactly once per transition: a unit that
+        # only answers to the vendor default is a site condition somebody has
+        # to fix, and it is invisible otherwise.
+        log.warning("[CRED] %s is answering to the fallback (vendor default) "
+                    "credential, not the configured one", ip)
+    return source
+
+
+def credential_report():
+    """Per-address credential provenance, by name. No values, ever."""
+    return dict(_credential_source)
+
+
 def _ws_send_recv_with_fallback(ip: str, payload: dict, timeout: float, ws_port: int, ws_path: str, primary_pwd: str = None):
-    """Try sending WebSocket payload with primary password, fall back to fallback password if auth fails"""
-    primary_pwd = primary_pwd or app.config['PASSWORD']
-    fallback_pwd = app.config['FALLBACK_PASSWORD']
-    
-    # Try with primary password first
+    """Send a WebSocket request, trying this device's credentials in order.
+
+    One resolver decides the order for every caller: the credential recorded
+    for this device, then the configured one, then the fallback. The old code
+    started from `app.config['PASSWORD']` and so could never reach a
+    per-device credential at all -- a device with its own password was tried
+    with the configured one and then the vendor default, and never with its
+    own.
+
+    The device reports some refusals that have nothing to do with
+    authentication as "Invalid username/password", so the error text is not
+    evidence of an auth problem and is no longer read as any. Every candidate
+    is tried in order and the first that the device answers cleanly wins.
+    """
+    user, device_pref, device = _device_credentials(ip)
+    device_pwd = (device or {}).get("password")
+    candidates = _password_candidates(primary_pwd or device_pref)
+
     url = _ws_url(ip, ws_port, ws_path)
     payload_with_pwd = payload.copy()
-    payload_with_pwd['password'] = primary_pwd
-    
-    try:
-        resp = _ws_send_recv(url, payload_with_pwd, timeout)
-        # Check if response indicates auth failure
-        if resp and not resp.get("error"):
-            return resp
-        # If there's an error that looks like auth failure, try fallback
-        error_msg = (resp.get("error") or "").lower()
-        if "auth" not in error_msg and "password" not in error_msg and "unauthorized" not in error_msg and "forbidden" not in error_msg:
-            # Not an auth error, return the error response
-            return resp
-    except Exception as e:
-        # Connection/timeout errors, try fallback
-        log.debug(f"[FALLBACK] Primary password failed on {ip}: {e}, trying fallback...")
-    
-    # If primary password failed or errored, try fallback password
-    if fallback_pwd != primary_pwd:
-        log.info(f"[FALLBACK] Trying fallback password on {ip}...")
-        payload_with_pwd['password'] = fallback_pwd
+    last = None
+    for index, pwd in enumerate(candidates):
+        payload_with_pwd['password'] = pwd
         try:
             resp = _ws_send_recv(url, payload_with_pwd, timeout)
-            if resp and not resp.get("error"):
-                log.info(f"[FALLBACK] Fallback password succeeded on {ip}")
-                return resp
-            # Document that fallback also failed
-            log.warning(f"[FALLBACK] Both primary and fallback passwords failed on {ip}: {resp}")
-            return resp
         except Exception as e:
-            log.error(f"[FALLBACK] Fallback password also failed on {ip}: {e}")
-            return {"error": f"Authentication failed with both primary and fallback passwords: {e}"}
+            log.debug("[CRED] %s did not answer on candidate %d/%d: %s",
+                      ip, index + 1, len(candidates), e)
+            last = {"error": f"{type(e).__name__}: {e}"}
+            continue
+        if resp and not resp.get("error"):
+            _remember_credential_source(ip, pwd, device_pwd)
+            return resp
+        last = resp
 
-    # Primary password worked, return original response
-    return resp
+    if last is not None and isinstance(last, dict) and last.get("error"):
+        log.warning("[CRED] %s refused every credential candidate (%d tried)",
+                    ip, len(candidates))
+    return last if last is not None else {
+        "error": "the device did not answer"}
 
 # ---------------- login (WS) ----------------
 @app.route("/api/login", methods=["POST"])
 def api_login():
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ip = (data.get("ip") or "").strip()
     if not ip: return jsonify({"ok": False, "error": "ip required"}), 400
     user = data.get("username") or app.config['USERNAME']
@@ -4566,7 +5456,7 @@ def api_login():
 
 @app.route("/api/lldp", methods=["POST"])
 def api_lldp():
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ip = (data.get("ip") or "").strip()
     if not ip:
         return jsonify({"ok": False, "error": "ip required"}), 400
@@ -4615,8 +5505,12 @@ def api_lldp_topology_acknowledge():
     units resets it -- not another scan, not another subnet, not a third switch
     appearing, not a page reload.
     """
-    data = request.get_json(silent=True) or {}
-    acknowledged = bool(data.get("acknowledged", True))
+    data = _json_dict(required=True)
+    if not isinstance(data.get("acknowledged"), bool):
+        return jsonify({"ok": False, "reason": "bad_request_body",
+                        "error": "Say whether this is acknowledged (acknowledged: true or false). "
+                                 "Nothing was changed."}), 400
+    acknowledged = data["acknowledged"]
     # Two distinct advisories, two distinct flags. They describe different risks --
     # an uplink between switches, and a link shared with devices in front of you --
     # so dismissing one must never silence the other.
@@ -4896,7 +5790,7 @@ def _update_poll_detail_cache(ip: str, updates: dict):
 @app.route("/api/hostname", methods=["POST"])
 @_audited("hostname")
 def api_hostname():
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ip = (data.get("ip") or "").strip()
     hostname = (data.get("hostname") or "").strip()
     if not ip:
@@ -4975,7 +5869,7 @@ def api_hostname():
 @app.route("/api/codec", methods=["POST"])
 @_audited("codec")
 def api_codec():
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ip = (data.get("ip") or "").strip()
     system_mode = (data.get("system_mode") or "").strip()
     if not ip:
@@ -5975,8 +6869,8 @@ def _usb_endpoint_network(entry):
 
     For an integrated endpoint this is the Icron interface as the parent `net`
     API reports it, never the parent's management address. An E4521 managed on
-    192.168.100.x whose Icron endpoint sits on 192.168.200.0/24 belongs, for
-    pairing purposes, to 192.168.200.0/24.
+    198.51.100.x whose Icron endpoint sits on 203.0.113.0/24 belongs, for
+    pairing purposes, to 203.0.113.0/24.
 
     Order of authority: whatever the derived view stamped on this entry (the same
     object every surface renders), then the parent Icron configuration, then the
@@ -6496,6 +7390,7 @@ def api_usb_extenders():
 @app.route("/api/usb_extenders/clear", methods=["POST"])
 def api_usb_extender_clear():
     """Forget discovered USB inventory.  Sends nothing to any device."""
+    _json_dict(required=True)
     removed = _usb_extenders.clear_devices()
     return jsonify({"ok": True, "cleared": removed})
 
@@ -6508,7 +7403,7 @@ def api_usb_extender_discover():
     scan are independent, so one being busy or invalid never suppresses the
     other, and neither is ever awaited by the OmniStream scan.
     """
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     interface_ip, mask = _usb_extender_network(data)
     if not interface_ip:
         return jsonify({"ok": False, "error": "A valid interface_ip and subnet_mask are required."}), 400
@@ -6601,7 +7496,7 @@ def api_usb_extender_traffic():
 def api_usb_extender_ranges():
     if request.method == "GET":
         return jsonify({"ok": True, "ranges": _usb_extenders.state()["ranges"], "maximum_hosts": omni_usb_extender.MAX_RANGE_HOSTS})
-    data = request.get_json(silent=True) or {}; ranges = data.get("ranges")
+    data = _json_dict(); ranges = data.get("ranges")
     if not isinstance(ranges, list) or not all(isinstance(value, str) for value in ranges):
         return jsonify({"ok": False, "error": "ranges must be a list of IPv4 ranges"}), 400
     try:
@@ -6613,7 +7508,7 @@ def api_usb_extender_ranges():
 
 @app.route("/api/usb_extenders/discover_local", methods=["POST"])
 def api_usb_extender_discover_local():
-    data = request.get_json(silent=True) or {}; interface_ip, mask = _usb_extender_network(data)
+    data = _json_dict(); interface_ip, mask = _usb_extender_network(data)
     if not interface_ip:
         return jsonify({"ok": False, "error": "A valid interface_ip and subnet_mask are required."}), 400
     try:
@@ -6626,7 +7521,7 @@ def api_usb_extender_discover_local():
 
 @app.route("/api/usb_extenders/discover_ip", methods=["POST"])
 def api_usb_extender_discover_ip():
-    data = request.get_json(silent=True) or {}; interface_ip, mask = _usb_extender_network(data)
+    data = _json_dict(); interface_ip, mask = _usb_extender_network(data)
     if not interface_ip:
         return jsonify({"ok": False, "error": "A valid interface_ip and subnet_mask are required."}), 400
     result = _usb_extenders.discover_ip(data.get("ip", ""), interface_ip, mask)
@@ -6639,7 +7534,7 @@ def api_usb_extender_discover_ip():
 
 @app.route("/api/usb_extenders/scan_ranges", methods=["POST"])
 def api_usb_extender_scan_ranges():
-    data = request.get_json(silent=True) or {}; interface_ip, mask = _usb_extender_network(data)
+    data = _json_dict(); interface_ip, mask = _usb_extender_network(data)
     if not interface_ip:
         return jsonify({"ok": False, "error": "A valid interface_ip and subnet_mask are required."}), 400
     ranges = data.get("ranges")
@@ -6658,7 +7553,7 @@ def api_usb_extender_scan_ranges():
 
 @app.route("/api/usb_extenders/network", methods=["POST"])
 def api_usb_extender_network_config():
-    data = request.get_json(silent=True) or {}; interface_ip, interface_mask = _usb_extender_network(data)
+    data = _json_dict(); interface_ip, interface_mask = _usb_extender_network(data)
     mac = str(data.get("mac") or "").strip(); mode = str(data.get("mode") or "").strip().lower()
     if not mac:
         return jsonify({"ok": False, "error": "An extender MAC is required."}), 400
@@ -6798,7 +7693,7 @@ def api_usb_extender_read_network_config():
 
 @app.route("/api/usb_extenders/identify", methods=["POST"])
 def api_usb_extender_identify():
-    data = request.get_json(silent=True) or {}; mac = str(data.get("mac") or "").strip(); action = str(data.get("action") or "identify").strip().lower()
+    data = _json_dict(); mac = str(data.get("mac") or "").strip(); action = str(data.get("action") or "identify").strip().lower()
     if not mac:
         return jsonify({"ok": False, "error": "An extender MAC is required."}), 400
     if action not in ("identify", "on", "off"):
@@ -6848,7 +7743,7 @@ def api_usb_extender_identify():
 
 @app.route("/api/usb_extenders/reboot", methods=["POST"])
 def api_usb_extender_reboot():
-    data = request.get_json(silent=True) or {}; mac = str(data.get("mac") or "").strip()
+    data = _json_dict(); mac = str(data.get("mac") or "").strip()
     if not mac: return jsonify({"ok": False, "error": "An extender MAC is required."}), 400
     # Never send a standalone extender reboot to a USB identity that belongs to an
     # E4521/D4511; rebooting that endpoint is the parent device's concern.
@@ -7645,81 +8540,158 @@ def _probe_one(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout
 
 @app.route("/api/scan", methods=["POST"])
 def api_scan():
-    data = request.get_json(silent=True) or {}
-    targets = (data.get("targets") or "").strip()
+    data = _json_dict()
+    raw_targets = data.get("targets") or ""
+    if not isinstance(raw_targets, str):
+        return jsonify({"ok": False, "reason": "bad_request_body",
+                        "error": "targets must be text, such as 192.0.2.1-254 or 192.0.2.0/24."}), 400
+    targets = raw_targets.strip()
     if not targets: return jsonify({"ok": False, "error": "No targets provided"}), 400
     try:
         ips = _expand_targets(targets)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
+    if not ips:
+        # _expand_targets drops any token it does not recognise, so text such as
+        # "10.0.0.1-10.0.0.20" used to expand to nothing and "scan" zero addresses
+        # in no time, which reads exactly like an empty network. Say so instead.
+        log.warning("[SCAN] No scannable addresses in %d characters of targets", len(targets))
+        return jsonify({"ok": False, "reason": "no_valid_targets",
+                        "error": "No scannable addresses were found in the targets. "
+                                 "Use a single address, a range such as 192.0.2.1-254, "
+                                 "or CIDR such as 192.0.2.0/24.",
+                        "tested": 0, "reachable": 0}), 400
     user = app.config['USERNAME']; pwd = app.config['PASSWORD']
     ws_port = app.config['WS_PORT']; ws_path = app.config['WS_PATH']
     timeout = app.config['TIMEOUT']
     
     log.info("[SCAN] Starting scan of %d IPs (timeout=%.1fs)", len(ips), timeout)
     start_time = time.time()
+    # The inventory this scan belongs to; see _inventory_generation.
+    scan_generation = _inventory_generation_now()
 
     # Single-phase probe: combine TCP + WS in one threaded pass
     raw_units = []
+    stats = _ScanProbeStats()
+    workers = min(96, max(8, len(ips)))
     def probe_ip(ip):
+        began = time.monotonic()
         try:
-            # Quick TCP check first
-            if not _tcp_probe(ip, [ws_port, 80, 443], timeout=0.4):
-                return None
+            # Quick TCP check first. Same ports, order and timeout as before; the
+            # outcome is kept so a scan the OS refused is not read as an empty one.
+            outcome = _tcp_probe_outcome(ip, [ws_port, 80, 443], timeout=0.4)
+        except Exception as exc:
+            stats.record("probe_error:" + type(exc).__name__, time.monotonic() - began)
+            return None
+        stats.record(outcome, time.monotonic() - began)
+        if outcome != "open":
+            return None
+        try:
             # If reachable, do WS probe
             return _probe_one(ip, user, pwd, ws_port, ws_path, timeout)
-        except Exception:
+        except Exception as exc:
+            stats.record_ws_error(type(exc).__name__)
+            log.debug("[SCAN] %s - WebSocket probe raised %s", ip, type(exc).__name__)
             return None
     
-    with ThreadPoolExecutor(max_workers=min(96, max(8, len(ips)))) as ex:
+    with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = {ex.submit(probe_ip, ip): ip for ip in ips}
         for fut in as_completed(futs):
             res = fut.result()
             if res: raw_units.append(res)
+
+    # Say what the connection attempts did, once, and refuse to present a scan the
+    # operating system blocked as though it had searched the network. Nothing has
+    # been merged or persisted yet, so a refused scan leaves the cache as it was.
+    fds = _fd_diagnostics()
+    diagnostics = {"probe_outcomes": stats.snapshot(), "probe_timing_ms": stats.timing_ms(),
+                   "platform": {"system": platform.system(), "machine": platform.machine()},
+                   "workers": workers, "duration_s": round(time.time() - start_time, 3),
+                   **fds, **_scan_context(ips)}
+    if stats.ws_errors:
+        diagnostics["ws_errors"] = dict(stats.ws_errors)
+    failure = None if raw_units else stats.verdict()
+    if failure:
+        message = _scan_failure_message(failure, fds)
+        log.warning("[SCAN] Refused locally: %s outcomes=%s timing_ms=%s fds=%s context=%s",
+                    message, diagnostics["probe_outcomes"], diagnostics["probe_timing_ms"],
+                    fds, {k: diagnostics.get(k) for k in (
+                        "target_count", "first_target", "last_target", "duration_s",
+                        "first_target_on_attached_subnet", "route_source_address",
+                        "route_source_error")})
+        return jsonify({"ok": False, "reason": "scan_blocked", "error": message,
+                        "likely_cause": _scan_likely_cause(failure["dominant"], platform.system()),
+                        "app_name": omni_release.active_product().name,
+                        "tested": len(ips), "reachable": 0,
+                        "diagnostics": diagnostics}), 503
+    if diagnostics["probe_outcomes"].keys() & _SCAN_LOCAL_BLOCK:
+        log.info("[SCAN] Connection outcomes: %s fds=%s", diagnostics["probe_outcomes"], fds)
     
+    # Every unit the scan reached has just answered; recorded so the screens do not show it as quiet.
+    for found in raw_units:
+        _liveness.record(found.get("ip"), True, "scan")
+
     # Deduplicate by MAC
-    seen = set(); units = []; omitted = 0
-    for u in raw_units:
-        mac = (u.get("mac") or "").lower()
-        if mac and mac in seen:
-            omitted += 1
-            continue
-        if mac: seen.add(mac)
-        units.append(u)
+    units, omitted = _dedupe_by_identity(raw_units)
 
     # Merge with cache, identity first: a fresh answer decides where a device is.
     existing = _load_cache()
     merged = []
     for u in _reconcile_discovered_units(existing, units):
-        mac = (u.get("mac") or "").lower()
-        if not u.get("timezone"):
-            # Identity first, and an address match only for a record that has no
-            # identity to match on. The disjunction below used to let a record
-            # that merely shared an address win over the one with the same MAC,
-            # and it copies a whole systeminfo blob.
-            matched = next((old for old in existing
-                            if mac and (old.get("mac") or "").lower() == mac), None)
-            if matched is None and not mac:
-                matched = next((old for old in existing if old.get("ip") == u.get("ip")), None)
-            if matched:
-                if matched.get("timezone") and not u.get("timezone"):
-                    u["timezone"] = matched.get("timezone")
-                if matched.get("active_timezone") and not u.get("active_timezone"):
-                    u["active_timezone"] = matched.get("active_timezone")
-                if matched.get("ntp_server") and not u.get("ntp_server"):
-                    u["ntp_server"] = matched.get("ntp_server")
-                if matched.get("details", {}).get("timezone") and not u.get("details", {}).get("timezone"):
-                    u.setdefault("details", {})["timezone"] = matched.get("details", {}).get("timezone")
-                if matched.get("details", {}).get("systeminfo") and not u.get("details", {}).get("systeminfo"):
-                    u.setdefault("details", {})["systeminfo"] = matched.get("details", {}).get("systeminfo")
-                if matched.get("linkspeed") is not None and u.get("linkspeed") is None:
-                    u["linkspeed"] = matched.get("linkspeed")
+        _inherit_cached_fields(u, existing)
         merged.append(u)
     
     # A scan reports no usb_mac/usb_type, so restore learned association onto the
     # rebuilt records before persisting. Pure in-memory; no device traffic.
     _preserve_usb_association_fields(merged)
-    _save_cache(merged); _write_csv(merged)
+
+    # Everything this scan persists is written in one hold of the cache and
+    # scan-results locks, after checking that no Clear Units has happened since
+    # the scan began. Clear Units takes the same two locks, so one of them is
+    # first: a clear that came first makes this scan's result stale (it is
+    # discarded and reported as such, never merged back in); a scan that came
+    # first is simply part of what the clear then classifies.
+    encoders = [u for u in merged if u.get("role") == "encoder"]
+    decoders = [u for u in merged if u.get("role") == "decoder"]
+    scan_results = {
+        "timestamp": time.time(),
+        "targets": targets,
+        "devices": merged,
+        "encoders": encoders,
+        "decoders": decoders,
+        "stats": {
+            "ips_scanned": len(ips),
+            "devices_found": len(raw_units),
+            "devices_merged": len(merged),
+            "devices_omitted": omitted,
+            "encoders_found": len(encoders),
+            "decoders_found": len(decoders)
+        }
+    }
+    with _cache_io_lock, _scan_results_lock:
+        if _inventory_generation_now() != scan_generation:
+            log.info("[SCAN] Inventory was cleared while this scan ran; its %d found "
+                     "unit(s) were not merged", len(raw_units))
+            current = _load_cache() or []
+            return jsonify({"ok": True, "discarded": True,
+                            "reason": "inventory_cleared_during_scan",
+                            "units": current,
+                            "encoders": [u for u in current if u.get("role") == "encoder"],
+                            "decoders": [u for u in current if u.get("role") == "decoder"],
+                            "tested": len(ips), "reachable": len(raw_units),
+                            "omitted": omitted, "added": 0,
+                            "diagnostics": diagnostics})
+        _save_cache(merged); _write_csv(merged)
+        if HAS_MATRIX:
+            try:
+                omni_matrix_logic._load_cache()
+            except Exception as e:
+                log.info("matrix_logic _load_cache failed: %s", e)
+        try:
+            _save_scan_results(scan_results)
+            log.info("[SCAN] Saved unified scan results to %s", SCAN_RESULTS)
+        except Exception as e:
+            log.warning("[SCAN] Failed to save scan results: %s", e)
 
     # An explicit Scan is the operator saying "make what you show me match the
     # hardware now", so the USB side is re-read as well.
@@ -7749,42 +8721,6 @@ def api_scan():
         _usb_extenders._executor.submit(_enrich_usb_after_scan)
     except Exception as exc:
         log.info("[SCAN] could not schedule USB enrichment: %s", type(exc).__name__)
-    if HAS_MATRIX:
-        try:
-            omni_matrix_logic._load_cache()
-        except Exception as e:
-            log.info("matrix_logic _load_cache failed: %s", e)
-    
-    # Separate encoders and decoders from merged devices
-    encoders = [u for u in merged if u.get("role") == "encoder"]
-    decoders = [u for u in merged if u.get("role") == "decoder"]
-    
-    # No need to call omni_matrix_logic if we already have the data from our scan
-    # (omni_matrix_logic would just duplicate the same scan we already did)
-    
-    # Save unified results
-    scan_results = {
-        "timestamp": time.time(),
-        "targets": targets,
-        "devices": merged,
-        "encoders": encoders,
-        "decoders": decoders,
-        "stats": {
-            "ips_scanned": len(ips),
-            "devices_found": len(raw_units),
-            "devices_merged": len(merged),
-            "devices_omitted": omitted,
-            "encoders_found": len(encoders),
-            "decoders_found": len(decoders)
-        }
-    }
-    
-    try:
-        _save_scan_results(scan_results)
-        log.info("[SCAN] Saved unified scan results to %s", SCAN_RESULTS)
-    except Exception as e:
-        log.warning("[SCAN] Failed to save scan results: %s", e)
-    
     # Summary
     elapsed = time.time() - start_time
     mac_pop = sum(1 for u in merged if u.get("mac"))
@@ -7800,7 +8736,7 @@ def api_scan():
              hostname_pop, len(merged), 100*hostname_pop/len(merged) if merged else 0,
              type_pop, len(merged), 100*type_pop/len(merged) if merged else 0)
 
-    return jsonify({"ok": True, "units": merged, "encoders": encoders, "decoders": decoders, "tested": len(ips), "reachable": len(raw_units), "omitted": omitted, "added": max(0,len(merged)-len(existing))})
+    return jsonify({"ok": True, "units": merged, "encoders": encoders, "decoders": decoders, "tested": len(ips), "reachable": len(raw_units), "omitted": omitted, "added": max(0,len(merged)-len(existing)), "diagnostics": diagnostics})
 
 # --- unified scan results retrieval
 @app.route("/api/scan_results", methods=["GET"])
@@ -7945,6 +8881,15 @@ def api_state_matrix():
 
     enc_mapped = [_merge_enc(e) for e in enc]
     dec_mapped = [_merge_dec(d) for d in dec]
+    # What was last learned about whether each unit answers, for display. Only said when something
+    # has actually been observed; silence is not "online". A unit recorded as not answering is
+    # looked at again here, bounded and rate-limited, so a unit that came back does not stay
+    # disabled on screen for as long as nothing happens to read it.
+    _refresh_offline_in_background()
+    for unit in enc_mapped + dec_mapped:
+        seen = _liveness.known(unit.get("ip"))
+        if seen is not None:
+            unit["online"] = seen
     
     log.debug(f"[API/STATE] After merge: {len(enc_mapped)} encoders, {len(dec_mapped)} decoders")
     if enc_mapped:
@@ -8002,7 +8947,7 @@ def api_state_matrix():
                 # last reported, and the Multiview verdict was derived from the
                 # cached one. Leaving it there made the matrix say a decoder was
                 # not in Multiview while naming a Multiview as its video input --
-                # measured on 192.168.100.32 after a route and a Show. Derived
+                # measured on a bench decoder after a route and a Show. Derived
                 # again here, from the value that actually survived, because a
                 # derived field must never outlive what it was derived from.
                 name = omni_multiview.active_multiview_name(
@@ -8014,17 +8959,26 @@ def api_state_matrix():
         log.debug(f"[API/STATE] Sample decoder after overlay: {dec_mapped[0]}")
 
     routes = {}
+    # Indexed once by (address, port) -- the first encoder carrying a stream still
+    # wins -- instead of every decoder scanning every encoder, which is a square
+    # of the inventory on the request the A/V Matrix waits for.
+    def _stream_key(addr, port):
+        try:
+            return (addr, int(port or 0))
+        except (TypeError, ValueError):
+            return None
+    enc_by_stream = {}
+    for enc in enc_mapped:
+        key = _stream_key(enc.get("v_mcast"), enc.get("v_port"))
+        if key is not None:
+            enc_by_stream.setdefault(key, enc.get("ip"))
     for dec in dec_mapped:
         dec_ip = dec.get("ip")
         if not dec_ip:
             continue
-        for enc in enc_mapped:
-            if (
-                dec.get("ip1_addr") == enc.get("v_mcast")
-                and int(dec.get("ip1_port") or 0) == int(enc.get("v_port") or 0)
-            ):
-                routes[dec_ip] = enc.get("ip")
-                break
+        key = _stream_key(dec.get("ip1_addr"), dec.get("ip1_port"))
+        if key is not None and key in enc_by_stream:
+            routes[dec_ip] = enc_by_stream[key]
 
     # Do not filter discovered units based on a transient reachability probe.
     # Control pages must remain driven by the cache/discovery list so a unit that
@@ -8032,13 +8986,237 @@ def api_state_matrix():
 
     return jsonify({"ok": True, "encoders": enc_mapped, "decoders": dec_mapped, "routes": routes, "poll": {}})
 
+@app.route("/api/unroute", methods=["POST"])
+def api_unroute_matrix():
+    """Put a display into the verified unrouted state.
+
+    The unrouted state was measured on the hardware rather than assumed. The
+    decoder REFUSES a multicast address of `0.0.0.0`, and refuses an empty
+    address while the input is still enabled; it accepts the address being
+    cleared and the input disabled in one write, after which the input reports
+    zero packets. That pair is what "subscribed to nothing" is on this
+    hardware, and it is what this writes and reads back.
+
+    A display that is compositing is taken out of Multiview first, through the
+    same verified teardown a normal route uses, so "unroute" on a Multiview
+    display means exit Multiview, return to single view, then subscribe to
+    nothing. The saved Multiview object is never deleted.
+    """
+    if not HAS_MATRIX:
+        return jsonify({"ok": False, "error": "matrix logic unavailable"}), 500
+    data = _json_dict()
+    decoder = data.get("decoder")
+    log.info("[UNROUTE] request decoder=%s", decoder)
+    if not decoder:
+        return jsonify({"ok": False, "error": "decoder required"}), 400
+
+    cache_devices = _load_cache() or []
+    cache_map = {d.get("ip"): d for d in cache_devices if d.get("ip")}
+    try:
+        omni_matrix_logic._load_cache()
+    except Exception as e:
+        log.warning("[UNROUTE] matrix_logic cache reload failed: %s", e)
+    decoder_user, decoder_pwd, _ = _device_credentials(decoder, cache_map)
+
+    route_decoder = (omni_matrix_logic._decoders.get(decoder)
+                     or cache_map.get(decoder))
+    if not route_decoder:
+        return jsonify({"ok": False,
+                        "error": f"Decoder {decoder} not found in current state"}), 200
+
+    # ---- leave a composition first, through the verified teardown --------
+    multiview_exit = None
+    try:
+        mv_state, _mv_error = _decoder_state(decoder)
+    except Exception:
+        mv_state, _mv_error = None, None
+    active_multiview = None
+    if mv_state:
+        try:
+            active_multiview = omni_multiview.active_multiview_name(
+                (mv_state or {}).get("video_input"))
+        except Exception:
+            active_multiview = None
+    if active_multiview:
+        log.info("[UNROUTE] %s is showing Multiview %s; leaving it first",
+                 decoder, active_multiview)
+        ok, steps, released, message = _exit_active_multiview(
+            decoder, active_multiview, mv_state)
+        multiview_exit = {"multiview": active_multiview, "steps": steps,
+                          "released": released, "ok": ok}
+        if not ok:
+            log.warning("[UNROUTE] could not leave Multiview %s on %s: %s",
+                        active_multiview, decoder, message)
+            return jsonify({"ok": False,
+                            "status": "FAILED — MULTIVIEW NOT EXITED",
+                            "error": message,
+                            "multiview": multiview_exit}), 200
+
+    # ---- clear the subscriptions, then read the device back --------------
+    # The same input names and interface the route path uses, read from the
+    # one place that holds them, so unroute cannot clear a different input
+    # from the one route subscribed.
+    _mx = omni_matrix_logic._args
+    video_name = _mx.get("video_input_name", "ip_input1")
+    audio_name = _mx.get("audio_input_name", "ip_input3")
+    interface = _mx.get("interface", "eth1")
+    cleared, failed = [], []
+    try:
+        rpc = omni_matrix_logic.user.WSClient(
+            username=decoder_user,
+            password=decoder_pwd,
+            timeout=float(app.config.get('TIMEOUT', 4.0)),
+            ws_port=int(app.config.get('WS_PORT', 80)),
+            ws_path=app.config.get('WS_PATH', '/wsapp/'),
+        )
+        current = rpc.config_get(decoder, "ip_input") or []
+        current_list = (current if isinstance(current, list)
+                        else current.get("ip_input", []))
+        by_name = {e.get("name"): e for e in current_list
+                   if isinstance(e, dict) and e.get("name")}
+        for name, number in ((video_name, 1), (audio_name, 3)):
+            entry = by_name.get(name)
+            if entry is not None and omni_matrix._entry_is_cleared(entry):
+                continue
+            rpc.config_set(decoder, "ip_input", [
+                omni_matrix.clear_ip_input_entry(name, number, interface, entry)])
+        verify = rpc.config_get(decoder, "ip_input") or []
+        verify_list = (verify if isinstance(verify, list)
+                       else verify.get("ip_input", []))
+        verified = {e.get("name"): e for e in verify_list
+                    if isinstance(e, dict) and e.get("name")}
+        for name in (video_name, audio_name):
+            if omni_matrix._entry_is_cleared(verified.get(name)):
+                cleared.append(name)
+            else:
+                failed.append(name)
+    except Exception as e:
+        log.error("[UNROUTE] %s did not complete: %s", decoder, e)
+        body = {"ok": False, "status": "FAILED", "reason": "device_unreachable",
+                "error": "The display could not be reached to clear its route."}
+        if multiview_exit:
+            restored, detail = _restore_multiview_after_failed_route(
+                decoder, multiview_exit["multiview"])
+            multiview_exit["rollback"] = {"restored": restored, "detail": detail}
+            body["multiview_exit"] = multiview_exit
+            body["status"] = ("FAILED — ROLLED BACK" if restored
+                              else "FAILED — ROLLBACK INCOMPLETE")
+        return jsonify(body), 200
+
+    if failed:
+        # The display still holds a subscription. Say which, and put a
+        # Multiview back if leaving one is what made room for this.
+        body = {"ok": False, "status": "FAILED", "reason": "plane_not_cleared",
+                "error": "The display did not confirm that it stopped "
+                         "subscribing.", "cleared": cleared, "failed": failed}
+        if multiview_exit:
+            restored, detail = _restore_multiview_after_failed_route(
+                decoder, multiview_exit["multiview"])
+            multiview_exit["rollback"] = {"restored": restored, "detail": detail}
+            body["multiview_exit"] = multiview_exit
+            body["status"] = ("FAILED — ROLLED BACK" if restored
+                              else "FAILED — ROLLBACK INCOMPLETE")
+        return jsonify(body), 200
+
+    # The decoder's own record, so the matrix does not go on showing a route
+    # this just removed.
+    fields = {"ip1_addr": "", "ip3_addr": "",
+              "multiview_name": "", "multiview_active": False}
+    try:
+        if decoder in omni_matrix_logic._decoders:
+            omni_matrix_logic._decoders[decoder].update(fields)
+        units = _load_cache() or []
+        for unit in units:
+            if unit.get("ip") == decoder:
+                unit.update(fields)
+                break
+        _save_cache(units)
+        omni_matrix_logic._save_cache()
+    except Exception as e:
+        log.info("[UNROUTE] post-unroute refresh failed for %s: %s", decoder, e)
+
+    log.info("[UNROUTE] %s is now subscribed to nothing (%s)",
+             decoder, ", ".join(cleared))
+    body = {"ok": True, "status": "UNROUTED", "cleared": cleared,
+            "decoder": {"ip": decoder, "ip1_addr": "", "ip3_addr": "",
+                        "multiview_active": False}}
+    if multiview_exit:
+        body["multiview_exit"] = multiview_exit
+    return jsonify(body)
+
+
+def _unit_probe(ip):
+    return omni_liveness.tcp_probe(ip, app.config.get("WS_PORT", 80))
+
+
+#: What the application currently believes about whether each unit answers. Fed by reads that were
+#: already happening; consulted, with at most one bounded connect, by an operation that needs a unit.
+_liveness = omni_liveness.UnitLiveness(_unit_probe)
+
+
+def _refresh_offline_in_background():
+    """Look again at units recorded as not answering, without making a read wait for it.
+
+    The Matrix state is read by every open page. Looking at a silent unit costs a bounded connect
+    (0.6 s) and eight are looked at at once, so with sixteen silent units a read stalled for 1.2 s
+    every ten seconds, and with several pages open each one started its own batch -- measured: twelve
+    readers, 192 probes for sixteen units. Now one batch is out at a time, on a thread registered with
+    the startup work so a caller that must not have it arrive late can wait for it, and the read
+    shows what is known. What the batch learns is shown by the next read.
+    """
+    work = _liveness.begin_refresh()
+    if work is None:
+        return
+    try:
+        thread = threading.Thread(target=_run_offline_refresh, args=(work,),
+                                  name="offline-refresh", daemon=True)
+        _startup_threads[:] = [t for t in _startup_threads if t.is_alive()]
+        _startup_threads.append(thread)
+        thread.start()
+    except Exception as exc:
+        # No thread: do it here rather than leave the claim held for ever.
+        log.info("[OFFLINE] background look-again unavailable: %s", type(exc).__name__)
+        _run_offline_refresh(work)
+
+
+def _run_offline_refresh(work):
+    try:
+        work()
+    except Exception as exc:
+        log.info("[OFFLINE] look-again failed: %s", type(exc).__name__)
+
+
+def _unit_offline_refusal(**roles):
+    """A 409 naming which role is not answering, or None when every unit the operation needs is.
+
+    `roles` maps a role word ("source", "display") to an address. The refusal is made before anything
+    is written, so nothing was changed, and says so. It carries no address in `error`: this text is
+    passed on to restricted accounts, and the projection that serves them exists to keep device
+    addresses out of a browser. The administrative surface gets the addresses in `offline`.
+    """
+    answers = _liveness.check_many(list(roles.values()))
+    down = [(role, ip) for role, ip in roles.items() if not answers.get(ip, False)]
+    if not down:
+        return None
+    words = {"source": "source", "display": "display", "usb_host": "USB host", "usb_device": "USB device"}
+    names = [words.get(role, role) for role, _ip in down]
+    if len(names) == 2:
+        subject = "Neither the %s nor the %s is answering" % (names[0], names[1])
+    else:
+        subject = "The %s is not answering" % names[0]
+    log.info("[ROUTE] refused: %s", ", ".join("%s %s" % (role, ip) for role, ip in down))
+    return jsonify({"ok": False, "status": "UNIT OFFLINE", "reason": "unit_offline",
+                    "error": subject + ", so nothing was changed.",
+                    "offline": [{"role": role, "ip": ip} for role, ip in down]}), 409
+
+
 @app.route("/api/route", methods=["POST"])
 def api_route_matrix():
     if not HAS_MATRIX:
         return jsonify({"ok": False, "error": "matrix logic unavailable"}), 500
     import time
     start_time = time.time()
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     # Named fields, not the whole body: a verbatim dump logs whatever a caller
     # sends, including a credential if one is ever added to this request.
     log.info("[ROUTE] request decoder=%s encoder=%s mode=%s",
@@ -8066,6 +9244,12 @@ def api_route_matrix():
         return jsonify({"ok": False, "error": f"Encoder {encoder} not found in current state"}), 200
     if not route_decoder:
         return jsonify({"ok": False, "error": f"Decoder {decoder} not found in current state"}), 200
+    # A unit that is not answering cannot take or give a route. Said now, before anything is written,
+    # rather than after a WebSocket timeout per step -- and by the engine, so the matrix, a restricted
+    # account, a group and a direct-access panel are all held to it by the one check.
+    offline = _unit_offline_refusal(source=encoder, display=decoder)
+    if offline is not None:
+        return offline
     encoder_mode = _unit_system_mode(route_encoder)
     decoder_mode = _unit_system_mode(route_decoder)
     if encoder_mode and decoder_mode and encoder_mode != decoder_mode:
@@ -8078,10 +9262,20 @@ def api_route_matrix():
 
     # ---- a decoder that is currently compositing a Multiview --------------
     #
-    # Routing a conventional source to it is allowed, but it has to stop
-    # compositing first, and the caller has to have said so. Without
-    # `exit_multiview` the request is refused rather than silently changing
-    # what is on screen in a way the matrix did not describe.
+    # A normal A/V route means "show this source on this display in single
+    # view". If the display is compositing, that is what has to stop, so the
+    # route leaves the Multiview itself rather than refusing and asking.
+    #
+    # This is deliberately not "the check was removed". The engine still reads
+    # the decoder, still recognises the composition by name, and still leaves
+    # it through `_exit_active_multiview` -- the verified teardown that moves
+    # the output first and releases only the pool inputs OmniSuite owns. A
+    # route that then fails still restores the Multiview and still says whether
+    # the restoration was verified, and the saved object is never deleted by
+    # any of this. Only the question is gone.
+    #
+    # `exit_multiview` in the body is accepted and ignored. Nothing needs to
+    # send it any more, and a page cached from an earlier build still works.
     multiview_exit = None
     try:
         mv_state, _mv_error = _decoder_state(decoder)
@@ -8092,15 +9286,8 @@ def api_route_matrix():
         active_multiview = omni_multiview.active_multiview_name(
             ((mv_state.get("hdmi_output") or {}).get("video") or {}).get("input"))
     if active_multiview:
-        if not data.get("exit_multiview"):
-            return jsonify({
-                "ok": False,
-                "status": "MULTIVIEW ACTIVE",
-                "multiview": active_multiview,
-                "error": ("%s is currently showing the Multiview %s. Routing a "
-                          "source here will exit Multiview."
-                          % (decoder, active_multiview)),
-            }), 409
+        log.info("[ROUTE] %s is showing Multiview %s; leaving it for a normal "
+                 "route", decoder, active_multiview)
         ok, steps, released, message = _exit_active_multiview(
             decoder, active_multiview, mv_state)
         multiview_exit = {"multiview": active_multiview, "steps": steps,
@@ -8117,6 +9304,7 @@ def api_route_matrix():
     encoder_candidates = _password_candidates(encoder_pref_pwd)
 
     ok = False
+    outcome = None
     used_decoder_pwd = None
     used_encoder_pwd = None
     route_errors = []
@@ -8127,16 +9315,34 @@ def api_route_matrix():
                 pwd_try_start = time.time()
                 ok = omni_matrix_logic.set_route(decoder, encoder, mode, decoder_user, d_pwd, encoder_user, e_pwd)
                 pwd_try_time = time.time() - pwd_try_start
-                log.info(f"[ROUTE] set_route attempt took {pwd_try_time:.2f}s: ok={ok}")
+                log.info(f"[ROUTE] set_route attempt took {pwd_try_time:.2f}s: ok={ok!r}")
                 if ok:
+                    # Only a real per-plane outcome is kept. `set_route` is
+                    # stubbed to a plain True in places, and a bool has no
+                    # planes to report.
+                    outcome = ok if hasattr(ok, "as_dict") else None
                     used_decoder_pwd = d_pwd
                     used_encoder_pwd = e_pwd
+                    break
+                # A per-plane outcome means the device answered, which means it
+                # authenticated: the route was refused on its merits, not on the
+                # credential. Trying the remaining passwords would re-apply the
+                # same writes and produce the same answer more slowly, so the
+                # credential matrix stops here.
+                if hasattr(ok, "failed_planes"):
+                    outcome = ok
+                    used_decoder_pwd = d_pwd
+                    used_encoder_pwd = e_pwd
+                    log.warning(
+                        "[ROUTE] %s -> %s refused on its merits (%s); not "
+                        "trying further credentials",
+                        encoder, decoder, ok)
                     break
             except Exception as e:
                 route_errors.append(str(e))
                 log.error(f"[ROUTE] set_route exception: {e}")
                 continue
-        if ok:
+        if ok or outcome is not None:
             break
 
     elapsed = time.time() - start_time
@@ -8173,13 +9379,32 @@ def api_route_matrix():
         if not dec:
             return jsonify({"ok": False, "error": f"Decoder {decoder} not found in current state"}), 200
         detail = route_errors[-1] if route_errors else ""
-        message = "Route command failed (device may be offline, unreachable, password mismatch, or unsupported AV route)"
+        # Say which plane failed when the device told us. The old sentence
+        # named four causes, none of which applied to the commonest failure,
+        # and an operator reading "password mismatch" about a route that had
+        # in fact been applied had nowhere to go.
+        planes = getattr(outcome, "failed_planes", None) if outcome else None
+        if planes:
+            message = ("The display did not confirm the "
+                       + " and ".join(planes)
+                       + " subscription after it was set.")
+            route_reason = "plane_not_verified"
+        elif route_errors:
+            message = ("The display could not be reached to set the route. "
+                       "It may be offline or unreachable.")
+            route_reason = "device_unreachable"
+        else:
+            message = "Route command failed (device may be offline, unreachable, password mismatch, or unsupported AV route)"
+            route_reason = "route_failed"
         if detail:
             message = f"{message}: {detail}"
         # If the decoder was taken out of Multiview to make room for this route,
         # the route failing is not the end of the operation: put the Multiview
         # back rather than leave the display on nothing.
-        body = {"ok": False, "error": message, "status": "FAILED"}
+        body = {"ok": False, "error": message, "status": "FAILED",
+                "reason": route_reason}
+        if outcome is not None:
+            body["planes"] = outcome.as_dict()
         if multiview_exit:
             restored, restore_detail = _restore_multiview_after_failed_route(
                 decoder, multiview_exit["multiview"])
@@ -8196,18 +9421,10 @@ def api_route_matrix():
     # Note: Decoder inputs will be fetched by the polling system (every 5 seconds)
     # No need to fetch them here - route response returns immediately
 
-    # ---- the route failed after the Multiview had been left ---------------
-    #
-    # Leaving Multiview and routing are one operation for the operator, so a
-    # half-completed one is put back rather than left as a blank display.
-    if multiview_exit and not ok:
-        restored, message = _restore_multiview_after_failed_route(
-            decoder, multiview_exit["multiview"])
-        multiview_exit["rollback"] = {"restored": restored, "detail": message}
-        log.warning("[ROUTE] route to %s failed after leaving Multiview %s; "
-                    "restore %s", decoder, multiview_exit["multiview"],
-                    "verified" if restored else "INCOMPLETE: %s" % message)
-
+    # A route that failed after the Multiview was left has already been dealt
+    # with above: `if not ok:` returns on every branch, including the one that
+    # restores the Multiview and reports whether the restoration was verified.
+    # There is one rollback, and it is there.
     dec_payload = {"ip": decoder}
     try:
         fields = _ws_get_decoder_inputs(decoder, decoder_user, used_decoder_pwd or decoder_pref_pwd, app.config['WS_PORT'], app.config['WS_PATH'], timeout=4, attempts=1, delay=0)
@@ -8230,15 +9447,27 @@ def api_route_matrix():
             _save_cache(units)
     except Exception as e:
         log.info("[ROUTE] post-route decoder refresh failed for %s: %s", decoder, e)
-    status = "VERIFIED" if ok else "FAILED"
-    if multiview_exit and not ok:
-        status = ("FAILED — ROLLED BACK"
-                  if (multiview_exit.get("rollback") or {}).get("restored")
-                  else "FAILED — ROLLBACK INCOMPLETE")
-    body = {"ok": bool(ok), "decoder": dec_payload, "status": status}
+    # Reaching here means the route succeeded; a failure returned above.
+    body = {"ok": bool(ok), "decoder": dec_payload, "status": "VERIFIED"}
+    if outcome is not None:
+        # What each plane actually achieved. A source that publishes no audio
+        # session is reported here rather than as a failed route, and the stale
+        # subscription it replaced is reported as cleared.
+        body["planes"] = outcome.as_dict()
+        if outcome.audio == omni_matrix.PLANE_NO_SOURCE_STREAM:
+            body["note"] = "That source does not send audio."
+        elif outcome.audio == omni_matrix.PLANE_CLEARED:
+            body["note"] = ("That source does not send audio; the display's "
+                            "previous audio was cleared.")
     if multiview_exit:
         body["multiview_exit"] = multiview_exit
     return jsonify(body)
+
+
+# Timing diagnostics for the route above, only when OMNI_ROUTE_DIAG is set in the
+# environment. With it unset the view is left exactly as defined (nothing is
+# wrapped), so the ordinary build pays nothing. See omni_routediag.
+omni_routediag.install(app, "api_route_matrix", DATA_DIR)
 
 
 def _restore_multiview_after_failed_route(ip, name):
@@ -8265,7 +9494,7 @@ def _restore_multiview_after_failed_route(ip, name):
         # Leaving the Multiview recorded the fallback input the display moved
         # to. Putting it back has to record that too, or the A/V Matrix goes on
         # showing the conventional route that was rolled back -- measured on
-        # 192.168.100.32, where the cache still read ip_input1 while the decoder
+        # a bench decoder, where the cache still read ip_input1 while the decoder
         # was demonstrably compositing again. The device is the truth; the cache
         # has to be told when the device changes back.
         if good:
@@ -8281,7 +9510,7 @@ def api_poll_encoders():
     if not HAS_MATRIX:
         return jsonify({"ok": False, "error": "matrix logic unavailable"}), 500
 
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     encoder_ips = data.get("encoders") or []
     if not encoder_ips:
         return jsonify({"ok": False, "error": "encoders array required"}), 400
@@ -8397,7 +9626,7 @@ def api_poll_encoders():
 @app.route("/api/encoder_input", methods=["POST"])
 def api_set_encoder_input():
     """Set encoder hdmi_input1 EDID and/or HDCP support version."""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ip = (data.get("encoder") or data.get("ip") or "").strip()
     if not ip:
         return jsonify({"ok": False, "error": "encoder ip required"}), 400
@@ -8458,7 +9687,7 @@ def api_set_encoder_input():
 @app.route("/api/encoder_output", methods=["GET", "POST"])
 def api_encoder_output():
     """Get or set encoder Output page session properties."""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ip = (
         request.args.get("encoder")
         or request.args.get("ip")
@@ -8492,7 +9721,7 @@ def api_encoder_output():
 @app.route("/api/encoder_encoding", methods=["GET", "POST"])
 def api_encoder_encoding():
     """Get or set encoder Encoding page VC2 properties."""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ip = (
         request.args.get("encoder")
         or request.args.get("ip")
@@ -8530,7 +9759,7 @@ def api_encoder_encoding():
 
 @app.route("/api/slate_status", methods=["POST"])
 def api_slate_status():
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ips = data.get("ips") or []
     if isinstance(ips, str):
         ips = [ips]
@@ -8587,7 +9816,7 @@ def api_slate_status():
 
 @app.route("/api/slate_settings", methods=["POST"])
 def api_slate_settings():
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ips = data.get("ips") or []
     if isinstance(ips, str):
         ips = [ips]
@@ -8631,7 +9860,7 @@ def api_slate_settings():
 
 @app.route("/api/slate_delete", methods=["POST"])
 def api_slate_delete():
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ips = data.get("ips") or []
     if isinstance(ips, str):
         ips = [ips]
@@ -8808,10 +10037,20 @@ def api_slate_upload():
 
 @app.route("/api/clear", methods=["POST"])
 def api_clear_matrix():
+    _json_dict(required=True)
     # Clear matrix cached results and in-memory state
+    if remote_access_enabled():
+        # scan_results.json is part of the discovered inventory, so this is a
+        # second way to clear it. While Remote Access is on, Clear Units is the
+        # one way, because it is the one that knows what is assigned.
+        return jsonify({"ok": False, "error": "Remote Access is on. Use Clear "
+                        "Units, which keeps units that Users and groups are "
+                        "assigned."}), 409
     try:
-        if SCAN_RESULTS.exists():
-            SCAN_RESULTS.unlink()
+        # Removing the file is a write: under the same two locks as every other.
+        with _cache_io_lock, _scan_results_lock:
+            if SCAN_RESULTS.exists():
+                SCAN_RESULTS.unlink()
     except Exception:
         pass
     if HAS_MATRIX:
@@ -8826,11 +10065,120 @@ DUAL_MODELS = set(["at-omni-112","at-omni-122"])
 RESI_MODELS = set(["at-omni-512","at-omni-521"])
 
 # --- clear/export/cache
+# ---------------------------------------------------------------------------
+# Device Info: uptime, and the USB extenders that are devices in their own right
+# ---------------------------------------------------------------------------
+
+#: Hardware the application can discover and show but has no firmware support for.
+#: AT-OMNI-311 and AT-OMNI-324 are USB extenders: the application reads them, and
+#: has never been able to update them. Matched as a whole number between
+#: separators so 3110 or 1324 would not be taken for one.
+_FIRMWARE_UNSUPPORTED_MODEL = re.compile(r"(?:^|[^0-9])(?:311|324)(?:[^0-9]|$)")
+
+
+def _firmware_unsupported_model(model) -> bool:
+    return bool(_FIRMWARE_UNSUPPORTED_MODEL.search(str(model or "")))
+
+
+#: Longest uptime accepted from a device, in seconds. A figure past this is a
+#: garbled reply, not a machine that has run for a century.
+_MAX_UPTIME_SECONDS = 100 * 365 * 24 * 3600
+
+
+def _uptime_seconds(unit):
+    """Seconds the device says it has been up, or None.
+
+    OmniStream reports it in the `systeminfo` read every scan already makes
+    (`config.uptime`, an integer number of seconds, measured on live encoders and
+    decoders across every model to advance one second per second). It is taken
+    from there and from nowhere else: not from when this application started,
+    when it first saw the unit, or how old the cache is. Anything that is not a
+    plain non-negative number is "unknown", never zero.
+    """
+    unit = unit if isinstance(unit, dict) else {}
+    config = (((unit.get("details") or {}).get("systeminfo") or {}).get("config") or {})
+    for value in (unit.get("uptime"), config.get("uptime")):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if value != value or value < 0 or value > _MAX_UPTIME_SECONDS:
+            continue
+        return int(value)
+    return None
+
+
+def _standalone_extender_rows():
+    """USB extenders that are devices in their own right, shaped for Device Info.
+
+    Only an endpoint classified STANDALONE, from recorded state: no device is
+    asked anything. An integrated endpoint is part of its parent's row and an
+    unconfirmed one is withheld, so one physical device never appears twice.
+    The row carries what the extender's own protocol established and nothing
+    else; every other Device Info field is simply absent.
+    """
+    try:
+        devices = (_usb_extender_view() or {}).get("devices") or []
+    except Exception as exc:
+        log.warning("[DEVICE-INFO] extender rows unavailable: %s", type(exc).__name__)
+        return []
+    rows = []
+    for device in devices:
+        if not isinstance(device, dict) or device.get("classification") != "STANDALONE":
+            continue
+        if not device.get("ip"):
+            continue
+        rows.append({
+            "ip": str(device.get("ip")),
+            "mac": str(device.get("mac") or ""),
+            "model": str(device.get("display_model") or device.get("device_type") or ""),
+            "version": str(device.get("firmware") or ""),
+            "type": "USB Extender",
+            "online": bool(device.get("online")),
+            "firmware_supported": not _firmware_unsupported_model(
+                device.get("display_model") or device.get("device_type")),
+        })
+    rows.sort(key=lambda row: _ip_sort_key(row["ip"]))
+    return rows
+
+
+def _firmware_refused_targets(targets):
+    """Targets that must never receive firmware: extenders, and 311/324 by model."""
+    wanted = [str(t).strip() for t in targets if isinstance(t, (str, int)) and str(t).strip()]
+    if not wanted:
+        return []
+    by_ip = {str(u.get("ip") or ""): u for u in (_load_cache() or []) if isinstance(u, dict)}
+    extender_ips = _extender_addresses()
+    refused = []
+    for ip in wanted:
+        unit = by_ip.get(ip)
+        if _firmware_unsupported_model((unit or {}).get("model")):
+            refused.append(ip)
+        elif ip in extender_ips and unit is None:
+            refused.append(ip)
+    return refused
+
+
+def _extender_addresses():
+    """Every address the extender inventory holds, whatever its classification."""
+    addresses = set()
+    try:
+        for device in (_usb_extender_view() or {}).get("devices") or []:
+            if isinstance(device, dict):
+                for field in ("ip", "usb_ip"):
+                    if device.get(field):
+                        addresses.add(str(device[field]))
+    except Exception as exc:
+        log.warning("[UPGRADE] extender inventory unavailable: %s", type(exc).__name__)
+    return addresses
+
+
 @app.route("/api/cache", methods=["GET"])
 def api_cache_dup():
     global _cache_startup_verified
     
+    # The life of the inventory this request's snapshot belongs to, read before it.
+    request_generation = _inventory_generation_now()
     units = _load_cache()
+    baseline_units = copy.deepcopy(units) if not _cache_startup_verified else None
     primary_pwd = app.config.get('PASSWORD', '')
     
     # On first cache request (startup), synchronously verify ALL units quickly
@@ -8892,7 +10240,7 @@ def api_cache_dup():
         
         if updated:
             log.info("[API/CACHE] Saving updated cache after quick verification")
-            _save_cache(units)
+            _apply_snapshot_to_cache(units, baseline_units, request_generation, "API/CACHE")
         
         # Also trigger full background verification for any remaining details
         if not _cache_verification_in_progress:
@@ -8913,6 +10261,7 @@ def api_cache_dup():
         unit_copy["codec_configurable"] = unit_copy.get("codec_configurable") if unit_copy.get("codec_configurable") is not None else _is_codec_configurable_model(unit_copy.get("model"))
         used_pwd = unit_copy.get("password") or primary_pwd
         unit_copy["password_source"] = "Primary" if used_pwd == primary_pwd else "Fallback"
+        unit_copy["uptime_seconds"] = _uptime_seconds(unit_copy)
         units_with_password_source.append(unit_copy)
 
     log.debug("[API/CACHE] Returning %d units from cache", len(units_with_password_source))
@@ -8922,50 +10271,251 @@ def api_cache_dup():
     topology = _lldp_topology(units_with_password_source)
     ack_state = _read_topology_ack()
     return jsonify({"ok": True, "units": units_with_password_source,
+                    "standalone_extenders": _standalone_extender_rows(),
                     "count": len(units_with_password_source), "source": "cache",
                     "lldp_topology": topology,
                     "topology_warning_acknowledged": bool(ack_state.get("acknowledged")),
                     "daisy_warning_acknowledged": _daisy_warning_acknowledged(topology, ack_state)})
 
+def _cascade_clear(identities):
+    """Remove cleared devices from every store that refers to them.
+
+    Accounts, display groups and friendly names are three files, so a failure
+    part-way would leave a hybrid: a device gone from the inventory yet still
+    granted, or a group naming nothing. Each store is snapshotted first and a
+    failure restores the ones already changed, in reverse. `identities=None`
+    means every device. Returns counts, or raises after restoring.
+    """
+    grants = _user_store.grants_snapshot()
+    members = _display_groups.members_snapshot()
+    names = _device_aliases.all()
+    done = []
+    try:
+        accounts = _user_store.forget_devices(identities)
+        done.append("accounts")
+        groups = _display_groups.forget_members(identities)
+        done.append("groups")
+        aliases = _device_aliases.forget_many(identities)
+        return {"accounts": accounts, "groups": groups, "names": aliases}
+    except Exception as exc:
+        log.warning("[CLEAR] cascade failed (%s); restoring", type(exc).__name__)
+        for step in reversed(["accounts", "groups"]):
+            try:
+                if step == "accounts":
+                    _user_store.restore_grants(grants)
+                else:
+                    _display_groups.restore_members(members)
+            except Exception as again:
+                log.error("[CLEAR] could not restore %s: %s", step,
+                          type(again).__name__)
+        try:
+            _device_aliases.restore_all(names)
+        except Exception:
+            pass
+        raise
+
+
+def _inventory_label(unit):
+    """The name an operator knows a unit by: the friendly name, else its own."""
+    identity = omni_users._normalise_identity(unit.get("mac"))
+    return _device_aliases.display_name(
+        identity, unit.get("hostname") or unit.get("name") or identity)
+
+
+def _inventory_assignment_report(units=None):
+    """The one derivation of what Remote Access is using, from current state.
+
+    Raises when the account or group store cannot be read: a caller must not
+    take "could not tell" to mean "nothing is assigned".
+    """
+    units = units if units is not None else (_load_cache() or [])
+    assignments = omni_inventory.collect(_user_store, _display_groups)
+    return omni_inventory.report(units, assignments,
+                                 remote_access=remote_access_enabled(),
+                                 display_name=_inventory_label,
+                                 alias_for=lambda unit: _device_aliases.alias_for(
+                                     omni_users._normalise_identity(unit.get("mac"))))
+
+
+@app.route("/api/admin/inventory/assignments", methods=["GET"])
+def api_inventory_assignments():
+    """Which units are in use by Remote Access, and by whom.
+
+    Feeds the Clear Units confirmation ("what is stopping this unit being
+    cleared?") and the Device names page, so both show one derived answer.
+    Names only: no password, token, session or credential is carried.
+    """
+    try:
+        return jsonify({"ok": True, **_inventory_assignment_report()})
+    except Exception as exc:
+        log.warning("[CLEAR] assignments unreadable: %s", type(exc).__name__)
+        return jsonify({"ok": False, "error": "OmniSuite could not read the "
+                        "User accounts and groups."}), 503
+
+
+def _scan_rows_without(scan_data, kept_identities, kept_ips):
+    """scan_results.json with only the kept units left in it."""
+    def keep(row):
+        identity = _device_identity(row)
+        if identity:
+            return omni_users._normalise_identity(row.get("mac")) in kept_identities
+        return row.get("ip") in kept_ips
+
+    for key in ("devices", "encoders", "decoders"):
+        rows = scan_data.get(key)
+        if isinstance(rows, list):
+            scan_data[key] = [r for r in rows if isinstance(r, dict) and keep(r)]
+    stats = scan_data.setdefault("stats", {})
+    stats["devices_merged"] = len(scan_data.get("devices") or [])
+    stats["encoders_found"] = len(scan_data.get("encoders") or [])
+    stats["decoders_found"] = len(scan_data.get("decoders") or [])
+    return scan_data
+
+
 @app.route("/api/clear_units", methods=["POST"])
 def api_clear_units_dup():
+    """Clear the discovered inventory.
+
+    Remote Access off: everything goes, and so does every assignment, group
+    membership and friendly name that pointed at it.
+
+    Remote Access on: assignment aware. Units that an account or a display
+    group refers to are kept; the rest go. That decision is made here, from
+    the stores as they are at this moment, and never from anything the request
+    says -- a manipulated request cannot remove an assigned unit. Removing an
+    assigned unit takes Remote Access being turned off first.
+
+    The classification and the removal happen under the same locks as the
+    account and group stores, so an assignment made a moment ago cannot be
+    lost: it lands before the decision (and the unit is kept) or after the
+    removal.
+    """
+    # A destructive request has to say something. The page sends `{}`; an absent,
+    # unparseable or non-object body is refused here rather than read as "clear".
+    _json_dict(required=True)
+    protect = remote_access_enabled()
+    unremoved = []
     try:
-        if CACHE.exists(): CACHE.unlink()
-        # Also clear unified scan results so UI cache empties
-        if SCAN_RESULTS.exists(): SCAN_RESULTS.unlink()
-        if CSV_VIEW.exists(): CSV_VIEW.unlink()
-    except Exception: pass
-    # This is the one operation that ends the inventory's life, so it is the one
-    # operation that resets the multi-switch acknowledgement. Scanning again,
-    # scanning another network, finding more devices or refreshing LLDP all leave
-    # it alone: the operator acknowledged the topology for this inventory, and
-    # that inventory still exists.
-    _topology_ack_reset()
-    # Device Info Clear Units is the single clear action, so it also forgets the
-    # standalone USB inventory. Inventory only: no packet is sent, and no device
-    # configuration, pairing, or power state is touched. Configured USB ranges are
-    # kept. Cleared devices return after the next successful discovery.
+        with omni_inventory.hold_assignments(_user_store, _display_groups):
+            with _cache_io_lock, _scan_results_lock:
+                units = _load_cache() or []
+                assignments = (omni_inventory.collect(_user_store, _display_groups)
+                               if protect else {})
+                kept, clearable = omni_inventory.classify(units, assignments, protect)
+                identities = {i for u in clearable
+                              for i in omni_inventory.unit_identities(u)}
+                kept_identities = {i for u in kept
+                                   for i in omni_inventory.unit_identities(u)}
+                # The stores are written before any file is removed. If they
+                # cannot be, nothing is cleared: an operator can try again,
+                # they cannot un-clear.
+                cascade = _cascade_clear(identities if protect else None)
+                if clearable:
+                    # A scan already in flight belongs to the inventory that
+                    # was just emptied; see _inventory_generation.
+                    _bump_inventory_generation()
+                everything = not kept
+
+                if everything:
+                    # Each file separately, and none of them silently.
+                    # scan_results is merged back in by the next read, so a
+                    # failed unlink means devices the operator was told had
+                    # been cleared reappear immediately.
+                    for path in (CACHE, SCAN_RESULTS, CSV_VIEW):
+                        try:
+                            if path.exists():
+                                path.unlink()
+                        except OSError as exc:
+                            unremoved.append(path.name)
+                            log.warning("[CLEAR] could not remove %s: %s",
+                                        path.name, exc.strerror or exc)
+                else:
+                    kept_ips = {u.get("ip") for u in kept}
+                    _save_cache(kept)
+                    scan_data = _read_scan_results()
+                    if scan_data:
+                        if not _save_scan_results(_scan_rows_without(
+                                scan_data, kept_identities, kept_ips)):
+                            unremoved.append(SCAN_RESULTS.name)
+                    _write_csv(kept)
+                    still = {i for u in (_load_cache() or [])
+                             for i in omni_inventory.unit_identities(u)}
+                    if still & identities:
+                        unremoved.append(CACHE.name)
+    except Exception as exc:
+        log.warning("[CLEAR] refused, state not changed: %s", type(exc).__name__)
+        return jsonify({"ok": False, "error": "OmniSuite could not update the "
+                        "User accounts and groups, so nothing was cleared."}), 503
+
+    # Inventory only: no packet is sent and no device configuration, pairing
+    # or power state is touched. Configured USB ranges are kept.
     usb_cleared = 0
     try:
-        usb_cleared = _usb_extenders.clear_devices()
+        if everything:
+            # The one operation that ends the inventory's life, so the one
+            # that resets the multi-switch acknowledgement.
+            _topology_ack_reset()
+            usb_cleared = _usb_extenders.clear_devices(
+                keep=set(assignments) if protect else None)
+            _liveness.forget()
+        else:
+            usb_cleared = _usb_extenders.clear_devices(keep=set(assignments))
+            for unit in clearable:
+                _liveness.forget(unit.get("ip"))
     except Exception as exc:
         log.warning("USB extender inventory clear failed: %s", type(exc).__name__)
-    return jsonify({"ok": True, "usb_cleared": usb_cleared})
+    _user_store.audit(
+        "inventory.cleared_unassigned" if protect else "inventory.cleared",
+        actor=getattr(g, "principal", None),
+        detail={"devices": len(clearable), "kept": len(kept), **cascade})
+    return jsonify({
+        "ok": True,
+        "mode": "unassigned" if protect else "full",
+        "usb_cleared": usb_cleared,
+        "cleared": len(clearable),
+        "kept": len(kept),
+        "accounts_updated": cascade["accounts"],
+        "groups_updated": cascade["groups"],
+        "names_removed": cascade["names"],
+        # Empty on an ordinary clear. Named rather than swallowed.
+        "unremoved": unremoved,
+    })
 
 @app.route("/api/remove_units", methods=["POST"])
 def api_remove_units():
     """Remove selected units from cache by IP address"""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ips_to_remove = data.get("ips") or []
     if not ips_to_remove:
         return jsonify({"ok": False, "error": "ips required"}), 400
-    
+
+    # With Remote Access on, a unit something refers to is not removed here
+    # either: this is the other way to take a unit out of the inventory, and
+    # protecting only Clear Units would leave it as the way around. Decided
+    # server-side, under the same locks as Clear Units.
+    protect = remote_access_enabled()
+    hold = omni_inventory.hold_assignments_if(protect, _user_store, _display_groups)
+    hold.__enter__()
     try:
         # Load current cache
         units = _load_cache()
         if not units:
             return jsonify({"ok": True, "removed": 0})
-        
+        protected_ips = []
+        if protect:
+            try:
+                assignments = omni_inventory.collect(_user_store, _display_groups)
+            except Exception as exc:
+                log.warning("[REMOVE] refused, assignments unreadable: %s",
+                            type(exc).__name__)
+                return jsonify({"ok": False, "error": "OmniSuite could not read "
+                                "the User accounts and groups, so nothing was "
+                                "removed."}), 503
+            kept_by_assignment, _free = omni_inventory.classify(
+                [u for u in units if u.get("ip") in ips_to_remove], assignments, True)
+            protected_ips = [u.get("ip") for u in kept_by_assignment]
+            ips_to_remove = [ip for ip in ips_to_remove if ip not in protected_ips]
+
         # Filter out the units with IPs in the removal list
         original_count = len(units)
         units = [u for u in units if u.get("ip") not in ips_to_remove]
@@ -8974,6 +10524,8 @@ def api_remove_units():
         # Save the updated cache
         _save_cache(units)
         _write_csv(units)
+        for removed_ip in ips_to_remove:
+            _liveness.forget(removed_ip)
         
         # Also update scan_results.json if it exists
         if SCAN_RESULTS.exists():
@@ -8992,10 +10544,13 @@ def api_remove_units():
                 log.warning(f"Failed to update scan_results.json: {e}")
         
         log.info(f"Removed {removed_count} unit(s) from cache")
-        return jsonify({"ok": True, "removed": removed_count, "remaining": len(units)})
+        return jsonify({"ok": True, "removed": removed_count, "remaining": len(units),
+                        "protected": len(protected_ips)})
     except Exception as e:
         log.error(f"Error removing units: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        hold.__exit__(None, None, None)
 
 @app.route("/api/export_csv", methods=["POST"])
 def api_export_csv_dup():
@@ -9888,7 +11443,7 @@ def _ws_import_unit_config(ip: str, uploaded_file: str):
                 sslopt = None
                 if url.startswith("wss://") and not app.config['WS_STRICT']:
                     sslopt = {"cert_reqs": ssl.CERT_NONE}
-                ws = websocket.create_connection(url, timeout=max(float(app.config.get("TIMEOUT", 4.5)), 15.0), sslopt=sslopt)
+                ws = websocket.create_connection(url, timeout=max(float(app.config.get("TIMEOUT", 4.5)), 15.0), sslopt=sslopt, redirect_limit=0)
                 ws.send(json.dumps({
                     "id": "import_config_file-method",
                     "username": user,
@@ -10312,7 +11867,8 @@ def _ws_upgrade(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeou
         }
     }
     
-    log.info("[UPGRADE_CMD] Payload JSON: %s", json.dumps(payload, indent=2))
+    # The command carries the device password; the log records the shape, not the secret.
+    log.info("[UPGRADE_CMD] Payload JSON: %s", json.dumps(omni_users.redact(payload), indent=2))
     
     sslopt = None
     if url.startswith("wss://") and not app.config['WS_STRICT']:
@@ -10322,7 +11878,7 @@ def _ws_upgrade(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeou
     sent = False
     try:
         log.info("[UPGRADE_CMD] Opening WebSocket to: %s", url)
-        ws = websocket.create_connection(url, timeout=max(timeout, 8.0), sslopt=sslopt)
+        ws = websocket.create_connection(url, timeout=max(timeout, 8.0), sslopt=sslopt, redirect_limit=0)
         ws.send(json.dumps(payload))
         sent = True
         log.info("[UPGRADE_CMD] Upgrade command sent; waiting briefly for an immediate error")
@@ -10357,7 +11913,7 @@ def _ws_upgrade(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeou
 # --- /api/poll endpoint ---
 @app.route("/api/poll", methods=["POST"])
 def api_poll():
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ip = (data.get("ip") or "").strip()
     if not ip:
         return jsonify({"ok": False, "error": "ip required"}), 400
@@ -10391,6 +11947,7 @@ def api_poll():
         has_fresh_hostname = False
         has_fresh_ntp = False
         has_fresh_timezone = False
+        fresh_uptime = None
         try:
             # Get systeminfo directly from device (fresh, not cached) - use very short timeout
             sysinfo_resp = _ws_send_recv(url, 
@@ -10411,6 +11968,8 @@ def api_poll():
                 if "ntpserver" in sysinfo_cfg or "ntp_server" in sysinfo_cfg:
                     fresh_ntp = (sysinfo_cfg.get("ntpserver") or sysinfo_cfg.get("ntp_server") or "").strip()
                     has_fresh_ntp = True
+                # Uptime is in the read this poll already makes: no extra request.
+                fresh_uptime = _uptime_seconds({"uptime": sysinfo_cfg.get("uptime")})
 
                 # If not found in config, check other locations
                 if not fresh_version:
@@ -10455,6 +12014,10 @@ def api_poll():
                 log.info("[POLL] %s firmware changed: %r -> %r", ip, cached_version, fresh_version)
             else:
                 log.debug(f"[POLL] {ip} version unchanged: '{fresh_version}'")
+        if fresh_uptime is not None:
+            # Handed to the page, never written to the cache: the cached copy is
+            # the scan's reading, and a poll-written one could shadow a newer scan.
+            status["uptime_seconds"] = fresh_uptime
         if has_fresh_hostname:
             status["hostname"] = fresh_hostname
             cache_updates["hostname"] = fresh_hostname
@@ -10579,7 +12142,7 @@ def api_poll_decoders():
     if not HAS_MATRIX:
         return jsonify({"ok": False, "error": "matrix logic unavailable"}), 500
     
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     decoder_ips = data.get("decoders") or []
     
     if not decoder_ips:
@@ -10648,6 +12211,7 @@ def api_poll_decoders():
         for ip, fields, success in executor.map(poll_decoder, decoder_ips):
             results[ip] = fields
             if success:
+                _liveness.record(ip, True, "poll")
                 # Update in-memory decoder state
                 if ip in omni_matrix_logic._decoders:
                     omni_matrix_logic._decoders[ip].update(fields)
@@ -10695,7 +12259,7 @@ def api_poll_decoders():
 @app.route("/api/decoder_input", methods=["POST"])
 def api_set_decoder_input():
     """Set decoder hdmi_output1 SAP Input enable and/or session selection."""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ip = (data.get("decoder") or data.get("ip") or "").strip()
     if not ip:
         return jsonify({"ok": False, "error": "decoder ip required"}), 400
@@ -10848,7 +12412,7 @@ def api_set_decoder_input():
 @app.route("/api/debug/latest_upload", methods=["POST"])
 def api_debug_latest_upload():
     """Debug endpoint to test latest upload detection on a device"""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ip = (data.get("ip") or "").strip()
     if not ip:
         return jsonify({"ok": False, "error": "ip required"}), 400
@@ -10870,7 +12434,7 @@ def api_debug_latest_upload():
 @app.route("/api/cleanup_uploads", methods=["POST"])
 def api_cleanup_uploads():
     """Cleanup old firmware upload files on device"""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ip = (data.get("ip") or "").strip()
     if not ip: return jsonify({"ok": False, "error": "ip required"}), 400
     
@@ -10884,14 +12448,33 @@ def api_cleanup_uploads():
 
 @app.route("/api/upgrade", methods=["POST"])
 def api_upgrade():
+    # Read before the try: a refusal of the body must stay a 400, not be
+    # absorbed by the handler below that turns anything into a 500.
+    data = _json_dict()
     try:
-        data = request.get_json(silent=True) or {}
         file_name = (data.get("file") or "").strip()
         targets = data.get("targets") or []
-        log.info("[UPGRADE] Received upgrade request for targets: %r", targets)
+        log.info("[UPGRADE] Received upgrade request for %s target(s)",
+                 len(targets) if isinstance(targets, list) else "an invalid")
         if not file_name or not targets:
             return jsonify({"ok": False, "error": "file and targets required"}), 400
         
+        # There is no firmware support for AT-OMNI-311/324, or for any USB
+        # extender: they are shown on Device Info and never made an upgrade
+        # target. Decided here, not only by hiding the control, so a crafted
+        # request cannot make the application try. An address in the extender
+        # inventory is refused whether or not it has been classified, because an
+        # endpoint that is not yet understood is not one to send firmware to.
+        if not isinstance(targets, list):
+            return jsonify({"ok": False, "error": "targets must be a list"}), 400
+        refused_ips = _firmware_refused_targets(targets)
+        if refused_ips:
+            log.warning("[UPGRADE] refused %d target(s) with no firmware support", len(refused_ips))
+            return jsonify({"ok": False, "reason": "firmware_not_supported",
+                            "error": "These devices have no firmware update support in OmniSuite: "
+                                     + ", ".join(refused_ips) + ".",
+                            "unsupported_devices": refused_ips}), 400
+
         # Use firmware path from config if set
         fw_path_str = app.config.get('FIRMWARE_PATH', '').strip()
         if fw_path_str:
@@ -11015,7 +12598,7 @@ def _omnistream_identify(ip):
     timeout = app.config['TIMEOUT']
 
     ws_url = f"{'wss' if ws_port == 443 else 'ws'}://{ip}:{ws_port}{ws_path}"
-    ws = websocket.create_connection(ws_url, timeout=timeout, sslopt={"cert_reqs":ssl.CERT_NONE} if ws_port==443 else {})
+    ws = websocket.create_connection(ws_url, timeout=timeout, sslopt={"cert_reqs":ssl.CERT_NONE} if ws_port==443 else {}, redirect_limit=0)
 
     payload = {
         "id": "identify-method",
@@ -11038,7 +12621,7 @@ def _omnistream_identify(ip):
 @_audited("blink")
 def api_blink():
     """Send identify/blink command to device"""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ip = (data.get("ip") or "").strip()
     if not ip: return jsonify({"ok": False, "error": "ip required"}), 400
 
@@ -11291,7 +12874,7 @@ def _omnistream_reboot(ip, cache_map=None):
     for pwd_try in _password_candidates(preferred_pwd):
         try:
             ws_url = f"{'wss' if ws_port == 443 else 'ws'}://{ip}:{ws_port}{ws_path}"
-            ws = websocket.create_connection(ws_url, timeout=timeout, sslopt={"cert_reqs":ssl.CERT_NONE} if ws_port==443 else {})
+            ws = websocket.create_connection(ws_url, timeout=timeout, sslopt={"cert_reqs":ssl.CERT_NONE} if ws_port==443 else {}, redirect_limit=0)
 
             payload = {
                 "id": "reboot-method",
@@ -11327,7 +12910,7 @@ def _omnistream_reboot(ip, cache_map=None):
 @_audited("reboot")
 def api_reboot():
     """Send reboot command to device(s)"""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     ips = data.get("ips") or []
     if not ips: return jsonify({"ok": False, "error": "ips required"}), 400
     log.info("[REBOOT] Requested for %d device(s): %s", len(ips), ips)
@@ -11369,10 +12952,59 @@ def api_reboot():
 
 # ================ USB Matrix Endpoints ================
 
+#: Model markers that make a unit USB-capable. One list, so the inventory signature below and
+#: the state it describes are cut from the same definition.
+USB_CAPABLE_MODEL_MARKERS = ("hw-omni-e4521", "hw-omni-d4521", "hw-omni-e4511", "hw-omni-d4511", "4521", "4511")
+
+
+def _usb_capable_units(all_devices):
+    units = []
+    for dev in all_devices or []:
+        model = (dev.get("model") or "").lower()
+        if any(m in model for m in USB_CAPABLE_MODEL_MARKERS):
+            units.append(dev)
+    return units
+
+
+def _usb_inventory_signature():
+    """A digest of which USB-capable endpoints are in the inventory, read from memory and disk only.
+
+    The USB Matrix is prepared when the inventory changes, and a prepared copy is only worth
+    painting while the inventory is still the one it was built from. This answers that without
+    touching a device: it covers the USB-capable OmniStream units and every standalone endpoint
+    the UDP provider has found, by identity and address, and nothing live (no reachability, no
+    pairing), so it moves exactly when membership does. A change to any member's address moves it
+    too, because a prepared copy would otherwise show the old one.
+    """
+    members = []
+    try:
+        for unit in _usb_capable_units(_load_cache()):
+            members.append(("I", str(unit.get("ip") or ""), _norm_usb_mac(unit.get("mac")),
+                            str(unit.get("model") or "").lower()))
+    except Exception as exc:
+        log.info("USB inventory signature: cache unavailable (%s)", type(exc).__name__)
+    try:
+        for device in (_usb_extenders.state().get("devices") or []):
+            members.append(("S", str(device.get("ip") or ""), _norm_usb_mac(device.get("mac")), ""))
+    except Exception as exc:
+        log.info("USB inventory signature: extender inventory unavailable (%s)", type(exc).__name__)
+    return hashlib.sha1(json.dumps(sorted(members)).encode("utf-8")).hexdigest()
+
+
+@app.route("/api/usb_state/signature", methods=["GET"])
+def api_usb_state_signature():
+    """What a prepared USB Matrix snapshot is checked against before it is painted. No device is read."""
+    return jsonify({"ok": True, "signature": _usb_inventory_signature()})
+
+
 @app.route("/api/usb_state", methods=["GET"])
 def api_usb_state():
     """Return current USB state: LEX units, REX units, and pairing info"""
     try:
+        # Taken before anything is read, so a membership change during this request leaves the
+        # snapshot carrying the older signature, which fails the check and is discarded -- the
+        # safe direction.
+        inventory_signature = _usb_inventory_signature()
         # Shared live-state refresh: throttled and in-flight suppressed, so two
         # open pages do not multiply device traffic.
         _usb_live_refresh()
@@ -11396,12 +13028,7 @@ def api_usb_state():
                     all_devices = []
         
         # Filter to USB-capable models only
-        units = []
-        usb_models = ["hw-omni-e4521", "hw-omni-d4521", "hw-omni-e4511", "hw-omni-d4511", "4521", "4511"]
-        for dev in all_devices:
-            model = (dev.get("model") or "").lower()
-            if any(m in model for m in usb_models):
-                units.append(dev)
+        units = _usb_capable_units(all_devices)
         
         log.debug("[API/USB_STATE] Found %d USB-capable devices from %d total", len(units), len(all_devices))
         
@@ -11415,7 +13042,7 @@ def api_usb_state():
                                                 "available": [], "fresh": r.get("pairing_state_fresh", False)}
                                  for r in axis_rex}
             inventory_lex, inventory_rex = _usb_inventory()
-            return jsonify({"ok": True, "lex": [], "rex": [], "pairings": {},
+            return jsonify({"ok": True, "inventory_signature": inventory_signature, "lex": [], "rex": [], "pairings": {},
                             "inventory_lex": inventory_lex, "inventory_rex": inventory_rex,
                             "matrix_lex": axis_lex, "matrix_rex": axis_rex,
                             "capabilities": capabilities, "standalone_routes": standalone_routes,
@@ -11723,6 +13350,7 @@ def api_usb_state():
         inventory_lex, inventory_rex = _usb_inventory(lex_units, rex_units, view=usb_view)
         return jsonify({
             "ok": True,
+            "inventory_signature": inventory_signature,
             "lex": lex_units,
             "rex": rex_units,
             "inventory_lex": inventory_lex,
@@ -11910,7 +13538,7 @@ def _usb_write_and_verify_rex_unpairs(rex_ip: str, payload: dict, previous_lex_r
 @_with_usb_route_lock
 def api_usb_pair():
     """Pair a LEX to a REX (add to available list or set as active)"""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     rex_ip = data.get("rex")
     lex_ip = data.get("lex")
     make_active = data.get("makeActive", False)
@@ -11918,6 +13546,12 @@ def api_usb_pair():
     
     if not rex_ip or not lex_ip:
         return jsonify({"ok": False, "error": "rex and lex IPs required"}), 400
+    # Before any read, and long before anything is released or written: a parent that is not
+    # answering cannot take a pairing, and finding that out through a WebSocket timeout per step
+    # helps nobody. Only this entry point; the standalone path has its own gate in the cell.
+    offline = _unit_offline_refusal(usb_host=lex_ip, usb_device=rex_ip)
+    if offline is not None:
+        return offline
     try:
         user = app.config['USERNAME']
         pwd = app.config['PASSWORD']
@@ -12152,7 +13786,7 @@ def api_usb_pair():
             }
         }
 
-        log.info("Setting USB pairings on REX %s: %s", rex_ip, json.dumps(pairing_payload, indent=2))
+        log.info("Setting USB pairings on REX %s: %s", rex_ip, json.dumps(omni_users.redact(pairing_payload), indent=2))
         
         response, verified_cfg = _usb_write_and_verify_rex_pairing(
             rex_ip, pairing_payload, lex_mac_upper, lex_ip, True,
@@ -12199,7 +13833,7 @@ def api_usb_pair():
 @_with_usb_route_lock
 def api_usb_unpair():
     """Unpair a LEX from a REX (remove from available/active)"""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     rex_ip = data.get("rex")
     lex_ip = data.get("lex")
     
@@ -12266,7 +13900,7 @@ def api_usb_unpair():
             }
         }
         
-        log.info("Sending unpair command to REX %s: %s", rex_ip, json.dumps(unpair_payload, indent=2))
+        log.info("Sending unpair command to REX %s: %s", rex_ip, json.dumps(omni_users.redact(unpair_payload), indent=2))
         
         response, verified_cfg = _usb_write_and_verify_rex_pairing(
             rex_ip, unpair_payload, lex_mac_upper, lex_ip, False,
@@ -12325,7 +13959,7 @@ def api_usb_unpair():
 @_audited("usb_set_port")
 def api_usb_set_port():
     """Set the USB host port for a LEX device"""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     lex_ip = data.get("lex")
     port = data.get("port")
     
@@ -12360,7 +13994,7 @@ def api_usb_set_port():
             }
         }
         
-        log.info("Sending port change command to LEX %s: %s", lex_ip, json.dumps(port_payload, indent=2))
+        log.info("Sending port change command to LEX %s: %s", lex_ip, json.dumps(omni_users.redact(port_payload), indent=2))
         
         response = _ws_send_recv(lex_url, port_payload, timeout=timeout)
         
@@ -12380,7 +14014,7 @@ def api_usb_set_port():
 @_audited("usb_set_type")
 def api_usb_set_type():
     """Change the USB device type between LEX and REX"""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     device_ip = data.get("device")
     new_type = data.get("type")
     
@@ -12431,7 +14065,7 @@ def api_usb_set_type():
             }
         }
         
-        log.info("Sending type change command to device %s: %s", device_ip, json.dumps(type_payload, indent=2))
+        log.info("Sending type change command to device %s: %s", device_ip, json.dumps(omni_users.redact(type_payload), indent=2))
         
         response = _ws_send_recv(device_url, type_payload, timeout=timeout)
         
@@ -12453,7 +14087,7 @@ def api_usb_set_type():
 @_audited("usb_set_filter")
 def api_usb_set_filter():
     """Set USB device filtering policy for encoders and decoders"""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     device_ip = (data.get("device") or "").strip()
     filter_val = (data.get("filter") or "").strip()
 
@@ -12509,7 +14143,7 @@ def api_usb_set_filter():
         }
 
         log.info("USB set filter: %s -> %s", device_ip, filter_val)
-        log.info("Sending filter change: %s", json.dumps(payload, indent=2))
+        log.info("Sending filter change: %s", json.dumps(omni_users.redact(payload), indent=2))
 
         response = _ws_send_recv(device_url, payload, timeout=timeout)
         log.info("Filter change response from %s: %s", device_ip, json.dumps(response, indent=2))
@@ -12525,7 +14159,7 @@ def api_usb_set_filter():
 @app.route("/api/set_thumbnail", methods=["POST"])
 def api_set_thumbnail():
     """Enable or disable thumbnail generation on an encoder"""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     device_ip = data.get("ip")
     enable = data.get("enable", True)
 
@@ -12576,7 +14210,7 @@ def api_set_thumbnail():
         }
 
         log.info("Thumbnail %s for %s", "enable" if enable else "disable", device_ip)
-        log.info("Sending vc2-set: %s", json.dumps(payload, indent=2))
+        log.info("Sending vc2-set: %s", json.dumps(omni_users.redact(payload), indent=2))
 
         response = _ws_send_recv(device_url, payload, timeout=timeout)
         log.info("Thumbnail response from %s: %s", device_ip, json.dumps(response, indent=2))
@@ -12592,7 +14226,7 @@ def api_set_thumbnail():
 @app.route("/api/get_thumbnail_status", methods=["POST"])
 def api_get_thumbnail_status():
     """Get thumbnail enable status from an encoder"""
-    data = request.get_json(silent=True) or {}
+    data = _json_dict()
     device_ip = data.get("ip")
 
     if not device_ip:
@@ -12680,6 +14314,16 @@ def _select_bind_port(preferred_port: int, bind_host: str) -> int:
 def main():
     host = os.getenv("OMNI_HOST", "127.0.0.1")
 
+    # Before the port is chosen and before anything starts: two copies sharing a
+    # data folder overwrite each other's accounts and settings, and the one that
+    # starts second must stop here, not after it has begun its background work.
+    import omni_instance
+    try:
+        omni_instance.acquire(DATA_DIR)
+    except omni_instance.AlreadyRunning as exc:
+        log.error("%s", exc)
+        raise SystemExit(1)
+
     selected_port = _select_bind_port(PORT, host)
     # Recorded for the support dump: the port the operator's browser and the host
     # firewall actually see is this one, not PORT.
@@ -12692,13 +14336,22 @@ def main():
     # module used to probe every address in whatever cache OMNI_DATA_DIR resolved
     # to, which put a plain unit-test run on real hardware.
     start_background_startup_tasks()
+    # Only an explicitly enabled, still-valid configuration comes back, and a
+    # refusal here never stops the local application from serving.
+    restore_remote_access()
     log.info("Serving on http://%s:%s/", host, selected_port)
 
     def run_server():
         # Never debug=True: that serves Werkzeug's interactive console, which is
         # remote code execution behind a console-printed PIN, on any unhandled
         # exception.
-        app.run(host=host, port=selected_port, debug=False, use_reloader=False, threaded=True)
+        #
+        # serve_tagged rather than app.run so the listener records what it is.
+        # The tag comes from the address actually bound, so forcing OMNI_HOST to
+        # a routable address does not hand out local trust -- that listener is
+        # tagged remote and its callers have to authenticate.
+        omni_remote.serve_tagged(host, selected_port, app,
+                                 threaded=True).serve_forever()
     th = threading.Thread(target=run_server, daemon=False); th.start()
     def open_when_ready():
         url = f"http://{host}:{selected_port}/"
@@ -12817,11 +14470,16 @@ def _group_member_record(unit):
 def _resolve_group_member(member, devices=None):
     """The device a stored member refers to now, or None if it is not here."""
     units = devices if devices is not None else _load_cache()
-    mac = (member.get("mac") or "").lower()
-    if mac:
+    identity = _device_identity(member)
+    if identity:
+        # A member recorded by hardware identity is found by that identity and
+        # by nothing else. Falling back to its stored address would hand the
+        # group whatever different unit now holds the address, and a group Show
+        # would then write to a display that was never in it.
         for unit in units:
-            if (unit.get("mac") or "").lower() == mac:
+            if _device_identity(unit) == identity:
                 return unit
+        return None
     ip = member.get("ip")
     for unit in units:
         if unit.get("ip") == ip:
@@ -13026,10 +14684,31 @@ MULTIVIEW_RETRY_DELAYS = (0.15, 0.30)
 _multiview_attempts_lock = threading.RLock()
 _MULTIVIEW_ATTEMPTS = {}
 
+# One list per thread, and the server starts a thread per request: without a
+# bound the table gains an entry for every request thread that ever read a
+# device and never loses one (measured: about 0.4 KiB retained per route, ~2,300
+# objects over 800 routes, all attributed to this function). The entries are a
+# per-operation diagnostic, so threads that have ended are forgotten, and the
+# table as a whole is capped.
+_MULTIVIEW_ATTEMPT_THREAD_CAP = 64
+
+
+def _forget_ended_attempt_threads():
+    """Caller holds `_multiview_attempts_lock`."""
+    live = {t.ident for t in threading.enumerate()}
+    for ident in [i for i in _MULTIVIEW_ATTEMPTS if i not in live]:
+        del _MULTIVIEW_ATTEMPTS[ident]
+    while len(_MULTIVIEW_ATTEMPTS) >= _MULTIVIEW_ATTEMPT_THREAD_CAP:
+        del _MULTIVIEW_ATTEMPTS[next(iter(_MULTIVIEW_ATTEMPTS))]
+
 
 def _note_attempt(ip, node, attempt, outcome, detail=""):
     with _multiview_attempts_lock:
-        entries = _MULTIVIEW_ATTEMPTS.setdefault(threading.get_ident(), [])
+        ident = threading.get_ident()
+        if (ident not in _MULTIVIEW_ATTEMPTS
+                and len(_MULTIVIEW_ATTEMPTS) >= _MULTIVIEW_ATTEMPT_THREAD_CAP):
+            _forget_ended_attempt_threads()
+        entries = _MULTIVIEW_ATTEMPTS.setdefault(ident, [])
         entries.append({"device": ip, "node": node, "attempt": attempt,
                         "outcome": outcome, "detail": detail[:160],
                         "at": time.time()})
@@ -13675,21 +15354,32 @@ def api_multiview_layouts_install():
     library, which is what makes a group able to show a common layout later --
     and still nothing is shown and no encoder is touched.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = _json_dict()
     group_id = (payload.get("group") or "").strip()
     if group_id:
         group = _find_group(group_id)
         if group is None:
             return jsonify({"ok": False, "error": "No such group."}), 404
-        targets = [m.get("ip") for m in (group.get("members") or ()) if m.get("ip")]
+        # Resolved by identity now, never by the address stored with the member:
+        # a stale address would install the library on a different decoder.
+        current = _load_cache() or []
+        targets, unresolved = [], []
+        for stored in (group.get("members") or ()):
+            unit = _resolve_group_member(stored, current)
+            if unit is not None and unit.get("ip"):
+                targets.append(unit.get("ip"))
+            else:
+                unresolved.append({"decoder": stored.get("hostname") or "A member",
+                                   "error": "Not currently discovered."})
         label = group.get("name")
     else:
+        unresolved = []
         ip = (payload.get("decoder") or "").strip()
         if not ip:
             return jsonify({"ok": False, "error": "decoder ip required"}), 400
         targets, label = [ip], ip
 
-    reports, problems = [], []
+    reports, problems = [], list(unresolved)
     for target in targets:
         report, error = _install_standard_layouts(target)
         if report is None:
@@ -14130,7 +15820,7 @@ def api_multiview_plan():
     This is what the confirmation summary is built from, so the operator is shown
     the same plan that will be executed rather than a description of it.
     """
-    built, failure = _build_plan(request.get_json(silent=True) or {})
+    built, failure = _build_plan(_json_dict())
     if failure:
         body, status = failure
         return jsonify(body), status
@@ -14609,7 +16299,7 @@ def api_multiview_apply():
     The plan is still built from freshly read device state, so what is stored is
     checked against real sources rather than trusted from the page.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = _json_dict()
     built, failure = _build_plan(payload)
     if failure:
         body, status = failure
@@ -14969,7 +16659,7 @@ def _show_multiview_on(ip, name):
 @app.route("/api/multiview/show", methods=["POST"])
 def api_multiview_show():
     """Recall a saved Multiview onto this decoder's display."""
-    payload = request.get_json(silent=True) or {}
+    payload = _json_dict()
     ip = str(payload.get("decoder") or payload.get("ip") or "").strip()
     name = str(payload.get("name") or "").strip()
     if not ip or not name:
@@ -15274,7 +16964,7 @@ def api_multiview_switch():
     restores another is a trap; a change that fails is rolled back and the
     preset is left alone.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = _json_dict()
     ip = str(payload.get("decoder") or payload.get("ip") or "").strip()
     name = str(payload.get("name") or "").strip()
     cell = str(payload.get("cell") or "").strip()
@@ -15780,7 +17470,7 @@ def api_multiview_groups_plan():
     This is the conflict check on its own, so the page can show the operator
     why a group cannot be synchronised before they ask for it to be.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = _json_dict()
     group = _find_group(payload.get("group"))
     if group is None:
         return jsonify({"ok": False, "error": "No such group."}), 404
@@ -15805,7 +17495,7 @@ def api_multiview_groups_copy():
     No display changes. This is the operation an operator runs while the room
     is in use.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = _json_dict()
     group = _find_group(payload.get("group"))
     if group is None:
         return jsonify({"ok": False, "error": "No such group."}), 404
@@ -15888,7 +17578,7 @@ def api_multiview_groups_show():
     Plan the whole group, refuse the whole group, or apply it member by member
     and verify each one. A failure stops and puts back what was already changed.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = _json_dict()
     group = _find_group(payload.get("group"))
     if group is None:
         return jsonify({"ok": False, "error": "No such group."}), 404
@@ -16071,7 +17761,7 @@ def api_multiview_groups():
 @app.route("/api/multiview/groups/save", methods=["POST"])
 def api_multiview_groups_save():
     """Create or update one group. Membership only -- no device is touched."""
-    payload = request.get_json(silent=True) or {}
+    payload = _json_dict()
     name = str(payload.get("name") or "").strip()
     group_id = str(payload.get("id") or "").strip()
     member_ips = [str(ip).strip() for ip in (payload.get("members") or []) if ip]
@@ -16116,7 +17806,7 @@ def api_multiview_groups_save():
 @app.route("/api/multiview/groups/delete", methods=["POST"])
 def api_multiview_groups_delete():
     """Forget a group. The decoders and their Multiviews are left alone."""
-    payload = request.get_json(silent=True) or {}
+    payload = _json_dict()
     group_id = str(payload.get("id") or "").strip()
     with _multiview_groups_lock:
         removed = _MULTIVIEW_GROUPS.pop(group_id, None)
@@ -16300,7 +17990,7 @@ def api_multiview_copy():
     source decoder -- the operator gets a preset on the target that they can
     show whenever they choose.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = _json_dict()
     source_ip = str(payload.get("source_decoder") or "").strip()
     target_ip = str(payload.get("target_decoder") or "").strip()
     name = str(payload.get("name") or "").strip()
@@ -16403,7 +18093,7 @@ def api_multiview_delete():
     `del_multiview` is the only deletion mechanism the device has; `config_set`
     omission and a `delete: true` flag are both accepted and silently ignored.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = _json_dict()
     ip = str(payload.get("decoder") or payload.get("ip") or "").strip()
     name = str(payload.get("name") or "").strip()
     if not ip or not name:
@@ -16497,6 +18187,1101 @@ def api_multiview_delete():
     return jsonify({"ok": True, "status": "VERIFIED", "steps": steps,
                     "was_active": was_active,
                     "remaining": remaining, "reclamation": reclamation})
+
+
+# ---------------------------------------------------------------- remote access
+#
+# Off by default, and off for every installation that updates into this build.
+# The listener below is created but never started until an administrator turns
+# remote access on, so nothing about the local experience changes.
+#
+# The gate is installed unconditionally, because a request that arrived on the
+# loopback listener is allowed through it untouched -- that is what keeps the
+# local behaviour identical rather than merely similar.
+USERS_FILE = DATA_DIR / "users.json"
+SECURITY_AUDIT_FILE = DATA_DIR / "security_audit.json"
+
+ALIASES_FILE = DATA_DIR / "device_aliases.json"
+GROUPS_FILE = DATA_DIR / "display_groups.json"
+
+#: Where a certificate and key live if OmniSuite manages them. In the runtime
+#: data directory, never in the package: a clean installation contains no key
+#: material at all.
+REMOTE_CERT_FILE = DATA_DIR / omni_tls.CERT_FILE
+REMOTE_KEY_FILE = DATA_DIR / omni_tls.KEY_FILE
+
+_user_store = omni_users.UserStore(USERS_FILE, SECURITY_AUDIT_FILE)
+_device_aliases = omni_aliases.AliasStore(ALIASES_FILE)
+_display_groups = omni_groups.GroupStore(GROUPS_FILE, omni_users._normalise_identity)
+# What Hall Research publishes, compared with what is installed. Reports only:
+# nothing is downloaded and no device is changed. Held without a network source
+# until start_background_startup_tasks() supplies one, so importing this module
+# (and therefore any test) can never reach Hall Research.
+_firmware_checker = omni_firmware.FirmwareChecker(DATA_DIR / "firmware_cache.json")
+
+
+@app.route("/api/firmware_status", methods=["GET"])
+def api_firmware_status():
+    """Firmware availability for every device Device Info lists.
+
+    Read from the last good catalogue: this request never touches the network and
+    never waits on Hall Research. Independent of upgrade capability -- a 311/324
+    can have a status here and is still refused by /api/upgrade.
+    """
+    snapshot = _firmware_checker.snapshot()
+    check = {k: v for k, v in snapshot.items() if k != "products"}
+    units = {}
+    for unit in _load_cache() or []:
+        ip = unit.get("ip")
+        if ip:
+            units[ip] = dict(_firmware_checker.describe(
+                unit.get("model"), unit.get("version") or unit.get("firmware")),
+                model=unit.get("model") or "")
+    extenders = {}
+    for row in _standalone_extender_rows():
+        extenders[row["ip"]] = dict(_firmware_checker.describe(
+            row.get("model"), row.get("version")), model=row.get("model") or "")
+    return jsonify({"ok": True, "check": check, "units": units,
+                    "extenders": extenders})
+
+
+@app.route("/api/firmware_status/check", methods=["POST"])
+def api_firmware_status_check():
+    """The manual check. Starts in the background and answers at once."""
+    started = _firmware_checker.check_async()
+    if started.get("started"):
+        return jsonify({"ok": True, "started": True}), 202
+    if started.get("reason") == "already_running":
+        return jsonify({"ok": True, "started": False, "running": True}), 202
+    return jsonify({"ok": False, "started": False,
+                    "error": "The firmware check is not available in this session."}), 409
+_remote_listener = omni_remote.RemoteListener(app)
+
+#: One short lock per piece of equipment, so two operators cannot interleave
+#: inside one device transaction. Narrow on purpose: Room 101 never waits on
+#: Room 102.
+_resource_locks = omni_locks.ResourceLocks()
+
+
+def remote_access_enabled() -> bool:
+    """Whether the remote listener is currently answering."""
+    return _remote_listener.running
+
+
+def remote_access_state() -> dict:
+    """What Settings shows about remote access."""
+    state = _remote_listener.describe()
+    state["has_admin"] = _user_store.has_admin
+    state["accounts"] = 0 if _user_store.is_empty else len(_user_store.list_accounts())
+    state["sessions"] = _user_store.active_session_count()
+    return state
+
+
+def _destination_inventory():
+    """Every address the application currently holds for a device."""
+    addresses = set()
+    for unit in _load_cache() or []:
+        if isinstance(unit, dict):
+            for field in ("ip", "usb_ip"):
+                if unit.get(field):
+                    addresses.add(str(unit[field]))
+    return addresses
+
+
+def _remote_destination_check(rule, payload):
+    """None, or the refusal, for a remote request naming a device it may not reach."""
+    try:
+        omni_destinations.check(rule, payload, _destination_inventory, _expand_targets)
+    except omni_destinations.Refusal as refusal:
+        log.warning("[GATE] remote request to %s refused: %s", rule, refusal.reason)
+        return refusal
+    return None
+
+
+omni_gate.install(app, lambda: _user_store, remote_access_enabled,
+                  _remote_destination_check)
+
+
+REMOTE_ACCESS_FILE = DATA_DIR / "remote_access.json"
+
+
+#: Why a saved configuration could not be restored, for Settings to show.
+#: Held in memory: it describes this run, not the stored preference.
+_remote_restore_error = ""
+
+
+def _remote_access_preference(enabled, address, port, transport=None,
+                              cert_path=None, key_path=None,
+                              adapter_id=None, adapter_name=None):
+    """Remember what the operator chose, including how to secure it.
+
+    Its own file rather than config.json: that one carries the device
+    credentials and maps field for field onto app.config, and a remote-access
+    setting has no business in it.
+
+    Only paths are stored. Key material stays in its own file, and nothing here
+    ever holds it.
+    """
+    global _remote_restore_error
+    _remote_restore_error = ""
+    previous = _remote_access_last_choice()
+    omni_users._atomic_write_json(REMOTE_ACCESS_FILE, {
+        "enabled": bool(enabled),
+        # The adapter is the choice. The address is what it had when the
+        # choice was made -- kept so the same address can be preferred if the
+        # adapter still has it, and so Settings can say what was configured.
+        "adapter_id": (adapter_id if adapter_id is not None
+                       else previous.get("adapter_id", "")),
+        "adapter_name": (adapter_name if adapter_name is not None
+                         else previous.get("adapter_name", "")),
+        "address": address or "",
+        "port": int(port) if port else None,
+        "transport": transport or previous.get("transport") or "https",
+        "cert_path": cert_path if cert_path is not None
+                     else previous.get("cert_path", ""),
+        "key_path": key_path if key_path is not None
+                    else previous.get("key_path", ""),
+    })
+
+
+def _remote_access_last_choice():
+    """The stored preference, plus why a restore failed if one did.
+
+    Three states an installed system has to distinguish, and "off" is only one
+    of them: never configured, explicitly disabled, and configured but the
+    selected network is not here today.
+    """
+    # A first-time setup starts on HTTP. A certificate generated for an
+    # address stops being valid when DHCP gives the computer another one, so
+    # HTTPS by default meant a warning the first time the address moved. HTTP is
+    # still not reachable without the administrator saying so in the request
+    # (`accept_insecure`), and HTTPS stays one choice away. Once a transport has
+    # been saved, that choice is what is honoured.
+    saved = {"enabled": False, "adapter_id": "", "adapter_name": "",
+             "address": "", "port": None,
+             "transport": "http", "cert_path": "", "key_path": ""}
+    try:
+        if REMOTE_ACCESS_FILE.exists():
+            stored = json.loads(REMOTE_ACCESS_FILE.read_text(encoding="utf-8"))
+            if isinstance(stored, dict):
+                saved.update({
+                    "enabled": bool(stored.get("enabled")),
+                    "adapter_id": str(stored.get("adapter_id") or ""),
+                    "adapter_name": str(stored.get("adapter_name") or ""),
+                    "address": str(stored.get("address") or ""),
+                    "port": stored.get("port"),
+                    # An unreadable or absent transport reads as https: the
+                    # safe direction is to refuse to start rather than to serve
+                    # something in clear.
+                    "transport": ("http" if stored.get("transport") == "http"
+                                  else "https"),
+                    "cert_path": str(stored.get("cert_path") or ""),
+                    "key_path": str(stored.get("key_path") or ""),
+                })
+    except Exception as exc:
+        # A damaged preference file means "not configured", which is the safe
+        # reading: it can never mean "expose this machine".
+        log.warning("[REMOTE] saved preference unreadable (%s); treating as off",
+                    type(exc).__name__)
+    saved["restore_error"] = _remote_restore_error
+    return saved
+
+
+def _remote_address_for(saved):
+    """Which address a saved configuration should bind now, or why it cannot.
+
+    Returns (address, reason). The operator chose an ADAPTER; this follows it
+    to whatever address it carries today, which is the whole point -- a DHCP
+    lease or a static change on the bench network must not leave remote access
+    permanently looking for an address nobody has.
+
+    A configuration saved before adapters had identities carries only an
+    address. It is migrated here, and only when exactly one adapter present on
+    this machine owns that address. Zero means the evidence is gone; more than
+    one means it cannot be established. Neither is guessed at, because
+    adopting the wrong adapter would move Remote Access to different hardware
+    without anybody asking -- the machine this was found on had one address on
+    a Wi-Fi adapter and a different one, same subnet, on an Ethernet adapter.
+    """
+    # Restoring is a decision about where to listen, so it asks the system and
+    # does not inherit a remembered answer.
+    omni_adapters.invalidate_cache()
+    try:
+        adapters = omni_adapters.enumerate_adapters()
+    except Exception as exc:
+        log.info("[REMOTE] adapter enumeration failed: %s", type(exc).__name__)
+        adapters = []
+
+    adapter_id = (saved or {}).get("adapter_id") or ""
+    address = (saved or {}).get("address") or ""
+    named = (saved or {}).get("adapter_name") or adapter_id or "that network"
+
+    if not adapter_id:
+        adopted = omni_adapters.adopt_saved_address(address, adapters)
+        if adopted is None:
+            return "", (
+                f"Remote access is configured for {address}, but which network "
+                "adapter that was cannot be established on this computer. "
+                "Choose the network again to continue.")
+        # Record what was established, so this happens once.
+        log.info("[REMOTE] migrated saved address %s to adapter %s",
+                 address, adopted["id"])
+        _remote_access_preference(
+            True, adopted["address"], (saved or {}).get("port"),
+            transport=(saved or {}).get("transport"),
+            cert_path=(saved or {}).get("cert_path"),
+            key_path=(saved or {}).get("key_path"),
+            adapter_id=adopted["id"], adapter_name=adopted["name"])
+        return adopted["address"], ""
+
+    resolved, reason = omni_adapters.resolve_address(adapter_id, address,
+                                                     adapters)
+    if reason == "adapter missing":
+        return "", (f"Remote access is configured for {named}, but that "
+                    "network adapter is not available on this computer right "
+                    "now.")
+    if reason == "ambiguous":
+        return "", (f"{named} has more than one address and none of them is "
+                    f"the one that was chosen. Choose the network again.")
+    if resolved and resolved != address:
+        # The adapter moved. Remember where it is now, so Settings and the
+        # next restart agree with the listener.
+        log.info("[REMOTE] %s moved from %s to %s", named, address, resolved)
+        _remote_access_preference(
+            True, resolved, (saved or {}).get("port"),
+            transport=(saved or {}).get("transport"),
+            cert_path=(saved or {}).get("cert_path"),
+            key_path=(saved or {}).get("key_path"),
+            adapter_id=adapter_id, adapter_name=named)
+    return resolved, ""
+
+
+def _remote_tls_context(saved):
+    """The TLS context for a saved configuration, or a reason it cannot start.
+
+    Returns (context, error). A configuration asking for HTTPS that cannot
+    produce a context yields (None, reason) and the caller must not start --
+    never a silent downgrade to plaintext, because an administrator who
+    configured HTTPS and got HTTP would have no way of knowing.
+    """
+    if (saved or {}).get("transport") == "http":
+        return None, ""
+    cert = (saved or {}).get("cert_path") or ""
+    key = (saved or {}).get("key_path") or ""
+    if bool(cert) != bool(key):
+        # Half a supplied pair is never completed from OmniSuite's own files:
+        # that would mix two certificates' halves, or serve a different one.
+        return None, ("A certificate and its key must be chosen together. "
+                      "Choose both files again.")
+    cert = cert or str(REMOTE_CERT_FILE)
+    key = key or str(REMOTE_KEY_FILE)
+    try:
+        return omni_tls.load_context(cert, key), ""
+    except omni_tls.TlsError as exc:
+        return None, str(exc)
+
+
+def remote_certificate_state():
+    """What Settings shows about the certificate. Never key material."""
+    saved = _remote_access_last_choice()
+    cert = saved.get("cert_path") or str(REMOTE_CERT_FILE)
+    described = omni_tls.describe(cert)
+    described["path_configured"] = bool(saved.get("cert_path"))
+    described["can_generate"] = omni_tls.generation_available()
+    return described
+
+
+def restore_remote_access():
+    """Bring back a remote listener the administrator explicitly asked for.
+
+    An unattended classroom host should not need somebody to walk over and
+    re-enable remote access after every power cut. But restoring a network
+    listener from a file is exactly the kind of convenience that quietly
+    exposes a machine, so every one of these has to hold:
+
+      * the preference says enabled -- absent, unreadable or disabled means no
+      * an administrator account exists -- otherwise the restored listener
+        would answer with nobody able to sign in, and bootstrap is local-only
+      * a concrete address was saved -- never 0.0.0.0, never "any"
+      * that exact address is on this machine right now
+
+    A failure here is a status to report, never a startup failure: the local
+    application must come up normally whatever the network is doing. And a
+    saved address that is missing is the end of it -- no second adapter is
+    tried, because the administrator chose a network and picking a different
+    one for them is how equipment ends up reachable from somewhere nobody
+    intended.
+    """
+    global _remote_restore_error
+    _remote_restore_error = ""
+    saved = _remote_access_last_choice()
+    if not saved.get("enabled"):
+        return {"restored": False, "reason": "not enabled"}
+
+    if not _user_store.has_admin:
+        _remote_restore_error = ("Remote access is configured, but no "
+                                 "administrator account exists.")
+        log.warning("[REMOTE] not restoring: no administrator account")
+        return {"restored": False, "reason": "no administrator"}
+
+    address, adapter_error = _remote_address_for(saved)
+    if adapter_error:
+        _remote_restore_error = adapter_error
+        log.warning("[REMOTE] not restoring: %s", adapter_error)
+        return {"restored": False, "reason": "adapter unavailable"}
+    if not omni_remote.is_usable_remote_address(address):
+        _remote_restore_error = "The saved remote address is not usable."
+        log.warning("[REMOTE] not restoring: saved address is unusable")
+        return {"restored": False, "reason": "unusable address"}
+
+    port = saved.get("port") or int(os.getenv("OMNI_PORT", PORT) or PORT)
+
+    context, tls_error = _remote_tls_context(saved)
+    if tls_error:
+        # Configured for HTTPS and unable to produce a context. The listener
+        # stays down and the local application carries on; falling back to
+        # plaintext here would be the worst possible outcome.
+        _remote_restore_error = (
+            f"Remote access is configured for HTTPS on {address}, but the "
+            f"certificate could not be used: {tls_error}")
+        log.warning("[REMOTE] not restoring: %s", tls_error)
+        return {"restored": False, "reason": "tls unavailable"}
+
+    # The adapter may have moved since this was configured, and a certificate
+    # OmniSuite generated for the old address does not cover the new one.
+    # Starting anyway would advertise HTTPS at an address no browser accepts,
+    # so the listener stays down and Settings says which button fixes it.
+    # A supplied certificate is the site's own and is never judged this way --
+    # it may carry a name OmniSuite has no way of knowing about.
+    if saved.get("transport") != "http" and not saved.get("cert_path"):
+        described = omni_tls.describe(str(REMOTE_CERT_FILE))
+        if described.get("readable") and not omni_tls.covers(described, address):
+            _remote_restore_error = (
+                f"Remote access is configured for {address}, but the "
+                f"certificate OmniSuite created is for "
+                f"{described.get('subject') or 'another address'}. Create a "
+                "certificate for this network in Settings, then turn remote "
+                "access on again.")
+            log.warning("[REMOTE] not restoring: certificate is for %s, not %s",
+                        described.get("subject"), address)
+            return {"restored": False, "reason": "certificate address mismatch"}
+
+    result = _remote_listener.start(address, port, ssl_context=context)
+    if not result.get("ok"):
+        _remote_restore_error = (
+            f"Remote access is configured for {address}, but the listener "
+            f"could not start: {result.get('error', 'unknown error')}")
+        log.warning("[REMOTE] restore failed: %s", result.get("error"))
+        return {"restored": False, "reason": result.get("error")}
+
+    log.info("[REMOTE] restored on %s:%s (%s)", address, port,
+             saved.get("transport"))
+    _user_store.audit("remote_access.restored", actor=None,
+                      detail={"address": address, "port": int(port),
+                              "transport": saved.get("transport")})
+    return {"restored": True, "address": address, "port": int(port),
+            "transport": saved.get("transport")}
+
+
+#: How long a source preview picture is reused.
+#:
+#: Short, because it is a picture of a live input; long enough that a class
+#: full of tablets is one fetch rather than thirty. This is source
+#: identification, not surveillance.
+PREVIEW_IMAGE_TTL_SECONDS = 5.0
+
+#: How long "does this encoder generate thumbnails" is reused. It changes only
+#: when an administrator changes it, and reading it costs a WebSocket round
+#: trip, so it is held far longer than the picture.
+PREVIEW_ENABLE_TTL_SECONDS = 300.0
+
+#: Bounded, because an encoder that has stopped answering must not hold a
+#: request open. A thumbnail is roughly 320x180 JPEG.
+PREVIEW_TIMEOUT_SECONDS = 4.0
+PREVIEW_MAX_BYTES = 2 * 1024 * 1024
+
+_preview_images = omni_statecache.StateCache(ttl=PREVIEW_IMAGE_TTL_SECONDS)
+_preview_enabled = omni_statecache.StateCache(ttl=PREVIEW_ENABLE_TTL_SECONDS)
+
+
+def _thumbnail_enabled(address):
+    """Whether this encoder is generating thumbnails.
+
+    Reuses the existing endpoint rather than repeating its WebSocket read and
+    its password-candidate handling, so there is one implementation of "ask an
+    encoder about its thumbnail".
+    """
+    def read():
+        with app.test_request_context("/api/get_thumbnail_status",
+                                      method="POST", json={"ip": address}):
+            body = _view_payload(api_get_thumbnail_status())
+        if body.get("error") and not body.get("ok"):
+            return None            # unknown, not disabled: do not cache a guess
+        return bool(body.get("enable"))
+
+    return _preview_enabled.get("thumb-enable:" + str(address), read)
+
+
+def source_preview(address, fresh=False):
+    """(image_bytes, content_type, reason) for one encoder.
+
+    `reason` is empty on success and otherwise names why there is no picture:
+    `preview_disabled` where the encoder is not generating one, and
+    `preview_unavailable` where it did not answer. The caller turns those into
+    card states; neither is a routing failure, because a source whose preview
+    is off is still a perfectly good source.
+
+    `fresh` drops this encoder's cached answers before reading. The enable flag
+    is otherwise held for minutes, which is right for idle pages and wrong the
+    moment somebody turns thumbnails on and reloads to see them: the cached
+    "disabled" outlived the change and made the page look as though the
+    assignment itself had to be redone. An explicit page load re-reads; hover
+    and scroll still come from the cache, so an idle page costs nothing.
+    """
+    address = str(address or "").strip()
+    if not address:
+        return None, "", "preview_unavailable"
+
+    if fresh:
+        _preview_enabled.invalidate("thumb-enable:" + address)
+        _preview_images.invalidate("thumb:" + address)
+
+    enabled = _thumbnail_enabled(address)
+    if enabled is False:
+        return None, "", "preview_disabled"
+
+    def fetch():
+        # Built from the address the application already trusts plus a fixed
+        # path. Nothing the device said contributes to this URL.
+        url = "http://%s/thumbnail/thumbnail1.jpg" % address
+        try:
+            with urllib.request.urlopen(url, timeout=PREVIEW_TIMEOUT_SECONDS) as reply:
+                if reply.status != 200:
+                    return None, ""
+                body = reply.read(PREVIEW_MAX_BYTES + 1)
+                if not body or len(body) > PREVIEW_MAX_BYTES:
+                    return None, ""
+                kind = reply.headers.get("Content-Type") or "image/jpeg"
+                if not kind.startswith("image/"):
+                    # A device that answered with something that is not a
+                    # picture is not a picture. Never passed through.
+                    return None, ""
+                return body, kind
+        except Exception as exc:
+            log.info("[PREVIEW] %s did not serve a thumbnail: %s",
+                     address, type(exc).__name__)
+            return None, ""
+
+    body, kind = _preview_images.get("thumb:" + address, fetch)
+    if not body:
+        return None, "", "preview_unavailable"
+    return body, kind, ""
+
+
+#: Observation for the restricted surfaces. Reading USB state queries every
+#: endpoint, and reading a decoder's Multiview state reads three nodes from it,
+#: so without this a second browser is a second sweep of the equipment --
+#: measured at ten times the device calls for ten clients.
+_user_observation = omni_statecache.StateCache()
+
+
+def _usb_state_snapshot():
+    """The administrative USB view, as /api/usb_state computes it.
+
+    Called rather than recomputed so the user projection and the USB Matrix can
+    never disagree about what is paired, and briefly shared so that a room full
+    of phones is one read rather than one each.
+    """
+    def read():
+        with app.test_request_context("/api/usb_state"):
+            import json as _json
+            return _view_payload(api_usb_state())
+    return _user_observation.get("usb", read)
+
+
+def _view_payload(result):
+    """The JSON body of whatever a Flask view returned.
+
+    A view may hand back a Response, or (Response, status), or
+    (Response, status, headers). Reading `.get_data()` off the tuple raises,
+    and because these callers run inside a request the operator sees a 500 --
+    which claims the application is broken when the truth is usually that a
+    device is not known or not answering.
+    """
+    import json as _json
+    if isinstance(result, tuple):
+        result = result[0] if result else None
+    if result is None:
+        return {}
+    data = getattr(result, "get_data", None)
+    if data is None:
+        # Already a mapping, which some views return directly.
+        return result if isinstance(result, dict) else {}
+    try:
+        return _json.loads(data() or b"{}")
+    except ValueError:
+        return {}
+
+
+def _forget_user_observation(key=None):
+    """Drop a shared answer after something changed it.
+
+    An operation that has just written to a device resets the cadence, so the
+    next read reports what happened rather than the picture from before it.
+    """
+    _user_observation.invalidate(key)
+
+
+def _matrix_state_snapshot():
+    """The administrative view, as /api/state computes it.
+
+    Called rather than recomputed so the projection can never disagree with the
+    matrix about what is routed where, and so no second device read exists.
+    """
+    with app.test_request_context("/api/state"):
+        import json as _json
+        return _view_payload(api_state_matrix())
+
+
+
+# ---------------------------------------------------------------- backup ----
+#
+# Export and restore are LOCAL_ONLY, and that is a security decision rather
+# than a convenience one.
+#
+# The backup contains the device credentials, which `/api/config` already
+# refuses to hand to anything but the local host. An export endpoint reachable
+# remotely would be a second, quieter way to the same secret, so it is not one.
+# It also matches how a disaster actually unfolds: somebody is standing at the
+# replacement PC with the backup file. The local operator is trusted by the
+# socket the request arrived on, which is what lets a technician who never knew
+# the old administrator's password rebuild the deployment anyway.
+
+BACKUP_SNAPSHOT_DIR = DATA_DIR / "restore-snapshot"
+
+_restore_lock = threading.Lock()
+_restore_in_progress = False
+#: Set when a restore left the files and the running process disagreeing.
+_restart_required = False
+
+
+@app.before_request
+def _refuse_writes_while_restoring():
+    """Configuration is not written while a restore runs, or after one that left
+    the process disagreeing with the disk. Reads and sign-in are unaffected."""
+    if not (_restore_in_progress or _restart_required):
+        return None
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return None
+    if request.path.startswith(("/api/backup/", "/api/auth/")):
+        return None
+    reason = "restore_in_progress" if _restore_in_progress else "restart_required"
+    return jsonify({
+        "ok": False, "reason": reason,
+        "error": ("A restore is running. Try again in a moment."
+                  if _restore_in_progress else
+                  "The configuration was restored but OmniSuite could not load "
+                  "all of it. Close and reopen OmniSuite before changing "
+                  "anything.")}), 409
+
+
+def _backup_data_dir():
+    """Where the deployment's files live. One answer, used by both halves."""
+    return DATA_DIR
+
+
+@app.route("/api/backup/export", methods=["POST"])
+def api_backup_export():
+    """Encrypt this deployment into one file the operator saves somewhere else."""
+    data = _json_dict()
+    passphrase = data.get("passphrase") or ""
+    # Named fields only, and never this one: a verbatim request dump would put
+    # the backup passphrase in the log.
+    log.info("[BACKUP] export requested")
+
+    try:
+        payload = omni_backup.build_payload(
+            _backup_data_dir(), _load_cache() or [], app_version=_app_version())
+        blob = omni_backup.seal(payload, passphrase, app_version=_app_version())
+    except omni_backup.BackupError as e:
+        log.warning("[BACKUP] export refused: %s", e.reason)
+        return jsonify({"ok": False, "reason": e.reason,
+                        "error": e.message}), 400
+
+    summary = omni_backup.summarise(payload, {"created_at": "",
+                                              "omnisuite_version": _app_version(),
+                                              "format": omni_backup.FORMAT_VERSION})
+    name = omni_backup.suggested_filename(_app_version())
+    log.info("[BACKUP] exported %d section(s), %d device(s), %d bytes",
+             len(summary["sections"]), summary["devices"], len(blob))
+    # Counts only. A backup carries every account and device credential, so the
+    # fact that one was made belongs in the record; nothing about its contents.
+    try:
+        _user_store.audit("backup.exported", actor=getattr(g, "principal", None),
+                          detail={"sections": len(summary["sections"]),
+                                  "devices": summary["devices"]})
+    except Exception as e:
+        log.warning("[BACKUP] the export could not be recorded: %s",
+                    type(e).__name__)
+
+    response = app.response_class(blob, mimetype="application/octet-stream")
+    response.headers["Content-Disposition"] = 'attachment; filename="%s"' % name
+    response.headers["Cache-Control"] = "no-store, private"
+    response.headers["X-OmniSuite-Backup-Sections"] = str(len(summary["sections"]))
+    return response
+
+
+def _local_port_call(method_name, *args):
+    """Run one local-port operation, or say plainly that none is available.
+
+    The supervisor is registered by the launcher. A source run, a test or any
+    other entry point has none, and then there is nothing to change: that is
+    reported, never guessed at.
+    """
+    supervisor = omni_local_port.controller()
+    if supervisor is None:
+        return jsonify({"ok": False, "available": False,
+                        "reason": "unavailable",
+                        "error": omni_local_port.NOT_AVAILABLE}), 409
+    body, status = getattr(supervisor, method_name)(*args)
+    return jsonify(body), status
+
+
+@app.route("/api/local_port", methods=["GET"])
+def api_local_port_status():
+    supervisor = omni_local_port.controller()
+    if supervisor is None:
+        return jsonify(omni_local_port.unavailable_status())
+    return jsonify(supervisor.status())
+
+
+@app.route("/api/local_port/fixed", methods=["POST"])
+def api_local_port_fixed():
+    data = request.get_json(silent=True)
+    value = data.get("port") if isinstance(data, dict) else None
+    return _local_port_call("set_fixed", value)
+
+
+@app.route("/api/local_port/disable", methods=["POST"])
+def api_local_port_disable():
+    return _local_port_call("disable_fixed")
+
+
+@app.route("/api/local_port/retry", methods=["POST"])
+def api_local_port_retry():
+    return _local_port_call("retry_fixed")
+
+
+@app.route("/api/local_port/make_fixed", methods=["POST"])
+def api_local_port_make_fixed():
+    return _local_port_call("make_fixed")
+
+
+@app.route("/api/backup/inspect", methods=["POST"])
+def api_backup_inspect():
+    """Decrypt and validate, and change absolutely nothing.
+
+    This is what the confirmation screen is built from, so an operator decides
+    with the real contents in front of them rather than a filename.
+    """
+    blob = _backup_upload()
+    if blob is None:
+        return jsonify({"ok": False, "reason": "no_file",
+                        "error": "Choose a backup file first."}), 400
+    passphrase = request.form.get("passphrase") or ""
+    try:
+        header, payload = omni_backup.unseal(blob, passphrase)
+    except omni_backup.BackupError as e:
+        log.warning("[BACKUP] inspect refused: %s", e.reason)
+        return jsonify({"ok": False, "reason": e.reason,
+                        "error": e.message}), 400
+    problems = omni_backup.validate(payload)
+    if problems:
+        return jsonify({"ok": False, "reason": "invalid",
+                        "error": "This backup is missing something it needs: "
+                                 + "; ".join(problems),
+                        "problems": problems}), 400
+    return jsonify({"ok": True,
+                    "summary": omni_backup.summarise(payload, header),
+                    "account_impact": _restore_account_impact(payload)})
+
+
+def _restore_account_impact(payload) -> dict:
+    """Which accounts on this computer a restore would remove or replace.
+
+    Read before anything is touched, from the same table the sessions are
+    checked against, so the sentence the administrator confirms is the one that
+    is then true. Names, never hashes or links.
+    """
+    try:
+        incoming = omni_users.UserStore.fingerprints_of(
+            ((payload.get("sections") or {}).get("accounts") or {}).get("users"))
+        return omni_backup.account_impact(
+            payload, _user_store.account_fingerprints(), incoming)
+    except Exception as e:
+        # The confirmation still says accounts are replaced; what it cannot do
+        # is name them, and it must not claim nothing will happen.
+        log.error("[BACKUP] could not work out the account impact: %s", e)
+        return {"applies": True, "known": False, "removed": [], "replaced": [],
+                "added": [], "current": 0, "in_backup": 0}
+
+
+@app.route("/api/backup/restore", methods=["POST"])
+def api_backup_restore():
+    """Replace this deployment's configuration, or leave it exactly as it is.
+
+    Read, authenticate, validate, snapshot, apply, verify. Nothing is written
+    until every one of the first four has succeeded, and if the apply fails
+    partway the snapshot goes back.
+    """
+    blob = _backup_upload()
+    if blob is None:
+        return jsonify({"ok": False, "reason": "no_file",
+                        "error": "Choose a backup file first."}), 400
+    passphrase = request.form.get("passphrase") or ""
+    log.info("[BACKUP] restore requested")
+
+    # ---- 1-4: nothing is touched until all of this has passed ----------
+    try:
+        header, payload = omni_backup.unseal(blob, passphrase)
+    except omni_backup.BackupError as e:
+        log.warning("[BACKUP] restore refused: %s", e.reason)
+        return jsonify({"ok": False, "reason": e.reason,
+                        "error": e.message}), 400
+    problems = omni_backup.validate(payload)
+    if problems:
+        log.warning("[BACKUP] restore refused: invalid payload")
+        return jsonify({"ok": False, "reason": "invalid",
+                        "error": "This backup is missing something it needs: "
+                                 + "; ".join(problems),
+                        "problems": problems}), 400
+
+    data_dir = _backup_data_dir()
+    summary = omni_backup.summarise(payload, header)
+
+    # One restore at a time, and nothing else writing configuration while it
+    # runs. The account and name stores keep their contents in memory and rewrite
+    # the whole file on any change, so a change made between "users.json
+    # restored" and "reloaded from disk" would write the old accounts straight
+    # back over the restored ones. Holding their locks across the whole
+    # transaction closes that; the flag makes every other configuration write
+    # answer 409 instead of queueing behind it.
+    global _restore_in_progress
+    if not _restore_lock.acquire(blocking=False):
+        return jsonify({"ok": False, "reason": "restore_in_progress",
+                        "error": "A restore is already running."}), 409
+    _restore_in_progress = True
+    try:
+        with _user_store._lock, _device_aliases._lock, _display_groups._lock:
+            return _restore_locked(payload, summary, data_dir)
+    finally:
+        _restore_in_progress = False
+        _restore_lock.release()
+
+
+def _restore_locked(payload, summary, data_dir):
+    """Snapshot, apply, reload -- with every store the restore replaces held.
+
+    units_cache.json is part of that: its pre-restore state is captured and, on
+    a failure, put back and verified. The cache lock and then the scan-results
+    lock (the project's one order) are held from the capture to the end of the
+    last step that can change the file, so the snapshot is one moment, no scan
+    or poll can write between it and a rollback, and a rollback cannot be
+    overwritten. Both are re-entrant, so the device-list step below takes them
+    again without waiting. The account, name and group locks are already held
+    by the caller, as in the other path that holds all of them (Clear Units).
+    """
+    with _cache_io_lock, _scan_results_lock:
+        return _restore_locked_cache_held(payload, summary, data_dir)
+
+
+def _restore_cache_rollback(info, why):
+    """Put units_cache.json back to its pre-restore state and say whether that was proven.
+
+    Only called with the cache and scan-results locks held. Returns the report
+    that goes in the reply; a rollback that could not be verified is logged at
+    error level with what to look at, never ignored.
+    """
+    verified, detail = omni_backup.rollback_cache(BACKUP_SNAPSHOT_DIR, CACHE, info)
+    if verified:
+        log.warning("[BACKUP] units_cache.json put back to its pre-restore state "
+                    "(%s, was %s) after: %s", detail, info.get("state"), why)
+    else:
+        log.error("[BACKUP] units_cache.json could NOT be put back to its "
+                  "pre-restore state (%s, was %s) after: %s; the pre-restore "
+                  "copy is in %s", detail, info.get("state"), why,
+                  BACKUP_SNAPSHOT_DIR)
+    return {"state": info.get("state"), "rollback": detail, "verified": verified}
+
+
+def _restore_cache_reads_back(units):
+    """Whether units_cache.json now holds exactly the device list just written."""
+    raw = omni_backup._read_cache_bytes(CACHE)
+    if raw is None:
+        return False
+    try:
+        return json.loads(raw.decode("utf-8")) == json.loads(json.dumps(units))
+    except (ValueError, UnicodeDecodeError):
+        return False
+
+
+def _restore_locked_cache_held(payload, summary, data_dir):
+    global _restart_required
+
+    # ---- 5: the way back, before there is anything to come back from ---
+    try:
+        saved = omni_backup.snapshot(data_dir, BACKUP_SNAPSHOT_DIR)
+        cache_snapshot = omni_backup.snapshot_cache(CACHE, BACKUP_SNAPSHOT_DIR)
+    except OSError as e:
+        log.error("[BACKUP] could not take a rollback snapshot: %s", e)
+        return jsonify({
+            "ok": False, "reason": "no_snapshot",
+            "error": "The current configuration could not be saved first, so "
+                     "nothing was changed."}), 500
+
+    # ---- 6: apply -------------------------------------------------------
+    try:
+        applied = omni_backup.apply_payload(
+            payload, data_dir, write_json=omni_users._atomic_write_json)
+    except Exception as e:
+        log.error("[BACKUP] restore failed partway: %s", e)
+        restored, failures = omni_backup.rollback(
+            BACKUP_SNAPSHOT_DIR, data_dir, saved)
+        cache_report = _restore_cache_rollback(
+            cache_snapshot, "the restore failed partway")
+        if not cache_report["verified"]:
+            failures.append("units_cache.json (%s)" % cache_report["rollback"])
+        status = ("FAILED — ROLLED BACK" if not failures
+                  else "FAILED — ROLLBACK INCOMPLETE")
+        body = {
+            "ok": False, "reason": "apply_failed", "status": status,
+            "error": "The restore could not be completed. %s"
+                     % ("The previous configuration has been put back."
+                        if not failures else
+                        "Some files could not be put back: "
+                        + ", ".join(failures)),
+            "rolled_back": restored, "rollback_failures": failures,
+            "cache": cache_report}
+        try:
+            _user_store.audit("backup.restore_failed",
+                              actor=getattr(g, "principal", None),
+                              detail={"rolled_back": not failures})
+        except Exception:
+            pass
+        if failures:
+            # Never claim a restoration that did not happen, and keep the way
+            # back: the snapshot is the only complete copy of the old state.
+            # Further saves are refused too, because the process still holds
+            # the old state and would write it over whatever is on disk.
+            _restart_required = True
+            body["recovery_snapshot"] = str(BACKUP_SNAPSHOT_DIR)
+            log.error("[BACKUP] rollback INCOMPLETE (%s); the previous "
+                      "configuration is preserved in %s", ", ".join(failures),
+                      BACKUP_SNAPSHOT_DIR)
+        return jsonify(body), 500
+
+    # ---- 7: re-read everything from what is now on disk -----------------
+    devices_matched = devices_unmatched = 0
+    devices_saved = None
+    cache_report = None
+    session_report = {"sessions_ended": 0, "reasons": {}}
+    try:
+        # Both stores read their own file on demand; this is the same load
+        # they do at startup, so there is one way to read each of them. The
+        # account store's also ends the sessions the new table no longer
+        # justifies, in the same critical section, so there is no request in
+        # between that is authorised against accounts that have just been
+        # replaced.
+        session_report = _user_store.reload_from_disk()
+        _user_store._load_activity_settings()
+        _device_aliases._load()
+        _display_groups.reload()
+        # The restored device credentials, into the live application. The
+        # same keys startup sets, from the same loader, so a restored
+        # deployment talks to its hardware without a restart.
+        restored_cfg = _load_config()
+        for key in ("USERNAME", "PASSWORD", "FALLBACK_PASSWORD", "WS_PORT",
+                    "TIMEOUT", "UPLOAD_CONCURRENCY", "FIRMWARE_PATH"):
+            if key in restored_cfg:
+                app.config[key] = restored_cfg[key]
+        # One critical section across the read, the merge and the write, in
+        # the fixed lock order. Locked separately, a poll or a scan that saved
+        # between the load and the save was silently overwritten by the
+        # restore's older copy of the list. (The scan-results lock is taken by
+        # the load itself, inside this one: cache first, then scan results.)
+        with _cache_io_lock:
+            units, devices_matched, devices_unmatched = omni_backup.merge_devices(
+                payload, _load_cache() or [])
+            devices_saved = _save_cache(units)
+            if devices_saved is not False and not _restore_cache_reads_back(units):
+                # Reported written, does not read back as written: the file
+                # is not what was meant, so it goes back to what it was.
+                devices_saved = False
+            if devices_saved is False:
+                # The write is atomic, so a failed one leaves the old file;
+                # this proves that rather than assuming it, and puts the old
+                # file back if it is not so.
+                cache_report = _restore_cache_rollback(
+                    cache_snapshot, "the device list could not be saved")
+        if devices_saved is False:
+            log.error("[BACKUP] restored, but the device list could not be "
+                      "written; learned device details will return with the "
+                      "next scan")
+    except Exception as e:
+        # The files are written and valid; what failed is this process picking
+        # them up. A restart does that, and saying so is better than rolling
+        # back a restore that actually succeeded.
+        log.error("[BACKUP] restored, but reloading in place failed: %s", e)
+        if devices_saved is None:
+            # The failure came before or during the device-list step: whatever
+            # state the cache is in, it is put back to what it was.
+            cache_report = _restore_cache_rollback(
+                cache_snapshot, "reloading after the restore failed")
+        # The files are the restored ones; the process may still hold the old
+        # state. The next ordinary save would write that over the restore, so
+        # saving stops until the application is restarted.
+        _restart_required = True
+        # Nobody can say which table the open sessions were opened against, so
+        # nobody keeps one: the sign-in that matters is the next one.
+        ended = _user_store.revoke_every_session()
+        _audit_restore("backup.restored", applied, session_report,
+                       sessions_ended=ended, restart_required=True)
+        return jsonify({
+            "ok": True, "status": "RESTORED — RESTART REQUIRED",
+            "summary": summary, "applied": applied, "cache": cache_report,
+            "error": "The configuration was restored, but OmniSuite could not "
+                     "load all of it without restarting. Close and reopen "
+                     "OmniSuite."}), 200
+
+    _restart_required = False
+    log.info("[BACKUP] restored %d file(s); %d device(s) matched by identity, "
+             "%d awaiting a scan; %d session(s) ended", len(applied["written"]),
+             devices_matched, devices_unmatched,
+             session_report["sessions_ended"])
+    _audit_restore("backup.restored", applied, session_report)
+    # Past this point the restore HAS happened, so nothing left to do may be
+    # able to report it as a failure. Building the results screen is the last
+    # thing, it is cosmetic, and an exception in it once turned a restore that
+    # had written all ten files into a 500 -- which, on the day somebody is
+    # rebuilding a dead deployment, is the worst lie this endpoint could tell.
+    try:
+        recovery = _admin_recovery_note()
+    except Exception as e:
+        log.error("[BACKUP] restored, but the summary could not be built: %s", e)
+        recovery = {"administrators": [],
+                    "note": "The configuration was restored. If nobody knows "
+                            "the restored administrator passwords, set a new "
+                            "one here on the OmniSuite computer."}
+    return jsonify({
+        "ok": True, "status": "RESTORED",
+        "summary": summary,
+        "applied": applied,
+        "devices": {"matched": devices_matched,
+                    "awaiting_scan": devices_unmatched,
+                    "saved": devices_saved is not False,
+                    **({"cache": cache_report} if cache_report else {})},
+        "sessions_ended": session_report["sessions_ended"],
+        "admin_recovery": recovery,
+    })
+
+
+def _audit_restore(event, applied, session_report, *, sessions_ended=None,
+                   restart_required=False):
+    """One entry for one restore, recorded where it happened.
+
+    Counts only: what was written, what was removed and how many sessions it
+    ended. The backup's contents, its passphrase and every credential in it
+    stay out of the log.
+    """
+    try:
+        _user_store.audit(event, actor=getattr(g, "principal", None), detail={
+            "written": len(applied.get("written") or []),
+            "removed": len(applied.get("removed") or []),
+            "sessions_ended": (session_report["sessions_ended"]
+                               if sessions_ended is None else sessions_ended),
+            "restart_required": bool(restart_required)})
+    except Exception as e:
+        log.warning("[BACKUP] the restore could not be recorded: %s",
+                    type(e).__name__)
+
+
+def _backup_upload():
+    """The uploaded file's bytes, however the caller sent them."""
+    upload = request.files.get("backup")
+    if upload is not None:
+        return upload.read()
+    if request.data:
+        return request.data
+    return None
+
+
+def _admin_recovery_note() -> dict:
+    """Whether anybody can still get in, said plainly.
+
+    A restore replaces the account table with the old deployment's, whose
+    administrator password may be one nobody at this site remembers. That is
+    not a lock-out: this machine's own operator is trusted by the socket and
+    can reset any password or create an administrator from here. Saying so on
+    the results screen is the difference between a calm afternoon and a
+    reinstall.
+    """
+    # `list_accounts` hands back the public projection -- dictionaries, not
+    # Account objects. Reading `.is_admin` off one raised, which turned a
+    # restore that had actually succeeded into a 500 on the results screen:
+    # the worst possible moment to tell somebody their recovery failed when
+    # it did not.
+    admins = [a.get("username") for a in _user_store.list_accounts()
+              if a.get("role") == omni_users.ROLE_ADMIN and a.get("username")]
+    if not admins:
+        # A backup of a deployment with no accounts leaves none here either.
+        # Saying "these administrator accounts came from the backup" over an
+        # empty list is not true, and is no help to the person who now has to
+        # create one.
+        return {
+            "administrators": [],
+            "note": "The backup contained no administrator account, so nobody "
+                    "can sign in as one now. Create a new administrator here "
+                    "on the OmniSuite computer -- this screen does not "
+                    "require a sign-in.",
+        }
+    return {
+        "administrators": sorted(admins),
+        "note": "These administrator accounts came from the backup. If nobody "
+                "knows their passwords, set a new one here on the OmniSuite "
+                "computer -- this screen does not require one.",
+    }
+
+omni_remote_api.register(
+    app,
+    store=_user_store,
+    listener=_remote_listener,
+    aliases=_device_aliases,
+    groups=_display_groups,
+    load_cache=_load_cache,
+    matrix_state=_matrix_state_snapshot,
+    route_view=api_route_matrix,
+    remote_enabled=remote_access_enabled,
+    set_remote_state=_remote_access_preference,
+    remote_config=_remote_access_last_choice,
+    # The verified engines. The user endpoints authorise and delegate; they
+    # never reimplement routing, pairing or Multiview planning.
+    usb_state=_usb_state_snapshot,
+    usb_pair_view=api_usb_route_pair,
+    usb_unpair_view=api_usb_route_unpair,
+    forget_observation=_forget_user_observation,
+    credential_report=credential_report,
+    unroute_view=api_unroute_matrix,
+    user_shell=user_page,
+    locks=_resource_locks,
+    tls=omni_tls,
+    cert_paths=(REMOTE_CERT_FILE, REMOTE_KEY_FILE),
+    tls_context_for=_remote_tls_context,
+    certificate_state=remote_certificate_state,
+    # The device half of source previews. Authorisation and HTTP shape
+    # stay in the API module, which has no opinion about how devices
+    # are read and must not gain one.
+    source_preview=source_preview,
+)
 
 
 # Restore Multiview metadata now that the helpers above are defined. The device

@@ -844,16 +844,26 @@ class ExtenderDiscoveryService:
             current = self._devices.get(mac)
             return self._decorate(current) if current else None
 
-    def clear_devices(self) -> int:
+    def clear_devices(self, keep=None) -> int:
         """Forget the discovered inventory.
 
         This is inventory only: configured ranges are kept, no packet is sent,
         and no device configuration, pairing, or power state is touched.  Cleared
         devices reappear after the next successful discovery.
+
+        `keep` is a set of normalised MACs that stay: with Remote Access on, an
+        endpoint something refers to is protected from Clear Units. Omitted means
+        everything goes, as before.
         """
+        def compact(value):
+            return "".join(c for c in str(value).lower() if c in "0123456789abcdef")
+
+        keeping = {compact(k) for k in (keep or ())}
         with self._lock:
-            removed = len(self._devices)
-            self._devices = {}
+            kept = {mac: dev for mac, dev in self._devices.items()
+                    if compact(mac) in keeping}
+            removed = len(self._devices) - len(kept)
+            self._devices = kept
             self._mark_dirty()
         self._flush()
         LOG.info("Cleared %d standalone USB extender record(s) from inventory", removed)

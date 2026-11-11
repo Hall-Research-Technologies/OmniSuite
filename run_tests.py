@@ -37,7 +37,17 @@ TESTS = ROOT / "tests"
 JS_SUITES = ("usb_render_smoke.js", "usb_filter_test.js", "lldp_topology_test.js",
              "sticky_observers_test.js", "mirror_scroll_test.js", "device_log_test.js",
              "appearance_theme_test.js", "multiview_ui_test.js",
-             "matrix_multiview_test.js")
+             "matrix_multiview_test.js", "user_shell_test.js",
+             "settings_remote_test.js", "csrf_test.js",
+             "user_routing_test.js", "adminnav_test.js", "scan_notice_test.js",
+             "device_text_escaping_test.js", "device_manager_test.js", "matrix_lifecycle_test.js", "device_sort_test.js", "state_text_contrast_test.js", "adapter_default_test.js",
+             "firmware_status_test.js", "remote_nav_test.js",
+             "remote_admin_ui_test.js", "user_groups_test.js", "usb_prep_test.js",
+             "user_preview_refresh_test.js", "version_status_test.js",
+             "clear_units_test.js", "settings_backup_test.js",
+             "restore_impact_test.js", "restore_confirm_focus_test.js",
+             "local_port_ui_test.js", "local_port_confirm_test.js",
+             "certificate_state_ui_test.js")
 
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(TESTS))

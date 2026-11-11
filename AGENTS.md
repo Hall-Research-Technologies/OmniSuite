@@ -1,5 +1,59 @@
 # OmniSuite development rules
 
+## Branches
+
+| Branch | Purpose |
+|---|---|
+| `omnisuite-unified` | The single OmniSuite development line. |
+| `main` | The published release (V1.1.0 until the consolidated product is published). Not moved without approval. |
+| `release/omnisuite-1.1.x` | Maintenance of the published V1.1.0, only if a V1.1.x fix is needed. |
+| `feature/*` | Individual features and fixes, branched from `omnisuite-unified`. |
+
+- Do not rename, delete, reset or force-push `main`, `V1.1.0` or any release branch.
+- Do not create a production tag or publish a release without approval.
+- Publishing source is a separate decision from building it, because a branch's history is part
+  of what it publishes. Never push a development branch to the public repository; a release is
+  published as a reviewed snapshot commit.
+- Read [DEVELOPMENT.md](DEVELOPMENT.md) before branching or releasing.
+
+## Release identity
+
+A GitHub release does not say what it is, so identity is something this project has to
+establish. `omni_release.py` is the single definition; `omni_product.py` names the product.
+
+- Tag `V1.2.0`; artifacts `OmniSuite-V1.2.0-<platform>`; macOS bundle identifier `OmniSuite`
+  (unchanged since the first release).
+- A tag is never repaired. `v1.2.0`, `V1.2.0-rc1` and a tag with a trailing newline are not
+  release tags; a release that had to be fixed to be understood was not understood. Match
+  with `\Z`, never `$`.
+- The prerelease flag is a channel, not an identity. It decides whether a build is offered;
+  it never decides what a release is.
+- The updater reads the release list and offers the newest release whose tag and artifact
+  names are this product's, by highest number rather than feed order. Nothing compatible is
+  UNABLE_TO_CHECK, never "up to date".
+- Installed V1.1.0 applications read the release repository's "latest" release and cannot be
+  changed. What is published must keep working with them; `tests/test_release_compatibility.py`
+  runs their update check, frozen verbatim, against what the build produces.
+- The workflow decides identity before anything is built (`tools/release_identity.py`) and
+  fails closed: the tag must be this product's, agree with `VERSION`, sit on the release
+  branch, and have release notes for its version. A dispatch or a branch push is a diagnostic
+  build that cannot publish and must carry a suffix.
+- The dispatched version is untrusted text: it reaches the guard through the environment and
+  is never interpolated into a shell command.
+- Publishing goes to the release repository (`release_repo`), which is not the repository the
+  workflow runs in, with a dedicated token (`RELEASE_PUBLISH_TOKEN`). A run without the token
+  stops; nothing publishes by default. Publish collects only this product's artifacts and
+  verifies every file against the product and version.
+- Workflows run only in the repository named by the repository variable `OMNI_CI_REPOSITORY`
+  In any other repository the identity job is skipped
+  and every later job with it. An unset variable skips everything.
+- Licensing: one licence. Its only change since V1.1.0 is the approved section 11A, which
+  preserves the LGPL rights of pystray. Do not introduce a second licence, terms or an activation
+  system.
+- The product is OmniSuite. There is no edition, tier or second product line inside it, and no
+  feature is gated by one. A test fails if obsolete product naming returns to the tree.
+- Do not create a production tag or publish a release without approval.
+
 ## Preserve the working application
 
 - This is an existing working application. Preserve existing behavior.
@@ -412,8 +466,8 @@
 - The **audio** crosspoint on that row stays. Multiview sound comes from one source over its ordinary audio path, so it is true, and hiding it would be the lie.
 - Whether a decoder is compositing is decided **only from what its display is currently selecting**. Saved Multiview objects, a remembered page selection and OmniSuite's own metadata are not evidence: none of them says what is on screen now.
 - This is derived from a field the ordinary scan already collects. **Do not add Multiview discovery or configuration reads to the scan hot path** to answer it.
-- **Normal routing to such a decoder stays available.** It warns first, once per browser session, with a "do not show this again" option; the acknowledgement is session-scoped so a refresh or a trip to another page does not ask again. Cancel performs **zero** device mutations.
-- The operator's answer **travels with the route request**. A request that does not carry it is refused, so no caller can take a display off a composition silently.
+- **Normal routing to such a decoder happens, and asks nothing.** *(Superseded the warn-and-consent rule: a normal A/V route MEANS single view, so the display simply stops compositing. Putting a source on a display is the instruction; nobody choosing a camera is thinking about what the display was doing first, and the question was one too many.)* The engine still recognises the composition, still leaves it through `_exit_active_multiview`, still restores it if the route then fails, and still never deletes the saved object. Only the question is gone, on every surface -- A/V Matrix, Display Output drop, password User and Direct Access User alike.
+- **Nothing carries an answer, because nothing is asked.** `exit_multiview` is accepted and ignored so a cached page still works, and no surface sends it. The decision belongs to the server, which has just read the decoder, rather than to a page's idea of what it was doing a moment ago.
 - Leaving Multiview is one transaction — move the display, release the pool inputs that Multiview owned, then route — and each step is verified. If the route fails, restore the Multiview and say whether the restoration was verified.
 - **Exiting a Multiview never deletes it.** The saved object stays and can be shown again.
 - The matrix redraws from the route response, and showing a Multiview records the decoder's new display state. **Do not add polling** to keep the matrix honest, and never show the intended state in place of the verified one.
@@ -572,3 +626,191 @@ Four things, and collapsing any two of them is how a saved layout comes to chang
 - Write it for an operator. What the feature does, how to use it, what the messages mean. Not function names, routes, protocol verbs, internal algorithms, test architecture or phase numbers — none of those help the person reading it, and all of them age badly.
 - The guide states the version it was built from, substituted at serve time. Never hand-type a version into it.
 - Screenshots must match the controls the build actually has. A screenshot that contradicts the current workflow is worse than none. Bench addresses, MAC addresses, serial numbers and hostnames are acceptable in it; credentials, tokens and secrets never are.
+
+
+### Remote access: hardening
+
+- **A first-time Remote Access setup starts on HTTP, and HTTPS is the recommended transport once a certificate exists; neither is ever chosen for the operator, and there is no automatic downgrade.** With no saved choice the transport reads as HTTP, because a certificate made for a DHCP address stops matching when the address moves. Plain HTTP requires an explicit boolean acknowledgement (`accept_insecure`) in the request body, so a caller that merely omits a field cannot reach it, and a truthy field of some other name will not do. Once a transport has been saved, that choice is honoured, and a saved file whose transport is absent or unreadable reads as HTTPS so the failure direction is refusing to start. A saved HTTPS choice whose certificate is missing, unreadable, encrypted, mismatched, expired or made for another address refuses remote access and says why; it never starts plaintext instead.
+- **There is no HTTP listener at all while HTTPS is active.** A redirect has to accept the request before it can protect it, and a sign-in posted to that listener has already crossed the network in clear. Refusing to listen is the only version of this that is true.
+- **A private key is never returned, logged or packaged.** A certificate description carries subject, issuer, fingerprint and expiry and nothing else. A generated key is written with `os.open` at `0o600` and an existing one has its mode narrowed on load. A clean installation contains no certificate and no key.
+- **The Secure flag follows the transport, not a setting.** It is decided from the request, beside the existing HttpOnly, SameSite and CSRF design rather than in place of any of it. A Secure cookie over plaintext is simply never sent, so the flag must not be forced on either.
+- **Authorization is re-evaluated at the operation boundary**, from the session as it is at that moment. An account disabled, demoted or re-permissioned a second ago is refused on its next operation; nothing waits for a browser to refresh itself.
+- **Lock the affected resource, never the application.** Per-resource locks, acquired in sorted order when an operation touches several, released in full if any acquisition fails, with a bounded wait that surfaces as 409 naming the resource. Hold one for the duration of one operation and no longer: the rule is last successful authorized operation wins, and a browser that closed must never leave a display unusable.
+- **An in-flight read must be ordered against the writes it races.** A cached read that began before an invalidation will otherwise publish a value the writer has already replaced. A per-key generation counter fixes the single-key case; a global invalidation needs its own epoch, because a key that was never individually invalidated has no generation to compare against. Both gaps were real, and both were found by stress tests rather than by reading the code.
+- **A discarded cache result is still returned to the caller that asked for it.** It simply is not stored. Count what was computed and what was discarded separately, or the behaviour cannot be observed.
+- **An audit write must not hold the lock authentication needs.** Rewriting the whole log on every event, under that lock, turns failed sign-ins into a way to stop the application answering. Snapshot under the lock, write outside it, batch on a cadence with security-relevant events immediate, and bound the entry count so a flood costs history rather than the disk.
+- **A username is not a secret.** Redacting it makes an activity view unreadable. Passwords, hashes, tokens, CSRF tokens, session data and device credentials are, and recursion through nested objects and lists belongs in the redactor rather than in the discipline of its callers.
+- **Do not prohibit duplicate friendly names.** Two displays legitimately share one, and a uniqueness rule is the application overruling the site. Disambiguate instead, and only where a label actually repeats **within that viewer's visible set** — a person who can see one *Front Display* sees it named exactly as it was typed. Never reach for an address or a MAC to solve a label problem: those are the engineering detail the projection exists to keep out of an operator's hands.
+- **Say what was tested, not what sounds strong.** Resistance to sophisticated timing analysis is not claimed anywhere. What is asserted is that the obvious differences are absent: an unknown username and a wrong password give the same answer and both cost a verification. A timing measurement inside a test suite would be flaky and would prove less than reading the code path, so the test reads the code path and says that is what it is doing.
+
+### A mutation harness is a test of the tests
+
+- **Break each security predicate on purpose and require the suite to notice.** An assertion nobody has watched fail is an assertion nobody has verified. Every predicate a trust boundary depends on — listener trust, route classification, the local-only refusal, the session requirement, CSRF, role, feature, source, destination, preset approval, expiry, the Secure cookie, address validation — earns a deliberate defect.
+- **A survivor is investigated, never waved through**: a real gap, a test gap, or a genuinely redundant control, and which one has to be established rather than assumed.
+- **A default nothing reaches still needs its own test.** Every route being classified means `classify()` never falls back and the gate never reaches its final return — which is exactly why a mutation of either survives, and exactly why they need testing directly. They are what protects the route somebody adds next.
+- **A second line of defence is tested by disabling the first.** A check that the ordinary path never reaches because something upstream already refused is not redundant; it is untested. Reach it deliberately.
+- **Record each suite's whole output, not its summary line.** A runner that greps the last line reports every mutation as uncaught, which is indistinguishable from tests that do not work.
+- **Restore the file in a `finally`**, so an interrupted run never leaves a deliberately defective source behind, and **translate the anchor's line endings to the file's** — sources here are CRLF, an anchor written with newlines matches nothing, and rewriting the file to match the anchor turns every mutation into a whole-file diff.
+
+### An internal name in front of an operator is a defect however it got there
+
+- **A label map written from string literals misses every name built by concatenation.** `"user." + action` produces ids that appear nowhere as a literal, so they were absent from the map and would have rendered as themselves. Derive the set of emittable names from the source, including the concatenated ones, and fail the suite when one has no label.
+- **The fallback for an unmapped id is English, never the id.** The map is today's fix; the fallback is the fix for the name somebody adds after the test was written.
+
+### Instrument the transport, and check the instrument
+
+- **A read counter belongs on the thing that opens the socket.** Wrapping a convenient helper counted zero device reads for every page, which reads exactly like a perfect cache and is no measurement at all.
+- **Settle background work before measuring, and discard a warm-up.** Startup threads open their own connections; counting those against the first sample reported seventeen reads for one client and four for ten.
+- **A zero is a result only once the request succeeded.** An endpoint answering 400 because the measurement omitted a parameter reports no device traffic for a reason that has nothing to do with caching. Report the status beside the count.
+
+
+### An audit entry is a record of what happened, not of what was asked
+
+- **One operator action, one entry.** Two layers each recording half of it produces a log that reads as though everything happened twice, and neither half answers the question on its own. Record it in the layer that knows *what changed and to whom*, and pass the actor down to it -- the actor is usually the only thing the outer layer knows that the inner one does not.
+- **Name the event after what happened, never after the verb in the request.** "Account disabled" is a fact; "set_enabled" is an instruction that may have been refused. Identify the account by something a person can read, not by an opaque id.
+- **An event name built by concatenation is invisible to a label map.** `"user." + action` appears nowhere as a literal, so nobody writing the map from the literals can see it, and the internal name reaches the operator. Derive the set of emittable names from the source and fail the suite when one has no label.
+- **Record it where the operation happened, not before it.** An entry written before a wait records an operation that may still be refused.
+- **A record with no actor is not a gap.** A local request is trusted by the socket it arrived on, not by a sign-in, so there is no account behind it. Writing one in would be inventing it.
+
+### A lock is a wait, and a wait is time in which permission can be withdrawn
+
+- **Authorisation is checked again on the far side of the lock**, immediately before the device write. Everything decided before the wait describes a world that may have moved on: an administrator can disable an account, change a permission or take a display away while a request sits in the queue.
+- **Check before the wait as well**, so a request that was never going to be allowed does not queue for a lock and delay one that was.
+- **A refusal after the wait is recorded as a refusal**, and the operation that did not happen is not recorded as though it did.
+
+### A setting that belongs to the installation is not a setting a user may write
+
+- **One file for the whole installation is not one file per account.** An appearance preference and a notice acknowledgement look harmless until a restricted account can restyle the operator's interface or dismiss their alert. Classify the write as administrative even when nothing about it is device control.
+- **A classification may narrow by method; it must never widen.** Where a rule's read is ordinary and its write is not, say so in one small table, and assert both that an override only ever restricts and that the rule it overrides is itself classified. A rule that needs an entry is usually a rule that should have been two.
+
+### Device-reported metadata is presentation, and only presentation
+
+- **Surface what the device already tells you before inventing a field.** Location and description sit in `systeminfo`, which every probe fetches and every cached record holds, so using them costs no device read and writes nothing back. Read from the record first and from the nested configuration underneath it, so something discovered before the field was promoted still answers and no rescan is required.
+- **Precedence is human-readability, not availability**: the room, then the description, then the device's own name. An address or a MAC would also distinguish and neither is ever used -- they are the engineering detail the projection exists to keep out of an operator's hands.
+- **A friendly name belongs to the application; location and description belong to the equipment.** Keep them in separate fields and separate columns, and never let either become authorization identity. A room renamed must change no permission, no alias, no routing identity and no approval, and that deserves adversarial tests rather than a comment.
+- **Use it to build the name; do not ship it as a new field.** A projection that gains a key for every fact it renders is no longer a projection.
+
+### A view's result is not always a response
+
+- **A Flask view may return `(response, status)`, and every error path usually does.** Reading `.get_data()` off the tuple raises inside a request, so the operator gets a 500 claiming the application is broken when the truth is that a device is not known or not answering. Unwrap in one helper and route every caller through it.
+
+### Make a test say which of its preconditions broke
+
+- **A guard that asserts the precondition, and names what it saw instead, turns a puzzling failure into a two-line diagnosis.** "The request finished without queueing (HTTP 502, display unavailable)" says the test never reached the thing it was written to measure; "expected 403, got 200" would have been read as the feature being broken.
+- **When the precondition cannot be met, say so and narrow the claim** rather than asserting something weaker and calling it the same test. A path whose gate reads a device cannot be driven end to end from a fenced test; hold it structurally and by mutation, and write down that this is what was done.
+
+### An object captured at registration cannot be substituted later
+
+- **Passing a function or a store into a registration captures it by value.** Reassigning the module attribute afterwards changes nothing the registered code can see -- so a test that substitutes `_user_store` or `_load_cache` silently drives the real one. Redirect what the captured object *reads* (its file paths) instead, and restore everything it held.
+- **Werkzeug's test client owns `HTTP_COOKIE`.** Setting it through `environ_base` is discarded, because the client rebuilds that header from its own cookie jar on every request. Put the session in the jar; ordinary headers still pass through.
+- **A remote request is refused outright while remote access is off**, which is correct and is not what a test about authorisation is measuring. Throw that switch where the gate reads it.
+
+### A cleanliness check must know what it is looking for
+
+- **"A bench address" is not "any private address".** Flagging all of RFC 1918 reports the fixtures as contraband, and noise is how a real finding gets scrolled past. Derive the actual bench from the machine's own cache and flag only that; report synthetic private addresses as fine.
+- **Read the artifact's own table of contents, not the archive around it.** A onefile package contains one file, so looking for a shipped page in the zip reports every one of them missing.
+- **A public CA bundle is not key material.** A `.pem` suffix alone is not evidence of a secret.
+
+### A refusal is one decision said two ways
+
+- **A person gets a page and a program gets a status code.** The gate had one answer for both, so opening the advertised Remote Access URL in Chrome displayed `{"error":"authentication required"}` as text on a white page. The fix is not to redirect every refusal -- an API caller handed HTML has nothing it can act on. Discriminate on three things together: a GET or HEAD, a rule outside `/api/`, and a client that asked for HTML in preference to JSON, with `Sec-Fetch-Mode: navigate` settling it where the browser sends it.
+- **The redirect is where the credential leaks if it leaks.** Validate `next` as a single-leading-slash same-site path on the way out and again on the way in; `//host` is a protocol-relative URL and is the one that gets missed.
+- **Where a sign-in lands depends on the role.** Sending everyone to the restricted shell put administrators on the User screen; the landing is decided from the role in the sign-in response, and only when nothing was asked for.
+
+### A certificate is valid for the names it carries
+
+- **Decide it from the subject alternative names and from nothing else.** Every browser in use ignores the common name, so believing the common name produces an application that says a connection is fine while the browser refuses it. A certificate whose SANs could not be read answers "no match" -- unknown is not the same as fine.
+- **A certificate made for one adapter is not valid on another.** Changing which network Remote Access uses, or an adapter changing address, leaves a generated certificate naming somewhere else; starting anyway advertises HTTPS that nothing will accept while Settings reports normal secure operation.
+- **Refuse rather than silently reissue.** The fingerprint is the only thing an administrator can check when their browser warns, and regenerating changes it behind their back. Refuse with the two addresses named and the one button that fixes it -- and never apply any of this to a supplied certificate, which may legitimately carry a name the application has no way of knowing about.
+
+### `hidden` loses to any class that sets `display`
+
+- **`.cfg-warning { display: flex }` defeated `element.hidden = true`**, so the plaintext warning stayed on screen over an encrypted listener, telling the operator their HTTPS connection was not encrypted. Every assertion about the property passed. Restate `[hidden] { display: none }` beside the rule that caused it, and hide the row as well as the callout so no empty label is left behind.
+- **Lift the function out and run it.** A source-text assertion proves the text; a twenty-line DOM stub makes "the warning is not shown under HTTPS" a measurement.
+
+### Measure the header before removing a directive from it
+
+- **A console full of `Unrecognized feature: 'attribution-reporting'` was not ours.** The running server sent no Permissions-Policy header at all; those are Privacy Sandbox features and the header came from something else in that browser. Ask the server what it actually sends before changing code to remove something from it. The work that was worth doing was stating the policy deliberately, naming only long-standing features, so the header is correct and any remaining error is demonstrably not ours.
+- **`mimetype="text/html; charset=utf-8"` produces `charset=utf-8; charset=utf-8`**, because the framework appends its own. Seven routes were doing it.
+
+### A bearer link is a password in a URL
+
+- **Off by default, per account, and never on an administrator.** Two controls, not one: the account type is refused at creation, and a session established by a link is barred from the administrative surface independently of the account's role -- because a role can change after a link is made.
+- **The token names an account and carries no permissions.** Every request is authorised against that account as it is at that moment, so removing a capability or a device takes it from the link in the same instant. Nothing about the permission set lives in the token.
+- **Exactly one is live.** Regenerating replaces the token and ends the sessions the previous one opened, in the same critical section that replaced it -- a replacement that leaves the old sessions running has replaced nothing. It does not touch a password session: replacing a link is not a reason to sign somebody out of their browser.
+- **Recoverable storage needs a platform facility, not an invention.** The operator has to be able to copy the same link a month later, so a one-way hash is not enough on its own. DPAPI on Windows, with a digest beside it for lookup; where no such facility exists, say so in the record and in the report rather than implying protection that was not applied. A blob that disagrees with its digest hands out nothing.
+- **Exchange the token for a session, and serve the panel at the link's own address.** The token is resolved once and becomes an ordinary server-side session; it is never sent again, never placed in an API payload and never stored by the page. The shell is served at `/access/<token>` rather than redirected, so the link stays bookmarkable and a refresh works. That is a deliberate, documented trade: the credential remains in the address bar, and so in a history and a screenshot. It is bounded by `Referrer-Policy: no-referrer`, `no-store`, one-action revocation and replacement, a throttle on refused links, and a link session being barred from the administrative surface whatever the role becomes. The User Guide says plainly that the address deserves the care of a password. A session opened this way never ran the sign-in page, so nothing gave the shell a CSRF token -- read it from the session endpoint, or every action the link can reach is refused. Do not replace this with a redirect without a separate decision.
+- **One answer for every refusal.** Unknown, revoked, disabled, deleted, promoted: whoever holds an old URL learns only that it does not work.
+
+### A page written for the local operator is not a page that works remotely
+
+- **Fifty-seven `fetch` call sites across nine files predated remote access**, and none presented a CSRF token. The gate trusts the socket a local request arrives on and never looks for one, so nothing was wrong until the same pages were opened from another device -- at which point an administrator could read everything and change nothing, with no message saying why.
+- **Measure it rather than infer it.** The same POST answered 403 "not permitted" without the header and 400 "IP address required" with it -- the handler's own answer -- which is what turned "something is broken" into a one-line diagnosis.
+- **The fix is one wrapper around `fetch`, not fifty-seven edits.** A sweep through the files fixes today and not tomorrow; a wrapper covers the call site somebody writes next. It attaches only on a same-origin state-changing request that does not already carry one, because the matrix fetches thumbnails straight from devices and a session token must never leave for a third party. It is not a security control -- the gate still decides -- it only makes the browser present what the gate asks for.
+- **Load it before everything else.** A script that ran first would hold the unwrapped `fetch`, and the test asserts each page's *first* script tag rather than merely that the tag is present.
+- **Ask for something only the local operator can have, and you get a console error on every page load.** `/api/files` reads the host's own disk and is local-only by design, so a remote administrator's session opened with a guaranteed 404 and an empty firmware picker saying nothing. Let the page ask who it is -- from the session answer the wrapper already has, not a second request -- and say why the control is empty.
+- **One single-flight, not two.** A mutation of the token's own guard changed nothing measurable, because the session request it delegates to already collapsed concurrent callers. A redundant guard that can never be reached is untested by construction; remove it rather than keeping it and hoping.
+
+### Classify a status code before believing what everybody assumes it means
+
+- **"User routing is hit or miss, the console says 409" was diagnosed as lock contention by everybody who read it, including the brief.** It was not. Measured, the refusal came back in **0.37 s** carrying `status: MULTIVIEW ACTIVE`, where a `ResourceBusy` costs the full 45-second bounded wait. The duration alone falsified the assumption before any code was read.
+- **The cause was a missing passthrough.** `/api/user/route` called the verified A/V engine without `exit_multiview`, so the engine refused to take a display off a composition — correctly, because that answer must come from a person. Any display that happened to be compositing refused every route and every other display worked, which is exactly what intermittent looks like from outside.
+- **Two conditions sharing three digits is not diagnostic information.** Each now carries a machine-readable `reason`, so neither the page nor the next reader has to infer which one it was from how long it took. The operator-facing sentence stays a sentence.
+- **"Hit or miss" is a claim about reliability, so the answer is a count.** Twenty sequential routes: zero 409s, zero busy, median 1.76 s, max 4.00 s — and five deterministic failures from one encoder whose session multicast was the unconfigured default, which failed identically for an administrator and was therefore never a user-path defect at all.
+
+### A picture of a source belongs to the server, not to the browser
+
+- **The A/V Matrix builds `http://<device-ip>/thumbnail/thumbnail1.jpg` in the page.** Handing that to a restricted client would publish a device address the projection has never carried, and would put authorisation in the browser. The restricted endpoint is addressed by **stable identity** and resolves the address server-side; no response, success or refusal, contains one.
+- **A disabled thumbnail cannot be detected from the image** — the device answers HTTP 200 with a placeholder either way — so the enable flag is read and cached for minutes, and the picture for seconds. Twenty-five clients then cost one device fetch, which is the measurement that matters, not the intent.
+- **Preview availability is never a routing gate.** A source whose encoder produces no picture keeps an ordinary card, says so, and routes perfectly well.
+- **Observation takes no lock.** A preview that queued behind somebody else's route would make looking at a card wait on unrelated equipment. The structural fence distinguishes translating *operations*, which must lock, from translating *reads*, which must not.
+
+### A survivor is a question, and there are three answers
+
+Three mutations survived the first pass on this work, and each one meant something different:
+
+- **A badly aimed mutation.** Adding the device address to a refusal that only fires when no address was found leaks an empty string. The test was right; the mutation proved nothing. Re-aim it at a path that actually holds the value.
+- **A second line of defence the first line never lets you reach.** The gate inspects `source` on that route and refuses before the handler's own grant check runs, so mutating the handler changed no observable behaviour. That check is not redundant — it is untested. Reach it deliberately by taking the first line out of the way for the span of one test, and assert the precondition so the test says which of the two it is measuring.
+- **A genuine gap.** The endpoint tests stubbed the device producer out entirely, so the rule that a disabled thumbnail is never passed off as a picture had no test at all.
+
+### An isolated evaluation world reports reassuring zeros
+
+- **`typeof window.omniConfirm` answered `undefined` for a module that had loaded perfectly well**, because the automation evaluates in an isolated world. Zero console errors, zero failed requests and the script tag present in the DOM — and a conclusion that was entirely wrong. Read page globals through an injected `<script>` that writes its answer into the DOM, which both worlds share.
+- The same measurement then found the real defect: the shared confirmation dialog was `position: static`, transparent, unpadded and full width on every page that did not load the A/V Matrix stylesheet. **Styling shared markup is part of sharing it** — the module now carries its own, and there is one definition rather than one per stylesheet.
+- **A guarded call to a helper that does not exist fails silently.** `window.omniToast` has never existed; the export is `window.toast`. `if (window.omniToast) window.omniToast(...)` is indistinguishable from working code until somebody looks for the message.
+
+### A deliberate action is the answer; do not ask it again
+
+- **Putting a source on a display IS the instruction.** Asking "this display is showing a Multiview, continue?" adds a decision the operator has already made, and nobody choosing a camera is thinking about what the display happened to be doing first. The question is gone from every surface -- A/V Matrix, Display Output drop, password User, Direct Access User.
+- **Remove the question, not the protection.** The engine still reads the decoder, still recognises the composition by name, still leaves it through the one verified teardown, still restores it when the route then fails, and still never deletes the saved object. The diff that deletes the check instead is one line shorter and loses all of that.
+- **The decision belongs where the facts are.** The A/V Matrix used to compute `exit_multiview` from its own idea of the decoder, so a page whose state was a few seconds stale sent the wrong answer and got a refusal. The server has just read the device; it decides. Nothing is sent, and a stale field from a cached page is accepted and ignored so an old tab still works.
+
+### Clearing an inventory must not quietly take somebody's equipment away
+
+- **A User's controls are built from the devices they were assigned.** Clearing one leaves a person with a control that has nothing behind it, and nothing on screen said so. While Remote Access is on, an assigned device is kept and the administrator is told how many and for whom.
+- **The protection is scoped to when it matters.** With Remote Access off there is nobody to protect, and a standalone installation must not be made to argue with dormant records -- so the ordinary path is left *byte for byte* as it was. That is not tidiness: `_load_cache()` merges scan results as a side effect, and simply calling it first made a suite intermittent.
+- **The override is not the ordinary button.** Clearing a device somebody was given is a decision about their permissions, so it is made where permissions are, it names the accounts affected, and it goes through the same endpoint -- one implementation of clearing, two ways in.
+- **Fail closed.** If what is assigned cannot be established, nothing is cleared. An operator can look and try again; they cannot un-clear.
+- **Assignments survive a clear, because identity is not an address.** A device that comes back is the same device, and a different unit that happens to take the same address is never silently adopted.
+
+### A mutation that changes nothing is telling you something
+
+- **`route.no-rollback` survived, and the rollback was real** -- just not the one it pointed at. `if not ok:` above returns on every branch, so a second rollback further down could never run. It had sat there reading as a safety net, with two places to keep in step and one of them a lie.
+- **A mutation whose anchor can never match is noise that reads as a gap.** Two mutations targeted the confirmation flow this build removed; they were deleted rather than repointed, because there is nothing left for them to break.
+- **Patch the object, never the method on its class.** A test replaced `Path.unlink` to simulate a locked file and restored a *bound* method onto the class, so every test that ran afterwards got a broken `unlink`. Test classes run alphabetically, so the blast radius moves whenever somebody renames one.
+
+### Read page globals through the DOM, and never search for what you injected
+
+- An isolated evaluation world cannot see page globals, so `typeof window.omniConfirm` answers `undefined` for a module that loaded perfectly well. Inject a `<script>` that writes its answer into the DOM, which both worlds share.
+- **And do not then search the page for the strings you just put in it.** A probe that serialised a list of device addresses into an injected script found those addresses in the page and reported a leak. Read the DOM out and search it in the harness, or ask the server for the responses directly.
+
+
+### Clear Units protects what Remote Access is using
+
+- **With Remote Access on, an inventory is not only a list of devices; it is what accounts, groups and names were built on.** Clear Units keeps every unit an account (as a source or a display) or a Display Group refers to, and removes the rest. With Remote Access off it is the full clear it always was. The deliberate way to remove assigned units is two steps -- turn Remote Access off in Settings, then clear -- and there is no button that does both.
+- **The server decides, from current state, and never from the request.** No body field, query string or header can switch the protection off. The other ways of emptying the inventory (Remove Selected, the older `/api/clear`) obey the same rule, because protecting one door leaves the others as the way round it.
+- **Classify and remove under the locks the stores write under.** A unit judged unassigned must not gain an assignment before it is removed. Take the account store, then the group store, then the cache and scan files, in that order and no other, for the whole decision; an edit then lands before it (and is seen) or after the removal.
+- **Cannot tell is not nothing.** If the accounts or groups cannot be read, nothing is cleared. The same holds in the page: an unreadable answer refuses, and never falls back to the plain confirmation.
+- **Derive the assignment report once.** The confirmation, View Assignments and the Device names page all consume `omni_inventory.report`; none of them works out who holds a unit. The report names things and carries no address, credential or session.
+- **A restore is authoritative for what the backup covered.** A backup records the sections it looked at; one it covered and found empty is removed by the restore, one it never looked at is left alone, and machine or in-memory settings are never removed. A restore that fails puts back every file, including one it removed.
+- **A runner that exits 0 is not a pass.** A scenario whose promise never settles lets Node exit with status 0 and print nothing. Give each scenario a deadline, and have the wrapper require the summary line.

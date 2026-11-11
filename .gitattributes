@@ -1,0 +1,2 @@
+.gitattributes -text
+third_party/pystray-0.19.5/** -text

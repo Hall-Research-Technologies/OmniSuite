@@ -265,12 +265,24 @@ function isDifferentSubnet(rexIp, lexIp){
 
 let usbRefreshRunning = false;
 
+// One place a server answer becomes the page's state, whether it came from a request or from the
+// copy prepared when the inventory last changed.
+function adoptUsbState(s){
+  // sort LEX left->right and REX top->bottom by IP
+  s.lex = sortByIpAsc(s.lex||[]);
+  s.rex = sortByIpAsc(s.rex||[]);
+  s.matrix_lex = sortMatrixAxis(s.matrix_lex || s.lex);
+  s.matrix_rex = sortMatrixAxis(s.matrix_rex || s.rex);
+  console.log('After sorting - LEX:', s.lex.length, 'REX:', s.rex.length);
+  lastState = s;
+}
+
 async function refresh(force = false){
   usbRefreshRunning = true;
   if (window.omniDiag) omniDiag.count('poll.usbState.run');
   // Show loading overlay only on first session
   const overlay = document.getElementById('usb_loading_overlay');
-  if (isFirstSession && overlay) overlay.classList.remove('hidden');
+  if (isFirstSession && overlay && !lastState) overlay.classList.remove('hidden');
   
   const seq = ++usbStateSeq;
   const epoch = usbStateEpoch;
@@ -286,13 +298,9 @@ async function refresh(force = false){
     }
     usbStateApplied = seq;
     console.log('USB state received:', s);
-    // sort LEX left->right and REX top->bottom by IP
-    s.lex = sortByIpAsc(s.lex||[]);
-    s.rex = sortByIpAsc(s.rex||[]);
-    s.matrix_lex = sortMatrixAxis(s.matrix_lex || s.lex);
-    s.matrix_rex = sortMatrixAxis(s.matrix_rex || s.rex);
-    console.log('After sorting - LEX:', s.lex.length, 'REX:', s.rex.length);
-    lastState = s;
+    adoptUsbState(s);
+    // Kept for the next time the page opens; the server's own answer, never edited further.
+    if (window.OmniUsbPrep) window.OmniUsbPrep.store(s);
     // A refresh that follows a route change renders unconditionally: deferring
     // it because a dropdown happens to hold focus is how a completed change ends
     // up invisible until the operator reloads.
@@ -514,9 +522,9 @@ function render(s){
       // data-rex/data-lex are display keys (a control IP for an integrated unit).
       // data-*-mac is the routing identity and is the only thing routing may use.
       const macAttr = ` data-lex-mac="${esc(l.usb_mac || '')}" data-rex-mac="${esc(r.usb_mac || '')}"`;
-      return `<td class="cell${disabledClass}" data-rex="${rexKey}" data-lex="${lexKey}"${macAttr} data-active="${isActive}" data-paired="${isPaired}" data-path="${cap.control_path}" data-state="${cap.state}"${staleAttr}${tipAttr}>
+      return `<td class="cell${disabledClass}" data-rex="${esc(rexKey)}" data-lex="${esc(lexKey)}"${macAttr} data-active="${isActive}" data-paired="${isPaired}" data-path="${esc(cap.control_path)}" data-state="${esc(cap.state)}"${staleAttr}${tipAttr}>
                 <span class="radio-wrap">
-                  <input type="radio" name="usb-${rexKey}" ${checked} ${disabledAttr} aria-label="USB pair ${rexKey} to ${lexKey}"/>
+                  <input type="radio" name="usb-${esc(rexKey)}" ${checked} ${disabledAttr} aria-label="USB pair ${esc(rexKey)} to ${esc(lexKey)}"/>
                   <span class="dot${innerCls}" aria-hidden="true"></span>
                 </span>
               </td>`;
@@ -812,6 +820,19 @@ initStickyHeaders();
 document.addEventListener('focusout', () => {
   setTimeout(flushDeferredUsbRender, 150);
 });
+// Opening the page paints the matrix prepared when the inventory last changed, if it is fresh and
+// the inventory still matches (the check reads no device); the request below then confirms or
+// corrects it. A live answer that got here first is never overwritten by it.
+(function paintPrepared(){
+  if (!window.OmniUsbPrep) return;
+  window.OmniUsbPrep.readIfCurrent(60000).then(function(prepared){
+    if (!prepared || lastState || usbStateApplied) return;
+    adoptUsbState(prepared);
+    requestUsbRender(true);
+    const overlay = document.getElementById('usb_loading_overlay');
+    if (overlay) overlay.classList.add('hidden');
+  });
+})();
 refresh();
 
 // Collapsible sections

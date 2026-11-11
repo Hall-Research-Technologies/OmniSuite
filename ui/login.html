@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sign in &mdash; OmniSuite</title>
+<link rel="icon" href="/ui/favicon.ico">
+<!-- The appearance module applies the stored theme to the document element
+     before first paint, so the sign-in page is painted in the right palette
+     the first time rather than flashing and correcting. -->
+<script>
+  (function () {
+    try {
+      if (localStorage.getItem('dark') === 'false') {
+        document.documentElement.classList.add('light');
+      }
+    } catch (err) { /* storage off: the dark default is fine */ }
+  })();
+</script>
+<link rel="stylesheet" href="/ui/templates.css">
+<link rel="stylesheet" href="/ui/remote.css">
+</head>
+<body class="remote">
+  <div class="login-wrap">
+    <main class="login-card">
+      <img src="/ui/companylogo.png" alt="Hall Research" class="logo">
+      <h1>Sign in</h1>
+      <p class="sub">OmniSuite remote access</p>
+
+      <form id="login_form" novalidate>
+        <div class="field">
+          <label for="username">Username</label>
+          <input id="username" name="username" type="text"
+                 autocomplete="username" autocapitalize="none"
+                 autocorrect="off" spellcheck="false" required>
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password"
+                 autocomplete="current-password" required>
+        </div>
+        <button id="submit" class="btn-primary-lg" type="submit">Sign in</button>
+        <p id="error" class="form-error" role="alert" aria-live="assertive"></p>
+      </form>
+
+      <!-- Stated rather than implied. The operator is entitled to know what
+           protects the connection, and the answer differs per connection, so
+           it is decided below from the scheme this page was served over.
+           Hidden until then: a note that flickers from one claim to the other
+           is worse than one that arrives a frame late. -->
+      <p class="form-note" id="transport_note" hidden></p>
+    </main>
+  </div>
+
+<script>
+(function () {
+  'use strict';
+  // What protects THIS connection. Read from the page's own scheme rather
+  // than from anything the server said: a claim about encryption that came
+  // over the connection it describes is worth nothing if that connection is
+  // not encrypted.
+  (function statement() {
+    const note = document.getElementById('transport_note');
+    if (!note) return;
+    if (window.location.protocol === 'https:') {
+      note.textContent = 'This connection is encrypted.';
+      note.classList.add('form-note-ok');
+    } else {
+      note.textContent = 'This connection is not encrypted. Use it only on a '
+                       + 'network you trust.';
+      note.classList.add('form-note-warn');
+    }
+    note.hidden = false;
+  }());
+
+  const form = document.getElementById('login_form');
+  const errorLine = document.getElementById('error');
+  const submit = document.getElementById('submit');
+
+  // Where to go afterwards.
+  //
+  // Taken from the query string but validated as a same-site path, because an
+  // open redirect on a login page is how somebody gets sent to a convincing
+  // copy of it. A single leading slash, no scheme, no host, no backslash, and
+  // only characters a path or an ordinary query can contain -- `//evil.test`
+  // is a protocol-relative URL and is refused by the same rule that refuses
+  // `https://evil.test`.
+  //
+  // With nothing asked for, the landing page depends on the role. A restricted
+  // account gets its routing shell; an administrator gets the application. The
+  // old default sent everybody to /user, so an administrator signing in
+  // remotely landed on the restricted screen.
+  function destination(role) {
+    const wanted = new URLSearchParams(location.search).get('next') || '';
+    const safe = /^\/(?!\/)[A-Za-z0-9/_.-]*(\?[A-Za-z0-9/_.=&%-]*)?$/;
+    const home = role === 'admin' ? '/' : '/user';
+    if (!wanted || !safe.test(wanted) || wanted === '/login') return home;
+    // Somewhere they can actually open.
+    //
+    // A restricted account that opens the advertised address is sent to
+    // /login?next=/ and, without this, straight back to / after signing in --
+    // the administrator's application, which the gate then refuses. Landing on
+    // a refusal having just entered correct credentials reads as the password
+    // being wrong.
+    //
+    // This is not authorisation, which is entirely the server's. It only
+    // avoids sending somebody somewhere that is certain to refuse them.
+    if (role !== 'admin' && !/^\/(user|help|license)(\/|\?|$)/.test(wanted)) {
+      return home;
+    }
+    return wanted;
+  }
+
+  form.addEventListener('submit', async function (event) {
+    event.preventDefault();
+    errorLine.textContent = '';
+    submit.disabled = true;
+    submit.textContent = 'Signing in...';
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        // The session cookie is set by the server and is HttpOnly, so nothing
+        // on this page ever holds it.
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          username: document.getElementById('username').value,
+          password: document.getElementById('password').value,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        // The CSRF token is the one piece the page keeps, in memory only, for
+        // the life of the tab. It is useless without the cookie, and putting
+        // it in storage would outlive the session it belongs to.
+        sessionStorage.setItem('omni_csrf', data.csrf_token || '');
+        location.replace(destination((data.user || {}).role));
+        return;
+      }
+      errorLine.textContent = data.error || 'Sign in failed.';
+    } catch (err) {
+      errorLine.textContent = 'Could not reach OmniSuite.';
+    }
+    submit.disabled = false;
+    submit.textContent = 'Sign in';
+  });
+
+  // If the page is being served over TLS, stop claiming otherwise.
+  if (location.protocol === 'https:') {
+    document.getElementById('transport_note').textContent =
+      'This connection is encrypted.';
+  }
+})();
+</script>
+</body>
+</html>

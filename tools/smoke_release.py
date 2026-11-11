@@ -11,7 +11,7 @@ read rather than guessed -- it is chosen at runtime and will not be 8080 on a
 machine where something else already holds that port.
 
 Usage:
-    python tools/smoke_release.py --artifact release/OmniSuite-V1.1.0-....zip
+    python tools/smoke_release.py --artifact release/OmniSuite-V1.2.0-....zip
     python tools/smoke_release.py --binary dist/windows/OmniSuite.exe
 """
 from __future__ import annotations
@@ -59,6 +59,37 @@ REQUIRED_PATHS = [
     # Settings links to this. A package that omits the file gives a dead link
     # in the About area of every installation.
     ("/license", "text/plain"),
+    # Remote access. These pages are served to a phone on the network, so a
+    # file left out of the package is a blank screen for somebody who is not
+    # sitting at the OmniSuite computer and cannot investigate it.
+    ("/login", "text/html"),
+    ("/admin/users", "text/html"),
+    ("/ui/admin/users.js", None),
+    ("/user", "text/html"),
+    ("/ui/user/user.js", None),
+    # Added this build. The shell delegates every browser-storage read and
+    # write to it, so a package that omitted it would serve a user page that
+    # forgets the chosen display -- and would build perfectly cleanly.
+    ("/ui/user/remember.js", None),
+    ("/ui/remote.css", None),
+    # Attaches the CSRF token to every state-changing request. Left out of
+    # the package, an administrator signed in from another device can read
+    # everything and change nothing, with nothing on screen saying why.
+    ("/ui/csrf.js", None),
+    # Added this build. Every dialog asks it which level to sit on, so a
+    # package without it puts the Export dialog back underneath Settings --
+    # and builds perfectly cleanly while doing so.
+    ("/ui/modal-stack.js", None),
+    # Every browser asks for this before it has a session. Missing, it is a
+    # failed request in the console of a customer's machine on every page.
+    ("/favicon.ico", None),
+    # Sign out. Without it an administrator who signed in remotely has
+    # no way out but to clear cookies, which is the defect it exists for.
+    ("/ui/adminnav.js", None),
+    # The shared confirmation dialog, which now carries its own styling.
+    # Left out, the question before a display leaves a Multiview cannot
+    # be asked, and the route is refused rather than taken silently.
+    ("/ui/confirm.js", None),
 ]
 
 
@@ -389,6 +420,31 @@ def run(binary: Path, expected_version: str, scope: Path | None = None) -> int:
         else:
             log("  clean start: no firmware folder configured")
 
+        # Disaster recovery, asked of the binary rather than assumed. The
+        # module is new and AES-256-GCM reaches a native backend, either of
+        # which a onefile build can leave out without saying a word -- and the
+        # day that is discovered would be the day somebody needs it.
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/backup/export",
+                data=_json.dumps(
+                    {"passphrase": "smoke-test-backup-passphrase"}).encode(),
+                headers={"Content-Type": "application/json",
+                         "User-Agent": "OmniSuite-smoke"},
+                method="POST")
+            with urllib.request.urlopen(request, timeout=30) as response:
+                blob = response.read()
+            header = _json.loads(blob.split(b"\n", 2)[1])
+            if header.get("cipher") != "AES-256-GCM":
+                failures.append("a backup was produced without encryption")
+            else:
+                log(f"  configuration backup: {len(blob)} bytes, "
+                    f"{header['cipher']}, {header['kdf']['name']}")
+        except Exception as exc:
+            failures.append(
+                f"the packaged build cannot produce a backup "
+                f"({type(exc).__name__})")
+
         try:
             status, _ctype, body = get(f"http://127.0.0.1:{port}/api/state")
             state = _json.loads(body) if status == 200 else {}
@@ -457,6 +513,120 @@ def run(binary: Path, expected_version: str, scope: Path | None = None) -> int:
     return report(failures)
 
 
+def local_network_problems(info: dict) -> list:
+    """What is wrong with a macOS bundle's Local Network declaration, if anything."""
+    problems = []
+    usage = info.get("NSLocalNetworkUsageDescription")
+    if not isinstance(usage, str) or not usage.strip():
+        problems.append("Info.plist has no NSLocalNetworkUsageDescription, so macOS shows "
+                        "its Local Network prompt with no explanation of why")
+    return problems
+
+
+def macos_readme_problems(text) -> list:
+    """What is wrong with the first-launch instructions shipped beside the app."""
+    problems = []
+    if not isinstance(text, str) or not text.strip():
+        return ["the first-launch instructions are missing or empty"]
+    for needed in ("Open Anyway", "Privacy & Security", "Local Network", "official"):
+        if needed not in text:
+            problems.append(f"the first-launch instructions do not mention {needed!r}")
+    return problems
+
+
+def identity_problems(info: dict) -> list:
+    """The bundle must carry THIS product's identity, so two products can share a Mac.
+
+    macOS keys an app's permissions on its identity. Two products with the same
+    identifier would share, and fight over, one Local Network permission.
+    """
+    here = Path(__file__).resolve().parents[1]
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+    import omni_release
+    product = omni_release.active_product()
+    problems = []
+    if info.get("CFBundleIdentifier") != product.bundle_identifier:
+        problems.append("CFBundleIdentifier is %r, expected %r for %s"
+                        % (info.get("CFBundleIdentifier"), product.bundle_identifier, product.name))
+    if info.get("CFBundleDisplayName") != product.name:
+        problems.append("CFBundleDisplayName is %r, expected %r"
+                        % (info.get("CFBundleDisplayName"), product.name))
+    return problems
+
+
+def version_problems(info: dict, expected: str) -> list:
+    """The bundle must report the version it was built as, not PyInstaller's 0.0.0."""
+    match = re.match(r"[Vv]?(\d+)(?:\.(\d+))?(?:\.(\d+))?", (expected or "").strip())
+    if not match:
+        return []
+    want = ".".join(str(int(g or 0)) for g in match.groups())
+    problems = []
+    for key in ("CFBundleShortVersionString", "CFBundleVersion"):
+        if info.get(key) != want:
+            problems.append("%s is %r, expected %r for %s" % (key, info.get(key), want, expected))
+    return problems
+
+
+def check_macos_bundle(binary: Path, expected: str = None) -> list:
+    """Read the packaged app's own Info.plist and signature. Returns problems.
+
+    This looks at the artifact that will be shipped, not at what the build
+    intended: the declaration is only worth anything if it is in the file a person
+    downloads. The plist and the signature details are printed so the CI log is the
+    evidence of what a given build carried.
+    """
+    import plistlib
+    problems = []
+    plist_path = binary.parent.parent / "Info.plist"
+    try:
+        with plist_path.open("rb") as handle:
+            info = plistlib.load(handle)
+    except Exception as exc:
+        return [f"could not read {plist_path}: {type(exc).__name__}"]
+    for key in ("CFBundleIdentifier", "CFBundleName", "CFBundleShortVersionString",
+                "NSLocalNetworkUsageDescription", "NSBonjourServices"):
+        log(f"Info.plist {key} = {info.get(key)!r}")
+    problems.extend(local_network_problems(info))
+    problems.extend(identity_problems(info))
+    if expected:
+        problems.extend(version_problems(info, expected))
+    app = binary.parent.parent.parent
+    if shutil.which("codesign"):
+        for args in (["-dvv", str(app)], ["--verify", "--deep", "--strict", str(app)]):
+            result = subprocess.run(["codesign", *args], capture_output=True, text=True)
+            for line in ((result.stdout or "") + (result.stderr or "")).strip().splitlines()[:12]:
+                log("codesign " + args[0] + ": " + line)
+            if args[0] == "--verify" and result.returncode != 0:
+                problems.append("the bundle's signature does not verify")
+    return problems
+
+
+def notice_problems(root: Path) -> list[str]:
+    """The licence, the third-party notices and their texts must sit beside the application
+    in the archive. A one-file executable unpacks its own copies to a temporary folder, so
+    these are the only ones a recipient can read."""
+    problems = []
+    found = [p for p in Path(root).rglob("THIRD_PARTY_NOTICES.md")
+             if len(p.relative_to(root).parts) <= 3]
+    if not found:
+        return ["THIRD_PARTY_NOTICES.md is not in the archive beside the application"]
+    folder = found[0].parent
+    if not (folder / "LICENSE").is_file():
+        problems.append("LICENSE is not beside THIRD_PARTY_NOTICES.md in the archive")
+    texts = [p for p in (folder / "third_party_licenses").rglob("*") if p.is_file()]
+    if len(texts) < 20:
+        problems.append("third_party_licenses/ is missing or nearly empty in the archive (%d files)"
+                        % len(texts))
+    # The corresponding source of the LGPL component and the rebuild instructions travel with it.
+    for name in ("REBUILD.md", "third_party/PYSTRAY_PROVENANCE.md",
+                 "third_party/pystray-0.19.5/COPYING", "third_party/pystray-0.19.5/COPYING.LGPL",
+                 "third_party/pystray-0.19.5/lib/pystray/__init__.py"):
+        if not (folder / name).is_file():
+            problems.append("%s is not beside THIRD_PARTY_NOTICES.md in the archive" % name)
+    return problems
+
+
 def report(failures: list[str]) -> int:
     if failures:
         log(f"FAIL -- {len(failures)} problem(s):")
@@ -490,9 +660,27 @@ def main() -> int:
                                      ignore_cleanup_errors=True) as tmp:
         binary = extract(args.artifact.resolve(), Path(tmp))
         log(f"extracted {binary}")
+        missing_notices = notice_problems(Path(tmp))
+        if missing_notices:
+            for item in missing_notices:
+                log(f"FAIL -- {item}")
+            return 1
+        log("licence, third-party notices and licence texts are beside the application")
         if platform.system() != "Windows" and shutil.which("file"):
             arch = subprocess.run(["file", str(binary)], capture_output=True, text=True)
             log(f"file: {arch.stdout.strip()}")
+        if platform.system() == "Darwin":
+            bundle_problems = check_macos_bundle(binary, expected)
+            readme = Path(tmp) / "READ-ME-FIRST-macOS.txt"
+            try:
+                bundle_problems.extend(macos_readme_problems(
+                    readme.read_text(encoding="utf-8") if readme.exists() else None))
+            except Exception as exc:
+                bundle_problems.append(f"could not read the first-launch instructions: {type(exc).__name__}")
+            if bundle_problems:
+                for item in bundle_problems:
+                    log(f"FAIL -- {item}")
+                return 1
         try:
             return run(binary, expected, scope=Path(tmp))
         finally:

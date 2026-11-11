@@ -180,6 +180,36 @@ listed in THIRD_PARTY_NOTICES.md. Where a Third-Party Component's license
 conflicts with this one, that component's license governs that component.
 
 
+11A. COMPONENTS LICENSED UNDER THE GNU LESSER GENERAL PUBLIC LICENSE
+
+Some Third-Party Components, identified in THIRD_PARTY_NOTICES.md, are
+licensed under the GNU Lesser General Public License version 3 (each, an
+"LGPL Component"). Each LGPL Component remains governed by its own LGPL
+license and not by this license. Notwithstanding any other provision of this
+license, but only to the extent necessary to preserve the rights that the LGPL
+grants you:
+
+  (a) nothing in this license prohibits you from modifying an LGPL Component
+      as the LGPL permits;
+
+  (b) nothing in this license prohibits you from reverse engineering the
+      Software to the extent the LGPL requires you to be permitted to do so
+      in order to debug such modifications; and
+
+  (c) you may replace an LGPL Component contained in the Software with a
+      modified, interface-compatible version, and rebuild or recombine the
+      Software with it using the source code and build instructions that Hall
+      publishes, for your own permitted use, as necessary to exercise those
+      rights.
+
+This section does not relicense, and grants no right in, the code and content
+of the Software that Hall owns beyond what sections 3 through 9 grant. Every
+other provision of this license, including sections 5, 7, 8 and 10, continues
+to apply to the Software as a whole, except to the extent necessary to
+preserve the rights described in this section. Nothing in this license
+modifies the text or terms of any LGPL.
+
+
 12. NO WARRANTY
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
@@ -227,7 +257,7 @@ a material violation, your rights are reinstated only if you correct it within
 
 On termination you must stop using the Software and stop distributing it, and
 you must stop distributing any copy you made available to others. Sections 2,
-11, 12, 13 and 15 survive termination.
+11, 11A, 12, 13 and 15 survive termination.
 
 
 15. GENERAL

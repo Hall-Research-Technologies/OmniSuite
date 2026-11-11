@@ -371,9 +371,13 @@ check('every close path goes through one function', async () => {
 
 check('closing returns focus to the control that opened the dialog', async () => {
   const settings = fs.readFileSync(SETTINGS, 'utf8');
-  const close = settings.slice(settings.indexOf('const closeSettings'));
-  assert(/gear\.focus\(\)/.test(close.slice(0, 400)),
-         'focus returns to the gear');
+  const from = settings.indexOf('const closeSettings');
+  // Bounded at the end of the function, not at an arbitrary number of
+  // characters into it: a fixed-length slice fails the moment somebody adds a
+  // line above the thing it was watching, which says nothing about whether
+  // the behaviour is still there.
+  const close = settings.slice(from, settings.indexOf('\n  };', from));
+  assert(/gear\.focus\(\)/.test(close), 'focus returns to the gear');
 });
 
 check('the shared dialog is loaded by every page, so Escape reaches all four', async () => {

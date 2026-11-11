@@ -49,8 +49,36 @@ units_view.csv
 
 # Runtime acknowledgements and preferences, written per installation.
 notice_ack.json
+local_port.json
 topology_ack.json
 scan_preferences.json
+
+# Accounts, Remote Access state, certificates, keys and backups. users.json holds password
+# hashes, remote_key.pem is a private key, and a backup holds the whole configuration.
+# The application writes all of these into its data directory, which is normally outside
+# the source tree -- but it falls back to the program directory when it cannot create that
+# one, so these must never be committable. A test derives the names from the code, so a
+# data file added later cannot be forgotten here.
+users.json
+remote_access.json
+remote_cert.pem
+remote_key.pem
+*.pem
+*.key
+*.pfx
+*.p12
+*.omnibak
+restore-snapshot/
+security_audit.json
+device_aliases.json
+display_groups.json
+activity_settings.json
+firmware_cache.json
+multiview_groups.json
+multiview_meta.json
+ui_preferences.json
+usb_associations.json
+usb_extenders.json
 
 # Logs, downloaded device logs and support bundles. A .vdf is an encrypted
 # device log pulled from real hardware.
@@ -70,3 +98,4 @@ omnisuite-smoke-*/
 .DS_Store
 Thumbs.db
 desktop.ini
+.mutation-in-flight

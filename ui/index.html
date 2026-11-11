@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta http-equiv="X-UA-Compatible" content="IE=edge"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>OmniSuite Upgrade Manager</title>
+  <title>OmniSuite Device Manager</title>
   <link rel="icon" href="/ui/favicon.ico">
   <style>
     .hover-preview{
@@ -45,14 +45,22 @@
     td.alternate-switch .switch-note{display:block;font-size:11px;color:var(--alternate-switch-fg);
       margin-top:2px;overflow-wrap:anywhere}
   </style>
+  <script src="/ui/csrf.js"></script>
+  <script src="/ui/matrix-prep.js?v=20261031-prep"></script>
+  <script src="/ui/usb-prep.js?v=20261031-usbprep"></script>
+  <script src="/ui/modal-stack.js"></script>
+  <script src="/ui/clear-units.js?v=20261102-clear"></script>
+  <script src="/ui/adminnav.js"></script>
   <script src="/ui/diagnostics.js?v=20260911-diag"></script>
 <link rel="stylesheet" href="/ui/templates.css?v=20260910-templates">
 <link rel="stylesheet" href="/ui/settings.css?v=20260911-settings">
   <link rel="stylesheet" href="/ui/device-table.css?v=20260910-devicetable">
   <script src="/ui/appearance.js?v=20260910-appearance"></script>
 <script src="/ui/toast.js?v=20260911-toast"></script>
+<script src="/ui/scan-notice.js?v=20261012-scannotice"></script>
 <script src="/ui/device-log.js?v=20260911-devicelog" defer></script>
 <script src="/ui/settings.js?v=20260911-settings"></script>
+<script src="/ui/firmware-status.js?v=20261030-firmware"></script>
 
   <div id="hover_preview" class="hover-preview"><img id="hover_preview_img" alt="preview"/></div>
   <div id="lldp_popup" class="lldp-popup"></div>
@@ -80,7 +88,7 @@
       --alternate-switch-fg:#3730a3}
     *{box-sizing:border-box}
     body{margin:16px;background:var(--bg);color:var(--fg);font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif;font-size:14px;line-height:1.4;min-width:1000px}
-    a{color:#93c5fd;text-decoration:underline;cursor:pointer}
+    a{color:var(--link-text);text-decoration:underline;cursor:pointer}
     a:hover{opacity:.8}
     h1{margin:0 0 14px;font-size:22px;font-weight:600}
     input[type=checkbox]{cursor:pointer}
@@ -94,7 +102,7 @@
     .header .controls{display:flex;gap:12px;align-items:center}
     .unit-counts{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
     .unit-count-pill{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);background:var(--panel-2);border-radius:999px;padding:3px 9px;font-size:12px;color:var(--fg)}
-    .unit-count-pill strong{font-size:13px;color:#93c5fd}
+    .unit-count-pill strong{font-size:13px;color:var(--link-text)}
     .toggle{display:inline-flex;align-items:center;gap:8px;cursor:pointer;user-select:none}
     .toggle *{pointer-events:none}
     .toggle .label{opacity:.9;font-size:14px}
@@ -121,6 +129,12 @@
     .clearable-input input{padding-right:28px}
     .input-clear-btn{position:absolute;right:4px;width:22px;height:22px;border:0;background:transparent;color:var(--muted);cursor:pointer;border-radius:50%;font-size:18px;line-height:1;display:flex;align-items:center;justify-content:center;padding:0}
     .input-clear-btn:hover{background:var(--selected-tint);color:var(--fg);filter:none}
+    /* Restated beside the rule that makes it necessary. `.btn` sets
+       display:inline-flex, and a class that sets display beats the `hidden`
+       attribute -- so a button hidden in markup or by script stayed on
+       screen, which is how the backup controls remained visible to a remote
+       administrator who could never use them. */
+    [hidden]{display:none !important}
     .btn{padding:3px 8px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--action-primary,var(--accent));color:var(--on-accent,var(--fg));font-size:14px;display:inline-flex;align-items:center;gap:6px;transition:filter .16s}
     .btn:hover{filter:brightness(1.1)}
     .btn.small{padding:3px 8px;font-size:12px}
@@ -131,7 +145,7 @@
     th,td{padding:6px 8px;border-bottom:1px solid var(--border);text-align:left;font-size:14px;font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif}
     th{background:var(--table);font-weight:600;font-size:14px}
     tr:hover{background:var(--selected-tint)}
-    .ip{color:#93c5fd;text-decoration:underline;cursor:pointer}
+    .ip{color:var(--link-text);text-decoration:underline;cursor:pointer}
     .status{padding:2px 8px;border-radius:999px;font-size:12px;display:inline-flex;align-items:center;gap:6px}
     .s-idle{background:#14532d;color:#bbf7d0}
     .s-error{background:#7f1d1d;color:#fecaca}
@@ -147,19 +161,19 @@
     .codec-ok{background:#14532d;color:#bbf7d0}
     .codec-bad{background:#7f1d1d;color:#fecaca}
     .codec-select{width:150px;padding:3px 6px;font-size:12px}
-    .codec-warning{margin:10px 0;padding:8px 10px;border:1px solid rgba(248,113,113,.45);border-radius:8px;background:rgba(127,29,29,.35);color:#fecaca;font-weight:600}
+    .codec-warning{margin:10px 0;padding:8px 10px;border:1px solid color-mix(in srgb,var(--state-error) 45%,transparent 55%);border-radius:8px;background:color-mix(in srgb,var(--state-error) 14%,transparent 86%);color:var(--state-error-text);font-weight:600}
     .codec-warning.hidden{display:none!important}
     .inventory-extra-hidden{display:none!important}
     .slate-manager-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
     .slate-manager-panel{border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--panel-2)}
     .slate-manager-panel h4{margin:0 0 10px;font-size:13px}
     .slate-manager-status{max-height:160px;overflow:auto;font-size:12px;line-height:1.45;white-space:pre-wrap}
-    .slate-manager-status .ok{color:#86efac}
-    .slate-manager-status .bad{color:#fecaca}
+    .slate-manager-status .ok{color:var(--state-success-text)}
+    .slate-manager-status .bad{color:var(--state-error-text)}
     .slate-thumb{width:72px;height:41px;object-fit:cover;border:1px solid var(--border);border-radius:4px;background:#111827;display:none}
     .action-btn{background:transparent;color:var(--fg);border:none;cursor:pointer;font-size:16px;padding:0;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;line-height:1}
     .action-btn:hover{background:var(--accent);transform:scale(1.05)}
-    .action-link{color:#93c5fd;cursor:pointer;text-decoration:underline}
+    .action-link{color:var(--link-text);cursor:pointer;text-decoration:underline}
     .action-link:hover{opacity:.8}
     /* Footer bar */
     .footer-bar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap}
@@ -168,11 +182,21 @@
     /* Modal */
     .confirm-modal{width:520px;max-width:min(95vw,560px)}
     .confirm-modal .confirm-title{margin:0 0 8px;font-size:17px;font-weight:600}
-    .confirm-modal .confirm-message{color:var(--muted);line-height:1.45;margin-bottom:12px}
+    .confirm-modal .confirm-message{color:var(--muted);line-height:1.45;margin-bottom:12px;white-space:pre-line}
+    .confirm-field-hint{display:block;margin-top:6px;font-size:12px;color:var(--muted);white-space:pre-line}
+    .confirm-field-error{display:block;margin-top:6px;font-size:12px;color:var(--state-error,#e5534b)}
     .confirm-summary{border:1px solid var(--border);border-radius:8px;background:var(--panel-2);padding:10px;margin:10px 0}
     .confirm-summary-row{display:flex;justify-content:space-between;gap:16px;padding:3px 0;font-size:13px}
     .confirm-summary-row span:first-child{color:var(--muted)}
     .confirm-list{max-height:180px;overflow:auto;border:1px solid var(--border);border-radius:8px;background:var(--table);padding:6px;margin-top:8px}
+    /* The dialog's optional field. Styled beside the rest of this dialog, so
+       it is not a control that renders only where some other stylesheet
+       happens to be loaded. */
+    .confirm-checkbox{display:flex;align-items:flex-start;gap:8px;margin-top:12px;font-size:13px;color:var(--fg);cursor:pointer}
+    .confirm-checkbox input{margin-top:2px;flex:0 0 auto}
+    .confirm-field{display:block;margin-top:12px;font-size:13px;color:var(--muted)}
+    .confirm-field-input{display:block;width:100%;box-sizing:border-box;margin-top:5px;min-height:38px;padding:0 10px;border-radius:7px;border:1px solid var(--border);background:var(--panel-2);color:var(--fg);font-size:15px}
+    .confirm-field-input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
     .confirm-list div{padding:4px 6px;border-bottom:1px solid var(--border);font-family:Calibri,system-ui,Segoe UI,Roboto,sans-serif}
     .confirm-list div:last-child{border-bottom:none}
     .small{font-size:12px;color:var(--muted)}
@@ -180,6 +204,14 @@
     .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--spinner);border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px}
     @keyframes spin{to{transform:rotate(360deg)}}
     .pill{padding:4px 10px;border-radius:999px;background:var(--accent-strong);color:var(--fg);font-size:12px}
+    /* An actionable notice, not an error: an edge in the accent colour, no danger treatment. */
+    .scan-notice{margin-top:10px;padding:10px 14px;border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:6px;color:var(--fg);font-size:13px;line-height:1.5}
+    .scan-notice[hidden]{display:none}
+    .scan-notice p{margin:6px 0}
+    .scan-notice ol{margin:6px 0 8px;padding-left:22px}
+    .scan-notice .scan-notice-actions{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+    .scan-notice details{margin-top:6px;color:var(--muted)}
+    .scan-notice pre{margin:6px 0 0;white-space:pre-wrap;word-break:break-word;font-size:12px;color:var(--fg)}
     /* Tabs */
     .tabs{display:flex;gap:0;}
     .tab{padding:8px 16px;cursor:pointer;background:transparent;color:var(--muted);border:none;font-size:14px;font-weight:500;border-bottom:2px solid transparent;transition:all .16s;text-decoration:none;border-radius:6px 6px 0 0}
@@ -191,7 +223,12 @@
     .loading-overlay.hidden{display:none!important;}
     .loading-message{color:var(--fg);text-align:center;padding:40px;font-size:18px;}
     .loading-spinner{width:40px;height:40px;border:4px solid rgba(255,255,255,0.2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 20px;}
+    /* A value like 73d 23h 33m is one token; wrapping it over three lines made the row three lines tall. */
+    .uptime_cell{white-space:nowrap}
     .version-footer{position:fixed;right:14px;bottom:10px;font-size:12px;color:var(--muted);opacity:.85;pointer-events:none}
+    /* The version text is fixed to the bottom-right corner, so the footer bar keeps clear of it
+       rather than drawing the Inventory button underneath it. */
+    .footer-bar{padding-right:150px}
     body.compact{font-size:12px}
     body.compact h1{font-size:18px}
     body.compact .header{margin-bottom:8px}
@@ -236,7 +273,7 @@
 <div class="header" id="app_header">
   <div class="left">
     <img src="/ui/companylogo.png" alt="Company Logo" class="logo">
-    <h1>OmniSuite Upgrade Manager</h1>
+    <h1>OmniSuite Device Manager</h1>
   </div>
   <div class="controls">
     <div class="tabs">
@@ -265,17 +302,19 @@
       </span>
     </div>
     <button id="scan_btn" class="btn">🔍 Scan</button>
-    <button id="clear_units_btn" class="btn secondary">🗑️ Clear Units</button>
+    <button id="clear_units_btn" class="btn danger">🗑️ Clear Units</button>
     <span id="scan_status" class="small pill"></span>
   </div>
+  <!-- Shown only for a macOS Local Network verdict from the server. See scan-notice.js. -->
+  <div id="scan_permission_notice" class="scan-notice" hidden></div>
 </div>
 
 <!-- Firmware/Upgrade Control Bar -->
 <div class="box" id="firmware_bar">
   <div class="row" style="gap:16px;">
     <div style="display:flex; align-items:center; gap:4px;">
-      <button class="btn icon-only" id="refresh_files_btn" title="Refresh firmware list">🔄</button>
-      <button class="btn icon-only" id="open_firmware_folder_btn" title="Open firmware folder">📁</button>
+      <button class="btn secondary icon-only" id="refresh_files_btn" title="Refresh firmware list" aria-label="Refresh firmware list">🔄</button>
+      <button class="btn secondary icon-only" id="open_firmware_folder_btn" title="Open firmware folder" aria-label="Open firmware folder">📁</button>
       <div>
         <select id="files" style="width:240px;"></select>
       </div>
@@ -355,11 +394,12 @@
         <th onclick="sortTable(3)">MAC</th>
         <th onclick="sortTable(4)">Link Speed</th>
         <th onclick="sortTable(5)">Codec</th>
-        <th class="inventory-extra-col" onclick="sortTable(6)">TimeZone</th>
-        <th class="inventory-extra-col" onclick="sortTable(7)">NTP Server</th>
-        <th class="inventory-extra-col" onclick="sortTable(8)">Type</th>
-        <th class="inventory-extra-col" onclick="sortTable(9)">Model</th>
-        <th class="inventory-extra-col" onclick="sortTable(10)">Version</th>
+        <th class="inventory-extra-col" onclick="sortTable(6, 'uptime')">Uptime</th>
+        <th class="inventory-extra-col" onclick="sortTable(7)">TimeZone</th>
+        <th class="inventory-extra-col" onclick="sortTable(8)">NTP Server</th>
+        <th class="inventory-extra-col" onclick="sortTable(9)">Type</th>
+        <th class="inventory-extra-col" onclick="sortTable(10)">Model</th>
+        <th class="inventory-extra-col" onclick="sortTable(11)">Version</th>
         <th class="inventory-extra-col">Password</th>
         <th style="width:60px;">Status</th>
         <th style="width:40px;">Blink</th>
@@ -546,6 +586,25 @@
     <div id="confirm_message" class="confirm-message"></div>
     <div id="confirm_summary" class="confirm-summary" style="display:none;"></div>
     <div id="confirm_list" class="confirm-list" style="display:none;"></div>
+    <!-- One optional tick box, matching the shared dialog's `checkbox`
+         option. A second, more destructive choice needs somewhere of its own:
+         overloading Cancel to mean it, or adding a third button, both ask the
+         operator to read carefully at the moment they are least likely to. -->
+    <label id="confirm_checkbox" class="confirm-checkbox" style="display:none;">
+      <input id="confirm_checkbox_input" type="checkbox">
+      <span id="confirm_checkbox_label"></span>
+    </label>
+    <!-- One optional field, matching the shared dialog's `field` option.
+         A backup passphrase is a credential: the browser's own string box
+         shows it in the clear, carries no explanation, and is a native
+         dialog this project does not use. -->
+    <label id="confirm_field" class="confirm-field" style="display:none;">
+      <span id="confirm_field_label" class="confirm-field-label"></span>
+      <input id="confirm_field_input" class="confirm-field-input"
+             type="password" autocomplete="off" spellcheck="false">
+      <span class="confirm-field-hint" style="display:none;"></span>
+      <span class="confirm-field-error" role="alert" style="display:none;"></span>
+    </label>
     <div class="modal-buttons">
       <button id="confirm_cancel" class="btn secondary" type="button">Cancel</button>
       <button id="confirm_ok" class="btn" type="button">Continue</button>
@@ -605,7 +664,7 @@ function _checkFirmwareCompatibility(fwType, selectedIps) {
     const row = getRowByIp(ip);
     if (!row) return;
     
-    const modelCell = row.cells[9];
+    const modelCell = row.cells[10];
     const model = modelCell ? modelCell.textContent.trim() : '';
     
     console.log(`[FIRMWARE_CHECK] ${ip}: model="${model}", compatible="${compatibleModels.some(m => model.toLowerCase().includes(m))}"`);
@@ -1440,6 +1499,7 @@ async function loadAdapters() {
       // selection instead of introducing a second interface picker.
       opt.dataset.ip = a.ip || '';
       opt.dataset.netmask = a.netmask || '';
+      if (a.preferred) opt.dataset.preferred = '1';
       sel.appendChild(opt);
     });
     // Bind before the async restore: a change made while the saved preference
@@ -1469,8 +1529,15 @@ async function restoreScanAdapter(sel) {
     // value can collide when two adapters share a scan expression, so pin the
     // index of the option that actually carries the saved address.
     sel.selectedIndex = options.indexOf(match);
-  } else if (saved) {
-    console.warn('Saved scan adapter ' + saved + ' is no longer present; using the default.');
+  } else {
+    if (saved) {
+      console.warn('Saved scan adapter ' + saved + ' is no longer present; using the default.');
+    }
+    // No saved choice (or it is gone): start on the adapter the server ranked
+    // best -- a physical Ethernet port before Wi-Fi, before anything virtual.
+    // An explicit saved selection never reaches this branch.
+    const best = options.find(o => o.dataset.preferred === '1');
+    if (best) sel.selectedIndex = options.indexOf(best);
   }
 }
 
@@ -1526,6 +1593,23 @@ async function saveScanAdapter() {
 
 async function loadFiles() {
   try {
+    // The firmware folder is on the OmniSuite computer's own disk, so this is
+    // reachable from that computer and nowhere else. Asking anyway from a
+    // remote browser produced a 404 and a console error on every page load,
+    // and left the picker empty with nothing saying why.
+    if (window.omniIsLocal && !(await window.omniIsLocal())) {
+      const sel = $('#files');
+      if (sel) {
+        sel.innerHTML = '';
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'Firmware files are only available on the OmniSuite computer';
+        opt.disabled = true;
+        sel.appendChild(opt);
+        sel.disabled = true;
+      }
+      return;
+    }
     const res = await fetch('/api/files');
     const data = await res.json();
     const sel = $('#files');
@@ -1556,7 +1640,7 @@ async function loadFiles() {
         // Filter rows and update checkboxes
         const rows = Array.from($$('#units_table tr'));
         rows.forEach(row => {
-          const modelCell = row.cells[9];
+          const modelCell = row.cells[10];
           const model = modelCell ? modelCell.textContent.trim() : '';
           const checkbox = row.querySelector('input[type="checkbox"].row-select');
           const isCompatible = model && compatibleModels.some(m => model.toLowerCase().includes(m));
@@ -1665,7 +1749,10 @@ function omniConfirm(options = {}) {
     // something expensive or irreversible. Degrading that to a native confirm
     // would replace the notice the operator is supposed to read with a browser
     // string box; a missing dialog means the action does not happen.
-    if (options.requireDialog) return Promise.resolve(false);
+    // A dialog that was asking for something cannot degrade to a browser
+    // string box either: window.confirm() takes no input, and prompt() would
+    // show a passphrase in the clear.
+    if (options.requireDialog || options.field) return Promise.resolve(false);
     return Promise.resolve(window.confirm(options.message || options.title || 'Continue?'));
   }
 
@@ -1695,6 +1782,50 @@ function omniConfirm(options = {}) {
     listEl.style.display = 'none';
   }
 
+  // One optional tick box, for a second and more destructive choice. Its
+  // state travels back through the caller's own callback, and it is always
+  // reset to unchecked on the way in so the safe answer is the default every
+  // time the dialog opens.
+  const boxWrap = $('#confirm_checkbox');
+  const boxInput = $('#confirm_checkbox_input');
+  const boxLabel = $('#confirm_checkbox_label');
+  const checkbox = options.checkbox;
+  if (checkbox && boxWrap && boxInput) {
+    boxLabel.textContent = checkbox.label || '';
+    boxInput.checked = false;
+    boxWrap.style.display = '';
+  } else if (boxWrap) {
+    boxWrap.style.display = 'none';
+  }
+
+  // One optional field, the same contract as the shared dialog in
+  // ui/confirm.js. tests/settings_backup_test.js asserts the two agree about
+  // it, because two implementations of one control drift.
+  const fieldWrap = $('#confirm_field');
+  const fieldInput = $('#confirm_field_input');
+  const fieldLabel = $('#confirm_field_label');
+  const field = options.field;
+  if (field && fieldWrap && fieldInput) {
+    fieldLabel.textContent = field.label || '';
+    fieldInput.type = field.type || 'text';
+    fieldInput.placeholder = field.placeholder || '';
+    // A value the caller wants offered; same contract as ui/confirm.js.
+    fieldInput.value = field.value == null ? '' : String(field.value);
+    const hintEl = fieldWrap.querySelector('.confirm-field-hint');
+    if (hintEl) {
+      hintEl.textContent = field.hint || '';
+      hintEl.style.display = field.hint ? '' : 'none';
+    }
+    const errorEl = fieldWrap.querySelector('.confirm-field-error');
+    if (errorEl) {
+      errorEl.textContent = '';
+      errorEl.style.display = 'none';
+    }
+    fieldWrap.style.display = '';
+  } else if (fieldWrap) {
+    fieldWrap.style.display = 'none';
+  }
+
   okBtn.textContent = options.confirmText || 'Continue';
   cancelBtn.textContent = options.cancelText || 'Cancel';
   // `acknowledge` is a message, not a choice: there is nothing to cancel, so
@@ -1712,11 +1843,32 @@ function omniConfirm(options = {}) {
   okBtn.classList.toggle('secondary', cancelIsDefault && !options.danger);
   cancelBtn.classList.toggle('secondary', !cancelIsDefault);
   backdrop.style.display = 'flex';
+  // Above whatever is already open -- Settings in particular, which is
+  // injected at the end of <body> and would otherwise win on document order.
+  if (window.omniModalStack) window.omniModalStack.raise(backdrop);
 
   const invoker = document.activeElement;
   return new Promise(resolve => {
     const cleanup = (result) => {
+      // The field's value reaches the caller on the way out and is wiped
+      // here whatever the answer was, so a passphrase does not sit in the
+      // DOM for the life of the page.
+      if (field && fieldInput) {
+        if (result && typeof field.onValue === 'function') {
+          field.onValue(fieldInput.value);
+        }
+        fieldInput.value = '';
+        if (fieldWrap) fieldWrap.style.display = 'none';
+      }
+      if (checkbox && boxInput) {
+        if (result && typeof checkbox.onValue === 'function') {
+          checkbox.onValue(!!boxInput.checked);
+        }
+        boxInput.checked = false;
+        if (boxWrap) boxWrap.style.display = 'none';
+      }
       backdrop.style.display = 'none';
+      if (window.omniModalStack) window.omniModalStack.release(backdrop);
       cancelBtn.hidden = false;
       // Back to the arrangement in the markup, so the next caller is not
       // styled by whatever the previous one asked for.
@@ -1731,13 +1883,35 @@ function omniConfirm(options = {}) {
       }
       resolve(result);
     };
-    const onOk = () => cleanup(true);
+    // An answer the caller can refuse in place; same contract as ui/confirm.js.
+    const commit = () => {
+      if (field && fieldInput && typeof field.validate === 'function') {
+        const problem = field.validate(fieldInput.value);
+        if (problem) {
+          const errorEl = fieldWrap.querySelector('.confirm-field-error');
+          if (errorEl) {
+            errorEl.textContent = String(problem);
+            errorEl.style.display = '';
+          }
+          fieldInput.focus();
+          return;
+        }
+      }
+      cleanup(true);
+    };
+    const onOk = () => commit();
     const onCancel = () => cleanup(false);
     const onBackdrop = (event) => {
       if (event.target === backdrop) cleanup(false);
     };
     const onKeydown = (event) => {
       if (event.key === 'Escape') cleanup(false);
+      // Enter in the field means "that is my answer".
+      if (event.key === 'Enter' && field && fieldInput
+          && event.target === fieldInput) {
+        event.preventDefault();
+        commit();
+      }
     };
     okBtn.addEventListener('click', onOk);
     cancelBtn.addEventListener('click', onCancel);
@@ -1746,7 +1920,15 @@ function omniConfirm(options = {}) {
     // Focus goes back where it came from. Without this, dismissing a dialog
     // dropped the keyboard at the top of the document and the operator had to
     // tab back to the control they had just used.
-    (cancelIsDefault && !options.acknowledge ? cancelBtn : okBtn).focus();
+    // A dialog that asks for something puts the cursor in the thing it is
+    // asking for -- otherwise the operator types a passphrase into a button.
+    // Otherwise the usual rule: where the costly answer is Yes, Cancel takes
+    // the focus so the keyboard default and the visual default agree.
+    if (field && fieldInput) {
+      fieldInput.focus();
+    } else {
+      (cancelIsDefault && !options.acknowledge ? cancelBtn : okBtn).focus();
+    }
   });
 }
 
@@ -1914,12 +2096,16 @@ async function loadUnits(fallbackUnits = null) {
     const tbody = $('#units_table');
     bindUnitsTableLinks();
     tbody.innerHTML = '';
-    if (units.length === 0) {
+    // USB extenders that are devices in their own right (AT-OMNI-311/324). They are
+    // classified by the server and drawn here as ordinary rows; this page decides
+    // nothing about what they are.
+    const extenderRows = Array.isArray(data.standalone_extenders) ? data.standalone_extenders : [];
+    if (units.length === 0 && extenderRows.length === 0) {
       updateUnitCounts([]);
       updateDeviceCodecMismatchWarning([]);
       renderSwitchTopology(null, data.topology_warning_acknowledged);
       renderDaisyWarning(null, data.daisy_warning_acknowledged);
-      tbody.innerHTML = '<tr><td colspan="16" style="text-align:center;padding:40px;opacity:.6;">Scan to discover units</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="18" style="text-align:center;padding:40px;opacity:.6;">Scan to discover units</td></tr>';
       const overlay = $('#loading_overlay');
       if (overlay) overlay.classList.add('hidden');
       return;
@@ -1945,10 +2131,12 @@ async function loadUnits(fallbackUnits = null) {
         || u.details?.timezone?.config?.ntp_server
         || ''
       );
-      const previewUrl = isEncoder ? `http://${u.ip}/thumbnail/thumbnail1.jpg` : '';
+      // Only a plain IPv4 literal is put into a URL that ends up inside an inline
+      // handler: a handler's string is parsed twice, so HTML-escaping alone is not enough.
+      const previewUrl = isEncoder && /^\d{1,3}(\.\d{1,3}){3}$/.test(String(u.ip)) ? `http://${u.ip}/thumbnail/thumbnail1.jpg` : '';
       const previewCell = isEncoder 
         ? `<td style="text-align:center;">
-            <input type="checkbox" class="preview-checkbox" data-ip="${u.ip}" onclick="event.stopPropagation(); toggleThumbnail(this)" title="Enable/disable thumbnail" style="display:block;margin:0 auto 4px;">
+            <input type="checkbox" class="preview-checkbox" data-ip="${escapeAttr(u.ip)}" onclick="event.stopPropagation(); toggleThumbnail(this)" title="Enable/disable thumbnail" style="display:block;margin:0 auto 4px;">
             <a class="action-link" data-preview-url="${previewUrl}" onmouseover="showHoverPreview(this, event)" onmouseout="hideHoverPreview()" onclick="openPreviewWindow('${previewUrl}'); return false;">Preview</a>
           </td>`
         : `<td></td>`;
@@ -1960,10 +2148,10 @@ async function loadUnits(fallbackUnits = null) {
       const cachedLooksDisconnected = String(cached.statusText || '').toLowerCase() === 'disconnected' || cached.statusClass === 's-error';
       let statusCellHtml;
       if (activeUpgrade) {
-        statusCellHtml = `<td data-monitoring="1"><span class="status ${activeUpgrade.cls}">${activeUpgrade.text}</span></td>`;
+        statusCellHtml = `<td data-monitoring="1"><span class="status ${escapeAttr(activeUpgrade.cls)}">${escapeHtml(activeUpgrade.text)}</span></td>`;
       } else if (cached.statusClass && !(pollingWillRefresh && cachedLooksDisconnected)) {
         // Use cached status HTML
-        statusCellHtml = `<td><span class="status ${cached.statusClass}">${cached.statusText}</span></td>`;
+        statusCellHtml = `<td><span class="status ${escapeAttr(cached.statusClass)}">${escapeHtml(cached.statusText)}</span></td>`;
       } else if (pollingWillRefresh) {
         statusCellHtml = '<td><span class="status s-na">N/A</span></td>';
       } else if (isFirstSession) {
@@ -1987,8 +2175,9 @@ async function loadUnits(fallbackUnits = null) {
         <td><a class="ip" data-open-ip="${escapeAttr(u.ip)}">${escapeHtml(u.ip || '')}</a></td>
         <td class="hostname_cell" title="${escapeAttr(u.hostname || '')}">${escapeAttr(u.hostname || '')}</td>
         <td class="${(macCellAttributes(u).includes('alternate-switch') ? 'alternate-switch' : '')}${daisyCellAttributes(u)}"><span class="mac-lldp" data-ip="${escapeAttr(u.ip || '')}" onmouseenter="showLldpPopup(this, event)" onmouseleave="hideLldpPopup()">${escapeHtml(u.mac || '')}</span>${macCellNote(u)}${daisyCellNote(u)}</td>
-        <td class="linkspeed_cell">${cached.linkspeedHtml || (u.linkspeed !== undefined && u.linkspeed !== null ? `<span style="color:${u.linkspeed === 1000 ? '#4ade80' : '#f87171'}">${u.linkspeed} Mbps</span>` : '')}</td>
+        <td class="linkspeed_cell">${cached.linkspeedHtml || (u.linkspeed !== undefined && u.linkspeed !== null ? linkspeedMarkup(u.linkspeed) : '')}</td>
         <td class="codec_cell">${buildCodecCell(u)}</td>
+        <td class="inventory-extra-col uptime_cell" data-uptime="${escapeAttr(u.uptime_seconds == null ? '' : u.uptime_seconds)}">${escapeHtml(formatUptime(u.uptime_seconds))}</td>
         <td class="inventory-extra-col">${escapeHtml(timezone || '')}</td>
         <td class="inventory-extra-col">${escapeHtml(ntpServer || '')}</td>
         <td class="inventory-extra-col">${escapeHtml(u.type || u.role || '')}</td>
@@ -1996,7 +2185,7 @@ async function loadUnits(fallbackUnits = null) {
         <td class="inventory-extra-col">${escapeHtml(u.version || '')}</td>
         <td class="inventory-extra-col"><span class="pwd-pill ${passwordClass}">${passwordSource}</span></td>
         ${statusCellHtml}
-        <td><button class="action-btn blink-btn" data-ip="${u.ip}" title="Blink LED">💡</button></td>
+        <td><button class="action-btn blink-btn" data-ip="${escapeAttr(u.ip)}" title="Blink LED">💡</button></td>
         ${previewCell}
         <td class="usb_cell inventory-extra-col">${cached.usbHtml || ''}</td>
         <td class="log_cell"><button type="button" class="btn small secondary log-btn" data-ip="${escapeAttr(u.ip)}" title="Download this device's debug log">Log</button></td>
@@ -2020,12 +2209,19 @@ async function loadUnits(fallbackUnits = null) {
       }
     });
 
+    extenderRows.forEach(x => tbody.appendChild(buildExtenderRow(x)));
+
     isFirstSession = false;
     // If polling is off, show N/A pills so users know status isn't live
     if (localStorage.getItem('pollUnits') !== 'true') {
       setStatusDisabled();
     }
     applyInventoryExtraVisibility();
+    // Firmware availability, read from the last good catalogue. Never blocks the
+    // table: the rows are already drawn, and this only decorates them.
+    if (window.omniFirmware) {
+      window.omniFirmware.fetchStatus().then(d => window.omniFirmware.applyToTable(d)).catch(() => {});
+    }
     
     // Hide loading overlay when done
     const overlay = $('#loading_overlay');
@@ -2139,6 +2335,9 @@ function startUsbDiscovery(targetsExpression) {
     setTimeout(refreshUsbExtenderCount, 1200);
     setTimeout(refreshUsbExtenderCount, 3500);
     setTimeout(refreshUsbExtenderCount, 8000);
+    // Standalone endpoints land after the scan has returned, so the prepared USB Matrix is rebuilt
+    // once they have.
+    setTimeout(function () { if (window.OmniUsbPrep) OmniUsbPrep.inventoryChanged(); }, 9000);
   }).catch(err => {
     console.warn('[USB] Discovery dispatch failed:', err && err.message ? err.message : err);
   });
@@ -2149,6 +2348,8 @@ $('#scan_btn').addEventListener('click', async () => {
   const targets = targetsInput || $('#adapters').value;
   if (!targets) { toast('Select an adapter, or enter targets to scan.', 'error'); return; }
   $('#scan_status').innerHTML = '<span class="spinner"></span> Scanning...';
+  // A new scan retires the previous scan's notice; it comes back only if this one is blocked too.
+  if (window.OmniScanNotice) OmniScanNotice.hide();
 
   // Remember what was scanned so the next Scan covers the same space without
   // it being retyped, and so USB directed discovery has it too.
@@ -2165,13 +2366,41 @@ $('#scan_btn').addEventListener('click', async () => {
       body: JSON.stringify({targets})
     });
     const data = await res.json();
-    $('#scan_status').innerHTML = `✅ ${data.reachable}/${data.tested} found`;
+    if (!res.ok || data.ok === false) {
+      // A refused scan is a result with a reason, not "0 found". The server's
+      // sentence is shown as-is; it says whether the machine blocked the scan.
+      // The server says whether this is a Local Network permission problem; the page only
+      // presents that verdict. Any other refusal keeps the one-line status and a toast.
+      if (window.OmniScanNotice && OmniScanNotice.show(data)) {
+        $('#scan_status').textContent = '❌ Blocked by macOS Local Network permission';
+        return;
+      }
+      $('#scan_status').textContent = '❌ ' + (data.error || ('Scan failed (HTTP ' + res.status + ')'));
+      toast(data.error || 'Scan failed.', 'error');
+      return;
+    }
+    // A Clear Units that finished while this scan ran wins: the scan's result was
+    // not merged, and saying "found" would describe units that are not shown.
+    $('#scan_status').textContent = data.discarded
+      ? 'Units were cleared while this scan ran, so its result was not added. Scan again to discover them.'
+      : `✅ ${data.reachable}/${data.tested} found`;
     await loadUnits(data.units || []);
     await loadScanResults();
+    if (window.OmniMatrixPrep) OmniMatrixPrep.inventoryChanged();
+    if (window.OmniUsbPrep) OmniUsbPrep.inventoryChanged();
   } catch (e) {
-    $('#scan_status').innerHTML = '❌ Error: ' + e.message;
+    $('#scan_status').textContent = '❌ Error: ' + e.message;
   }
 });
+
+if (window.OmniScanNotice) {
+  OmniScanNotice.attach({
+    container: document.getElementById('scan_permission_notice'),
+    onRetry: () => $('#scan_btn').click(),
+    navigate: (url) => { window.location.href = url; },
+    env: { hostname: window.location.hostname, platform: navigator.platform || '' },
+  });
+}
 
 $('#targets_clear').addEventListener('click', () => {
   const input = $('#targets');
@@ -2188,15 +2417,63 @@ if (targetsField) {
 }
 
 $('#clear_units_btn').addEventListener('click', async () => {
+  // A plain destructive confirmation. Clearing removes the discovered units
+  // and every assignment that refers to them, so it always asks, and the safe
+  // answer is the default. If the shared dialog is unavailable the action is
+  // refused: a native box would not carry the sentence that matters.
+  //
+  // With Remote Access on the question is a different one -- assigned units
+  // are kept -- and ui/clear-units.js asks it, after reading what is assigned.
+  // That module refuses when the assignments cannot be read, and the server
+  // decides again on its own when the request arrives.
+  const go = window.OmniClearUnits
+    ? await OmniClearUnits.confirmClear({
+        doc: document,
+        fetch: window.fetch.bind(window),
+        modalStack: window.omniModalStack,
+        onError: (message) => toast(message, 'error'),
+        legacyConfirm: () => omniConfirm({
+          title: 'Clear discovered units?',
+          message: 'This removes all currently discovered units from the '
+            + 'application and removes their assignments from users and display '
+            + 'groups. Devices can be rediscovered by scanning again.',
+          confirmText: 'Clear Units',
+          cancelText: 'Cancel',
+          defaultAction: 'cancel',
+          requireDialog: true,
+        }),
+      })
+    : false;                         // No dialog module: the action does not happen.
+  if (!go) return;                   // Cancel changes nothing at all.
+
   const wasPolling = pollInterval !== null;
   if (wasPolling) stopPolling();
   try {
-    // Clear Units is the single clear action: it clears encoder/decoder state as
-    // before and additionally forgets the standalone USB inventory server-side.
-    await fetch('/api/clear_units', {method: 'POST'});
+    // Clear Units is the single clear action: it clears encoder/decoder state,
+    // forgets the standalone USB inventory, and removes the cleared devices
+    // from accounts, display groups and friendly names server-side.
+    const res = await fetch('/api/clear_units', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: '{}',
+    });
+    const outcome = await res.json().catch(() => ({}));
+    if (!res.ok || outcome.ok === false) {
+      toast(outcome.error || 'Clear failed. Nothing was changed.', 'error');
+      if (wasPolling) startPolling();
+      return;
+    }
     await loadUnits();
+    if (window.OmniMatrixPrep) OmniMatrixPrep.inventoryChanged();
+    if (window.OmniUsbPrep) OmniUsbPrep.inventoryChanged();
     await refreshUsbExtenderCount();
     if (wasPolling) startPolling();
+    if ((outcome.unremoved || []).length) {
+      toast('Some units could not be cleared and may reappear.', 'warn');
+    } else {
+      const said = window.OmniClearUnits ? OmniClearUnits.outcomeMessage(outcome) : '';
+      if (said) toast(said);
+    }
   } catch (e) {
     toast('Clear failed: ' + e.message, 'error');
     if (wasPolling) startPolling();
@@ -2277,14 +2554,88 @@ function getRowByIp(ip){
   // #units_table is already the <tbody>; search its direct rows
   return Array.from($$('#units_table tr')).find(r => r.getAttribute('data-ip') === ip);
 }
+// Uptime as the device reported it, compactly: 3m, 2h 14m, 1d 2h 49m, 73d 23h 33m.
+// Leading zero units are never shown, and nothing is shown for a value that is not a
+// plain non-negative number -- an unknown uptime is a dash, not "0m".
+function formatUptime(seconds) {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return '\u2014';
+  const total = Math.floor(seconds);
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (days === 0 && hours === 0 && minutes === 0) return '<1m';
+  const parts = [];
+  if (days) parts.push(days + 'd');
+  if (days || hours) parts.push(hours + 'h');
+  parts.push(minutes + 'm');
+  // A day or an hour with nothing after it still reads naturally: 2d 0h 0m is shown
+  // as 2d 0h 0m only when something follows; trailing zero units are kept so the
+  // columns line up, but nothing is ever invented in front.
+  return parts.join(' ');
+}
+
+// A poll that carries a fresh reading updates the cell; one that does not leaves
+// the last reading in place rather than blanking it.
+function updateUptimeCell(row, seconds) {
+  const cell = row && row.querySelector ? row.querySelector('.uptime_cell') : null;
+  if (!cell || typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return;
+  cell.textContent = formatUptime(seconds);
+  cell.dataset.uptime = String(Math.floor(seconds));
+}
+
+// A row for a USB extender that is a device in its own right. It shows what the
+// extender's own protocol established -- address, hardware address, model,
+// firmware -- and a dash for everything else, and it offers no action: no
+// selection (so it can never be an upgrade target), no blink, no preview, no log.
+function buildExtenderRow(x) {
+  const dash = '\u2014';
+  const tr = document.createElement('tr');
+  tr.className = 'extender-row';
+  // Deliberately not data-ip: polling and the per-unit actions find rows by it.
+  tr.setAttribute('data-extender-ip', x.ip || '');
+  const status = x.online ? '<span class="status s-idle">Online</span>'
+                          : '<span class="status s-na">Offline</span>';
+  tr.innerHTML = `
+    <td></td>
+    <td><a class="ip" data-open-ip="${escapeAttr(x.ip)}">${escapeHtml(x.ip || '')}</a></td>
+    <td class="hostname_cell">${dash}</td>
+    <td>${escapeHtml(x.mac || dash)}</td>
+    <td>${dash}</td>
+    <td>${dash}</td>
+    <td class="inventory-extra-col uptime_cell">${dash}</td>
+    <td class="inventory-extra-col">${dash}</td>
+    <td class="inventory-extra-col">${dash}</td>
+    <td class="inventory-extra-col">${escapeHtml(x.type || 'USB Extender')}</td>
+    <td class="inventory-extra-col">${escapeHtml(x.model || dash)}</td>
+    <td class="inventory-extra-col">${escapeHtml(x.version || dash)}</td>
+    <td class="inventory-extra-col">${dash}</td>
+    <td>${status}</td>
+    <td>${dash}</td>
+    <td>${dash}</td>
+    <td class="inventory-extra-col">${dash}</td>
+    <td>${dash}</td>`;
+  return tr;
+}
+
+// A link speed is a number when the device is behaving; whatever else it sent is text.
+// Coloured by the state tokens (green exactly at gigabit, red below it), never a
+// literal, so every preset and both modes keep the same meaning. data-sort is the
+// number the column sorts by.
+function linkspeedMarkup(raw){
+  const speed = Number(raw);
+  const shown = Number.isFinite(speed) ? String(speed) : escapeHtml(String(raw).trim());
+  const cls = speed === 1000 ? 'linkspeed linkspeed-ok' : 'linkspeed linkspeed-slow';
+  return `<span class="${cls}"${Number.isFinite(speed) ? ` data-sort="${speed}"` : ''}>${shown} Mbps</span>`;
+}
+
 function setStatus(ip, text, cls, holdMs){
   const row = getRowByIp(ip); if(!row) { console.log('[STATUS] No row for', ip); return; }
-  const statusCell = row.cells[12]; if(!statusCell) { console.log('[STATUS] No status cell for', ip); return; }
+  const statusCell = row.cells[13]; if(!statusCell) { console.log('[STATUS] No status cell for', ip); return; }
   console.log(`[STATUS] Setting ${ip} to '${text}' (${cls}), holdMs=${holdMs}`);
   if (activeUpgradeIps.has(ip)) {
     activeUpgradeStatus.set(ip, {text, cls});
   }
-  statusCell.innerHTML = `<span class="status ${cls}">${text}</span>`;
+  statusCell.innerHTML = `<span class="status ${escapeAttr(cls)}">${escapeHtml(text)}</span>`;
   if (activeUpgradeIps.has(ip)) {
     statusCell.dataset.monitoring = '1';
   }
@@ -2562,8 +2913,8 @@ async function monitorUpgrade(ip, snapshotVersion, file = null){
   
   // Update version cell in table
   const row = getRowByIp(ip);
-  if(row && row.cells[10]){
-    row.cells[10].textContent = currentVersion || '(unknown)';
+  if(row && row.cells[11]){
+    row.cells[11].textContent = currentVersion || '(unknown)';
   }
   
   // Compare versions
@@ -2639,7 +2990,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
   const selectedLabels = selected.map(ip => {
     const row = getRowByIp(ip);
     const host = (row?.cells?.[2]?.textContent || '').trim();
-    const model = (row?.cells?.[9]?.textContent || '').trim();
+    const model = (row?.cells?.[10]?.textContent || '').trim();
     return [ip, host, model].filter(Boolean).join(' / ');
   });
   if (!await omniConfirm({
@@ -2665,7 +3016,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
     activeUpgradeIps.add(ip);
     const row = getRowByIp(ip);
     if(row){
-      const verCell = row.cells[10];
+      const verCell = row.cells[11];
       const ver = verCell ? verCell.textContent.trim() : '';
       snapVersions[ip] = ver;
       console.log(`[UPGRADE] Captured version for ${ip}: "${ver}"`);
@@ -2674,7 +3025,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
         console.warn(`[UPGRADE] WARNING: Version is empty for ${ip} - may cause issues detecting upgrade success`);
       }
       
-      const statusCell = row.cells[12];
+      const statusCell = row.cells[13];
       if(statusCell){
         // Mark this row as under active upgrade monitoring so poller skips it
         statusCell.dataset.monitoring = '1';
@@ -2714,7 +3065,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
       activeUpgradeIps.delete(ip);
       activeUpgradeStatus.delete(ip);
     }
-    const statusCell = row && row.cells ? row.cells[12] : null;
+    const statusCell = row && row.cells ? row.cells[13] : null;
     if(statusCell){ delete statusCell.dataset.monitoring; }
     const finalText = (statusCell?.textContent || '').toLowerCase();
     finishUpgradeMonitor(
@@ -2729,8 +3080,8 @@ $('#upgrade_btn').addEventListener('click', async () => {
   const uploadAndStartMonitor = async (ip) => {
     const row = getRowByIp(ip);
     const snap = snapVersions[ip] || '';
-    if(row && row.cells && row.cells[12]){
-      delete row.cells[12].dataset.holdUntil;
+    if(row && row.cells && row.cells[13]){
+      delete row.cells[13].dataset.holdUntil;
     }
     console.log(`[UPGRADE] Upload slot starting ${ip}`);
     setStatus(ip, 'Uploading', 's-uploading', 0);
@@ -2749,7 +3100,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
       if (uploadResult && !uploadResult.ok) {
         activeUpgradeIps.delete(ip);
         activeUpgradeStatus.delete(ip);
-        const statusCell = row && row.cells ? row.cells[12] : null;
+        const statusCell = row && row.cells ? row.cells[13] : null;
         if(statusCell){ delete statusCell.dataset.monitoring; }
         const stage = uploadResult.stage || 'upload';
         const error = uploadResult.error || 'failed';
@@ -2763,7 +3114,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
     } catch (e) {
       activeUpgradeIps.delete(ip);
       activeUpgradeStatus.delete(ip);
-      const statusCell = row && row.cells ? row.cells[12] : null;
+      const statusCell = row && row.cells ? row.cells[13] : null;
       if(statusCell){ delete statusCell.dataset.monitoring; }
       setStatus(ip, `Upload error: ${e.message}`, 's-error', 30000);
       finishUpgradeMonitor(false);
@@ -2807,14 +3158,14 @@ $('#upgrade_btn').addEventListener('click', async () => {
       } else {
         toast('Upgrade failed: ' + data.error, 'error');
       }
-      $('#scan_status').innerHTML = `❌ ${data.error}`;
+      $('#scan_status').textContent = `❌ ${data.error}`;
       
       // Clear the uploading status from selected devices since upgrade was rejected
       selected.forEach(ip => {
         const row = getRowByIp(ip);
-        if(row && row.cells && row.cells[12]){
-          row.cells[12].innerHTML = '<span class="status s-idle">Idle</span>';
-          delete row.cells[12].dataset.monitoring;
+        if(row && row.cells && row.cells[13]){
+          row.cells[13].innerHTML = '<span class="status s-idle">Idle</span>';
+          delete row.cells[13].dataset.monitoring;
         }
       });
       return;
@@ -2853,13 +3204,13 @@ $('#upgrade_btn').addEventListener('click', async () => {
       const snap = snapVersions[ip] || '';
       // Clear the uploadinghold so monitor can show Upgrading now
       const row = getRowByIp(ip);
-      if(row && row.cells && row.cells[12]){
-        delete row.cells[12].dataset.holdUntil;
+      if(row && row.cells && row.cells[13]){
+        delete row.cells[13].dataset.holdUntil;
       }
       const uploadResult = results[ip];
       if (uploadResult && !uploadResult.ok) {
         activeUpgradeStatus.delete(ip);
-        const statusCell = row && row.cells ? row.cells[12] : null;
+        const statusCell = row && row.cells ? row.cells[13] : null;
         if(statusCell){ delete statusCell.dataset.monitoring; }
         const stage = uploadResult.stage || 'upload';
         const error = uploadResult.error || 'failed';
@@ -2871,7 +3222,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
       // Pass file name so retry can be triggered if device doesn't reboot
       monitorUpgrade(ip, snap, file).finally(()=>{
         // Clear monitoring flag after monitor completes
-        const statusCell = row && row.cells ? row.cells[12] : null;
+        const statusCell = row && row.cells ? row.cells[13] : null;
         if(statusCell){ delete statusCell.dataset.monitoring; }
 
         const finalText = (statusCell?.textContent || '').toLowerCase();
@@ -2885,7 +3236,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
       });
     });
   } catch (e) {
-    $('#scan_status').innerHTML = '❌ Error: ' + e.message;
+    $('#scan_status').textContent = '❌ Error: ' + e.message;
   }
 });
 
@@ -2960,6 +3311,8 @@ $('#remove_btn').addEventListener('click', async () => {
       await fetch('/api/reload_cache', {method: 'POST'});
       // Reload the cache to update the table
       await loadUnits();
+    if (window.OmniMatrixPrep) OmniMatrixPrep.inventoryChanged();
+    if (window.OmniUsbPrep) OmniUsbPrep.inventoryChanged();
     } else {
       console.error(`[REMOVE] Failed:`, data.error);
       toast(`Failed to remove units: ${data.error}`, 'error');
@@ -2973,6 +3326,21 @@ $('#remove_btn').addEventListener('click', async () => {
 // Table sorting state
 let currentSortCol = null;
 let sortAscending = true;
+
+// Two cell values in sort order: addresses as addresses, numbers as numbers, and
+// everything else with numeric collation, so 10.0.0.9 < 10.0.0.10, 9 < 10 and
+// version 2.0.9 < 2.0.10 -- not the character order that puts "10" before "9".
+const IPV4_TEXT = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+const SIMPLE_NUMBER_TEXT = /^-?\d+(\.\d+)?$/;
+function compareDeviceValues(aVal, bVal) {
+  if (IPV4_TEXT.test(aVal) && IPV4_TEXT.test(bVal)) {
+    const a = aVal.split('.').map(Number), b = bVal.split('.').map(Number);
+    for (let i = 0; i < 4; i += 1) if (a[i] !== b[i]) return a[i] - b[i];
+    return 0;
+  }
+  if (SIMPLE_NUMBER_TEXT.test(aVal) && SIMPLE_NUMBER_TEXT.test(bVal)) return parseFloat(aVal) - parseFloat(bVal);
+  return aVal.localeCompare(bVal, undefined, {numeric: true, sensitivity: 'base'});
+}
 
 function sortTable(colIndex, dataAttr) {
   const tbody = $('#units_table');
@@ -2989,23 +3357,19 @@ function sortTable(colIndex, dataAttr) {
   rows.sort((a, b) => {
     const cellValue = (row) => {
       const cell = row.cells[colIndex];
+      if (dataAttr && cell && cell.dataset && cell.dataset[dataAttr] !== undefined) {
+        return String(cell.dataset[dataAttr]).trim();
+      }
+      const keyed = cell ? cell.querySelector('[data-sort]') : null;
+      if (keyed) return String(keyed.dataset.sort).trim();
       const input = cell ? cell.querySelector('input') : null;
       return (input ? input.value : cell?.textContent || '').trim();
     };
     let aVal = cellValue(a);
     let bVal = cellValue(b);
     
-    // Only try numeric sort if BOTH values are simple numbers (no dots except decimal point, no special chars)
-    // This prevents IP addresses and version strings from being incorrectly parsed as numbers
-    const isSimpleNumber = /^-?\d+(\.\d+)?$/;
-    if (isSimpleNumber.test(aVal) && isSimpleNumber.test(bVal)) {
-      const aNum = parseFloat(aVal);
-      const bNum = parseFloat(bVal);
-      return sortAscending ? aNum - bNum : bNum - aNum;
-    }
-    
-    // String sort for everything else (IPs, versions, hostnames, etc)
-    return sortAscending ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+    const order = compareDeviceValues(aVal, bVal);
+    return sortAscending ? order : -order;
   });
   
   // Re-append sorted rows
@@ -3014,13 +3378,33 @@ function sortTable(colIndex, dataAttr) {
   // Update header indicators
   Array.from(document.querySelectorAll('table th')).forEach((th, idx) => {
     th.style.cursor = idx <= 8 ? 'pointer' : 'default';
-    th.style.opacity = (idx === colIndex) ? '1' : '0.6';
+    // The other headers are dimmed with a text colour, never with opacity: an
+    // opacity on a sticky header cell makes the whole cell translucent, and the
+    // rows scrolling under it read through from the first sort onwards.
+    th.classList.toggle('th-dim', idx !== colIndex);
+    if (th.hasAttribute('onclick')) th.setAttribute('aria-sort', idx === colIndex ? (sortAscending ? 'ascending' : 'descending') : 'none');
     th.textContent = th.textContent.replace(/ [↑↓]/g, '');
     if (idx === colIndex) {
       th.textContent += sortAscending ? ' ↑' : ' ↓';
     }
   });
 }
+
+// A sortable header is a control, so it is reachable and operable from the keyboard:
+// focusable, Enter or Space sorts. aria-sort (set in sortTable) says which way.
+function makeSortableHeadersKeyboardOperable() {
+  document.querySelectorAll('table.device-table thead th[onclick]').forEach((th) => {
+    th.tabIndex = 0;
+    th.setAttribute('aria-sort', 'none');
+    th.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        th.click();
+      }
+    });
+  });
+}
+makeSortableHeadersKeyboardOperable();
 
 // Poll Units functionality
 let pollInterval = null;
@@ -3035,7 +3419,8 @@ function setStatusDisabled() {
   // Set all non-monitored rows to N/A
   const rows = $$('#units_table tr');
   rows.forEach(r => {
-    const cell = r.cells && r.cells[12];
+    if (r.hasAttribute && r.hasAttribute('data-extender-ip')) return;
+    const cell = r.cells && r.cells[13];
     if (cell) {
       // Don't change status if this device is currently being monitored for upgrade
       if (cell.dataset?.monitoring === '1') {
@@ -3096,10 +3481,7 @@ function updatePolledUnitDetails(row, unit, ip) {
   if (linkSpeed !== undefined && linkSpeed !== null) {
     const lsCell = row.querySelector('.linkspeed_cell') || row.cells[4];
     if (lsCell) {
-      const speed = Number(linkSpeed);
-      const display = Number.isFinite(speed) ? speed : String(linkSpeed).trim();
-      const color = speed === 1000 ? '#4ade80' : '#f87171';
-      const lsHtml = `<span style="color:${color}">${display} Mbps</span>`;
+      const lsHtml = linkspeedMarkup(linkSpeed);
       if (lsCell.innerHTML !== lsHtml) lsCell.innerHTML = lsHtml;
       if (unitIp) {
         if (!unitStatusCache[unitIp]) unitStatusCache[unitIp] = {};
@@ -3133,20 +3515,20 @@ async function pollUnits() {
     ip: row.getAttribute('data-ip'),
     el: row
   })).sort((a, b) => {
-    const aRebooting = (a.el?.cells?.[12]?.textContent || '').trim().toLowerCase() === 'rebooting';
-    const bRebooting = (b.el?.cells?.[12]?.textContent || '').trim().toLowerCase() === 'rebooting';
+    const aRebooting = (a.el?.cells?.[13]?.textContent || '').trim().toLowerCase() === 'rebooting';
+    const bRebooting = (b.el?.cells?.[13]?.textContent || '').trim().toLowerCase() === 'rebooting';
     return Number(bRebooting) - Number(aRebooting);
   });
   console.log(`[POLL] Found ${units.length} rows in table`);
   
   for (const u of units) {
-    console.log(`[POLL] Processing unit - ip: ${u.ip}, has cells: ${!!u.el.cells}, statusCell: ${u.el.cells?.[12]?.innerHTML}`);
+    console.log(`[POLL] Processing unit - ip: ${u.ip}, has cells: ${!!u.el.cells}, statusCell: ${u.el.cells?.[13]?.innerHTML}`);
     // Skip rows without IP or without a status cell
-    if (!u.ip || !u.el || !u.el.cells || !u.el.cells[12]) {
-      console.log(`[POLL] Skipping - missing ip(${!!u.ip}) el(${!!u.el}) cells(${!!u.el?.cells}) statusCell(${!!u.el?.cells?.[12]})`);
+    if (!u.ip || !u.el || !u.el.cells || !u.el.cells[13]) {
+      console.log(`[POLL] Skipping - missing ip(${!!u.ip}) el(${!!u.el}) cells(${!!u.el?.cells}) statusCell(${!!u.el?.cells?.[13]})`);
       continue;
     }
-    const statusCell = u.el.cells[12];
+    const statusCell = u.el.cells[13];
     // Skip rows under active upgrade monitoring
     if (activeUpgradeIps.has(u.ip) || statusCell?.dataset?.monitoring === '1') {
       if (activeUpgradeIps.has(u.ip)) statusCell.dataset.monitoring = '1';
@@ -3198,12 +3580,13 @@ async function pollUnits() {
         console.log(`[POLL] ${u.ip} status=${newStatus} not stable yet, waiting for confirmation`);
         // Still update linkspeed even during stability wait — it's not a volatile field
         try {
+          updateUptimeCell(u.el, (data.unit || {}).uptime_seconds);
           const ls = (data.unit || {}).linkspeed;
           console.log(`[POLL][LS] ${u.ip} (pre-stable) linkspeed=${ls}`);
           const lsCell = u.el.querySelector('.linkspeed_cell');
           console.log(`[POLL][LS] ${u.ip} lsCell found:`, !!lsCell);
           if (lsCell && ls !== undefined && ls !== null) {
-            const lsHtml = `<span style="color:${ls === 1000 ? '#4ade80' : '#f87171'}">${ls} Mbps</span>`;
+            const lsHtml = linkspeedMarkup(ls);
             lsCell.innerHTML = lsHtml;
             if (!unitStatusCache[u.ip]) unitStatusCache[u.ip] = {};
             unitStatusCache[u.ip].linkspeedHtml = lsHtml;
@@ -3244,7 +3627,7 @@ async function pollUnits() {
             // clearly named.
             const role = (usb.role||'').toUpperCase();
             const label = role || (usb.mac ? 'USB' : '');
-            const usbHtml = label ? `<span class="usb-pill">${label}</span>` : '';
+            const usbHtml = label ? `<span class="usb-pill">${escapeHtml(label)}</span>` : '';
             usbCell.innerHTML = usbHtml;
             // Cache USB info
             if (label) {
@@ -3257,11 +3640,12 @@ async function pollUnits() {
         }catch(e){ console.warn('[POLL][USB] update error:', e); }
         // Update link speed indicator if available
         try{
+          updateUptimeCell(u.el, (data.unit || {}).uptime_seconds);
           const ls = (data.unit || {}).linkspeed;
           const lsCell = u.el.querySelector('.linkspeed_cell');
           console.log(`[POLL][LS] ${u.ip} (stable) linkspeed=${ls}, lsCell found:`, !!lsCell);
           if(lsCell && ls !== undefined && ls !== null){
-            const lsHtml = `<span style="color:${ls === 1000 ? '#4ade80' : '#f87171'}">${ls} Mbps</span>`;
+            const lsHtml = linkspeedMarkup(ls);
             lsCell.innerHTML = lsHtml;
             unitStatusCache[u.ip].linkspeedHtml = lsHtml;
             console.log(`[POLL][LS] ${u.ip} updated linkspeed cell: ${ls} Mbps`);
@@ -3281,7 +3665,7 @@ async function pollUnits() {
         try {
           const unit = data.unit || {};
           const version = String(unit.fw || unit.version || '').trim();
-          const versionCell = u.el.cells && u.el.cells[10];
+          const versionCell = u.el.cells && u.el.cells[11];
           if (versionCell && version && versionCell.textContent.trim() !== version) {
             versionCell.textContent = version;
           }

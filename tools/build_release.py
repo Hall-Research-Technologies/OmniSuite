@@ -3,18 +3,27 @@ import ast
 import hashlib
 import os
 import platform
+import re
 import shutil
 import subprocess
+import plistlib
 import sys
 import tarfile
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+import omni_release  # noqa: E402
 ENTRY = ROOT / "OmniMatrix_upgrade_server_v7_6y.py"
 LAUNCHER = ROOT / "app_launcher.py"
 VERSION_FILE = ROOT / "VERSION"
 LICENSE_FILE = ROOT / "LICENSE"
+LICENSES_DIR = ROOT / "third_party_licenses"
+PYSTRAY_SOURCE_DIR = ROOT / "third_party" / "pystray-0.19.5"
+PYSTRAY_PROVENANCE = ROOT / "third_party" / "PYSTRAY_PROVENANCE.md"
+REBUILD_FILE = ROOT / "REBUILD.md"
 THIRD_PARTY_FILE = ROOT / "THIRD_PARTY_NOTICES.md"
 RELEASE_DIR = ROOT / "release"
 APP_ICON = ROOT / "omnimatrix.ico"
@@ -31,6 +40,7 @@ ALLOWED_DATA = {
     "VERSION",       # reported by /api/config and by the updater
     "LICENSE",       # served at /license and linked from Settings
     "THIRD_PARTY_NOTICES.md",  # the bundled libraries and their own licences
+    "third_party_licenses",      # the licence texts of those libraries (tools/collect_licenses.py)
     "omnimatrix.ico",
     "hallway.png",
     "atlona.png",
@@ -190,6 +200,75 @@ def tar_path(source: Path, target_tgz: Path) -> None:
         tf.add(source, arcname=source.name)
 
 
+def numeric_version(version: str) -> tuple[int, int, int, int]:
+    """The four-number form Windows file metadata requires. `V1.2.0-diag1` is 1.2.0.0:
+    the suffix is a build name, not a version, and the full text is kept as a string."""
+    match = re.match(r"[Vv]?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?", version.strip())
+    parts = [int(g) for g in match.groups() if g is not None] if match else []
+    return tuple((parts + [0, 0, 0, 0])[:4])
+
+
+def write_windows_version_file(path: Path, version: str, product_name: str) -> Path:
+    """The version resource of OmniSuite.exe, so Properties > Details shows what the
+    application itself reports. It is derived from the same version the build was
+    named for, never typed here."""
+    numbers = numeric_version(version)
+    text = version.strip().lstrip("Vv")
+    strings = [("CompanyName", "Hall Research Technologies LLC"),
+               ("FileDescription", product_name), ("FileVersion", text),
+               ("InternalName", product_name), ("OriginalFilename", product_name + ".exe"),
+               ("ProductName", product_name), ("ProductVersion", text)]
+    # The text PyInstaller's --version-file evaluates. Written out here rather than
+    # built from its classes so the file can be produced, and tested, anywhere.
+    body = "\n".join("          StringStruct(%r, %r)," % pair for pair in strings)
+    path.write_text(
+        "VSVersionInfo(\n"
+        "  ffi=FixedFileInfo(filevers=%r, prodvers=%r, mask=0x3f, flags=0x0,\n"
+        "                    OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),\n"
+        "  kids=[\n"
+        "    StringFileInfo([StringTable('040904B0', [\n%s\n    ])]),\n"
+        "    VarFileInfo([VarStruct('Translation', [1033, 1200])])\n"
+        "  ])\n" % (numbers, numbers, body), encoding="utf-8")
+    return path
+
+
+def notice_files() -> list[tuple[Path, str]]:
+    """(source, archive name) for what must accompany a distribution: the product
+    licence, the third-party notices and every licence text they refer to.
+
+    The copies inside the executable cannot be read by the person who receives the
+    download -- a onefile build unpacks them to a temporary folder -- so the same
+    files travel beside the application in the archive.
+    """
+    files = [(LICENSE_FILE, "LICENSE"), (THIRD_PARTY_FILE, "THIRD_PARTY_NOTICES.md"),
+             (REBUILD_FILE, "REBUILD.md"), (PYSTRAY_PROVENANCE, "third_party/PYSTRAY_PROVENANCE.md")]
+    # The corresponding source of the LGPL component, unmodified, so it travels with the release.
+    if PYSTRAY_SOURCE_DIR.is_dir():
+        for item in sorted(PYSTRAY_SOURCE_DIR.rglob("*")):
+            if item.is_file():
+                files.append((item, "third_party/pystray-0.19.5/" + item.relative_to(PYSTRAY_SOURCE_DIR).as_posix()))
+    if LICENSES_DIR.is_dir():
+        for item in sorted(LICENSES_DIR.rglob("*")):
+            if item.is_file():
+                files.append((item, "third_party_licenses/" + item.relative_to(LICENSES_DIR).as_posix()))
+    return [(source, name) for source, name in files if source.exists()]
+
+
+def add_notices_to_zip(target_zip: Path) -> None:
+    """Append the notice files to the archive, beside the application."""
+    with zipfile.ZipFile(target_zip, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+        for source, name in notice_files():
+            archive.write(source, arcname=name)
+
+
+def copy_notices_into(directory: Path) -> None:
+    """Place the notice files in an application folder before it is archived."""
+    for source, name in notice_files():
+        destination = directory / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+
+
 def zip_macos_app(app_bundle: Path, target_zip: Path) -> None:
     target_zip.parent.mkdir(parents=True, exist_ok=True)
     if shutil.which("ditto"):
@@ -208,12 +287,143 @@ def zip_macos_app(app_bundle: Path, target_zip: Path) -> None:
     zip_path(app_bundle, target_zip)
 
 
-def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
+def bundle_version(version: str) -> str:
+    """The three-number form macOS reads from CFBundleShortVersionString: V1.2.0 is 1.2.0."""
+    return ".".join(str(n) for n in numeric_version(version)[:3])
+
+
+def declare_local_network_usage(app_bundle: Path, usage: str, display_name: str = None,
+                                bundle_identifier: str = None, version: str = None) -> None:
+    """Add NSLocalNetworkUsageDescription to a built .app, then sign it again.
+
+    macOS asks the person before an app may reach devices on the local network,
+    and this is the sentence it shows. PyInstaller writes the bundle's Info.plist
+    without it, and its command line has no way to add one.
+
+    Editing Info.plist invalidates the ad-hoc signature PyInstaller applied, and
+    Apple Silicon will not run code whose signature does not verify, so the
+    bundle is signed again -- ad hoc, as before; no signing identity is involved
+    -- and the result is verified. A failure here fails the build: shipping a
+    bundle that will not launch is worse than shipping none.
+
+    No Bonjour service types are declared. The application does not use Bonjour
+    or mDNS; it opens direct TCP connections and sends UDP broadcasts, and
+    declaring services it never browses would describe behaviour it does not have.
+    """
+    if not usage.strip():
+        raise RuntimeError("no Local Network usage description for this product")
+    plist_path = app_bundle / "Contents" / "Info.plist"
+    with plist_path.open("rb") as handle:
+        info = plistlib.load(handle)
+    info["NSLocalNetworkUsageDescription"] = usage
+    if version:
+        # PyInstaller writes 0.0.0 here, so the app reported no version to the system.
+        info["CFBundleShortVersionString"] = bundle_version(version)
+        info["CFBundleVersion"] = bundle_version(version)
+    if display_name:
+        # What System Settings lists under Local Network. Without this both
+        # products appear as "OmniSuite" and cannot be told apart.
+        info["CFBundleDisplayName"] = display_name
+        info["CFBundleName"] = display_name
+    if bundle_identifier:
+        # What macOS keys the app's permissions on. Distinct per product, so two
+        # products on one Mac keep separate Local Network permissions. OmniSuite's is
+        # its existing "OmniSuite", so setting it changes nothing for it.
+        info["CFBundleIdentifier"] = bundle_identifier
+    with plist_path.open("wb") as handle:
+        plistlib.dump(info, handle)
+    run(["codesign", "--force", "--deep", "--sign", "-", str(app_bundle)])
+    run(["codesign", "--verify", "--deep", "--strict", str(app_bundle)])
+    print(f"[build] Local Network usage description declared in {plist_path}")
+
+
+MACOS_README_NAME = "READ-ME-FIRST-macOS.txt"
+
+_MACOS_README = """{title}
+{rule}
+
+{name} is not signed or notarized by Apple, so macOS blocks it the first time
+you open it. That is expected. This page shows how to approve it.
+
+BEFORE YOU APPROVE ANYTHING
+  Only approve {name} if you downloaded it from the official project releases
+  page:
+
+      {url}
+
+  The file name should start with "{prefix}". If it came from anywhere else,
+  delete it. Each release also lists SHA-256 checksums in SHA256SUMS.txt. To
+  check yours, open Terminal in the folder with both files and run
+  shasum -a 256 followed by your zip file's name, then compare the result with
+  the matching line in SHA256SUMS.txt.
+
+FIRST LAUNCH
+  1. Double-click the zip in Finder to unpack it. Use Finder: some other unzip
+     tools damage the app.
+  2. Move OmniSuite.app to your Applications folder if you like.
+  3. Open OmniSuite.app. macOS says it cannot verify the app. Click Done. Do not
+     click Move to Trash.
+  4. Open System Settings, then Privacy & Security. Scroll down to the
+     Security section. It says "OmniSuite" was blocked and shows an
+     Open Anyway button. Click Open Anyway, enter your password, then
+     click Open.
+     The button is only there for a while after the blocked attempt. If you do
+     not see it, open the app again and look again.
+  On macOS 14 (Sonoma) and earlier you can also Control-click the app and
+  choose Open.
+
+  You only need to do this once for each copy you download. A new download may
+  ask again.
+
+LOCAL NETWORK ACCESS
+  The first time {name} looks for devices, macOS asks whether it may find and
+  connect to devices on your local network. Choose Allow.
+
+  If you chose Don't Allow, scans will report that they could not reach the
+  network. To fix it, open System Settings, then Privacy & Security, then
+  Local Network, switch on {name}, and scan again.
+
+WHAT NOT TO DO
+  Do not turn off Gatekeeper, and do not run commands that remove the
+  quarantine flag. Approve this one app, once, and only if it came from the
+  official releases page above.
+
+LATER
+  Future releases are intended to be signed with an Apple Developer ID and
+  notarized, which will remove the Open Anyway step.
+
+More help is in the User Guide: open Settings, or visit /help while {name} is
+running.
+"""
+
+
+def macos_readme_text(product) -> str:
+    """The first-launch instructions that travel inside the macOS download."""
+    title = f"{product.name} for macOS - read this first"
+    return _MACOS_README.format(
+        title=title, rule="=" * len(title), name=product.name,
+        url=product.releases_url, prefix=product.artifact_prefix)
+
+
+def add_macos_readme(target_zip: Path, product) -> None:
+    """Add the first-launch instructions beside the app, inside the zip.
+
+    Appended to the archive that already exists rather than staged beside the app,
+    so the bundle's symlinks and permissions are never copied or rewritten.
+    """
+    with zipfile.ZipFile(target_zip, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(MACOS_README_NAME, macos_readme_text(product))
+
+
+def build_binary(dist_path: Path, work_path: Path, suffix: str, version: str | None = None) -> None:
     data_sep = ";" if os.name == "nt" else ":"
     onefile = suffix == "windows"
     mac_bundle = suffix in {"x86_64", "arm64"}
     gui_app = True
-    version = read_version(None)
+    # The version the application reports is the one the artifact is named for. It used to be read
+    # again here, ignoring --version, so a build named V1.2.0-rc1 reported whatever the environment
+    # or the VERSION file said -- which CI hid, because it sets both.
+    version = read_version(version)
 
     work_path.mkdir(parents=True, exist_ok=True)
     runtime_hook = work_path / "omni_version_runtime_hook.py"
@@ -262,6 +472,8 @@ def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
     for document in (LICENSE_FILE, THIRD_PARTY_FILE):
         if document.exists():
             cmd.extend(["--add-data", f"{document}{data_sep}."])
+    if LICENSES_DIR.is_dir():
+        cmd.extend(["--add-data", f"{LICENSES_DIR}{data_sep}third_party_licenses"])
 
     if APP_ICON.exists():
         cmd.append(f"--icon={APP_ICON}")
@@ -284,6 +496,8 @@ def build_binary(dist_path: Path, work_path: Path, suffix: str) -> None:
     # firmware present, 908 MB of which was firmware.
 
     if suffix == "windows":
+        cmd.extend(["--version-file", str(write_windows_version_file(
+            work_path / "omni_version_info.txt", version, omni_release.active_product().name))])
         cmd.extend(["--hidden-import", "pystray"])
         cmd.extend(["--hidden-import", "pystray._win32"])
     elif suffix == "linux":
@@ -322,29 +536,37 @@ def resolve_suffix(cli_suffix: str | None) -> str:
 # name here without changing that matcher would offer someone the wrong
 # download, so ArtifactNamingTests pins the two together.
 ARTIFACT_NAMES = {
-    "windows": "OmniSuite-{version}-Windows-x86_64.zip",
-    "arm64": "OmniSuite-{version}-macOS-arm64.zip",
-    "x86_64": "OmniSuite-{version}-macOS-x86_64.zip",
-    "linux": "OmniSuite-{version}-Ubuntu-x86_64.tar.gz",
+    "windows": "{prefix}{version}-Windows-x86_64.zip",
+    "arm64": "{prefix}{version}-macOS-arm64.zip",
+    "x86_64": "{prefix}{version}-macOS-x86_64.zip",
+    "linux": "{prefix}{version}-Ubuntu-x86_64.tar.gz",
 }
 
 
 def package_release(dist_path: Path, suffix: str, version: str) -> Path:
     RELEASE_DIR.mkdir(parents=True, exist_ok=True)
-    artifact = RELEASE_DIR / ARTIFACT_NAMES[suffix].format(version=version)
+    # The prefix is the product's. See omni_release for the identity.
+    artifact = RELEASE_DIR / ARTIFACT_NAMES[suffix].format(
+        prefix=omni_release.active_product().artifact_prefix, version=version)
 
     if suffix == "windows":
         windows_exe = dist_path / "OmniSuite.exe"
         if not windows_exe.exists():
             raise RuntimeError(f"Expected build output not found: {windows_exe}")
         zip_path(windows_exe, artifact)
+        add_notices_to_zip(artifact)
         return artifact
 
     if suffix in {"x86_64", "arm64"}:
         app_bundle = dist_path / "OmniSuite.app"
         if not app_bundle.exists():
             raise RuntimeError(f"Expected build output not found: {app_bundle}")
+        product = omni_release.active_product()
+        declare_local_network_usage(app_bundle, product.local_network_usage, product.name,
+                                    product.bundle_identifier, version=version)
         zip_macos_app(app_bundle, artifact)
+        add_macos_readme(artifact, product)
+        add_notices_to_zip(artifact)
         return artifact
 
     bundle_dir = dist_path / "OmniSuite"
@@ -352,6 +574,7 @@ def package_release(dist_path: Path, suffix: str, version: str) -> Path:
         raise RuntimeError(f"Expected build output not found: {bundle_dir}")
 
     if suffix == "linux":
+        copy_notices_into(bundle_dir)
         tar_path(bundle_dir, artifact)
         return artifact
 
@@ -370,9 +593,12 @@ def write_checksum(artifact: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     hexdigest = digest.hexdigest()
-    # The `sha256sum -c` format, so verification needs no special tooling.
-    artifact.with_suffix(artifact.suffix + ".sha256").write_text(
-        f"{hexdigest}  {artifact.name}\n", encoding="utf-8")
+    # The `sha256sum -c` format, so verification needs no special tooling. Bytes, with a bare
+    # line feed: write_text in text mode turns "\n" into CR LF on Windows, and a carriage return
+    # at the end of the line becomes part of the file name `sha256sum` looks for. The V1.1.0
+    # SHA256SUMS.txt shipped with exactly that on its Windows line.
+    artifact.with_suffix(artifact.suffix + ".sha256").write_bytes(
+        f"{hexdigest}  {artifact.name}\n".encode("utf-8"))
     return hexdigest
 
 
@@ -394,7 +620,7 @@ def main() -> int:
     work_path = ROOT / "build" / suffix
 
     clean_paths([dist_path, work_path, RELEASE_DIR])
-    build_binary(dist_path=dist_path, work_path=work_path, suffix=suffix)
+    build_binary(dist_path=dist_path, work_path=work_path, suffix=suffix, version=version)
     artifact = package_release(dist_path=dist_path, suffix=suffix, version=version)
     digest = write_checksum(artifact)
 

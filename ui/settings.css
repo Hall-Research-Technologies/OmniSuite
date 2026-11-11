@@ -99,6 +99,69 @@ border-radius:6px;background:var(--panel-2);color:var(--fg);cursor:pointer;font-
 }
 
 
+/* The Remote Access warning.
+   It lived in ui/remote.css, which the administrative pages have no reason to
+   load -- so the one warning that has to be read before exposing equipment to
+   a network rendered as plain bold text with no callout at all. Settings is
+   injected into every page, so its styling belongs here with the rest of the
+   dialog's.
+   Advisory treatment rather than danger: turning remote access on is a
+   supported thing to do, and the warning is about the transport, not a fault.
+   Semantic tokens only, so it follows every preset and both palettes. */
+.cfg-warning {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 9px 11px;
+  border: 1px solid var(--state-warning, var(--accent));
+  border-left: 3px solid var(--state-warning, var(--accent));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--state-warning, var(--accent)) 14%, transparent);
+  color: var(--text, var(--fg));
+  font-size: 12px;
+  line-height: 1.45;
+}
+@supports not (background: color-mix(in srgb, white 50%, black)) {
+  .cfg-warning { background: var(--panel-2); }
+}
+.cfg-warning strong { color: var(--text, var(--fg)); }
+/* `display: flex` above beats the user agent's rule for the `hidden`
+   attribute, so setting `hidden` on this element did nothing at all: the
+   plaintext warning stayed on screen while HTTPS was active and the operator
+   was told their encrypted connection was not encrypted. Any class that sets
+   `display` has to restate this, and it is restated beside the rule that
+   caused it rather than somewhere general. */
+.cfg-warning[hidden] { display: none; }
+
+/* The same thing said about a connection that IS encrypted. Informational
+   rather than advisory: HTTPS working is not a condition to warn about. */
+.cfg-note {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--state-ok, var(--accent));
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text, var(--fg));
+  font-size: 12px;
+  line-height: 1.45;
+}
+.cfg-note[hidden] { display: none; }
+.cfg-note strong { color: var(--text, var(--fg)); }
+
+/* Remote access is configured but the network it names is not here. Neither
+   on nor off, and an installed system has to be able to tell. */
+.update-status.remote-unavailable {
+  color: var(--text, var(--fg));
+  background: color-mix(in srgb, var(--state-warning, var(--accent)) 22%, transparent);
+  border: 1px solid var(--state-warning, var(--accent));
+  padding: 5px 9px;
+  border-radius: 6px;
+  display: inline-block;
+}
+
 /* The About line in Settings. Quiet: it is a statement of fact, not a banner,
    and it appears once in the application rather than on every page. */
 .cfg-about { align-items: flex-start; }
@@ -114,3 +177,23 @@ border-radius:6px;background:var(--panel-2);color:var(--fg);cursor:pointer;font-
 .cfg-about-links { margin-top: 4px; display: flex; gap: 14px; }
 .cfg-about-text a { color: inherit; text-decoration: underline; }
 .cfg-about-text a:hover { color: var(--text, var(--fg)); }
+
+/* Firmware availability, per model. Semantic tokens only. */
+.fw-table { border-collapse: collapse; margin-top: 8px; width: 100%; font-size: var(--font-small, 12px); }
+.fw-table th, .fw-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--edge, var(--border)); vertical-align: top; }
+.fw-table th { color: var(--text-muted, var(--muted)); font-weight: 600; }
+.fw-state.fw-up_to_date { color: var(--state-success-text); }
+.fw-state.fw-update_available { color: var(--state-warning-text); }
+.fw-state.fw-unknown { color: var(--text-muted, var(--muted)); }
+.fw-reason { font-size: var(--font-small, 12px); color: var(--text-muted, var(--muted)); }
+.update-status.ok { color: var(--state-success-text); }
+.update-status.warn { color: var(--state-warning-text); }
+/* An update exists. Red text from the derived error-text token, which is held to 4.5:1 in every preset
+   in both palettes; bold in a border as well, so the role survives a preset whose red sits near its accent. */
+.update-status.bad {
+  color: var(--state-error-text);
+  font-weight: 700; letter-spacing: .02em;
+  padding: 4px 9px; border-radius: 6px;
+  border: 1px solid var(--state-error-text);
+  display: inline-block;
+}

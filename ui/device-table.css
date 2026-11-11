@@ -75,6 +75,18 @@
  * shorthand, which would drop the overlay.
  */
 
+/* The keyboard sees which header has focus; the outline sits inside the cell so the frozen
+   columns and the sticky row cannot clip it. */
+table.device-table thead th:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+
+/* A column that is not the sorted one is dimmed by its text colour. */
+table.device-table thead th.th-dim { color: var(--text-muted); }
+
+/* Link speed: green at gigabit, red below it -- from the state tokens, so a preset or
+   light mode cannot leave the colour unreadable or change what it means. */
+.linkspeed-ok { color: var(--state-success-text); }
+.linkspeed-slow { color: var(--state-error-text); }
+
 /* ------------------------------------------------- locked command area --- */
 /*
  * The header and the two command bars stay put and the table scrolls beneath
@@ -307,3 +319,29 @@ table.device-table tbody tr > td[colspan] {
   min-width: 44px;
   justify-content: center;
 }
+
+/*
+ * Firmware availability, drawn beside the version it describes.
+ *
+ * The status lives on the Version cell as data (see ui/firmware-status.js) and is
+ * drawn here, because handlers elsewhere rewrite that cell's text and an attribute
+ * survives that where a child element would not. Semantic tokens only, so every
+ * preset and both modes follow. The words are the operator's: Up to Date,
+ * Available, Unknown -- never N/A for a model that has a status.
+ */
+td[data-fw]::after {
+  content: attr(data-fw-label);
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 7px;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  font-size: var(--font-small, 12px);
+  line-height: 18px;
+  vertical-align: baseline;
+  color: var(--text-muted);
+  background: transparent;
+  white-space: nowrap;
+}
+td[data-fw="up_to_date"]::after { color: var(--state-success-text); border-color: var(--state-success); }
+td[data-fw="update_available"]::after { color: var(--state-warning-text); border-color: var(--state-warning); }

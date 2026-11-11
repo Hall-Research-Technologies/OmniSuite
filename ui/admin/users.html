@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OmniSuite Remote Access</title>
+<link rel="icon" href="/ui/favicon.ico">
+<script>
+  (function () {
+    try {
+      if (localStorage.getItem('dark') === 'false') {
+        document.documentElement.classList.add('light');
+      }
+    } catch (err) { /* storage off: the dark default is fine */ }
+  })();
+</script>
+<link rel="stylesheet" href="/ui/templates.css">
+<!-- The dialog classes this page uses -- .modal-backdrop, .modal, .modal-row,
+     .modal-buttons, .modal-error -- are owned by settings.css. Without it the
+     editor renders as bare form controls in the page flow, which is exactly
+     what happened the first time this page was opened in a browser. Markup
+     extracted into a shared vocabulary has to bring its stylesheet with it. -->
+<link rel="stylesheet" href="/ui/settings.css">
+<link rel="stylesheet" href="/ui/remote.css">
+</head>
+<body class="remote">
+
+<header class="remote-header" id="app_header">
+  <div class="brand">
+    <img src="/ui/companylogo.png" alt="Hall Research" class="logo">
+    <h1>OmniSuite Remote Access</h1>
+  </div>
+  <div class="controls">
+    <!-- The same primary navigation every page carries, with Remote Access as
+         the page this is. The entry exists only while Remote Access is on
+         (see adminnav.js); this page is where an administrator lands from it. -->
+    <div class="tabs" id="primary_tabs">
+      <a href="/" class="tab">Device Info</a>
+      <a href="/matrix/configure" class="tab">Configure</a>
+      <a href="/matrix" class="tab">A/V Matrix</a>
+      <a href="/matrix/usb" class="tab">USB Matrix</a>
+      <a href="/matrix/multiview" class="tab">Multiview</a>
+      <a href="/admin/users" class="tab active" aria-current="page" data-nav="remote">Remote Access</a>
+    </div>
+    <button id="header_gear" class="gear-btn" type="button" title="Settings" aria-label="Settings">&#9881;&#65039;</button>
+  </div>
+</header>
+
+<main class="remote-main">
+  <div class="panel" id="remote_intro">
+    <h2>Remote Access</h2>
+    <p class="hint" style="margin:0;">
+      Who may sign in from another device, and what they may do. An
+      <strong>Administrator</strong> gets the normal OmniSuite interface. A
+      <strong>User</strong> gets a restricted routing page with only the sources,
+      displays and display groups you assign.
+    </p>
+  </div>
+  <div id="loading" class="empty">Loading&hellip;</div>
+
+  <nav class="remote-tabs" id="admin_tabs" role="tablist" hidden>
+    <button type="button" class="tab" role="tab" data-panel="accounts"
+            aria-selected="true">Accounts</button>
+    <button type="button" class="tab" role="tab" data-panel="names"
+            aria-selected="false">Device names</button>
+    <button type="button" class="tab" role="tab" data-panel="groups"
+            aria-selected="false">Display groups</button>
+    <button type="button" class="tab" role="tab" data-panel="audit"
+            aria-selected="false">Activity</button>
+  </nav>
+
+  <!-- The security log. Called Activity rather than Audit because that is what
+       an administrator is looking for when they open it. -->
+  <section id="panel_audit" hidden>
+    <div class="panel">
+      <h2>Activity</h2>
+      <p class="hint">
+        Who signed in, what they routed, and what was refused. Newest first.
+        Passwords, tokens and device credentials are never recorded.
+      </p>
+      <div class="assign-toolbar">
+        <input type="search" id="audit_search" placeholder="Search activity"
+               aria-label="Search activity">
+        <select id="audit_event" aria-label="Filter by event"
+                style="min-height:34px;flex:0 1 190px;">
+          <option value="">All events</option>
+        </select>
+        <select id="audit_actor" aria-label="Filter by account"
+                style="min-height:34px;flex:0 1 170px;">
+          <option value="">All accounts</option>
+        </select>
+        <button class="btn-quiet" id="audit_refresh" type="button">Refresh</button>
+        <span class="assign-count" id="audit_count"></span>
+      </div>
+      <div class="assign-toolbar" id="retention_row">
+        <label for="ret_days">Keep activity for</label>
+        <input type="number" id="ret_days" min="1" max="365" step="1"
+               style="width:5.5em;" aria-describedby="ret_note">
+        <span>days, up to</span>
+        <input type="number" id="ret_mb" min="0.25" max="50" step="0.25"
+               style="width:5.5em;" aria-describedby="ret_note">
+        <span>MB</span>
+        <button class="btn small" id="ret_save" type="button">Save</button>
+        <span class="assign-count" id="ret_note"></span>
+      </div>
+      <table class="user-table">
+        <thead>
+          <tr><th>When</th><th>Account</th><th>Action</th><th>Details</th></tr>
+        </thead>
+        <tbody id="audit_body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="panel_groups" hidden>
+    <div class="panel">
+      <h2>Display groups</h2>
+      <p class="hint">
+        A group is a set of displays that receive the same source. Routing to a
+        group sends the source to each display in turn and checks each one; a
+        display that does not respond does not stop the others. A group is not
+        a Multiview &mdash; every display shows the whole picture.
+      </p>
+      <table class="user-table">
+        <thead>
+          <tr><th>Group</th><th>Displays</th><th>Given to</th><th></th></tr>
+        </thead>
+        <tbody id="groups_body"></tbody>
+      </table>
+      <div style="margin-top:12px;">
+        <button class="btn-primary-lg" id="new_group" type="button">Add group</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="panel_names" hidden>
+    <div class="panel">
+      <h2>Device names</h2>
+      <p class="hint">
+        Give a device a name people will recognise &mdash; <em>Teacher PC</em>,
+        <em>Front Display</em>. Users see this name instead of the device's
+        hostname. The device itself is not renamed and nothing is written to it;
+        this is OmniSuite's own label. Clear a name to go back to the hostname.
+      </p>
+      <div id="dupe_warning" class="cfg-warning" style="margin-bottom:10px;" hidden></div>
+      <div class="assign-toolbar">
+        <input type="search" id="alias_filter" placeholder="Search devices"
+               aria-label="Search devices">
+        <span class="assign-count" id="alias_count"></span>
+      </div>
+      <table class="user-table">
+        <thead>
+          <tr><th>Friendly name</th><th>Device</th><th>Location</th><th>Model</th><th>Address</th><th>Role</th><th>Assignments</th></tr>
+        </thead>
+        <tbody id="alias_body"></tbody>
+      </table>
+      <div style="margin-top:12px;display:flex;gap:8px;align-items:center;">
+        <button class="btn-primary-lg" id="alias_save" type="button">Save names</button>
+        <span class="assign-count" id="alias_dirty"></span>
+      </div>
+    </div>
+  </section>
+
+  <section id="panel_accounts">
+    <div class="panel">
+      <h2>Accounts</h2>
+      <p class="hint">
+        An <strong>Administrator</strong> can do everything OmniSuite does. A
+        <strong>User</strong> can only route the sources and displays you
+        assign to them.
+      </p>
+      <table class="user-table">
+        <thead>
+          <tr>
+            <th>Name</th><th>Role</th><th>Status</th><th>Can use</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="users_body"></tbody>
+      </table>
+      <div style="margin-top:12px;">
+        <button class="btn-primary-lg" id="new_user" type="button">Add account</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- The editor. One dialog for create and edit: the difference is whether an
+     id is being carried, not a second copy of the form. -->
+<div class="modal-backdrop" id="editor_backdrop">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="editor_title"
+       style="width:620px;">
+    <h3 id="editor_title">Add account</h3>
+
+    <div class="modal-row">
+      <label for="f_role">Role</label>
+      <select id="f_role">
+        <option value="user">User &mdash; routing only</option>
+        <option value="admin">Administrator &mdash; full control</option>
+      </select>
+    </div>
+
+    <div class="modal-row">
+      <label for="f_username">Name</label>
+      <input id="f_username" type="text" autocapitalize="none" spellcheck="false">
+    </div>
+
+    <div class="modal-row" id="row_password">
+      <label for="f_password">Password</label>
+      <input id="f_password" type="password" autocomplete="new-password"
+             placeholder="At least 8 characters">
+    </div>
+
+    <div id="user_only">
+      <!-- Acts immediately rather than on Save, because enabling it mints a
+           credential on the server. Offered only for an account that already
+           exists: there is nothing to attach a link to while one is being
+           created. -->
+      <div class="settings-section" id="direct_section">
+        <h4>Direct access</h4>
+        <p class="hint" style="margin:0 0 8px;">
+          A link that opens this person&rsquo;s controls without asking for a
+          password &mdash; for a tablet on a lectern or a phone in a classroom.
+          Off unless you turn it on.
+        </p>
+        <label class="feature-choice" style="display:block;margin-bottom:8px;">
+          <input type="checkbox" id="f_direct"> Allow passwordless direct link
+        </label>
+        <div id="direct_detail" hidden>
+          <div class="cfg-warning" style="margin:0 0 10px;">
+            <div><strong>Anyone with this link can use the controls assigned to
+            this account.</strong> Treat the link like a password.</div>
+          </div>
+          <div class="assign-toolbar">
+            <input type="text" id="direct_link" readonly
+                   aria-label="Direct access link"
+                   style="flex:1 1 240px;min-width:0;">
+            <button class="btn small" type="button" id="direct_copy">Copy link</button>
+            <button class="btn small secondary" type="button" id="direct_regen">
+              Regenerate</button>
+          </div>
+        </div>
+        <div id="direct_status" class="hint" style="margin-top:8px;"></div>
+      </div>
+
+      <div class="settings-section">
+        <h4>What they can use</h4>
+        <div class="modal-row" style="align-items:flex-start;">
+          <label>Features</label>
+          <div class="feature-choice" style="flex:1 1 auto;">
+            <label><input type="checkbox" value="av" class="f-feature"> A/V</label>
+            <label><input type="checkbox" value="usb" class="f-feature"> USB</label>
+          </div>
+        </div>
+        <div class="modal-row" style="align-items:flex-start;" id="interface_row">
+          <label>Routing interface</label>
+          <div style="flex:1 1 auto;">
+            <div class="feature-choice">
+              <label><input type="checkbox" value="standard" class="f-interface">
+                Standard routing</label>
+              <label><input type="checkbox" value="matrix" class="f-interface">
+                Matrix routing</label>
+            </div>
+            <div class="hint" style="margin-top:4px;">Standard is the source and
+              display page with a Route button. Matrix is a grid of the sources
+              and displays this account may use. Choose at least one.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Sources they may route</h4>
+        <div class="assign-toolbar">
+          <input type="search" id="src_filter" placeholder="Search sources"
+                 aria-label="Search sources">
+          <button class="btn-quiet" type="button" data-all="sources">All</button>
+          <button class="btn-quiet" type="button" data-none="sources">None</button>
+          <span class="assign-count" id="src_count">0 selected</span>
+        </div>
+        <div class="assign-list" id="src_list"></div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Displays they may control</h4>
+        <div class="assign-toolbar">
+          <input type="search" id="dst_filter" placeholder="Search displays"
+                 aria-label="Search displays">
+          <button class="btn-quiet" type="button" data-all="destinations">All</button>
+          <button class="btn-quiet" type="button" data-none="destinations">None</button>
+          <span class="assign-count" id="dst_count">0 selected</span>
+        </div>
+        <div class="assign-list" id="dst_list"></div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Display groups they may route</h4>
+        <p class="hint" style="margin:0 0 8px;">
+          A group lets this person send one source to every display in it, one
+          at a time. It does not give them the individual displays.
+        </p>
+        <div class="assign-toolbar">
+          <input type="search" id="grp_filter" placeholder="Search groups"
+                 aria-label="Search groups">
+          <button class="btn-quiet" type="button" data-all="groups">All</button>
+          <button class="btn-quiet" type="button" data-none="groups">None</button>
+          <span class="assign-count" id="grp_count">0 selected</span>
+        </div>
+        <div class="assign-list" id="grp_list"></div>
+      </div>
+    </div>
+
+    <div id="editor_error" class="modal-error"></div>
+    <div class="modal-buttons">
+      <button class="btn secondary" id="editor_cancel" type="button">Cancel</button>
+      <button class="btn" id="editor_save" type="button">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- The group editor: a name and a set of displays. -->
+<div class="modal-backdrop" id="group_backdrop">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="group_title"
+       style="width:560px;">
+    <h3 id="group_title">Add group</h3>
+    <div class="modal-row">
+      <label for="g_name">Name</label>
+      <input id="g_name" type="text" maxlength="60" spellcheck="false">
+    </div>
+    <div class="settings-section">
+      <h4>Displays in this group</h4>
+      <div class="assign-toolbar">
+        <input type="search" id="g_filter" placeholder="Search displays"
+               aria-label="Search displays">
+        <span class="assign-count" id="g_count">0 selected</span>
+      </div>
+      <div class="assign-list" id="g_list"></div>
+    </div>
+    <div id="group_error" class="modal-error"></div>
+    <div class="modal-buttons">
+      <button class="btn secondary" id="group_cancel" type="button">Cancel</button>
+      <button class="btn" id="group_save" type="button">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="/ui/csrf.js"></script>
+<script src="/ui/modal-stack.js"></script>
+<script src="/ui/adminnav.js"></script>
+<script src="/ui/appearance.js?v=20260910-appearance"></script>
+<script src="/ui/toast.js"></script>
+<script src="/ui/confirm.js"></script>
+<script src="/ui/settings.js?v=20260911-settings"></script>
+<script src="/ui/admin/users.js"></script>
+</body>
+</html>

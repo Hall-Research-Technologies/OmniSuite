@@ -120,7 +120,8 @@
       <a href="#usb">10. USB Endpoints and USB Matrix</a>
       <a href="#popups">11. Configuration Popups</a>
       <a href="#gotchas">12. Gotchas and Field Rules</a>
-      <a href="#troubleshooting">13. Troubleshooting</a>
+      <a href="#remote-access">13. Remote Access and User Accounts</a>
+      <a href="#troubleshooting">14. Troubleshooting</a>
     </div>
 
     <section id="before-first-use">
@@ -140,7 +141,54 @@
         <tr><td>Finding <strong>unknown</strong> standalone HW-OMNI-311/324 USB extenders on the attached network</td><td>The HW-OMNI-311/324 binary UDP API on port <code>6137</code>, sent as a local broadcast, with the devices' replies returning to OmniSuite.</td></tr>
         <tr><td>Polling, configuring and controlling <strong>known</strong> standalone USB extenders, routed ones included</td><td>The same binary UDP API on port <code>6137</code>, sent as directed unicast to each known address.</td></tr>
         <tr><td>Using OmniSuite itself</td><td>The browser connects to the local OmniSuite server; the address and port it bound to are printed at startup.</td></tr>
+        <tr><td>Checking whether a newer OmniSuite release, or newer firmware, has been published</td><td><strong>Outbound</strong> HTTPS (port 443) to <code>api.github.com</code> and to <code>hallresearch.com</code>. Optional; see <a href="#internet-contact">What OmniSuite contacts on the Internet</a>.</td></tr>
+        <tr><td><strong>Only if you turn on <a href="#remote-access">Remote Access</a>:</strong> reaching OmniSuite from a phone, tablet or laptop</td><td><strong>Inbound</strong> HTTPS to the OmniSuite computer, on the network adapter and port you choose in Settings. This is the one item in this table that lets something else start a connection <em>to</em> OmniSuite, so it is usually the one that needs a firewall rule of its own.</td></tr>
       </table>
+      <div class="note"><strong>Until Remote Access is turned on, nothing on the
+      network can reach OmniSuite at all.</strong> It answers only on the
+      computer it is running on, and updating OmniSuite never changes that. The
+      row above describes what to ask for <em>if</em> you want remote access,
+      not something to permit in advance.</div>
+
+      <h3 id="internet-contact">What OmniSuite contacts on the Internet</h3>
+      <p>OmniSuite does not need an Internet connection. Scanning, routing, Multiview, Remote Access and
+      upgrades all work on the local network alone. It makes two optional checks of public websites, and
+      these are the only places it contacts the Internet by itself:</p>
+      <table>
+        <tr><th>Check</th><th>Contacts</th><th>When</th><th>What is sent</th></tr>
+        <tr><td>Is a newer OmniSuite version available?</td>
+        <td>GitHub (<code>api.github.com</code>), reading the public list of OmniSuite releases.</td>
+        <td>OmniSuite may contact GitHub at startup to check whether a newer OmniSuite version is available.
+        After that there is no timer: it asks again only when the last answer is more than six hours old and
+        a page is opened, or when you press <strong>Check Now</strong> in Settings.</td>
+        <td>An ordinary request for the public release list, naming OmniSuite and its version number. No
+        account, password, device, inventory or setting is included. As with any website, GitHub can see the
+        public address of the connection.</td></tr>
+        <tr><td>Is newer firmware published?</td>
+        <td>Hall Research (<code>hallresearch.com</code>), reading the public product page for each model in
+        your inventory.</td>
+        <td>Once shortly after OmniSuite starts, then once every seven days while it stays running, and when
+        you press <strong>Check Now</strong> in the Firmware section of Settings. A failed check is tried
+        again after an hour.</td>
+        <td>One request for each model's public product page, so the model names are visible in the
+        addresses requested. No serial number, MAC address, device address or setting is included.</td></tr>
+      </table>
+      <ul>
+        <li><strong>No update is downloaded or installed automatically.</strong> The release check only
+        reports whether a newer version exists. If one does, Settings shows it and links to the release page;
+        downloading and installing it is something you do yourself. The firmware check likewise only reports;
+        see <a href="#settings-firmware-availability">Firmware availability</a>.</li>
+        <li><strong>Neither check gets in the way.</strong> Both run in the background with a short time
+        limit. With no Internet connection they quietly report that they could not check, and OmniSuite
+        works exactly the same.</li>
+        <li><strong>Turning them off.</strong> There is no setting for either check in the application. The
+        firmware check can be switched off by starting OmniSuite with the environment variable
+        <code>OMNI_FIRMWARE_CHECK</code> set to <code>0</code>. That variable covers the firmware check only:
+        the OmniSuite release check has no switch and is unaffected by it. To stop either one, do not permit
+        the corresponding address in the firewall.</li>
+        <li><strong>Nothing else is sent.</strong> OmniSuite has no usage statistics, analytics or crash
+        reporting. Other Internet addresses are opened only when you click a link, such as the release page.</li>
+      </ul>
       <div class="note"><strong>Do not disable your firewall.</strong> What OmniSuite needs is permission for its own process and the traffic above, not an unprotected machine. On a corporate PC, endpoint-security policy is often centrally managed and cannot be changed locally; in that case the permission has to be granted by your IT department, and the table above is what to give them.</div>
 
       <h3>What a scan can reach, and what it remembers</h3>
@@ -152,16 +200,24 @@
         <li><strong>A device that changes IP but keeps its MAC updates its existing inventory entry.</strong> It does not appear a second time, and the row it had at the old address does not linger.</li>
         <li><strong>Firewall or security policy can prevent discovery or management</strong> even when the device is otherwise reachable on the network. Treat it as a first suspect rather than a last one.</li>
       </ul>
-      <div class="warn"><strong>Clear Units is not a normal refresh mechanism.</strong> Do not use it to update stale information. To bring the list up to date, <strong>scan again</strong>. Clear Units empties the inventory &mdash; it is for deliberately starting over, and it also resets the topology advisory acknowledgements. See <a href="#scan">Scanning and Discovery</a>.</div>
+      <div class="warn"><strong>Clear Units is not a normal refresh mechanism.</strong> Do not use it to update stale information. To bring the list up to date, <strong>scan again</strong>. Clear Units empties the inventory &mdash; it is for deliberately starting over, and it also resets the topology advisory acknowledgements. While Remote Access is on it keeps the units that Users and groups are assigned and removes only the rest. See <a href="#scan">Scanning and Discovery</a>.</div>
     </section>
 
     <section id="settings">
       <h2>2. Settings</h2>
       <p>Settings is the gear button in the page header. It is present on <strong>every</strong> page &mdash; Device Info, Configure, A/V Matrix and USB Matrix &mdash; in the same position, and it opens the same dialog with the same state everywhere. There is one implementation of the dialog, and it reads and writes the server (<code>/api/config</code> and <code>/api/ui_preferences</code>), so there is no page-local copy that could disagree with another page.</p>
       <p>This is the first place to check before scanning or sending writes.</p>
+      <p>The dialog is in seven sections, always in this order:
+      <strong>Device Communication</strong>, <strong>Firmware</strong>, <strong>Appearance</strong>,
+      <strong>Local Application Port</strong>,
+      <strong>Remote Access</strong>, <strong>Backup and Restore</strong> and
+      <strong>Application Information</strong>. The table below lists the settings by name; where each
+      one lives is the section it belongs to (Theme is under Appearance, Version and About are under
+      Application Information, Username through Concurrency are under Device Communication, and Firmware
+      Path is under Firmware).</p>
       <table>
         <tr><th>Setting</th><th>Purpose</th><th>Notes</th></tr>
-        <tr><td>Version</td><td>Shows the running OmniSuite version, and whether a newer official release exists.</td><td>Read only. The server reports it from the <code>VERSION</code> file it was built from; this build reports <code>{{OMNI_VERSION}}</code>. Always trust what Settings shows over any version printed elsewhere. Underneath it OmniSuite reports one of three answers: <code>No update available &mdash; {{OMNI_VERSION}} is current.</code>, <code>UPDATE AVAILABLE</code> naming the newer release, or <code>Unable to check for updates.</code> A build that is <em>newer</em> than the latest published release is current, not an error. <strong>Check Now</strong> re-checks immediately; <strong>Releases</strong> always opens the official release page. The check is made by the server, cached for several hours, and is never on a polling path — OmniSuite works normally with no Internet, and a failed check changes nothing else. Nothing is downloaded or installed for you: when an update exists and your platform's build can be identified, a download link is offered alongside the release page, and you choose.<br/>When a newer release is found, the <strong>Settings gear</strong> pulses gently so you notice without a dialog interrupting you. Opening Settings stops the pulse for that release; it does not hide the message, which goes on saying an update is available for as long as one is. A later release starts it again, and re-checking the same one does not.</td></tr>
+        <tr><td>Version</td><td>Shows the running OmniSuite version, and whether a newer official release exists.</td><td>Read only. The server reports it from the <code>VERSION</code> file it was built from; this build reports <code>{{OMNI_VERSION}}</code>. Always trust what Settings shows over any version printed elsewhere. Underneath it OmniSuite reports one of three answers: <code>No update available &mdash; {{OMNI_VERSION}} is current.</code> in <strong>green</strong>, <code>UPDATE AVAILABLE</code> naming the newer release in <strong>red</strong> (bold, in a border, so it still stands out in a colour preset where red is close to the accent colour), or <code>Unable to check for updates.</code> in <strong>amber</strong>. A check that could not be made is never shown as green or as red, because it says nothing either way. Only the status line is coloured, never the Version field itself. A build that is <em>newer</em> than the latest published release is current, not an error. <strong>Check Now</strong> re-checks immediately; <strong>Releases</strong> always opens the official release page. The check is made by the server, cached for several hours, and is never on a polling path — OmniSuite works normally with no Internet, and a failed check changes nothing else. Nothing is downloaded or installed for you: when an update exists and your platform's build can be identified, a download link is offered alongside the release page, and you choose.<br/>When a newer release is found, the <strong>Settings gear</strong> pulses gently so you notice without a dialog interrupting you. Opening Settings stops the pulse for that release; it does not hide the message, which goes on saying an update is available for as long as one is. A later release starts it again, and re-checking the same one does not.</td></tr>
         <tr><td>Theme</td><td>Switches the UI between Dark and Light.</td><td>Applies to every layout. See <a href="#appearance">Appearance</a>.</td></tr>
         <tr><td>About</td><td>Who publishes OmniSuite and on what terms.</td><td>Names the copyright holder and links to the <strong>License</strong>, which the application serves from the file the running build was made from. The summary in the dialog is a convenience; the licence text is what governs use.</td></tr>
         <tr><td>Username</td><td>Device login username.</td><td>Most Omni units use <code>admin</code>.</td></tr>
@@ -171,12 +227,288 @@
         <tr><td>Timeout</td><td>Per-request device timeout in seconds.</td><td>Increase on slow networks. Too low can make reachable units appear failed.</td></tr>
         <tr><td>Concurrency</td><td>Number of simultaneous scan/upgrade operations.</td><td>Higher is faster, but can make busy networks or units respond unevenly.</td></tr>
         <tr><td>Firmware Path</td><td>Folder scanned for firmware files.</td><td>Choose Folder opens OmniSuite's own folder browser. See below.</td></tr>
+        <tr><td>Firmware availability</td><td>Whether Hall Research has published newer firmware for the models you have.</td><td>Checked for you; see <a href="#settings-firmware-availability">Firmware availability</a>.</td></tr>
         <tr><td>Appearance</td><td>Layout, colour preset and light background.</td><td>Covered in <a href="#appearance">section 3</a>, along with Reset Appearance.</td></tr>
         <tr><td>User Guide</td><td>Opens this document.</td><td>Also served directly at <code>/help</code>.</td></tr>
         <tr><td>TS Dump</td><td>Downloads a timestamped troubleshooting JSON file.</td><td>Built entirely from state OmniSuite already holds, so generating it sends nothing to any device. See below.</td></tr>
       </table>
 
-      <h3>Choosing the firmware folder</h3>
+      <h3 id="settings-local-port">Local Application Port</h3>
+      <p>OmniSuite is opened in a browser at an address such as
+      <code>http://127.0.0.1:8080/</code>. By default OmniSuite picks the port
+      itself each time it starts: <strong>8080</strong> if it is free, otherwise
+      the next free one. That is why the address can be different after a restart
+      on a computer where something else already uses 8080. The
+      <strong>Local Application Port</strong> section of Settings shows the port
+      OmniSuite is using right now and the address it gives you.</p>
+      <p>If you have bookmarked the address, or written it into a procedure, you
+      can ask for a <strong>fixed</strong> port instead. This section only
+      appears when you open Settings on the OmniSuite computer itself, and only
+      when OmniSuite was started from its own launcher window. It has nothing to
+      do with Remote Access, which has its own port and settings further down.</p>
+      <table>
+        <tr><th>You want to</th><th>Do this</th></tr>
+        <tr><td>Keep the same local address every time</td><td>Tick <strong>Use a fixed TCP port</strong>. A window asks
+        for the port, already filled in with the one OmniSuite is using now. Keep it, or type another
+        number between 1024 and 65535, then choose <strong>Save and Restart</strong>. OmniSuite
+        restarts, and this page reconnects at the new address. Choosing <strong>Cancel</strong>
+        changes nothing.</td></tr>
+        <tr><td>Change the fixed port</td><td>Choose <strong>Change Port</strong> and enter the new number. This also
+        restarts OmniSuite.</td></tr>
+        <tr><td>Go back to automatic</td><td>Untick the box and confirm. OmniSuite returns to picking a free port
+        itself, and the local address may be different after it restarts.</td></tr>
+      </table>
+      <p>A port that is not free right now is refused when you save it. That check
+      is only a courtesy: what counts is whether OmniSuite can actually open the
+      port when it starts.</p>
+
+      <h4 id="local-port-conflict">If the fixed port is already in use</h4>
+      <p>With a fixed port, OmniSuite never quietly moves to a different one. If
+      something else is using the port when OmniSuite starts, the launcher window
+      says <strong>Server could not start</strong> and
+      <strong>Configured TCP port <em>number</em> is already in use</strong>. The
+      launcher stays open and offers four choices:</p>
+      <table>
+        <tr><th>Button</th><th>What it does</th></tr>
+        <tr><td><strong>Retry</strong> <em>number</em></td><td>Tries the same port again, for when you have just closed the
+        program that was using it. Nothing is changed.</td></tr>
+        <tr><td><strong>Start on Alternate Port</strong></td><td>An emergency way to get going: OmniSuite starts normally on a
+        free port, for this session only. The launcher shows the address to use and
+        <strong>Open Browser</strong> opens it. Your fixed port is <em>not</em> changed, so the next time
+        OmniSuite starts it tries the fixed port again.</td></tr>
+        <tr><td><strong>Change Fixed Port</strong></td><td>Asks for a new port and tries it. Only if it works is it saved as the
+        new fixed port. If it does not work, nothing is saved and you can try another number.</td></tr>
+        <tr><td><strong>Exit</strong></td><td>Closes OmniSuite.</td></tr>
+      </table>
+      <p>While OmniSuite is running on a temporary port, Settings says so: it shows
+      <strong>Running temporarily on TCP port</strong> <em>number</em>, the fixed port you configured,
+      and the port in use now. From there you can <strong>Retry Fixed Port</strong> (OmniSuite restarts and
+      tries it), <strong>Make</strong> <em>number</em> <strong>Fixed</strong> (keep the port it is
+      already using, with no restart) or <strong>Change Fixed Port</strong>. Nothing is saved
+      unless you choose one of these.</p>
+      <div class="note"><strong>A damaged setting never stops OmniSuite starting.</strong> If the
+      saved port setting cannot be read, OmniSuite sets the file aside, goes back to automatic port
+      selection and says so. The setting belongs to the computer it was made on, so it is
+      <em>not</em> included in a configuration backup.</div>
+
+      <h3 id="settings-backup">Configuration Backup</h3>
+      <p>OmniSuite runs on an ordinary PC, and ordinary PCs fail. Everything
+      that makes your installation <em>yours</em> &mdash; who is allowed to
+      route what, what each display is called, the Multiview layouts somebody
+      spent an afternoon building, the passwords the equipment answers to
+      &mdash; lives on that machine. <strong>Configuration Backup</strong>
+      writes all of it to one encrypted file you can keep somewhere else.</p>
+      <div class="note"><strong>Keep the backup off the OmniSuite PC.</strong>
+      A backup that only exists on the machine that failed is not a backup.
+      A network share, a USB stick in a drawer, anywhere that is not this
+      computer.</div>
+
+      <h4>Export Configuration</h4>
+      <ol>
+        <li><strong>Settings &gt; Configuration Backup &gt; Export
+        Configuration</strong>.</li>
+        <li>Choose a <strong>backup passphrase</strong> &mdash; at least 8
+        characters. Letters, numbers, symbols and spaces are all fine, and
+        nothing else is demanded of it: no forced capital, digit or symbol.
+        A phrase you will actually remember is worth more than a short
+        complicated one you have to write on the box.</li>
+        <li>The file is saved through your browser, named something like
+        <code>OmniSuite-{{OMNI_VERSION}}-backup-20260928-143000.omnibak</code>.</li>
+      </ol>
+      <div class="warn"><strong>Write the passphrase down and keep it
+      separately.</strong> It is not stored anywhere in OmniSuite and it
+      cannot be recovered or reset. Without it the backup file is of no use to
+      anybody &mdash; including you.</div>
+
+      <h4>What is in the backup</h4>
+      <table>
+        <tr><th>Included</th><th>Why</th></tr>
+        <tr><td>User accounts and their passwords</td>
+        <td>So everybody's existing sign-in keeps working after a
+        restore.</td></tr>
+        <tr><td>Permissions and device assignments</td>
+        <td>Who may use which source and which display.</td></tr>
+        <tr><td>Device names you have set</td><td>Stored against the
+        equipment itself, so they come back on the right units.</td></tr>
+        <tr><td>Multiview layouts and groups</td><td>Rebuilding these by hand
+        is the part nobody wants to do twice.</td></tr>
+        <tr><td>USB associations</td><td>Learned over time and slow to learn
+        again.</td></tr>
+        <tr><td>Device sign-in details</td><td>What OmniSuite uses to talk to
+        encoders and decoders.</td></tr>
+        <tr><td>Scan settings and USB scan ranges</td><td>The addresses your
+        equipment lives on.</td></tr>
+        <tr><td>Remote Access on/off, port and encryption choice</td>
+        <td>Your decisions, as opposed to this machine's hardware.</td></tr>
+        <tr><td>A short record of every device OmniSuite knows</td>
+        <td>Its hardware identity and the password it answers to, so the
+        equipment is recognised again after a scan.</td></tr>
+      </table>
+      <table>
+        <tr><th>Not included</th><th>Why</th></tr>
+        <tr><td>Scan results</td><td>A Scan rebuilds them in seconds.</td></tr>
+        <tr><td>The Activity log</td><td>It is a record of what happened on
+        the old machine. Copying it onto a new one would make that machine's
+        history claim things it never saw.</td></tr>
+        <tr><td>The HTTPS certificate and its private key</td>
+        <td>A certificate is only valid for the address it was made for, so it
+        would be wrong on the replacement PC anyway. A new one is generated
+        there.</td></tr>
+        <tr><td>Who is signed in right now</td><td>Sign-ins are not
+        configuration.</td></tr>
+      </table>
+
+      <h4>Restore Configuration</h4>
+      <ol>
+        <li><strong>Settings &gt; Configuration Backup &gt; Restore
+        Configuration</strong>.</li>
+        <li>Choose the <code>.omnibak</code> file.</li>
+        <li>Enter the backup passphrase. <strong>Nothing is changed yet.</strong>
+        OmniSuite opens the file and shows you what is in it.</li>
+        <li>Read the summary, then press <strong>Restore</strong>.</li>
+        <li>Run a <strong>Scan</strong> so OmniSuite finds the equipment
+        again.</li>
+      </ol>
+      <p>Before anything is written, OmniSuite saves a copy of the
+      configuration that is on the machine now. If the restore cannot be
+      finished, that copy goes back automatically and you are told so. You will
+      never be left with half of one deployment and half of another.</p>
+      <p><strong>The backup is the authority for what it contains.</strong> A
+      section the backup carries replaces the one on this computer completely, so
+      an account, group or friendly name that is on this computer but not in the
+      backup is gone after the restore. If the backup was made when there were no
+      display groups, no device names or no accounts, restoring it leaves none. A
+      backup made before a kind of setting existed says nothing about it, and
+      this computer's own copy is left alone. Settings that describe this
+      computer, and anything OmniSuite keeps in memory while it runs (Multiview
+      layouts and groups, USB associations, activity retention, device
+      credentials, scan preferences, Remote Access settings and USB scan ranges)
+      are replaced when the backup carries them and otherwise kept. Scan results,
+      the CSV view, the firmware list, the certificate and key and the activity
+      log are never restored; this computer makes its own.</p>
+      <p>While a restore is running, OmniSuite does not accept other changes
+      &mdash; anything that would save settings, names, accounts or routes
+      answers that a restore is in progress, and works again a moment later.
+      If the restore finished but OmniSuite could not load all of it without
+      restarting, it says so and keeps refusing changes until you close and
+      reopen OmniSuite, so that nothing can overwrite what was restored. If the
+      previous configuration could not be put back after a failure, the message
+      says so plainly and names the folder that still holds the copy that was
+      taken first; nothing is reported as restored when it was not.</p>
+      <p>The confirmation opens with <strong>Cancel</strong> selected, so
+      pressing Enter does not replace anything; choose <strong>Restore</strong>
+      deliberately. If the backup carried no accounts, the results screen says
+      that it contained no administrator and that you can create a new one on
+      the OmniSuite computer itself.</p>
+      <p>A wrong passphrase, a damaged file, a file from a newer version of
+      OmniSuite, or one that has been altered since it was written, are all
+      refused with a message &mdash; and the configuration you already have is
+      untouched.</p>
+
+      <h4 id="settings-backup-newpc">Restoring onto a different computer</h4>
+      <p>This is what the feature is for, and most of it simply works. Three
+      things belong to the machine rather than to the deployment, so the new
+      PC keeps its own and tells you on the results screen:</p>
+      <ul>
+        <li><strong>The network adapter</strong> Remote Access uses. Choose it
+        again in Settings.</li>
+        <li><strong>The firmware folder.</strong> Choose it again if you use
+        firmware upgrades.</li>
+        <li><strong>The HTTPS certificate.</strong> A new one is generated for
+        the new machine's address and name. Anybody connecting remotely will see their
+        browser's warning once more, because it is genuinely a different
+        certificate.</li>
+      </ul>
+
+      <p><strong>Who stays signed in.</strong> Before you press Restore, the
+      summary names the accounts the backup will remove or replace. Anyone
+      signed in as one of those accounts is signed out the moment the restore
+      completes: an account the backup does not carry, or one that comes back
+      with a different password, role, permissions, enabled state or direct
+      access link. An account that comes back exactly as it is, an
+      administrator's included, stays signed in &mdash; a restore is not a
+      sign-out of the room. If your own account is changed by the restore, you
+      are signed out; sign in again with the restored credentials, or recover
+      from the OmniSuite computer as described below.</p>
+      <h4 id="settings-backup-admin">If nobody remembers the old administrator
+      password</h4>
+      <p>A restore brings the old deployment's accounts with it, and that may
+      include an administrator password nobody at your site has ever known.
+      <strong>This does not lock you out.</strong></p>
+      <p>Anyone working at the OmniSuite computer itself is already trusted
+      &mdash; the local screens never ask for a password. So from that machine
+      you can set a new password on any account, or create a new administrator,
+      exactly as you would normally. The results screen lists which
+      administrator accounts arrived with the backup so you know which ones to
+      deal with.</p>
+      <div class="note"><strong>Export and Restore are only available at the
+      OmniSuite computer.</strong> They cannot be reached from another device,
+      by a User, by a direct access link, or even by an administrator signed in
+      remotely. The backup holds the equipment passwords, and rebuilding a
+      deployment is something you do standing at the machine.
+      <br><br>Open Settings from another device and the two buttons are not
+      there at all &mdash; in their place is a line saying that backup and
+      restore need local access through 127.0.0.1. That is decided by
+      OmniSuite itself rather than by the address you typed, so it is the same
+      answer however you reached the page.</div>
+
+      <h4>If the save window does not appear</h4>
+      <p>After you enter the passphrase, your browser saves the file. If it is
+      set to ask where to put each download, that window belongs to the browser
+      and can open behind whatever else is on screen. OmniSuite says so on the
+      Settings page when it hands the file over.</p>
+
+      <h4>Direct access links after a restore</h4>
+      <p><strong>Existing direct access links keep working.</strong> A tablet
+      on a wall with a link saved to it carries on as before, which is usually
+      the difference between a quiet afternoon and a walk around the building.
+      </p>
+      <p>What you cannot do on the new machine is display an old link again to
+      copy it, because the copy OmniSuite keeps for that purpose is locked to
+      the computer that created it. If somebody needs the link sent to them
+      again, press <strong>Regenerate</strong> for that account &mdash; which
+      gives a new link and stops the old one, as it always does.</p>
+
+      <h4>How the backup is protected</h4>
+      <p>The file is encrypted with your passphrase and cannot be read without
+      it. It is also <em>authenticated</em>: if a single byte is altered, the
+      file is refused rather than partly read. None of the passwords inside it
+      &mdash; yours or the equipment's &mdash; appear anywhere in the file in
+      readable form, and the passphrase itself is never written down by
+      OmniSuite, never logged, and never sent anywhere.</p>
+      <p>Treat the file as you would the equipment passwords, because that is
+      what it contains.</p>
+
+      <h3 id="settings-firmware-availability">Firmware availability</h3>
+      <p>OmniSuite tells you whether Hall Research has published newer firmware for the models in your
+      inventory. It is the <strong>Firmware</strong> section of Settings, and a status beside each
+      version on Device Info (turn the Version column on if it is hidden).</p>
+      <table>
+        <tr><th>Status</th><th>Meaning</th></tr>
+        <tr><td><strong>Up to Date</strong></td><td>The installed version is the newest Hall Research publishes for that model, or newer.</td></tr>
+        <tr><td><strong>Available</strong></td><td>Hall Research publishes a newer version than the one installed.</td></tr>
+        <tr><td><strong>Unknown</strong></td><td>OmniSuite cannot say, and Settings says why: no check has finished yet, Hall Research has no page for the model, it publishes no firmware for it, or the version could not be read.</td></tr>
+      </table>
+      <ul>
+        <li><strong>When it checks.</strong> Once shortly after OmniSuite starts, then once every seven days
+        while it stays running. <strong>Check Now</strong> in Settings checks straight away. A check that
+        cannot reach Hall Research is tried again after an hour, not every minute.</li>
+        <li><strong>It never gets in the way.</strong> The check runs in the background with a short time
+        limit. OmniSuite starts, scans and routes the same with or without an Internet connection.</li>
+        <li><strong>The last good answer is kept.</strong> If a later check fails, the status you had stays
+        on screen, with a note that it is the last known result; it does not turn into Unknown. The answer
+        is remembered across a restart.</li>
+        <li><strong>It only reports.</strong> Nothing is downloaded or installed, and no device is changed.
+        What it contacts and what it sends are listed under
+        <a href="#internet-contact">What OmniSuite contacts on the Internet</a>.
+        Where to get the firmware, and installing it, remain the steps described under
+        <a href="#device-info-firmware">Firmware Upgrade</a>.</li>
+        <li><strong>The USB extenders.</strong> HW-OMNI-311 and HW-OMNI-324 show <em>Unknown</em>, because
+        Hall Research publishes no firmware for them. That is a statement about what is published, not about
+        OmniSuite: they are still never offered as firmware upgrade targets.</li>
+      </ul>
+
+      <h3 id="settings-firmware-folder">Choosing the firmware folder</h3>
       <p>A browser file input cannot return a directory path, and OmniSuite does not pretend otherwise. <strong>Choose Folder</strong> opens the application's own folder browser, which lists directories on the machine running the server. You can double-click through the tree, pick a drive, or type/paste a full path. The chosen path is stored server-side in <code>config.json</code>, so it survives a restart, and the firmware selector then lists the <code>.vpup2</code> files in that folder.</p>
 
       <h3>TS Dump / support information</h3>
@@ -223,6 +555,7 @@
       <table>
         <tr><th>File</th><th>Purpose</th><th>Safe to delete?</th></tr>
         <tr><td><code>config.json</code></td><td>Stores Settings values such as username, passwords, WS port, timeout, concurrency, and firmware path.</td><td>Yes, but the app returns to defaults and saved passwords/settings are lost.</td></tr>
+        <tr><td><code>local_port.json</code></td><td>Whether OmniSuite uses a fixed local port, and which one. Absent unless you have chosen one.</td><td>Yes. OmniSuite goes back to choosing its port automatically. It is not part of a configuration backup.</td></tr>
         <tr><td><code>units_cache.json</code></td><td>Device cache used to repopulate the Device Info list quickly.</td><td>Yes. The unit list clears until you scan again.</td></tr>
         <tr><td><code>scan_results.json</code></td><td>Unified scan cache used by Device Info, Configure, A/V Matrix, and USB Matrix. It includes discovered devices plus encoder/decoder route details.</td><td>Yes. The matrix and configure pages will need a new scan or cache reload.</td></tr>
         <tr><td><code>units_view.csv</code></td><td>Generated inventory CSV.</td><td>Yes. It is recreated on export.</td></tr>
@@ -232,9 +565,39 @@
         <tr><td><code>ui_preferences.json</code></td><td>Layout, colour preset and light background.</td><td>Yes. Appearance returns to defaults.</td></tr>
         <tr><td><code>notice_ack.json</code></td><td>Which one-time notices you have already seen &mdash; the first-run network notice, and the release an update alert has been acknowledged for.</td><td>Yes. The first-run notice appears again, and a pending update alert returns once.</td></tr>
         <tr><td><code>topology_ack.json</code></td><td>Which topology advisories have been dismissed for the current discovered inventory.</td><td>Yes. Any outstanding advisory is shown again.</td></tr>
+        <tr><td><code>multiview_meta.json</code></td><td>Which layout each saved Multiview uses, and which source is in which window.</td><td>Yes, but OmniSuite then has to work each saved Multiview&rsquo;s layout out from the geometry on the decoder, and may show it as Custom.</td></tr>
+        <tr><td><code>multiview_groups.json</code></td><td>Decoder groups &mdash; which displays are meant to show the same Multiview.</td><td>Yes. The groups disappear and would have to be created again. No display changes.</td></tr>
         <tr><td><code>launcher.log</code></td><td>Launcher startup and error log.</td><td>Yes. It is recreated if the launcher needs to log again.</td></tr>
       </table>
+
+      <h3 id="files-remote">Files for Remote Access</h3>
+      <p>These appear only once you use <a href="#remote-access">Remote
+      Access</a>. A machine that has never had it turned on has none of them.</p>
+      <table>
+        <tr><th>File</th><th>Purpose</th><th>Safe to delete?</th></tr>
+        <tr><td><code>users.json</code></td><td>Accounts: usernames, roles, permissions, and passwords stored as one-way hashes. Sign-ins are <strong>not</strong> kept here &mdash; they live in memory only and end when OmniSuite restarts.</td><td><strong>No, not casually.</strong> Deleting it removes every account and every permission you have assigned, and OmniSuite asks for a first administrator again. There is no way to recover it.</td></tr>
+        <tr><td><code>device_aliases.json</code></td><td>The friendly names you have given devices. They belong to OmniSuite and are never written to the equipment.</td><td>Yes, but every device goes back to showing its own name, and you would have to type the names again.</td></tr>
+        <tr><td><code>security_audit.json</code></td><td>The <a href="#remote-activity">Activity</a> history. It holds no passwords, no sign-in tokens and no device credentials.</td><td>Yes. The Activity list starts empty. Nothing else is affected.</td></tr>
+        <tr><td><code>remote_access.json</code></td><td>Whether Remote Access is on, which network it uses, which port, and whether it is encrypted.</td><td>Yes. Remote Access comes back <strong>off</strong> after the next restart and has to be turned on again. Accounts are unaffected.</td></tr>
+        <tr><td><code>remote_cert.pem</code></td><td>The certificate that encrypts remote connections.</td><td>Yes, but Remote Access will not start until you create or supply another one. It does not fall back to an unencrypted connection.</td></tr>
+        <tr><td><code>remote_key.pem</code></td><td>The private key belonging to that certificate. <strong>Keep this private.</strong></td><td>Yes, with the same consequence as the certificate. Never copy it anywhere, never email it, and never put it in a support bundle.</td></tr>
+      </table>
+      <div class="warn"><strong>The private key is the one file here that
+      must stay private.</strong> OmniSuite writes it so only your Windows
+      account can read it, never shows it on screen, never returns it through
+      its own interface and never includes it in a support file. Treat a copy
+      of it the way you would treat a password.</div>
       <p>In the packaged app, the launcher log is stored in the user log folder: Windows uses <code>%LOCALAPPDATA%\OmniSuite\logs\launcher.log</code>, macOS uses <code>~/Library/Logs/OmniSuite/launcher.log</code>, and Linux uses <code>~/.omnisuite/logs/launcher.log</code>.</p>
+      <h3 id="one-copy">Only one copy at a time</h3>
+      <p>OmniSuite runs once per data folder. If you start a second copy, even
+      on a different port, it starts no server and shows a message saying that OmniSuite
+      is already running and which process has the folder. The second copy stays open
+      only until you press <strong>OK</strong> on that message; pressing it closes the second copy
+      completely and leaves the first one untouched. Two copies sharing
+      one folder would overwrite each other's accounts and settings, so close
+      the first one and start again. The file <code>omnisuite.lock</code> in the
+      data folder is how this is decided; it is safe to leave alone, and a copy
+      that crashed or was killed does not leave the folder locked.</p>
       <div class="warn">Do not edit cache files while OmniSuite is running. To refresh device information, scan again; Clear Units is not a refresh. When you do want to start from an empty inventory, use Clear Units, and close OmniSuite before manually deleting any cache/config file.</div>
     </section>
 
@@ -243,7 +606,7 @@
       <p>Device Info owns discovery. Its adapter selector, Targets field, Scan button and Clear Units button drive every provider. No other page has a discovery console, an interface picker or a clear action; the other pages view and configure what discovery has already found.</p>
       <ol>
         <li>Choose the network adapter that is connected to the Omni control network.</li>
-        <li>Leave Targets blank to use the adapter's detected range, or type a specific range such as <code>192.168.100.1-254</code>, CIDR such as <code>192.168.100.0/24</code>, or comma-separated IPs.</li>
+        <li>Leave Targets blank to use the adapter's detected range, or type a specific range such as <code>198.51.100.1-254</code>, CIDR such as <code>198.51.100.0/24</code>, or comma-separated IPs.</li>
         <li>Click Scan. Discovered units are cached and reused by Device Info, Configure, A/V Matrix, and USB Matrix.</li>
         <li>Use the X inside the Targets field to clear manual input and return to the selected adapter range.</li>
       </ol>
@@ -272,6 +635,106 @@
       <p>Range input is bounded before it is expanded, so an over-broad expression such as <code>10.0.0.0/8</code> is rejected immediately rather than being materialised. Range scanning is a discovery operation triggered by Scan; ordinary page polling never runs one.</p>
       <div class="warn">On macOS and Linux builds, adapter discovery depends on OS interface data. If the adapter list looks wrong, use the Targets box to enter the intended subnet manually.</div>
 
+      <h3>When a scan fails instead of finding nothing</h3>
+      <p>A scan that finds no devices and a scan that could not look are different results, and OmniSuite reports them differently.</p>
+      <ul>
+        <li><strong>&ldquo;The scan could not reach the network&rdquo;</strong> means the computer refused or could not attempt the connections before any device had the chance to answer. Nothing in the device list is changed. On macOS this is usually the <em>Local Network</em> permission &mdash; see <a href="#macos-local-network">macOS: Local Network access</a> below. The message also says if the cause was running out of open-file capacity, or, on Windows and Linux, that a firewall or security policy may be blocking OmniSuite.</li>
+        <li><strong>&ldquo;No scannable addresses were found in the targets&rdquo;</strong> means the Targets text was not understood, for example a range written with the full address on both sides. Use a single address, a range such as <code>198.51.100.1-254</code>, or CIDR such as <code>198.51.100.0/24</code>.</li>
+        <li>A scan that completes and finds <strong>0 devices</strong> genuinely looked and saw none: check the adapter, the cabling and the firewall.</li>
+      </ul>
+
+      <h3 id="macos-first-launch">macOS: first launch</h3>
+      <p>OmniSuite for macOS is not signed with an Apple Developer ID and is not notarized, so macOS blocks it the first time you open it. That is expected. <strong>Only approve OmniSuite if you downloaded it from the official project releases page</strong>; delete a copy that came from anywhere else.</p>
+      <ol>
+        <li>Unpack the zip by double-clicking it in Finder.</li>
+        <li>Open <strong>OmniSuite.app</strong>. macOS says it cannot verify the app. Click <strong>Done</strong>.</li>
+        <li>Open <strong>System Settings &rarr; Privacy &amp; Security</strong> and scroll to the <strong>Security</strong> section. Click <strong>Open Anyway</strong>, enter your password, then click <strong>Open</strong>. The button is only there for a while after the blocked attempt; open the app again if it is missing.</li>
+      </ol>
+      <p>Do not turn off Gatekeeper and do not run commands that remove the quarantine flag. You approve each downloaded copy once; a new download may ask again. The same steps are in the download as <code>READ-ME-FIRST-macOS.txt</code>. Signing with an Apple Developer ID and notarizing future releases is planned and will remove this step.</p>
+
+      <h3 id="macos-local-network">macOS: Local Network access</h3>
+      <p>Recent versions of macOS ask before an application may talk to devices on your local network. OmniSuite needs this to find and manage encoders, decoders and USB extenders, so the first time you scan, macOS shows a <em>Local Network</em> prompt for OmniSuite. <strong>Choose Allow.</strong></p>
+      <ul>
+        <li><strong>If you chose Don&rsquo;t Allow, or dismissed the prompt,</strong> scans of your local network fail straight away with &ldquo;The scan could not reach the network&rdquo; rather than finding nothing. To change it, open <strong>System Settings &rarr; Privacy &amp; Security &rarr; Local Network</strong>, switch <strong>OmniSuite</strong> on, and scan again.</li>
+        <li><strong>If the prompt is still on screen</strong> while a scan runs, the scan fails the same way. Answer the prompt, then scan again.</li>
+        <li><strong>OmniSuite tells you when this is the problem.</strong> A notice appears under the Scan button explaining what happened, with a <strong>Retry Scan</strong> button and, on a Mac you are using directly, an <strong>Open System Settings</strong> button. A scan that completes and finds no devices does not show this notice.</li>
+        <li><strong>After you change the setting,</strong> choose <strong>Retry Scan</strong>. If scans still fail, quit OmniSuite completely and reopen it.</li>
+        <li><strong>OmniSuite does not change this setting for you</strong> and does not reset it. It can only tell you where it is.</li>
+        <li>OmniSuite downloads are not signed with an Apple developer certificate, so macOS may treat each new download as a different application and ask again after an update.</li>
+        <li>The setting applies to this application only. Devices reached through a router on another subnet are not always affected by it, so a scan of another range can succeed while the local one fails.</li>
+      </ul>
+      <p>Windows and Linux do not have this permission; there, a refused scan usually means a firewall or security policy.</p>
+
+      <h3 id="clear-assigned">Clear Units and the accounts that use them</h3>
+      <p>What Clear Units does depends on one thing: whether
+      <a href="#remote-access">Remote Access</a> is on.</p>
+      <h4 id="clear-remote-on">While Remote Access is on: assigned units are kept</h4>
+      <p>People are working from the sources, displays and groups you set up, so
+      <strong>Clear Units keeps every unit that a User or a Display Group is
+      using</strong> and removes only the units nothing refers to. Nothing about
+      the accounts changes: no User, group, permission or direct access link is
+      removed, and everyone who is signed in carries on.</p>
+      <p>Pressing Clear Units opens a question with three choices:</p>
+      <ul>
+        <li><strong>Cancel</strong> &mdash; changes nothing. It is the choice
+        the keyboard starts on.</li>
+        <li><strong>View Assignments</strong> &mdash; a list of the units that
+        will be kept and why: the device, its type, its friendly name, its own
+        name, how many assignments it has, and which Users and Display Groups hold
+        it. A User who signs in with a direct access link is marked. Closing the
+        list returns you to the question; it does not answer it.</li>
+        <li><strong>Clear Unassigned Units</strong> &mdash; removes the units
+        nothing is using, and reports how many were removed and how many were
+        kept. If every unit is in use, this choice is switched off, because
+        there is nothing to clear.</li>
+      </ul>
+      <p>If OmniSuite cannot read the accounts and groups, it says so and
+      <strong>nothing is cleared</strong>.</p>
+      <p>To remove units that are assigned, <strong>turn Remote Access off in
+      Settings first</strong>, then use Clear Units. There is deliberately no
+      single button that does both: removing equipment people have been given is
+      two decisions, and you make the first in Settings. While Remote Access is
+      on, <strong>Remove Selected</strong> on Device Info keeps assigned units in
+      the same way. Settings says so with one line under the Remote Access
+      status.</p>
+      <p>The <strong>Assignments</strong> column on the <strong>Device names</strong>
+      page shows the same information for every unit as you work: <em>Unassigned</em>,
+      or a summary such as <em>2 Users</em> or <em>1 User &middot; 1 Group</em>.
+      Press the summary to see the names. It is re-read when you open the tab and
+      whenever you change an account or group on that page.</p>
+      <p><strong>A scan that is still running when you clear is not added.</strong>
+      If you press Clear Units while a scan is in progress and the clear removes
+      anything, that scan's result is thrown away rather than putting the cleared
+      units straight back, and the scan bar says so. Scan again to discover them.
+      A grant you make to a unit that is not in the inventory is kept: it belongs to
+      the unit, not to the list, so the unit is protected from the next clear as
+      soon as a scan finds it again.</p>
+      <h4 id="clear-remote-off">While Remote Access is off: everything is cleared</h4>
+      <p><strong>Clear Units always asks first.</strong> The question is
+      direct:</p>
+      <p><em>Clear discovered units? This removes all currently discovered
+      units from the application and removes their assignments from users and
+      display groups. Devices can be rediscovered by scanning again.</em></p>
+      <p><strong>Cancel changes nothing at all.</strong> Nothing is removed
+      until you press <strong>Clear Units</strong>.</p>
+      <p>Clearing empties the discovered inventory, and everything that pointed
+      at those units goes with it, in one step:</p>
+      <ul>
+        <li>the units are removed from every User's sources and displays;</li>
+        <li>they are removed from every display group (the groups themselves
+        stay, empty, until you delete them);</li>
+        <li>their friendly names are removed.</li>
+      </ul>
+      <p>People who are signed in, including anyone using a direct access link,
+      see the change on their next action or when the page next checks, and
+      anything they try to use after that is refused. If OmniSuite cannot
+      update the accounts and groups, <strong>nothing is cleared</strong> and
+      it says so.</p>
+      <div class="note"><strong>Scanning again does not give anything back.</strong>
+      Rediscovered equipment is simply available to assign again; accounts and
+      groups are not rebuilt for you. Accounts, passwords, features and direct
+      access links are not touched.</div>
+
       <h3>Clear Units</h3>
       <p>Scan results are merged into the existing list; rediscovering a device at a new address updates the existing row rather than adding a second one, because identity is the hardware MAC and not the IP address. Clear Units is the single reset:</p>
       <ul>
@@ -285,18 +748,21 @@
 
     <section id="device-info">
       <h2>6. Device Info Page</h2>
-      <p>The Device Info page is the fleet overview, the discovery console and the firmware workflow page.</p>
+      <p>The Device Info page is the fleet overview, the discovery console and the firmware workflow page. It is the first page of the <strong>OmniSuite Device Manager</strong> &mdash; the application that used to be called the Upgrade Manager. Firmware is still upgraded from here; the name now covers everything the page does.</p>
 
       <h3>Navigating the table</h3>
       <p>The leading columns are, in order, the <strong>selection checkbox, IP, Hostname, then MAC</strong>, so you read select, address, name, hardware identity. The first three &mdash; checkbox, IP and Hostname &mdash; are <strong>frozen</strong>: MAC and everything to the right of it scroll underneath them, so a row read at the far right of a wide table is still attributable to a device. The frozen widths are measured from what is actually rendered, so they stay correct in every layout and at any zoom.</p>
       <p>The <strong>command area is locked in place</strong>. The page header, the scan bar (adapters, Targets, Scan, Clear Units) and the firmware bar (firmware selector, Upgrade Selected, the Encoders/Decoders/USB counts and the details toggle) stay on screen while the table scrolls beneath them. Only those compact command surfaces are pinned; the advisory banners scroll away with the rows, because a permanently pinned advisory costs the height you came for.</p>
       <p>A <strong>mirrored horizontal scrollbar</strong> sits directly below the locked command area and above the table, so reaching it does not mean scrolling past every row first. It drives the same container the table's own scrollbar does, and the two stay in step whichever one you use. It is shown <strong>only when the table actually overflows</strong> its width, and disappears again as soon as it does not &mdash; for example after hiding the device detail columns. This is an application-wide rule rather than a Device&nbsp;Info feature: any section wide enough to need a horizontal scrollbar at the bottom also gets a synchronized one at the top &mdash; the Encoder, Decoder and USB tables on Configure, the LEX and REX inventories on the USB&nbsp;Matrix, and the route grids when they are wide enough. Each section scrolls independently: moving one does not move the others. A section that fits shows no top scrollbar at all.</p>
+      <h3 id="sorting">Sorting</h3>
+      <p>Click a column heading to sort by it; click again to reverse. The heading shows an arrow and the other headings dim. IP addresses sort in numeric order (10.0.0.9 comes before 10.0.0.10), numbers sort as numbers, and host names and versions sort the way a person reads them, so <code>enc-9</code> comes before <code>enc-10</code> and 2.0.9 before 2.0.10. Link speed sorts by its number. The headings can also be reached with <strong>Tab</strong> and sorted with <strong>Enter</strong> or <strong>Space</strong>; the focused heading has a visible outline.</p>
+      <p><strong>Link speed</strong> is green at exactly 1000 Mbps and red for anything else. The colours follow the appearance you have chosen.</p>
 
       <div class="grid">
         <div class="mini">
           <h3>Inventory Table</h3>
-          <p>Shows the selection checkbox, IP, hostname, MAC, link speed, codec, timezone, NTP server, type, model, version, password state, status, blink, preview, USB role, and a Log button.</p>
-          <p>Use Show/Hide Device Details to hide or show TimeZone, NTP Server, Type, Model, Version, Password, and USB columns. Status, Blink, Preview and Log stay visible either way.</p>
+          <p>Shows the selection checkbox, IP, hostname, MAC, link speed, codec, <strong>uptime</strong>, timezone, NTP server, type, model, version, password state, status, blink, preview, USB role, and a Log button.</p>
+          <p>Use Show/Hide Device Details to hide or show Uptime, TimeZone, NTP Server, Type, Model, Version, Password, and USB columns. Status, Blink, Preview and Log stay visible either way.</p>
         </div>
         <div class="mini">
           <h3>Unit Counts</h3>
@@ -366,14 +832,27 @@
       <div class="note"><strong>What is in the file.</strong> The bundle is <strong>encrypted by the manufacturer</strong> and is around 10&nbsp;MB. OmniSuite passes the bytes through exactly as the device produced them &mdash; it does not and cannot read them, so it cannot tell you what is inside. Treat it as diagnostic material for Hall&nbsp;Research or Atlona support and send it only to them. Do not expect to open it yourself. OmniSuite never writes your device passwords into it.</div>
       <div class="warn"><strong>If Log does not work.</strong> A unit that is powered down, on an unreachable network, or answering on neither the primary nor the fallback password will report that it did not return a debug log, and the button returns to normal. Nothing is left half-downloaded. Check that the unit's row shows a current status, that you can open its web page from the IP link, and that the Primary and Fallback passwords in Settings still match the unit &mdash; a log uses the same sign-in that discovery does.</div>
 
-      <h3>Firmware Upgrade</h3>
+      <h3 id="device-info-firmware">Firmware Upgrade</h3>
       <ol>
         <li>Select one or more units.</li>
         <li>Select the firmware file from the firmware selector. The list is the <code>.vpup2</code> files in the folder set in Settings &rsaquo; Firmware Path; the refresh button re-reads that folder and the folder button opens it.</li>
         <li>Click Upgrade Selected and confirm the custom upgrade dialog.</li>
         <li>Rows move through queued/uploading/upgrading/rebooting/idle based on feedback and version polling.</li>
       </ol>
+      <div class="note"><strong>Firmware upgrades are started at the OmniSuite
+      computer.</strong> The firmware files are in a folder on that machine's
+      own disk, so the file list is empty when you are signed in from a phone,
+      tablet or another PC, and the picker says so. Everything else an
+      administrator does works the same from anywhere.</div>
       <div class="warn">Some units can time out during upload and need a reboot before retry. The app avoids leaving the UI stuck in an old state, but the device is still the source of truth. Watch for the version to update after the unit returns.</div>
+
+      <h3 id="device-uptime">Uptime</h3>
+      <p>The <strong>Uptime</strong> column, just left of TimeZone, is how long the unit itself says it has been running, written compactly: <code>3m</code>, <code>2h 14m</code>, <code>1d 2h 49m</code>, <code>73d 23h 33m</code>. A unit that has been up for less than a minute shows <code>&lt;1m</code>, and a dash means the unit did not report one.</p>
+      <p>It comes from the unit, not from OmniSuite: it is not the time since OmniSuite started, since the unit was first found, or since the last scan. It is read when you scan and refreshed when Poll Units is on, using a request OmniSuite was already making, so showing it adds no traffic. Between readings the figure is the last one the unit gave, not a clock that keeps counting. Click the heading to sort by it.</p>
+
+      <h3 id="device-info-extenders">HW-OMNI-311 and HW-OMNI-324 USB extenders</h3>
+      <p>A standalone USB extender &mdash; an HW-OMNI-311 or HW-OMNI-324 that is not part of an encoder or decoder &mdash; appears on Device Info as its own row, after the OmniStream units. It shows what the extender itself reports: its address, hardware address, model, firmware version and whether it is online. Every other field is a dash, because the extender does not provide it. The row has no checkbox, no Blink, no Preview and no Log.</p>
+      <div class="note"><strong>OmniSuite cannot update the firmware of an HW-OMNI-311 or HW-OMNI-324.</strong> There is no firmware support for them, so they can never be selected for an upgrade, and OmniSuite refuses an upgrade request that names one (or any USB extender address) even if it is sent some other way. An extender that is inside an encoder or decoder is shown in that unit's USB column, not as a second row.</div>
 
       <h3>Footer Actions</h3>
       <table>
@@ -440,6 +919,7 @@
     <section id="av-matrix">
       <h2>8. A/V Matrix Page</h2>
       <p>The A/V Matrix page is for routing. Encoders are columns. Decoders are rows. Click a matrix cell to route the selected encoder to the selected decoder.</p>
+      <p><strong>Opening the page.</strong> The grid is drawn as soon as OmniSuite has the inventory. The decoders' own settings (the ones Configure uses) are read afterwards, so a decoder that is slow or switched off no longer holds up the page. After a scan, Clear Units or a removal, OmniSuite keeps the latest inventory ready for the next time you open the matrix, and the page confirms it with a fresh read a moment later. When only a route or a codec status changes, the cells update in place.</p>
       <table>
         <tr><th>Mode</th><th>What it writes</th><th>Visual feedback</th></tr>
         <tr><td>AV</td><td>Writes video and audio route together.</td><td>Blue outer ring and black inner dot.</td></tr>
@@ -447,9 +927,10 @@
         <tr><td>Audio</td><td>Writes the decoder audio route.</td><td>Black inner dot.</td></tr>
       </table>
       <div class="danger">Important: the matrix wires decoder video to <code>ip_input1</code> and decoder audio to <code>ip_input3</code>. When AV is selected, OmniSuite updates both fields. When Video or Audio is selected, it updates only the matching field.</div>
+      <p><strong>A unit that is not answering cannot be routed.</strong> If OmniSuite has seen an encoder or a decoder stop answering, its column or row is marked <strong>OFFLINE</strong> and its crosspoints are greyed out, with the reason on hover. It stays in the matrix, because removing it would suggest it had been taken away rather than that it is not answering. The same rule is enforced by the server, not only by the greyed cells: a route to or from a unit that does not answer is refused straight away, naming whether it was the source or the display, and nothing is changed. A decoder selected together with others for a group route is skipped if it is offline, and the others are still routed. A unit that has come back is looked at again shortly afterwards and becomes available without a rescan.</p>
       <p>Routes are queued per decoder. You can click multiple decoders quickly; each decoder keeps only the latest requested route while different decoders can process in parallel.</p>
       <p>Use Lock Headers when the matrix is larger than the viewport. Use Preview to show or hide encoder preview behavior. Use the encoder and decoder filters to reduce the visible matrix without changing the discovered cache.</p>
-      <div class="note">A decoder currently showing a <strong>Multiview</strong> is marked <strong>MULTIVIEW</strong> and has no video crosspoint, because its picture is a composition rather than a route from one encoder. Its audio may still show a source, which is correct. Routing a normal source to it is still allowed and will exit Multiview after a warning &mdash; the saved Multiview is kept. See <a href="#multiview">9. Multiview</a>.</div>
+      <div class="note">A decoder currently showing a <strong>Multiview</strong> is marked <strong>MULTIVIEW</strong> and has no video crosspoint, because its picture is a composition rather than a route from one encoder. Its audio may still show a source, which is correct. Routing a normal source to it is still allowed: the display leaves Multiview and shows the source. The saved Multiview is kept and can be shown again. See <a href="#multiview">9. Multiview</a>.</div>
     </section>
 
     <section id="multiview">
@@ -632,10 +1113,8 @@
 
       <h3>Putting an ordinary source on the display</h3>
       <p><strong>Drag a source onto the Display output panel</strong> and that source is routed to the decoder normally &mdash; its ordinary picture and sound, exactly as if you had routed it from the A/V Matrix.</p>
-      <p>If a Multiview is on the display at the time, OmniSuite asks first, because the picture is about to change:</p>
+      <p>If a Multiview is on the display at the time, it stops being what is on screen and the source takes its place. Nothing asks first &mdash; choosing a source for the display is the instruction:</p>
       <div class="note"><strong>The Multiview is not deleted.</strong> It stays saved on the decoder. It simply stops being the thing on screen, and the canvas changes from LIVE to INACTIVE. Press <strong>Show on Display</strong> whenever you want it back.</div>
-      <p>The question is asked once per session. Tick <em>Do not show this again</em> and it stops asking altogether. It is the same question, and the same preference, as the one the A/V Matrix asks &mdash; answering it in one place answers it in both.</p>
-      <p>Choosing <strong>Cancel</strong> changes nothing at all. Nothing is sent to any device until you choose Continue.</p>
       <p>If the route then fails, OmniSuite puts the Multiview back and tells you. You are never left with a blank display because half an operation succeeded.</p>
       <p>Two different drops, two different meanings, and the panel you drop on decides which:</p>
       <table>
@@ -744,11 +1223,11 @@
       <h3>Multiview and the A/V Matrix</h3>
       <p>A decoder that is currently showing a Multiview is marked <strong>MULTIVIEW</strong> on its row in the A/V Matrix, and no video crosspoint is shown for it &mdash; because the picture is a composition of several sources, not a route from one encoder. Hovering the row explains this.</p>
       <p><strong>Audio may still show a source on that row, and that is correct.</strong> Multiview sound comes from the main window's source over its ordinary audio path, so the matrix is telling you exactly where the sound is coming from.</p>
-      <p>You can still route a normal source to that decoder from the matrix. Doing so <strong>exits Multiview</strong> and shows the route you asked for. OmniSuite warns you first:</p>
-      <div class="note">Multiview is active on this decoder. Completing this route will exit Multiview and replace the Multiview display with the selected A/V route.</div>
+      <p>You can still route a normal source to that decoder from the matrix. Doing so <strong>exits Multiview</strong> and shows the route you asked for &mdash; that is what a normal route means, so nothing asks you to confirm it.</p>
+      <div class="note"><strong>The saved Multiview is kept.</strong> Only the display changes, and you can show the same Multiview on that decoder again whenever you like. If the route cannot be completed, the display is put back on its Multiview rather than left blank.</div>
       <p><strong>The saved Multiview is not deleted.</strong> It stays in the Multiview dropdown and you can show it again whenever you like; it will be rebuilt against whatever the sources are doing at that time.</p>
       <p>If that decoder belongs to a group, only that one decoder leaves Multiview &mdash; the rest of the group carries on. It is then reported as <strong>Drifted</strong> until you choose to show the group Multiview again.</p>
-      <p>The warning appears <strong>once per session</strong> &mdash; after you have acknowledged it, further routes that exit Multiview during the same session go straight through. Refreshing the page or moving between pages does not bring it back. Ticking <strong>Do not show this again</strong> stops it appearing in future sessions as well.</p>
+
       <p>If the route cannot be completed, OmniSuite puts the Multiview back rather than leaving the display blank, and tells you so.</p>
 
       <h3>Deleting a Multiview</h3>
@@ -781,6 +1260,8 @@
     <section id="usb">
       <h2>10. USB Endpoints and USB Matrix</h2>
       <p>The USB Matrix pairs LEX and REX endpoints. A LEX (local extender, USB host) is where the computer is; a REX (remote extender, USB device) is where the peripherals are. LEX endpoints are columns and REX endpoints are rows.</p>
+      <p><strong>Opening the page.</strong> After a scan, Clear Units or a removal, OmniSuite keeps the latest USB Matrix ready, so opening the page shows it at once instead of waiting for every endpoint to be asked. Before it is shown, OmniSuite checks that the endpoints it was prepared from are still the ones in the inventory (a check that asks no device anything); if a unit has since been added, removed or moved, the prepared copy is discarded and the page waits for a fresh read. The page then confirms what it showed with its own read a moment later, and live state such as pairings updates in place. Opening the page never starts extra device traffic of its own.</p>
+      <p>Creating a pairing between two E4521/D4511 endpoints is refused straight away, naming the side, if either of their units is not answering; nothing is released or changed.</p>
 
       <h3>Standalone and integrated endpoints</h3>
       <p>OmniSuite handles two kinds of USB endpoint, and the distinction decides how each one is discovered, controlled and reported:</p>
@@ -819,7 +1300,7 @@
       <h3>A USB route never crosses a subnet</h3>
       <p>Management is routed; USB is not. OmniSuite can query, configure, identify and reboot an endpoint through a router perfectly well. <strong>A USB pairing between endpoints on different subnets does not work, and OmniSuite will not create one.</strong></p>
       <p>Compatibility is computed from the two endpoints' own addresses and subnet masks, with real address arithmetic &mdash; nothing assumes a /24, and the controller's own subnet is irrelevant. Both endpoints must resolve to the same network, and each must fall inside the other's.</p>
-      <div class="danger">For an integrated endpoint the judgement uses the <strong>Icron interface's own IP and mask</strong>, as the parent reports it &mdash; <strong>never the parent's management subnet</strong>. An E4521 managed on <code>192.168.100.x</code> whose USB endpoint sits on <code>192.168.200.0/24</code> belongs, for pairing purposes, to <code>192.168.200.0/24</code>.</div>
+      <div class="danger">For an integrated endpoint the judgement uses the <strong>Icron interface's own IP and mask</strong>, as the parent reports it &mdash; <strong>never the parent's management subnet</strong>. An E4521 managed on <code>192.0.2.x</code> whose USB endpoint sits on <code>203.0.113.0/24</code> belongs, for pairing purposes, to <code>203.0.113.0/24</code>.</div>
       <p>The check <strong>fails closed</strong>, and it runs on the server immediately before anything is written:</p>
       <table>
         <tr><th>What is known</th><th>Result</th><th>What the cell says</th></tr>
@@ -928,8 +1409,936 @@
       </table>
     </section>
 
+    <section id="remote-access">
+      <h2>13. Remote Access and User Accounts</h2>
+
+      <p>Normally OmniSuite answers only on the computer it is running on.
+      <strong>Remote Access</strong> lets you also reach it from a phone,
+      tablet or laptop on your network, so somebody can change what is on a
+      display without sitting at the OmniSuite PC.</p>
+
+      <div class="warn"><strong>Remote Access is off until you turn it on.</strong>
+      Updating OmniSuite never switches it on, and nothing on the network can
+      reach OmniSuite while it is off.</div>
+
+      <h3 id="remote-turning-on">Turning it on</h3>
+      <p>Everything here is in <strong>Settings &gt; Remote Access</strong>, on
+      the OmniSuite computer itself.</p>
+      <ol>
+        <li><strong>Create an administrator.</strong> The first time, Settings
+        asks for a username and password. This can only be done at the OmniSuite
+        computer &mdash; nobody on the network can create the first account, and
+        there is no default password to change.</li>
+        <li><strong>Choose the network.</strong> Pick the network adapter
+        other devices will reach OmniSuite on. Each one is listed by its name
+        and its current address &mdash; <em>Ethernet 3 &mdash;
+        198.51.100.185</em> &mdash; so you can tell them apart. Until you choose,
+        OmniSuite starts on a physical network port: Ethernet first, then Wi-Fi, and
+        only then anything virtual such as a Hyper-V switch, a VPN or a VMware
+        adapter. A network you chose earlier is never replaced by this.</li>
+        <li><strong>Choose how connections are secured.</strong> A first-time
+        setup starts on <strong>HTTP &mdash; not encrypted</strong>. That is
+        labelled plainly, and OmniSuite asks you to confirm it when you turn
+        Remote Access on. Sign-ins are still protected the same way (see
+        <a href="#remote-https">Encryption and certificates</a>); what HTTP does not do is stop someone
+        watching the network from reading what is sent. For encryption, choose
+        <strong>HTTPS</strong> and create or supply a certificate.</li>
+        <li><strong>Turn on remote access.</strong> Settings then shows the
+        address people type into their browser, such as
+        <code>http://10.0.4.12:8080/</code> (or <code>https://&hellip;</code> if you chose
+        encryption).</li>
+      </ol>
+      <p>That address is the whole of it. Opening it in a browser brings up the
+      OmniSuite sign-in page &mdash; there is no separate link to remember and
+      nothing to type after the address. After signing in, an administrator gets
+      the full OmniSuite screens and a User gets their own simple screen.</p>
+      <p>It takes effect immediately. OmniSuite keeps working on its own
+      computer exactly as before, and turning Remote Access off stops network
+      access at once and signs out everyone who was using it.</p>
+      <h3 id="remote-devices">What a remote administrator can reach</h3>
+      <p>A remote administrator can work only with equipment OmniSuite has
+      already found. Asking it to act on an address it has not found &mdash;
+      change a name, route, upgrade, sign in to a unit &mdash; is refused with
+      &ldquo;is not a device this application has found. Scan for it first.&rdquo;
+      A scan started from a remote session may cover private network addresses,
+      but not public Internet, loopback, link-local or multicast addresses; scan
+      those from the OmniSuite computer. This is what stops a stolen sign-in
+      from being used to send the equipment&rsquo;s password to a machine of
+      someone&rsquo;s choosing. Nothing changes on the OmniSuite computer
+      itself.</p>
+
+      <h3 id="remote-restart">After a restart</h3>
+      <p>Once you have turned Remote Access on, it stays on. When OmniSuite or
+      the computer restarts, it comes back on the same network automatically, so
+      an unattended machine in a rack does not need somebody to visit it after
+      every power cut.</p>
+      <p>Two things do not come back on their own, deliberately:</p>
+      <ul>
+        <li><strong>Everyone has to sign in again.</strong> Sign-ins are not kept
+        across a restart. Accounts, passwords and permissions are.</li>
+        <li><strong>A network that is no longer there is not replaced.</strong>
+        If the adapter you chose is missing &mdash; a cable out, a network card
+        changed, a different dock &mdash; OmniSuite does not pick another one and
+        does not fall back to "all networks". It starts normally on this
+        computer, and Settings says that Remote Access is configured but the
+        chosen network is unavailable, so you can pick a replacement.</li>
+        <li><strong>A certificate that cannot be read is not worked around.</strong>
+        If the certificate file has been moved, replaced or damaged, Remote
+        Access stays off and Settings says why. It does not start unencrypted
+        instead.</li>
+      </ul>
+
+      <h4 id="remote-adapter">If the computer&rsquo;s address changes</h4>
+      <p>Remote Access is assigned to a <strong>network adapter</strong>, not to
+      an address. OmniSuite shows that adapter&rsquo;s current address and uses
+      it for the Remote Access link.</p>
+      <p>So if the address changes &mdash; a new lease from the DHCP server, or
+      somebody sets a different static address &mdash; OmniSuite carries on
+      using the same adapter and the link simply shows the new address. You do
+      not have to set it up again.</p>
+      <div class="note"><strong>Moving the cable to a different adapter is a
+      different thing.</strong> If you unplug the network and plug it into
+      another port or a different card, that is another adapter as far as
+      Windows and OmniSuite are concerned &mdash; even when it ends up with the
+      same address. Remote Access stays off until you choose the new adapter
+      yourself, because OmniSuite will not decide on its own which piece of
+      equipment you meant.</div>
+      <div class="note"><strong>The local port and the Remote Access port can be the same number.</strong>
+      That is allowed and does not clash, because they are two separate doors on
+      two different addresses: the local one is <code>http://127.0.0.1:</code>
+      and a number, reachable only on the OmniSuite computer, and the Remote
+      Access one is the address of the adapter you chose with its own number,
+      reachable from the network. They are not interchangeable. Typing the
+      Remote Access number after the local address, or the other way round,
+      does not reach the other door; the browser reports a refused connection
+      or a security warning. Use the link that Settings shows for each.</div>
+      <p>If the adapter you chose is not present at all &mdash; a cable out, a
+      dock changed, a card removed &mdash; Settings says so by name:</p>
+      <p><em>Remote access is configured for Ethernet 3, but that network
+      adapter is not available on this computer right now.</em></p>
+      <p>OmniSuite keeps running normally on its own computer, and nothing is
+      reachable from the network until you either put that adapter back or pick
+      a different one.</p>
+      <div class="note">A brand-new installation always starts with Remote
+      Access <strong>off</strong>, and updating OmniSuite never turns it on.
+      Only an administrator turning it on makes it persist; turning it off makes
+      that persist too.</div>
+
+      <h3 id="remote-https">Encryption and certificates</h3>
+      <p>Remote Access starts on <strong>HTTP</strong>, which is <strong>not
+      encrypted</strong>: the password somebody types at sign-in crosses the
+      network in clear, so use it only on a network you trust. <strong>HTTPS</strong>
+      is one choice away in <strong>Settings &gt; Remote Access &gt; Security</strong>
+      and encrypts everything, including that password.</p>
+      <p><strong>Why HTTP is where it starts.</strong> A certificate is made for an address. If
+      the OmniSuite computer gets its address from DHCP, the address can change,
+      and a certificate for the old one then stops matching &mdash; so a browser
+      warns, and OmniSuite refuses to start HTTPS until you create a new one. HTTP has
+      nothing to go out of date.</p>
+      <p><strong>The address is what OmniSuite relies on; the computer&rsquo;s name is a bonus.</strong>
+      A certificate OmniSuite creates names both the network address you chose and the
+      computer&rsquo;s name. The address is what always works. Whether another device can find the
+      computer by its name depends on things OmniSuite cannot see or change from here: whether the
+      network registers names, and whether each phone, tablet or laptop supports local names. So the
+      name is covered by the certificate, but Remote Access still advertises the address. If your
+      site reaches OmniSuite by a different name, give OmniSuite a certificate for it with
+      <strong>Use my own files</strong>.</p>
+      <p>HTTPS needs a certificate, and you have two ways to get
+      one. Both are in <strong>Settings &gt; Remote Access</strong>.</p>
+      <table>
+        <tr><th>Option</th><th>What it means</th></tr>
+        <tr><td><strong>Create certificate</strong></td><td>OmniSuite makes one
+        for the address you chose. Nothing else is needed and it works
+        immediately. Because nobody else vouches for it, browsers show a warning
+        the first time &mdash; see below.</td></tr>
+        <tr><td><strong>Use my own files</strong></td><td>If your organisation
+        issues certificates, give OmniSuite the paths to the certificate file
+        and its private key. Browsers that already trust your organisation show
+        no warning at all.</td></tr>
+      </table>
+      <p><strong>Your own files stay chosen.</strong> Once you choose
+      <strong>Use my own files</strong>, OmniSuite uses that certificate and key
+      every time Remote Access is turned on, including after a restart, until you
+      choose <strong>Create certificate</strong> or <strong>Remove
+      certificate</strong>. If the files cannot be used (moved, damaged, or a key
+      that does not belong to the certificate), Remote Access does not start and
+      says why. It never switches to a certificate OmniSuite made, and never to
+      an unencrypted connection. Choose both files together; a certificate
+      without its key, or a key without its certificate, is refused.</p>
+      <p>Settings shows what OmniSuite currently has: who the certificate is
+      for, when it expires and its fingerprint.</p>
+
+      <h4 id="remote-cert-identity">What a certificate OmniSuite creates says about itself</h4>
+      <table>
+        <tr><th>Field</th><th>Value</th></tr>
+        <tr><td>Name (common name)</td><td>This computer&rsquo;s Windows name. Characters a network name cannot
+        carry are replaced with a hyphen and the name is shortened if it is longer than certificates allow.</td></tr>
+        <tr><td>Organisation</td><td>Hall Research</td></tr>
+        <tr><td>Unit</td><td>OmniSuite</td></tr>
+        <tr><td>Names it is valid for</td><td>The computer&rsquo;s name and the network address of the adapter
+        chosen for Remote Access. Browsers decide whether a certificate fits from these names, not from the
+        common name, so an address that is not listed is rejected.</td></tr>
+        <tr><td>Valid for</td><td>Three calendar years from the day it is created, to the same date and time of
+        day. A certificate created on 29 February expires on 28 February three years later, never after
+        the third anniversary. Settings shows the days left; create a new certificate before it runs out.</td></tr>
+      </table>
+      <p><strong>Certificates you already have keep working.</strong> A certificate OmniSuite created earlier
+      keeps the name and validity it was made with. OmniSuite never replaces it on its own, at start-up or
+      when it changes address; if the address no longer matches it refuses to start HTTPS and tells you so.
+      The new identity applies the next time you choose <strong>Create one for this network</strong>.
+      Because that <em>replaces</em> the certificate, OmniSuite asks first, with
+      <strong>Cancel</strong> selected. The new certificate has a different fingerprint, so browsers that
+      accepted the old one warn again, and Remote Access keeps serving the old one until you turn it off and on.
+      If you chose <strong>Use my own files</strong> the replacement stops using your files but never changes
+      or deletes them.</p>
+
+      <h4 id="remote-cert-wording">What the HTTPS wording in Settings means</h4>
+      <p>The <strong>Security</strong> choice describes the certificate OmniSuite actually has, not
+      merely the fact that HTTPS is available. The wording follows the certificate whichever way
+      Security is set, and whether or not Remote Access is on.</p>
+      <table>
+        <tr><th>Settings says</th><th>It means</th></tr>
+        <tr><td><strong>HTTPS &mdash; encrypted &middot; certificate active</strong></td><td>OmniSuite has the
+        certificate it created for this network, it can be read and loaded, and it has not expired. Details
+        underneath give the address it is for, the days left and its fingerprint. <em>Active</em> means
+        OmniSuite can serve with it. It does not mean a browser trusts it: OmniSuite signed it itself, so
+        <strong>your browser may warn</strong> the first time; compare the fingerprint if you want
+        to be sure.</td></tr>
+        <tr><td><strong>HTTPS &mdash; encrypted &middot; custom certificate active</strong></td><td>OmniSuite is
+        using the certificate and key you supplied. OmniSuite cannot tell whether a browser accepts the
+        organisation that issued it, so it says <em>active</em>, never <em>trusted</em>. If it does not name this
+        computer&rsquo;s address OmniSuite says so, but does not change a certificate you supplied.</td></tr>
+        <tr><td><strong>HTTPS &mdash; certificate required</strong></td><td>There is nothing usable to
+        serve HTTPS with: no certificate, one that cannot be read, one that has expired, a key that does
+        not belong to it, or a certificate OmniSuite created for a different network address. Turn
+        Remote Access off, then create or install a certificate for this network before enabling HTTPS.
+        Remote Access never falls back to an unencrypted connection to get round this.</td></tr>
+      </table>
+
+      <h4 id="remote-warning">The browser warning, and why it appears</h4>
+      <p>A certificate OmniSuite creates for itself is not signed by an
+      authority your browser has heard of, so the first visit says something
+      like &ldquo;Your connection is not private&rdquo; or &ldquo;Warning:
+      Potential Security Risk Ahead&rdquo;. That is expected. Choose
+      <strong>Advanced</strong>, then the option to continue to the site. Most
+      browsers only ask once per device.</p>
+      <table>
+        <tr><th></th><th>Created by OmniSuite</th><th>Issued by your
+        organisation</th></tr>
+        <tr><td>Traffic is encrypted</td><td><strong>Yes</strong></td>
+        <td><strong>Yes</strong></td></tr>
+        <tr><td>Passwords readable on the network</td><td>No</td><td>No</td></tr>
+        <tr><td>Browser shows a warning</td><td>Yes, the first time</td>
+        <td>No</td></tr>
+        <tr><td>Browser can confirm it is really your OmniSuite</td>
+        <td><strong>No</strong></td><td>Yes</td></tr>
+      </table>
+      <p>So the warning is about the last row, not the first. The connection is
+      encrypted either way, and nobody watching the network can read the
+      password somebody types.</p>
+      <div class="note"><strong>What a certificate OmniSuite created does not
+      give you.</strong> Your browser cannot tell whether it is talking to your
+      OmniSuite computer or to something else that answered on that address,
+      because nothing it trusts vouches for the name. On a switch and a network
+      you control, that is usually an acceptable trade for being able to set it
+      up in one click. If you need the browser to be sure &mdash; a larger
+      site, a shared network, anywhere the traffic leaves equipment you manage
+      &mdash; use a certificate your organisation issued instead. Do not treat
+      the two as equivalent because both say HTTPS.</div>
+
+      <div class="warn"><strong>If the certificate is missing or unreadable,
+      Remote Access does not start.</strong> OmniSuite will not quietly fall
+      back to an unencrypted connection, because that would send passwords in
+      the clear without anyone being told. Settings says what is wrong. OmniSuite
+      keeps working normally on its own computer throughout.</div>
+
+      <h4 id="remote-cert-address">A certificate belongs to one address</h4>
+      <p>A certificate OmniSuite creates is made for the address of the network
+      you picked, and it is only valid for that address. If you later switch
+      Remote Access to a different network &mdash; from a wired connection to
+      Wi-Fi, say &mdash; the old certificate no longer matches, and browsers
+      will refuse the new address rather than merely warning about it.</p>
+      <p>OmniSuite checks this before it starts, so you will see it in Settings
+      rather than discovering it on somebody's phone:</p>
+      <p><em>This certificate is for a different address.</em></p>
+      <p>Press <strong>Create one for this network</strong> and the problem is
+      solved. Remote Access will not start over HTTPS until you do &mdash; it
+      does not carry on with a certificate that will not work, and it never
+      falls back to an unencrypted connection.</p>
+      <p>The same applies if the address of your chosen network changes. Remote
+      Access follows the adapter, so the link updates by itself, but a
+      certificate made for the old address has to be replaced.</p>
+      <div class="note"><strong>A certificate you supplied is never touched.</strong>
+      If it does not name the current address, OmniSuite says so and leaves it
+      exactly as it is &mdash; it may well be correct for a name your site
+      reaches OmniSuite by, which OmniSuite has no way of knowing. Replacing it
+      is your decision, not the software's.</div>
+      <p>Everybody will still see a browser warning the first time they connect
+      with a certificate OmniSuite created. That warning is about who is
+      answering, not about whether the connection is protected &mdash; the
+      traffic is encrypted either way. Settings shows a fingerprint you can
+      check against the one the browser displays.</p>
+
+      <h4 id="remote-cert-remove">Removing a certificate</h4>
+      <p><strong>Remove certificate</strong> appears once there is one. Use it
+      when you are replacing a certificate OmniSuite created with one your
+      organisation issued, or clearing one that was made for an address this
+      computer no longer has.</p>
+      <ul>
+        <li>A certificate <strong>OmniSuite created</strong> is deleted, along
+        with its private key.</li>
+        <li>A certificate <strong>you supplied</strong> is only unselected
+        &mdash; OmniSuite stops using it and your files are left alone.</li>
+      </ul>
+      <p>Turn Remote Access off first. OmniSuite will not remove a certificate
+      that is in use, because doing so would disconnect everyone without
+      warning. Afterwards, Remote Access will not start over HTTPS until you
+      create or supply another certificate.</p>
+
+      <h4>HTTP, and when to choose HTTPS</h4>
+      <p><strong>Not encrypted (HTTP)</strong> is where a first-time setup starts. OmniSuite
+      labels it plainly and asks you to confirm it each time you turn Remote Access on with it.
+      It means exactly what it says: anyone able to watch the network can read what is sent,
+      including passwords typed at sign-in. <strong>HTTPS is the recommended choice once a
+      certificate exists</strong>, and on any network that carries anyone else's traffic.
+      OmniSuite does not switch you between the two: the choice you save is the one it uses
+      after a restart, and an HTTPS choice whose certificate cannot be used keeps Remote Access
+      off rather than starting without encryption. While HTTPS is on, nothing answers on plain
+      HTTP at all. Never expose OmniSuite to the internet or to a guest network under any
+      setting.</p>
+
+      <h3 id="remote-roles">Administrators and Users</h3>
+      <table>
+        <tr><th>Role</th><th>Can do</th></tr>
+        <tr><td><strong>Administrator</strong></td><td>Everything OmniSuite
+        does: scanning, configuration, firmware, Settings, Multiview, USB,
+        diagnostics and managing accounts.</td></tr>
+        <tr><td><strong>User</strong></td><td>Only routing, and only with the
+        sources and displays you assign. A User cannot scan, cannot open
+        Settings, cannot touch firmware, cannot see other rooms' equipment and
+        cannot create accounts or change their own permissions.</td></tr>
+      </table>
+
+      <h3 id="device-names">Giving devices friendly names</h3>
+      <p>Equipment arrives with names like <code>at-omni-111-00001</code>. That
+      is fine for an engineer and useless to a teacher, so OmniSuite lets you
+      give each device a name people will recognise &mdash; <em>Teacher PC</em>,
+      <em>Document Camera</em>, <em>Front Display</em>.</p>
+      <p><strong>Settings &gt; Remote Access &gt; Manage users</strong>, then the
+      <strong>Device names</strong> tab. Each row shows the device's own name,
+      model, address and whether it is a source or a display, so you can tell
+      similar units apart. Type a name and press <strong>Save names</strong>.
+      Clear the box to go back to the device's own name.</p>
+      <p>The <strong>Assignments</strong> column says what is using each unit:
+      <em>Unassigned</em>, or how many Users and Display Groups hold it. Press the
+      summary to see their names, with Direct Access users marked. While Remote
+      Access is on, a unit with assignments is kept when you use
+      <a href="#clear-assigned">Clear Units</a>.</p>
+      <div class="note"><strong>The device is not renamed.</strong> This is
+      OmniSuite's own label, stored on this computer. Nothing is written to the
+      OmniStream unit, its hostname is unchanged, and other systems on your
+      network see no difference. The name follows the device by its hardware
+      identity, so it survives an IP address change and an OmniSuite restart.</div>
+      <p>Where you have set a name, Users see it instead of the hostname, and so
+      do the source and display lists when you assign permissions. Names are
+      labels only &mdash; renaming a device never changes who is allowed to use
+      it.</p>
+      <p>You may give two devices the same name if that genuinely reflects the
+      site. Where a name is used more than once, OmniSuite adds something after
+      it on the screens where somebody has to choose &mdash; so the choice is
+      never a guess. Names that are already unique are shown exactly as you
+      typed them.</p>
+
+      <h3 id="device-location">Location and Description</h3>
+      <p>OmniStream units carry a <strong>Location</strong> and a
+      <strong>Description</strong> of their own, set on the device itself.
+      OmniSuite reads both and shows them in <strong>Manage users &gt; Device
+      names</strong>, beside the friendly name. It never changes them, and
+      nothing is written to the equipment.</p>
+      <p>Where they are filled in, they are what OmniSuite uses to tell two
+      identical names apart:</p>
+      <table>
+        <tr><th>Order</th><th>What is added</th><th>Looks like</th></tr>
+        <tr><td>1</td><td>The device&rsquo;s Location</td><td>Front Display
+        &mdash; Room 101</td></tr>
+        <tr><td>2</td><td>Its Description, if there is no Location</td>
+        <td>Front Display &mdash; House left</td></tr>
+        <tr><td>3</td><td>Its own name, if it has neither</td><td>Front Display
+        &mdash; at-omni-121-00011</td></tr>
+      </table>
+      <div class="note"><strong>Setting Location on your OmniStream units is
+      worth the few minutes.</strong> It is the difference between a teacher
+      choosing between <em>Room 101</em> and <em>Room 102</em>, and choosing
+      between two hostnames. Set it on the device (its own web interface, under
+      system settings), then scan again in OmniSuite.</div>
+      <div class="note">Friendly name and Location are different things and are
+      kept apart on purpose. The <strong>friendly name</strong> is yours: it
+      lives in OmniSuite, you can change it at any time and the device never
+      sees it. <strong>Location</strong> and <strong>Description</strong> belong
+      to the equipment and are shown exactly as the device reports them.
+      Changing either one never changes who is allowed to use a device &mdash;
+      permissions follow the hardware, not what anything is called.</div>
+
+      <h3 id="remote-page">The Remote Access page</h3>
+      <p>While Remote Access is on, <strong>Remote Access</strong> is the last tab in the navigation
+      bar on every page, between the other pages and the Settings gear. It opens one page for
+      everything about who may sign in: <strong>Accounts</strong>, <strong>Device names</strong>,
+      <strong>Display groups</strong> and <strong>Activity</strong>. An <strong>Administrator</strong>
+      signs in to the normal OmniSuite interface; a <strong>User</strong> signs in to a restricted
+      routing page.</p>
+      <p>While Remote Access is off, the tab is not shown, because nobody can sign in to use it. Turning
+      it on is still done in <strong>Settings &gt; Remote Access</strong>, on the OmniSuite computer, and
+      the <strong>Manage users</strong> button there opens the same page.</p>
+
+      <h3 id="remote-users">Managing accounts</h3>
+      <p><strong>Remote Access &gt; Accounts</strong> (or <strong>Settings &gt; Remote Access &gt; Manage users</strong>,
+      or <code>/admin/users</code>). You can add an account, change its role, reset
+      its password, disable it temporarily, or delete it.</p>
+      <p>The editor runs in one order: name, role and password, then <strong>Direct
+      access</strong> (it is a way of signing in, so it sits with the credentials), then
+      what the account may use. For a User you choose:</p>
+      <ul>
+        <li><strong>Features</strong> &mdash; A/V and USB. The person only sees the ones you tick.</li>
+        <li><strong>Routing interface</strong> &mdash; shown when A/V is ticked. <em>Standard
+        routing</em> is the page where the person chooses a source, chooses displays or groups and
+        presses Route (sources can also be dragged onto a display or group). <em>Matrix
+        routing</em> is a grid of just the sources, displays and groups you gave them. Tick one or
+        both; an account with A/V must have at least one. Accounts that existed before this option
+        keep Standard routing and gain nothing else until you change it.</li>
+        <li><strong>Sources they may route</strong> &mdash; tick the equipment
+        they are allowed to use.</li>
+        <li><strong>Displays they may control</strong> &mdash; tick the displays
+        they are allowed to change.</li>
+        <li><strong>Display groups they may route</strong> &mdash; tick the
+        <a href="#remote-groups">display groups</a> the person may send a source to.</li>
+      </ul>
+      <div class="note"><strong>Multiview is for administrators.</strong> A User account cannot be
+      given Multiview in this release: there is no Multiview option in the editor, and a User never
+      sees a Multiview page. Multiview itself is unchanged for administrators. If an account was
+      given Multiview before, that setting is ignored and is removed the next time the account is saved.</div>
+      <p>Both lists have a search box and <strong>All</strong> /
+      <strong>None</strong> buttons, and show each device's model and address so
+      you can tell similar units apart.</p>
+      <p>Changes apply immediately, and which of them signs someone out
+      depends on what changed:</p>
+      <ul>
+        <li><strong>Sources, displays, groups, features and the routing interface</strong> are
+        applied <em>live</em>. A person who is already signed in is not signed
+        out. Anything you took away is refused on their very next action, and
+        their screen drops it the next time it checks (when they return to the
+        tab and about every half minute while it is open). If they had it
+        selected, the selection is cleared.</li>
+        <li><strong>Disabling an account, changing its password or changing
+        its role</strong> signs out anyone using that account's password.
+        Disabling or changing the role also ends sessions opened by a direct
+        access link. A password change does not: a direct access link does not
+        use the password, so the link and anyone using it carry on and follow
+        their own rules below.</li>
+        <li>Editing a display group, or renaming a device, updates what people
+        see without touching their accounts.</li>
+      </ul>
+      <div class="note">OmniSuite will not let you disable, demote or delete the
+      last active administrator, so you cannot lock yourself out. Those buttons
+      are greyed out when only one administrator is left.</div>
+
+      <h3 id="remote-groups">Display groups</h3>
+      <p>A display group is a named set of displays that all receive the same source &mdash; the
+      front-of-house screens, or every display on a floor. <strong>Remote Access &gt; Display groups</strong>
+      is where you create, rename, change and delete them.</p>
+      <ul>
+        <li><strong>Routing to a group.</strong> A User chooses a source and then a group, just as they
+        would a display, and presses <strong>Route</strong>. OmniSuite routes each display in turn,
+        checking each one before it moves to the next, and says how many took it &mdash; for example
+        <em>3 of 4 displays routed</em> &mdash; and which did not.</li>
+        <li><strong>One display failing does not stop the rest</strong>, and displays already routed are
+        not put back. A group makes no promise that all of its displays change together.</li>
+        <li><strong>It is an ordinary route.</strong> Each display gets the same single-view route a
+        display gets on its own. A display that was showing a Multiview leaves it, exactly as it does
+        for any other route. A display group is not a Multiview and not a video wall: every display shows
+        the whole picture.</li>
+        <li><strong>A group is its own permission.</strong> Giving someone a group lets them route to
+        the group; it does not give them the individual displays inside it, and giving someone a display
+        does not give them a group.</li>
+        <li><strong>Members are kept by hardware identity</strong>, not address, so a display that changes
+        address stays in its groups. A display can be in several groups, and the members are read each time
+        a group is routed, so editing a group changes what it controls at once.</li>
+        <li><strong>A display that is no longer there is not named.</strong> If a member is not in the
+        inventory any more (cleared, replaced or never found), the User is told
+        <em>a display that is no longer available</em> for that place in the result, never its hardware
+        address, and the other displays are still routed. Members and permissions are chosen by hardware
+        address: an IP address or a name is refused with an explanation instead of being saved.</li>
+        <li><strong>Clear Units empties them.</strong> Displays that are cleared from the inventory are
+        removed from every group; the group stays, with fewer (or no) displays, until you delete it.</li>
+        <li><strong>Backups include them.</strong> Display groups are part of the configuration backup.</li>
+      </ul>
+
+      <h3 id="remote-direct">Direct access links</h3>
+      <p>A teacher who has to type a username and password before they can put
+      the document camera on the projector will, before long, stop bothering. A
+      <strong>direct access link</strong> is a web address that opens one
+      person&rsquo;s OmniSuite controls without asking for a password, so it can
+      be saved to a phone or tablet home screen or bookmarked on a classroom
+      PC.</p>
+      <div class="warn"><strong>Anyone who has the link can use the controls
+      assigned to that account.</strong> Treat it like a password. It is not a
+      harmless bookmark: somebody who is sent the link can do everything that
+      account can do, without knowing anything about it.</div>
+
+      <h4>Turning one on</h4>
+      <p>Direct access is <strong>off for every account</strong> until you turn
+      it on, one account at a time. In <strong>Manage users</strong>, open the
+      account and tick <strong>Allow passwordless direct link</strong>. The link
+      appears straight away, with <strong>Copy link</strong> beside it.</p>
+      <ul>
+        <li>It is available for <strong>Users only</strong>. An administrator
+        account cannot be given one, and making an account an administrator
+        removes any link it had.</li>
+        <li>Each account gets its own link. Two people never share one.</li>
+        <li>It reaches the same address as ordinary Remote Access. If Remote
+        Access is off, the link is kept but Settings says it cannot be reached
+        from another device yet.</li>
+      </ul>
+
+      <h4>What the link can and cannot do</h4>
+      <p>The link is a way of saying who is asking. It carries no permissions of
+      its own, so everything you have set for that account still applies, and
+      applies immediately:</p>
+      <ul>
+        <li>Take a feature away and the link loses it at once.</li>
+        <li>Remove a source or a display and the link can no longer use it.</li>
+        <li>Disable the account and the link stops working.</li>
+        <li>Delete the account and the link stops working.</li>
+        <li>Turn direct access off and the link stops working.</li>
+      </ul>
+      <p>A direct link never reaches Settings, Remote Access, Activity, firmware,
+      diagnostics, scanning or any administrator screen. Editing the web address
+      by hand does not change that.</p>
+
+      <h4>What it looks like to the person using it</h4>
+      <p>A direct link opens a <strong>dedicated control panel</strong> rather
+      than somebody&rsquo;s signed-in account. There is no name at the top, no
+      <strong>My link</strong> and no <strong>Sign out</strong> &mdash; there is
+      no password behind the link to sign back in with, so signing out would
+      only strand whoever is holding the tablet. What it shows is the features
+      you granted that account and nothing else.</p>
+      <p>The browser stays on the link&rsquo;s own address, so it can be
+      bookmarked, saved to a home screen and refreshed like any other page.</p>
+      <p><strong>It does not expire.</strong> A panel left untouched for a
+      night, a weekend or a whole holiday is still working when somebody walks
+      up to it, and it never asks for a password it was never given. If
+      OmniSuite is restarted the panel re-establishes itself the next time it
+      is used. A link stops working when, and only when, you stop it &mdash;
+      see <a href="#remote-signing-in">Signing in and out</a>.</p>
+      <div class="warn"><strong>The address bar holds the credential.</strong>
+      That is what makes the bookmark work, and it means the address deserves
+      the same care as a password. Anyone who reads it off the screen, a
+      screenshot or a browser history can use it. On a shared machine, prefer a
+      password account. If a link may have been seen, press
+      <strong>Regenerate</strong>.</div>
+
+      <h4>Replacing a link</h4>
+      <p>If a link has been shared with somebody who should not have it, or you
+      simply want a new one, press <strong>Regenerate</strong>. The old address
+      stops working immediately, anyone using it is signed out, and a new link
+      takes its place. There is only ever one link per account &mdash; an old
+      one is never left quietly working.</p>
+      <p><strong>Allow passwordless direct link</strong> unticked removes the
+      link altogether. Ticking it again creates a new one; the previous address
+      does not come back.</p>
+
+      <h4>A User collecting their own link</h4>
+      <p>Once you have turned it on, the person can fetch the link themselves
+      rather than waiting for you to send it. They sign in normally and press
+      <strong>My link</strong> at the top of their screen. They can copy it;
+      they cannot turn the feature on, and they cannot replace the link. Both of
+      those stay with you.</p>
+      <p>If you have not turned it on, they are told so plainly and there is
+      nothing for them to press.</p>
+      <div class="note"><strong>Use HTTPS.</strong> The link is a credential
+      travelling in a web address, so it should not be crossing a network in
+      clear. Do not hand out direct access links on an installation running
+      without encryption.</div>
+
+      <h3 id="remote-activity">Activity</h3>
+      <p><strong>Remote Access &gt; Activity</strong>. It shows what has happened on this
+      installation, newest first: who signed in, who was refused, what was
+      routed, and what an administrator changed.</p>
+      <p>Three boxes narrow it down &mdash; a search box, a list of event types,
+      and a list of people. Use them together to answer a question like "what did
+      this account do this afternoon".</p>
+      <ul>
+        <li><strong>Sign-ins</strong> &mdash; successful, failed, and attempts
+        that were slowed down after repeated wrong passwords.</li>
+        <li><strong>Refusals</strong> &mdash; somebody asked for something they
+        are not allowed. Worth a look if a person says a control does nothing.</li>
+        <li><strong>Routing</strong> &mdash; what was shown where, and by whom.</li>
+        <li><strong>Administration</strong> &mdash; accounts created, changed,
+        disabled or deleted, and Remote Access being turned on or off.</li>
+        <li><strong>Direct links</strong> &mdash; created, replaced, removed,
+        and each time one is used to open a session.</li>
+      </ul>
+      <div class="note"><strong>Passwords are never recorded.</strong> Neither
+      are session details, direct access links, nor the passwords OmniSuite uses
+      to talk to encoders and decoders. A failed sign-in records that one
+      happened and for which username, never what was typed. A direct link
+      being used records the account and the time, never the address.</div>
+      <h4 id="activity-retention">How long Activity is kept</h4>
+      <p>Above the list, <strong>Keep activity for</strong> sets how many days of history are kept
+      and the size limit sets how much disk it may use. The defaults are <strong>30 days</strong> and
+      <strong>5 MB</strong>; you can choose 1 to 365 days and 0.25 to 50 MB. Entries older than the
+      number of days are removed, and if the log reaches the size limit first, the oldest entries go
+      first, so it can never grow without bound. A busy site that fills 5 MB in less than 30 days
+      keeps fewer days, not more disk &mdash; raise the size if you want longer history. The
+      settings are kept across a restart and are included in a configuration backup. Only
+      administrators can see Activity or change these limits &mdash; Users have no access to it at all.</p>
+
+      <h3 id="remote-signing-out">Signing out</h3>
+      <p><strong>Sign out</strong> is at the top right, beside the account name,
+      on every screen anybody reaches through Remote Access &mdash; the User
+      screen and the full OmniSuite application alike. It ends that browser's
+      sign-in and returns to the sign-in page.</p>
+      <ul>
+        <li>It signs out <strong>that browser only</strong>. A phone and a
+        laptop signed in to the same account are independent, and signing out
+        of one leaves the other working.</li>
+        <li>Going back or refreshing afterwards returns to the sign-in page
+        rather than showing what was on screen before.</li>
+        <li>Signing out of a session opened by a
+        <a href="#remote-direct">direct access link</a> ends that session and
+        leaves the link itself working &mdash; opening it again starts a new
+        one. Only an administrator can withdraw a link.</li>
+      </ul>
+      <div class="note">There is no <strong>Sign out</strong> on the OmniSuite
+      computer itself, and that is deliberate: nobody signs in there, so there
+      would be nothing to sign out of.</div>
+
+      <h3 id="remote-signing-in">Signing in and out</h3>
+      <p>People open the address shown in Settings and sign in with the username
+      and password you gave them. Signing in on a second device is fine &mdash; a
+      phone and a laptop can both be signed in at once. <strong>Sign out</strong>
+      is in the top right.</p>
+      <p><strong>Password sessions</strong> end on their own after about eight
+      hours without use, and after twenty-four hours whatever happens. Everyone
+      is signed out if OmniSuite restarts, and repeated wrong passwords are
+      slowed down for a while. If a password session ends while somebody is
+      using OmniSuite, the sign-in page comes back by itself &mdash; they do not
+      have to know where to go.</p>
+      <div class="note"><strong>A
+      <a href="#remote-direct">direct access link</a> works differently, on
+      purpose.</strong> It does not time out, however long the panel sits
+      untouched &mdash; overnight, over a weekend, over the holidays. Somebody
+      walking up to a wall panel has no password to give a sign-in page, so
+      being asked for one would simply leave the room without controls. If
+      OmniSuite restarts, the panel puts itself back the next time it is
+      touched, with nobody going to fix it.</div>
+      <p>That is not a gap in the protection. The link itself is the credential,
+      so anyone holding it could open a fresh session at any moment anyway
+      &mdash; waiting would have protected nothing. What actually stops a link
+      is <strong>you</strong> stopping it, and that takes effect immediately:</p>
+      <ul>
+        <li>Untick <strong>Allow passwordless direct link</strong>.</li>
+        <li>Press <strong>Regenerate</strong>.</li>
+        <li>Disable or delete the account.</li>
+        <li>Make the account an administrator.</li>
+        <li>Change what the account is allowed to use.</li>
+      </ul>
+      <p>Any of those ends both the link and every panel it had open, at once
+      &mdash; not at the end of some timer.</p>
+      <p>Accounts you create here are OmniSuite sign-ins. They are not the
+      <a href="#settings">device passwords</a> OmniSuite uses to talk to
+      encoders and decoders; those are separate and unchanged.</p>
+
+      <h3 id="remote-user-view">What a User sees</h3>
+      <p>A User gets a simple screen built for a phone or tablet, with a tab for
+      each feature you granted (A/V and USB). If you granted only one, there are no tabs at
+      all.</p>
+
+      <h4>A/V</h4>
+      <ol>
+        <li>Choose a source &mdash; what to route.</li>
+        <li>Choose a display &mdash; where to route it.</li>
+        <li>Press <strong>Route</strong>.</li>
+      </ol>
+      <p>Any display groups you gave the account appear beside the displays in step 2, marked with
+      the number of displays in them. Choosing a group instead of a display routes the source to
+      every display in it, one after another, and the screen reports <em>N of M displays routed</em>.
+      A group has no picture of its own &mdash; it is several displays, not one.</p>
+      <p>Each display also says what is on it now. A display showing something
+      the account is not allowed to use is reported as showing another source,
+      without naming it.</p>
+      <p><strong>Dragging.</strong> On a computer you can also drag a source card onto a display
+      or a group instead of choosing both and pressing Route. It does exactly what Route does, with
+      the same checks, and it sends the same single request. A source that is offline cannot be
+      picked up, and a display that is offline does not accept a drop. Some browsers (Firefox, for one)
+      do not start a drag from these cards, and a touch screen has no drag; choosing and pressing Route
+      always works.</p>
+
+      <h4 id="user-routing-modes">Routing and Matrix</h4>
+      <p>If you gave the account both interfaces, the A/V tab has two tabs of its own,
+      <strong>Routing</strong> and <strong>Matrix</strong>. With only one there is no second tab,
+      and an account given neither is told that routing is not available and to ask an
+      administrator. The page opens on the one the person used last on that browser; that is
+      only a preference, and if they no longer have it they are moved to the one they do.</p>
+      <p>The Matrix is a grid: the sources the account may use across the top, and the displays and
+      display groups it may control down the side. Choose <strong>AV</strong>, <strong>Video</strong>
+      or <strong>Audio</strong> above the grid, then press the circle where a source meets a
+      display. AV routes sound and picture together; Video or Audio changes only that one and
+      leaves the other where it was, so a display can show one source's picture with another's
+      sound. The ring is the picture and the dot inside it is the sound.</p>
+      <ul>
+        <li>A <strong>group</strong> is one row. A filled ring means every display in it has that
+        source; a dashed ring means only some do. The row itself says <em>Partial</em> when some
+        displays have it and others do not, <em>Mixed</em> when they differ, and
+        <em>Unavailable</em> when none of them is answering. A group is never drawn as routed
+        because one of its displays is.</li>
+        <li>Holding a group does not give the account its individual displays, and holding a
+        display does not give it the group.</li>
+        <li>A source or display that is not answering is greyed out and says <em>Offline</em>;
+        OmniSuite refuses a route to it. A display showing a Multiview says <em>Multiview</em>
+        for its picture, and its sound is shown as usual.</li>
+        <li>Rest the pointer on a source's name (or tab to it) to see its picture. Nothing is
+        loaded until you do, and a source with its preview turned off simply shows none.</li>
+        <li>If an administrator changes what the account may use while the Matrix is open, rows
+        and columns appear and disappear without signing out. If the Matrix itself is taken away,
+        the page moves to Routing at once.</li>
+        <li>An account that opens its page from a direct access link gets whichever interfaces the
+        account has, and follows later changes the same way.</li>
+      </ul>
+      <p>The display chosen last is remembered, so coming back to the screen or
+      refreshing it does not mean choosing it again. Nothing is ever chosen
+      automatically &mdash; a person with one display still picks it &mdash; and
+      if that display is later unassigned or removed, the selection is simply
+      cleared rather than moved to another one.</p>
+
+      <h4 id="user-display-pictures">Pictures on the display cards</h4>
+      <p>A display that is showing one of the account's own sources shows that
+      source's picture on its card, so it is possible to see at a glance what is
+      on each screen. A display showing something else keeps its ordinary card
+      and says so without naming it, and a display showing a Multiview says
+      <em>Multiview</em>. A display showing nothing says <em>Unrouted</em>.</p>
+
+      <h4 id="user-unroute">Stopping a display</h4>
+      <p>Choosing a display puts an <strong>Unroute</strong> button beside
+      <strong>Route</strong>. It stops that display showing anything: the picture
+      goes, the sound goes, and the card then reads <em>Unrouted</em>.</p>
+      <p>OmniSuite asks before doing it, because unlike choosing a different
+      source there is nothing left on screen afterwards. If the display was
+      showing a Multiview, unrouting takes it out of the Multiview first and
+      then stops it; the saved Multiview itself is not deleted and can be shown
+      again later.</p>
+      <p>The button is greyed out when the display is already showing nothing,
+      and OmniSuite confirms with the display that it really has stopped before
+      reporting success.</p>
+
+      <h4 id="user-previews">Source pictures</h4>
+      <p>Where a source is set up to produce a picture, its card shows one, so
+      somebody can pick <em>the camera pointing at the workbench</em> rather
+      than read a list of names. Tapping anywhere on the card chooses it &mdash;
+      the picture is part of the card, not a separate button.</p>
+      <p>The picture is a still. While the screen is showing, the pictures you can
+      see are refreshed every five seconds, and a picture on a card you have
+      scrolled out of view is not refreshed until it comes back. The moment a
+      route finishes, the pictures on screen are refreshed straight away rather
+      than at the next five-second tick, so a display card shows what it is
+      showing now. Nothing is refreshed while the page is hidden or in another
+      tab, for a source whose thumbnail is switched off, or after you sign out;
+      a picture that did not arrive is tried again about every thirty seconds.
+      One request is made per source at a time, however many cards show it, so a
+      slow unit never gathers a queue. The pictures are for telling one source
+      from another, not for monitoring what is on them.</p>
+      <p>A source or display that is not answering is shown as <em>Offline</em>
+      and cannot be chosen. If a unit goes offline after it was chosen,
+      <strong>Route</strong> is withheld and the summary says which one; the same
+      refusal is made by OmniSuite itself if the page was out of date. Routing to
+      a display group reports how many displays took the route, and names any
+      that did not.</p>
+      <div class="note"><strong>A source with no picture works exactly the
+      same.</strong> Some encoders are not set up to produce one, and the card
+      then says <em>Preview disabled</em> and can still be chosen and shown. If
+      you want pictures for a source, turn its thumbnail on in
+      <strong>Configure</strong>; nothing in OmniSuite turns it on by itself.</div>
+      <p>Turning a thumbnail on takes effect the next time the User screen is
+      opened or refreshed &mdash; the assignment does not need changing, and the
+      source does not need removing and adding back. The same is true of a
+      device's friendly name, its location and description, whether it is
+      online, and what it is currently showing: an assignment grants access to a
+      piece of equipment, and what the screen says about that equipment always
+      comes from the equipment as it is now.</p>
+      <p>People only ever see pictures of the sources you assigned to them.
+      Asking for any other source's picture is refused by OmniSuite, not merely
+      left off the screen.</p>
+
+      <h4 id="user-routing-states">While a display is changing</h4>
+      <p>After <strong>Route</strong>, the display's card reads
+      <strong>Routing&hellip;</strong> until the change is confirmed, and will
+      not take another selection until it finishes. When it is done a short
+      <strong>Routed</strong> message appears. Waiting a moment is normal; a
+      route usually takes a second or two.</p>
+      <p>Messages that can appear instead:</p>
+      <table>
+        <tr><th>Message</th><th>What it means</th></tr>
+        <tr><td>That display is busy with another routing operation</td>
+        <td>Somebody else is changing the same display at this moment. Wait a
+        few seconds and press Route again.</td></tr>
+        <tr><td>The display was put back on its Multiview</td>
+        <td>The route could not be completed, so rather than leave the display
+        blank OmniSuite restored what was there. Try again, or check that the
+        source is switched on.</td></tr>
+        <tr><td>Your permission for that has changed</td>
+        <td>An administrator changed what this account may use while the screen
+        was open. Sign in again to see the current list.</td></tr>
+        <tr><td>That equipment did not respond</td>
+        <td>The source or the display is not answering. It is a network or
+        equipment problem rather than a permission one.</td></tr>
+        <tr><td>The display did not confirm the video (or audio) subscription
+        after it was set</td>
+        <td>The change was sent but the display did not report it back.
+        OmniSuite names the part that did not confirm rather than reporting the
+        whole route as failed.</td></tr>
+        <tr><td>That source does not send audio</td>
+        <td>Not a failure. Some sources carry picture only; the picture is
+        showing. Any sound the display was carrying from a previous source is
+        cleared, so it cannot be left playing underneath the new picture.</td></tr>
+        <tr><td>Your account does not have A/V routing</td>
+        <td>The feature itself has not been granted, as opposed to a particular
+        source or display.</td></tr>
+        <tr><td>You do not have access to that source (or that display)</td>
+        <td>The feature is granted but that particular piece of equipment is
+        not assigned to this account.</td></tr>
+        <tr><td>That preset now uses a source you do not have access to</td>
+        <td>A Multiview preset was approved for this account, but one of the
+        windows in it is fed by a source the account was not given. Assign that
+        source to the account, or approve a preset that only uses sources it
+        already has.</td></tr>
+        <tr><td>That page has been open a while. Reload it and try again</td>
+        <td>The screen has been open long enough that its security token is
+        stale. Reloading fixes it.</td></tr>
+      </table>
+      <p>Each message says which of these it is, so a refusal can be acted on
+      without guessing. A refusal about permission and a display that simply did
+      not answer are never reported the same way.</p>
+
+      <h4 id="user-multiview-exit">Showing a source on a display that has a Multiview</h4>
+      <p>Nothing special is needed. Choosing a source and pressing
+      <strong>Route</strong> means &ldquo;put this on that display&rdquo;, so if
+      the display happens to be showing a Multiview it simply stops and shows
+      the source instead.</p>
+      <div class="note"><strong>The Multiview itself is kept.</strong> Only the
+      display changes. An administrator can put the same Multiview back on that
+      display at any time, and nothing about it has been deleted or altered.</div>
+      <p>If the change cannot be completed &mdash; the source is not answering,
+      say &mdash; the display is put back on its Multiview rather than left
+      blank, and the message says what happened.</p>
+
+      <h4>USB</h4>
+      <p>USB extension moves a keyboard, mouse, camera or other USB device from
+      one place to another, so it is not described as sources and displays. The
+      User picks:</p>
+      <ol>
+        <li>a <strong>computer</strong> &mdash; which machine the USB devices
+        should work with;</li>
+        <li>the <strong>USB devices</strong> &mdash; the peripherals to give it;</li>
+        <li><strong>Connect</strong>.</li>
+      </ol>
+      <p>If those two are already joined the button reads
+      <strong>Disconnect</strong> instead. Peripherals connected to a computer
+      the account is not allowed to see are shown as connected to another
+      computer, without naming it.</p>
+      <p>A User can only use USB on equipment you already assigned: the USB
+      built into a source is covered by that source's permission, and the USB
+      built into a display by that display's.</p>
+
+      <p>Sources and displays appear under the friendly names you set, or
+      their own names where you have not set one.</p>
+      <p>They see only the equipment you assigned. Device addresses, hostnames,
+      firmware versions, multicast settings and every other engineering detail
+      are not sent to them at all &mdash; not hidden, not sent. The same applies
+      to the administrative pages: a User account cannot read the device
+      inventory even by asking for it directly.</p>
+      <p>A device that is assigned but not answering is shown as
+      <strong>Offline</strong> and cannot be selected, so it is clear the
+      assignment is still there and the equipment is not responding.</p>
+
+      <div class="note"><strong>What a User cannot do.</strong> Administer anything: no
+      scanning, no configuration, no firmware, no Settings, no account
+      management, and no Multiview &mdash; Multiview is not available to User accounts
+      or direct access links.</div>
+
+      <h3 id="remote-troubleshooting">If it does not work</h3>
+      <table>
+        <tr><th>What you see</th><th>What to check</th></tr>
+        <tr><td>Nobody can reach the address</td><td>Confirm Remote Access shows
+        <strong>ON</strong>; confirm the device is on the same network as the
+        adapter you chose; confirm the host firewall allows OmniSuite. Check the
+        address begins <code>https://</code> &mdash; a browser that was given
+        <code>http://</code> will not connect.</td></tr>
+        <tr><td>The browser warns that the connection is not private</td>
+        <td>Expected with a certificate OmniSuite created for itself. Choose
+        <em>Advanced</em> and continue; the connection is encrypted. To remove
+        the warning entirely, supply a certificate your organisation issued.</td></tr>
+        <tr><td>Remote Access will not turn on</td><td>HTTPS needs a
+        certificate. Press <strong>Create certificate</strong>, or supply your
+        own files, then turn it on.</td></tr>
+        <tr><td>After a restart, Settings says the certificate cannot be
+        read</td><td>The file has been moved, replaced or damaged. Create a new
+        one or point OmniSuite at the correct files. It deliberately does not
+        start unencrypted instead.</td></tr>
+        <tr><td>The browser says the certificate has expired</td><td>Settings
+        shows the expiry date. Press <strong>Create certificate</strong> again,
+        or supply a current one.</td></tr>
+        <tr><td>The sign-in page appears but the password is refused</td>
+        <td>Reset it in Manage users. After several wrong attempts OmniSuite
+        pauses that account briefly.</td></tr>
+        <tr><td>A User sees no sources or displays</td><td>Nothing has been
+        assigned to them yet. Edit the account and tick the equipment.</td></tr>
+        <tr><td>A User is signed out unexpectedly</td><td>Their permissions,
+        role or password were changed, the account was disabled, or OmniSuite
+        restarted.</td></tr>
+        <tr><td>A display is missing from a User's list</td><td>It is not
+        assigned to that account, or discovery has not found it.</td></tr>
+        <tr><td>Settings names an adapter that is &ldquo;not
+        available&rdquo;</td><td>The adapter you chose is not present right
+        now. Check the cable and the network connection. If the network has
+        genuinely moved to a different adapter, choose that one in Settings and
+        turn Remote Access on again.</td></tr>
+        <tr><td>Settings says it cannot establish which adapter was
+        configured</td><td>Seen after an upgrade when the address that was
+        saved no longer belongs to any adapter on this computer. Choose the
+        network again; OmniSuite then remembers the adapter rather than the
+        address.</td></tr>
+        <tr><td>A browser shows a certificate error rather than a
+        warning</td><td>The certificate does not name the address being used.
+        Settings says so under Certificate; press <strong>Create one for this
+        network</strong>.</td></tr>
+        <tr><td>A direct access link says it is no longer valid</td>
+        <td>It has been replaced, turned off, or the account has been disabled
+        or deleted. Ask an administrator for a new link.</td></tr>
+        <tr><td>A direct access link cannot be shown in Manage users</td>
+        <td>Links are protected using the Windows account OmniSuite runs as. If
+        OmniSuite has been moved to a different computer or is running as a
+        different user, the stored link cannot be read back. Press
+        <strong>Regenerate</strong> for one you can copy.</td></tr>
+        <tr><td>The Remote Access address is different from last time</td>
+        <td>Expected if the adapter&rsquo;s address changed. OmniSuite follows
+        the adapter you chose, so the link shows its current address.</td></tr>
+        <tr><td>Everyone was signed out</td><td>OmniSuite restarted. Accounts and
+        permissions are unaffected; people simply sign in again.</td></tr>
+        <tr><td>A device still shows its hostname</td><td>No friendly name has
+        been set for it. Add one in Manage users &gt; Device names.</td></tr>
+        <tr><td>A User sees a group but not its displays</td><td>That is how groups work: a group
+        is its own permission. Give the account the displays too if they should also route to them one at a time.</td></tr>
+        <tr><td>A User sees no computers under USB</td><td>The equipment with
+        the USB host connection has not been assigned to them as a source.</td></tr>
+        <tr><td>A Multiview layout will not show</td><td>OmniSuite reports why.
+        &ldquo;No record of what feeds this layout&rdquo; means the layout needs
+        opening and saving once on the Multiview page, as an administrator.</td></tr>
+        <tr><td>Two displays have the same name</td><td>Give them different
+        friendly names. Users cannot tell identically named equipment apart.</td></tr>
+      </table>
+    </section>
+
     <section id="troubleshooting">
-      <h2>13. Troubleshooting</h2>
+      <h2>14. Troubleshooting</h2>
       <p>Most reports of a missing or unresponsive device are answered by the same short sequence. The order matters: there is nothing to gain from rescanning a subnet the PC is not on, and nothing to learn from suspecting OmniSuite while its traffic is being filtered.</p>
       <div class="note">Device missing &rarr; Verify interface/subnet &rarr; Verify IP connectivity &rarr; Verify firewall/security policy &rarr; For routed USB: verify Discovery Network / known address &rarr; Scan again &rarr; Review TS Dump</div>
 
@@ -983,6 +2392,22 @@
         <li><strong>A standalone extender that lost power lost its pairing table.</strong> Its peers are gone and any surviving peer will disagree with it until the routes are re-established from the matrix. That is the device's behaviour, not stale display.</li>
         <li><strong>A blank USB Firmware is deliberate.</strong> It means that endpoint has never reported one; it is never filled in from the parent's firmware.</li>
       </ol>
+      <h3>Things that are known, and not yet explained</h3>
+      <ul>
+        <li><strong>Browser warning on a certificate OmniSuite created.</strong> Expected; see
+        &ldquo;The browser warning, and why it appears&rdquo; in Remote Access.</li>
+        <li><strong>An older certificate keeps its old name and dates.</strong> OmniSuite does not
+        replace a certificate on its own. Press <em>Create one for this network</em> when you want
+        the current identity; browsers that accepted the old one will warn again.</li>
+        <li><strong>Routing can feel slower after OmniSuite has run for many days.</strong> One long
+        test saw the time a route takes rise with how long OmniSuite had been running. It has not been
+        shown to be a fault and is still being looked at. If you see it, closing and reopening
+        OmniSuite resets it, and the support team can ask you to switch on a timing record.</li>
+        <li><strong>Memory use creeps up slowly over a very long run</strong> &mdash; measured at
+        roughly 2.5 MB an hour. The cause is not yet known. Closing and reopening OmniSuite returns
+        it to its starting size.</li>
+      </ul>
+
       <div class="warn">Nothing in this section asks you to clear the inventory. <strong>Clear Units is not the fix for stale data</strong> &mdash; scanning again is, and it keeps everything OmniSuite has already learned. Clear Units is for deliberately starting from an empty inventory.</div>
     </section>
 
@@ -991,7 +2416,7 @@
       <p>OmniSuite {{OMNI_VERSION}} is published by <strong>Hall Research Technologies LLC</strong>.</p>
       <p>Copyright &copy; 2026 Hall Research Technologies LLC.</p>
       <p>OmniSuite is source-available software, free for personal and business use &mdash; including while you are doing paid work. It may not be sold, and modified versions may not be distributed. See <a href="/license" target="_blank" rel="noopener noreferrer">LICENSE</a> for complete terms. The summary here and in Settings is a convenience and nothing more &mdash; where it and the licence differ, the licence governs.</p>
-      <p>OmniSuite includes third-party software, each component under its own licence and copyright. Those are listed in the <code>THIRD_PARTY_NOTICES.md</code> file that ships with the application.</p>
+      <p>OmniSuite includes third-party software, each component under its own licence and copyright. Those are listed in the <code>THIRD_PARTY_NOTICES.md</code> file, and their licence texts are in the <code>third_party_licenses</code> folder; both are beside the application in the download. One of them, <strong>pystray</strong> (the tray icon), is licensed under the LGPL: its complete source is in the <code>third_party</code> folder of the download, and <code>REBUILD.md</code> explains how to rebuild OmniSuite with your own copy of it, as section 11A of the licence preserves.</p>
     </section>
   </div>
 </body>

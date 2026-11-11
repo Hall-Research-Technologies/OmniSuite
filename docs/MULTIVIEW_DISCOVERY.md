@@ -50,7 +50,7 @@ in its own section; they are collected here because they change the Phase 2 desi
 ## B. Authorization, safety boundaries, and test isolation
 
 **Authorized and used:** inspection and temporary configuration of decoder
-`192.168.100.32` and encoder `192.168.100.142`.
+`198.51.100.32` and encoder `198.51.100.142`.
 
 **Mutations made, and their disposition:**
 
@@ -74,7 +74,7 @@ name/limit/canvas validation objects) were all deleted; §G.3 documents how.
 
 ### B.1 One object intentionally left on the bench
 
-`multiviewOmniSuiteTest` remains on decoder **192.168.100.32**:
+`multiviewOmniSuiteTest` remains on decoder **198.51.100.32**:
 
 - canvas 3840x2160, two subframes (`subframe1` → `ip_input1`, `subframe2` → `ip_input2`)
 - it is **not** selected on the HDMI output, and `ip_input2` is disabled, so it is inert
@@ -88,7 +88,7 @@ Delete it with the call in §G.3 when it is no longer wanted.
 Automated tests must make **zero** real hardware traffic: no WebSocket connections, UDP
 packets, TCP connections or HTTP requests to devices, and no device mutations. Any
 Multiview tests must use synthetic/test-net addresses and mocked responses. **No
-`192.168.100.x` address may appear in an automated test as a reachable target.** The
+`198.18.100.x` address may appear in an automated test as a reachable target.** The
 existing process-wide hardware fences must remain effective.
 
 The live work in this phase was manual and run outside the automated suite; nothing in
@@ -119,7 +119,7 @@ Probed read-only. The `multiview` column is the result of `config_get multiview`
 - **ip_input count is model-dependent** — 32 on 4xxx, 16 on the 2.0-era `at-omni-121`.
   Do not hardcode 32; use the length of the returned array.
 - `.145` is unreachable over WebSocket yet is still the active source feeding `.32`
-  (`session1@hw-omni-e4111-08412`). Multicast delivery does not require the encoder to be
+  (`session1@hw-omni-e4111-00001`). Multicast delivery does not require the encoder to be
   manageable, so **a working source is not evidence that its encoder is reachable.**
   Phase 2 must tolerate a source device that cannot be queried.
 
@@ -855,8 +855,8 @@ cannot both be enabled.
 
 ```json
 {"enabled": true,
- "session": "session1@hw-omni-e4111-08412",
- "available_sessions": ["session1@hw-omni-e4111-08414", ...]}
+ "session": "session1@hw-omni-e4111-00001",
+ "available_sessions": ["session1@hw-omni-e4111-00002", ...]}
 ```
 
 SAP is an *automatic* input selector: while enabled, it drives the output from an
@@ -1112,7 +1112,7 @@ refuses both, and three tests assert it.
 
 ### S.3 The retained Phase 1 object
 
-`multiviewOmniSuiteTest` on **192.168.100.32** is still there, and was used
+`multiviewOmniSuiteTest` on **198.51.100.32** is still there, and was used
 exactly as intended: it validated the read path, source resolution, and — most
 usefully — the honest-layout requirement. It was hand-built in Phase 1 with both
 subframes at x=0 y=0, which matches no generated layout, so it reads back as
@@ -1160,7 +1160,7 @@ Phase 1 recorded the exclusion as **[INFER]** and Phase 2 implemented it as
 | `HW-OMNI-E4111-WP` | **yes** | a 4xxx wall plate, and an ordinary encoder in every way that matters |
 | `AT-OMNI-111` | **yes** | never in question, but a `111` substring rule would have taken it |
 
-**[LIVE]** The 4xxx wall plate at **192.168.100.253** (`hw-omni-e4111-wp-01003`)
+**[LIVE]** The 4xxx wall plate at **198.51.100.253** (`hw-omni-e4111-wp-01003`)
 reports the same capabilities as any other supported encoder — two `vc2`
 encoders (700/150 Mb/s), six sessions, `destination_generate_applied` on both
 Session 1 and Session 2 — and in Phase 3 it drove a live Multiview window on .32
@@ -1214,7 +1214,7 @@ showed **zero differences**. Only `multiviewOmniSuiteTest` remains, as before.
 
 ## U. Phase 4: the full layout matrix, and what it found
 
-Every one of the eleven layouts was created on decoder **192.168.100.32** at both
+Every one of the eleven layouts was created on decoder **198.51.100.32** at both
 exposed canvases — 22 live cases — through the production Save transaction, each
 verified by independent read-back of the decoder and of every source encoder.
 
@@ -1283,7 +1283,7 @@ source remain fine, which is exactly how a 4K PiP works.
 
 ### U.4 An unreachable source no longer stalls the page
 
-`hw-omni-e4111-08412` lives at **10.1.1.33** and answered neither ICMP nor TCP/80.
+`hw-omni-e4111-00001` lives at **10.1.1.33** and answered neither ICMP nor TCP/80.
 The record is not stale — the MAC is unique and the hostname matches.
 
 > **Corrected in Phase 4B: that device was switched off.** Its silence was
@@ -1305,9 +1305,9 @@ scan uses and read concurrently:
 
 ### U.5 The 22-case matrix
 
-Decoder `192.168.100.32`. Sources: `hw-omni-e4521-00002` (.141),
-`hw-omni-e4111-08414` (.142), `hw-omni-e4521-856c` (.143), and
-`hw-omni-e4521-85e6` (192.168.200.144) standing in for the unreachable .33 —
+Decoder `198.51.100.32`. Sources: `hw-omni-e4521-00001` (.141),
+`hw-omni-e4111-00002` (.142), `hw-omni-e4521-0000a` (.143), and
+`hw-omni-e4521-00012` (203.0.113.144) standing in for the unreachable .33 —
 marked `*` wherever it was used. One object per canvas, taken through all eleven
 layouts in turn, then deleted.
 
@@ -1403,10 +1403,10 @@ The corrected pool replaces it with the 4xxx wall plate:
 
 | Source | Model | Role in the matrix |
 |---|---|---|
-| 192.168.100.253 | `hw-omni-e4111-wp` | W1, and both windows of the PiP rotations |
-| 192.168.100.141 | `hw-omni-e4521` | W2 |
-| 192.168.100.142 | `hw-omni-e4111` | W3 |
-| 192.168.100.143 | `hw-omni-e4521` | W4 |
+| 198.51.100.253 | `hw-omni-e4111-wp` | W1, and both windows of the PiP rotations |
+| 198.51.100.141 | `hw-omni-e4521` | W2 |
+| 198.51.100.142 | `hw-omni-e4111` | W3 |
+| 198.51.100.143 | `hw-omni-e4521` | W4 |
 
 ### V.2 The decoder output resolution follows the canvas
 
@@ -1618,10 +1618,10 @@ which the device's web application shows as **Not used**:
 
 | Source | Model | Encoder 2 input as found |
 |---|---|---|
-| 192.168.100.141 | `hw-omni-e4521` | `hdmi_input1` |
-| 192.168.100.142 | `hw-omni-e4111` | `hdmi_input1` |
-| 192.168.100.143 | `hw-omni-e4521` | **`""` (Not used)** |
-| 192.168.100.253 | `hw-omni-e4111-wp` | **`""` (Not used)** |
+| 198.51.100.141 | `hw-omni-e4521` | `hdmi_input1` |
+| 198.51.100.142 | `hw-omni-e4111` | `hdmi_input1` |
+| 198.51.100.143 | `hw-omni-e4521` | **`""` (Not used)** |
+| 198.51.100.253 | `hw-omni-e4111-wp` | **`""` (Not used)** |
 
 Multiview preparation now reads Encoder 1's input and Encoder 2's, and:
 
@@ -1676,7 +1676,7 @@ off**.
 **[LIVE]** §20 enabled Session 2's announcement on `.142` with the decoder's own
 SAP input enabled, and watched `.32` for 30 seconds:
 
-* the session was advertised -- `session2@hw-omni-e4111-08414` appeared in the
+* the session was advertised -- `session2@hw-omni-e4111-00002` appeared in the
   decoder's `sap_input.available_sessions`;
 * the decoder did **not** adopt it. `sap_input.session` stayed on the session it
   was configured for, no ip_input was repointed, and the output did not move.
@@ -1842,16 +1842,16 @@ had to be manufactured:
 
 | Decoder | Wall | Result |
 |---|---|---|
-| 192.168.100.151 | enabled | HTTP 400, 0 mutations, nothing created, display and sources untouched |
-| 192.168.100.152 | enabled | HTTP 400, 0 mutations, nothing created, display and sources untouched |
+| 198.51.100.151 | enabled | HTTP 400, 0 mutations, nothing created, display and sources untouched |
+| 198.51.100.152 | enabled | HTTP 400, 0 mutations, nothing created, display and sources untouched |
 
 **[LIVE] Fast Switching**, the decoder's `video.output.fsm` block, on both
 families:
 
 | Decoder | Model | Family | FSM | Result |
 |---|---|---|---|---|
-| 192.168.100.32 | `hw-omni-d4511` | 4xxx | on | **not blocked** -- all eleven layouts composited with it on |
-| 192.168.100.205 | `at-omni-121` | 1xx | on | **blocked**, HTTP 400, 0 mutations, nothing written |
+| 198.51.100.32 | `hw-omni-d4511` | 4xxx | on | **not blocked** -- all eleven layouts composited with it on |
+| 198.51.100.205 | `at-omni-121` | 1xx | on | **blocked**, HTTP 400, 0 mutations, nothing written |
 
 The family comes from the model identity and nothing else: the last segment of
 the normalised model, with a leading `d` stripped, four digits starting `4` for
@@ -1861,8 +1861,8 @@ is on** -- a safety gate with no evidence behind it is not a gate.
 
 ### W.10 The live matrix
 
-**[LIVE]** Decoder `192.168.100.32`. Sources: `hw-omni-e4521-00002` (.141),
-`hw-omni-e4111-08414` (.142), `hw-omni-e4521-856c` (.143),
+**[LIVE]** Decoder `198.51.100.32`. Sources: `hw-omni-e4521-00001` (.141),
+`hw-omni-e4111-00002` (.142), `hw-omni-e4521-0000a` (.143),
 `hw-omni-e4111-wp-01003` (.253). Each case is Save -> verify -> Show -> verify ->
 Delete over the shipping HTTP endpoints. **11 of 11 verified, 0 problems.**
 
@@ -2037,7 +2037,7 @@ multicast address and port twice. So a layout that asks one source to fill three
 or four windows cannot be built, and the planner refuses it by name:
 
 ```
-hw-omni-e4521-00002 is assigned to 4 windows (top_left, top_right, bottom_left,
+hw-omni-e4521-00001 is assigned to 4 windows (top_left, top_right, bottom_left,
 bottom_right), and a decoder input drives at most 2. The extra windows would stay
 black with no error from the device. Use a different source for bottom_left,
 bottom_right, or choose a layout with fewer windows on it.
@@ -2106,10 +2106,10 @@ product's own endpoints:
 
 | Main source | Its Session 1 audio | What `ip_input3` carried | Enabled | HDMI audio | Decoder audio status |
 |---|---|---|---|---|---|
-| 192.168.100.141 | 239.80.133.236 | 239.80.133.236 | yes | `ip_input3` | active, 16-bit LPCM 48 kHz |
-| 192.168.100.142 | 239.80.132.254 | 239.80.132.254 | yes | `ip_input3` | active, 16-bit LPCM 48 kHz |
-| 192.168.100.143 | 239.80.133.108 | 239.80.133.108 | yes | `ip_input3` | active, 16-bit LPCM 48 kHz |
-| 192.168.100.253 | 239.80.65.179 | 239.80.65.179 | yes | `ip_input3` | active, 24-bit LPCM 48 kHz |
+| 198.51.100.141 | 239.80.133.236 | 239.80.133.236 | yes | `ip_input3` | active, 16-bit LPCM 48 kHz |
+| 198.51.100.142 | 239.80.132.254 | 239.80.132.254 | yes | `ip_input3` | active, 16-bit LPCM 48 kHz |
+| 198.51.100.143 | 239.80.133.108 | 239.80.133.108 | yes | `ip_input3` | active, 16-bit LPCM 48 kHz |
+| 198.51.100.253 | 239.80.65.179 | 239.80.65.179 | yes | `ip_input3` | active, 24-bit LPCM 48 kHz |
 
 **Four of four correct**, and the audio moved with the main window on every
 recall of the matrix rather than staying on the previous Multiview's source.
@@ -2288,11 +2288,11 @@ device configuration at all, which is what keeps opening the page cheap. So a
 source that loses its Session 2 destination *after* the last scan still shows as
 READY until the next one.
 
-**[LIVE]** Measured by clearing `session2`'s destination on `192.168.200.144`
+**[LIVE]** Measured by clearing `session2`'s destination on `203.0.113.144`
 and putting it back. The tile stayed READY, exactly as the design implies -- and
 the plan, which reads every source live, refused it by name:
 
-> `Encoder hw-omni-e4521-85e6 session2 has no stream destination. Configure it
+> `Encoder hw-omni-e4521-00012 session2 has no stream destination. Configure it
 > on the device (it generates its own default) before using it in a Multiview.`
 
 Nothing can be configured from a stale tile: the refusal happens before any
@@ -2378,16 +2378,16 @@ Which one fires depends on which rule the attempted configuration breaks first,
 not on which direction the window moved. Both are correct refusals, and both
 name the rule and the windows involved.
 
-- 1x `192.168.100.141 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1280x720; bottom_middle needs 640x360. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
-- 1x `192.168.100.141 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1920x1080; top_left needs 640x360. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
-- 1x `192.168.100.142 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1920x1080; bottom_left needs 640x360. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
-- 1x `192.168.100.142 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1920x1080; bottom_right needs 640x360. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
-- 1x `192.168.100.143 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1280x736; top_right needs 640x368. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
-- 1x `192.168.100.253 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1280x720; top_middle needs 640x360. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
-- 1x `192.168.100.253 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1280x736; middle_left needs 640x368. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
-- 1x `192.168.100.253 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1440x816; bottom_right needs 480x272. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
-- 1x `192.168.100.253 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1920x1080; top_right needs 640x360. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
-- 1x `hw-omni-e4111-08414 is assigned to 3 windows (main, bottom_left, bottom_middle), and a decoder input drives at most 2. The extra windows would stay black with no error from the device. Use a different source for bottom_middle, or choose a layout with fewer windows on it.`
+- 1x `198.51.100.141 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1280x720; bottom_middle needs 640x360. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
+- 1x `198.51.100.141 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1920x1080; top_left needs 640x360. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
+- 1x `198.51.100.142 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1920x1080; bottom_left needs 640x360. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
+- 1x `198.51.100.142 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1920x1080; bottom_right needs 640x360. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
+- 1x `198.51.100.143 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1280x736; top_right needs 640x368. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
+- 1x `198.51.100.253 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1280x720; top_middle needs 640x360. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
+- 1x `198.51.100.253 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1280x736; middle_left needs 640x368. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
+- 1x `198.51.100.253 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1440x816; bottom_right needs 480x272. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
+- 1x `198.51.100.253 is assigned to windows that need different sizes from the same encoder (Encoder 2): main needs 1920x1080; top_right needs 640x360. A scaler belongs to the encoder, so it can only produce one of them. Use a different source for one of these windows.`
+- 1x `hw-omni-e4111-00002 is assigned to 3 windows (main, bottom_left, bottom_middle), and a decoder input drives at most 2. The extra windows would stay black with no error from the device. Use a different source for bottom_middle, or choose a layout with fewer windows on it.`
 
 Duplicating a source into two windows of the **same** size is legal and was
 exercised in every layout that has two windows of one size. It shares a single
@@ -2942,7 +2942,7 @@ Every layout: equal-sized windows shared one target, the aggregate stayed inside
 The two windows have the same target and different actuals, and neither
 Encoder 1 moved. The warning now reads
 
-> Encoder 2 on hw-omni-e4521-00002 is set to 150 Mb/s rather than the 200 Mb/s
+> Encoder 2 on hw-omni-e4521-00001 is set to 150 Mb/s rather than the 200 Mb/s
 > target for this window: Encoder 1 is at 750 Mb/s, leaving 150 of the source's
 > 900 Mb/s. Encoder 1 is left alone — it carries the source's primary stream.
 
@@ -2964,7 +2964,7 @@ still 700 and 750.
 
 | | decoder | Multiview | canvas |
 |---|---|---|---|
-| chosen | `192.168.100.32` | `multiviewSidebySide` | 2 windows, LIVE |
+| chosen | `198.51.100.32` | `multiviewSidebySide` | 2 windows, LIVE |
 | after a browser refresh | restored | restored | 2 windows, LIVE |
 | after navigating away and back | restored | restored | 2 windows, LIVE |
 | remembered decoder not selectable | **cleared** | **cleared** | "Select a decoder to begin." |
@@ -3151,8 +3151,8 @@ copy left the original untouched.
 
 ### AE.1 The reported failure was true
 
-`Encoder hw-omni-e4521-00002 did not answer, so its Session 2 cannot be prepared
-for window top_left.` That encoder is 192.168.100.141, and it answered **none**
+`Encoder hw-omni-e4521-00001 did not answer, so its Session 2 cannot be prepared
+for window top_left.` That encoder is 198.51.100.141, and it answered **none**
 of five TCP probes on port 80, each timing out at 2 s, while every other device
 on the bench answered in under 0.03 s. It is switched off. The sentence was
 correct and the operation wrote nothing.
@@ -3339,7 +3339,7 @@ purpose and must be reported. Four mutations of the fix were all caught:
 
 ### AF.3 A source that was advertised Ready and then refused
 
-`192.168.100.218` was listed **Ready** and then refused by the planner. Read
+`198.51.100.218` was listed **Ready** and then refused by the planner. Read
 live:
 
 ```
@@ -3442,7 +3442,7 @@ not apply.
 both, and the page holds neither. Live on the bench:
 
 ```
-192.168.100.218: multiview=configuration_required  normal_route=ready
+198.51.100.218: multiview=configuration_required  normal_route=ready
 ```
 
 Windows refuse what they cannot carry, at the window rather than at the tile.
@@ -3479,7 +3479,7 @@ now records the restored display.
 Both defects were found by looking at the bench rather than at the tests, and
 both are covered by tests that fail without the fix.
 
-### AG.6 Live results, decoder 192.168.100.32
+### AG.6 Live results, decoder 198.51.100.32
 
 Twenty of twenty checks passed on the first pass (A–T), with the rollback proved
 separately because the encoder chosen for the "unreachable" case turned out to
@@ -3493,7 +3493,7 @@ was left on the Multiview it was found on.
 
 ### AH.1 The discovery gate
 
-Nothing was implemented until decoder 192.168.100.32 had been asked. Raw object
+Nothing was implemented until decoder 198.51.100.32 had been asked. Raw object
 writes and semantic readback, one variable at a time, with the display
 untouched:
 
@@ -3562,7 +3562,7 @@ the one this phase asked for.
 
 ### AH.4 Live results
 
-Section 27, with a Multiview genuinely active on .32 and 192.168.100.142 feeding
+Section 27, with a Multiview genuinely active on .32 and 198.51.100.142 feeding
 its main window at 1280x720:
 
 ```
@@ -3584,11 +3584,11 @@ intact after a round trip.
 Section 28, cross-decoder:
 
 ```
-.32 uses 192.168.100.142 Encoder 2 at 1280x720
+.32 uses 198.51.100.142 Encoder 2 at 1280x720
 .161 SAVES a preset wanting it at 960x544      -> allowed
 .161 SHOWS it                                   -> HTTP 409 conflict
-   "Window top_left needs Encoder 2 on hw-omni-e4111-08414 scaled to 960x544,
-    but multiview13HorizontalBottom on hw-omni-d4511-085c6 already depends on
+   "Window top_left needs Encoder 2 on hw-omni-e4111-00002 scaled to 960x544,
+    but multiview13HorizontalBottom on hw-omni-d4511-00011 already depends on
     it at a different size."
    .142 scaler unchanged, .32 still showing, all four windows live,
    .161 display untouched
@@ -3612,7 +3612,7 @@ holds it.
 
 ## AI. The four Phase 8F hardware findings, stated once
 
-These are **measured** on decoder 192.168.100.32, not inferred. They are
+These are **measured** on decoder 198.51.100.32, not inferred. They are
 restated here because each one costs real time to rediscover.
 
 ### AI.1 An empty subframe is `input: ""`

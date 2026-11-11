@@ -320,7 +320,12 @@ function enqueueLiveWrite({kind, ip, field, value, control, payload, endpoint, s
   return run;
 }
 
-function omniConfirm(options = {}) {
+// Kept as the fallback only. ui/confirm.js is the one dialog (it carries the
+// optional field, the do-not-ask-again box, its own styling and the Cancel-first
+// focus for a danger dialog); a page that loads it before this file gets that one,
+// because a page-local copy without the field is how Settings > Restore showed a
+// passphrase dialog with nowhere to type.
+function matrixOwnConfirm(options = {}) {
   let backdrop = document.getElementById('matrix_confirm_backdrop');
   if (!backdrop) {
     backdrop = document.createElement('div');
@@ -403,54 +408,7 @@ function omniConfirm(options = {}) {
     okBtn.focus();
   });
 }
-
-// ---- leaving Multiview for a conventional route ---------------------------
-//
-// Session-scoped so a page refresh and a trip to another page do not ask again,
-// and a genuinely new browser session does. The permanent preference uses
-// localStorage, the same idiom the Multiview notice uses, and outranks it.
-const MV_ROUTE_SESSION_KEY = 'matrix_multiview_exit_acknowledged';
-const MV_ROUTE_FOREVER_KEY = 'matrix_multiview_exit_suppressed';
-
-function multiviewWarningSuppressed(){
-  try {
-    if (localStorage.getItem(MV_ROUTE_FOREVER_KEY) === 'true') return true;
-    return sessionStorage.getItem(MV_ROUTE_SESSION_KEY) === 'true';
-  } catch (err) {
-    return false;              // storage refused: ask, rather than assume
-  }
-}
-
-function rememberMultiviewWarning(forever){
-  try {
-    sessionStorage.setItem(MV_ROUTE_SESSION_KEY, 'true');
-    if (forever) localStorage.setItem(MV_ROUTE_FOREVER_KEY, 'true');
-  } catch (err) { /* not fatal */ }
-}
-
-// Returns true when the route may proceed. Nothing is written to any device
-// before this resolves.
-async function confirmMultiviewExit(dec, multiviewName){
-  if (multiviewWarningSuppressed()) return true;
-  const who = dec.host ? `${dec.host} (${dec.ip})` : dec.ip;
-  const answer = await omniConfirm({
-    title: 'Multiview is active on this decoder',
-    message: `Completing this route will exit Multiview on ${who} and replace `
-      + 'the Multiview display with the selected A/V route. The saved Multiview '
-      + 'is kept and can be shown again later.',
-    summary: [
-      {label: 'Decoder', value: who},
-      {label: 'Currently showing', value: multiviewName},
-      {label: 'After this route', value: 'the source you selected'},
-      {label: 'Saved Multiview', value: 'kept, not deleted'},
-    ],
-    confirmText: 'Continue',
-    suppressLabel: 'Do not show this again',
-  });
-  const ok = answer === true || (answer && answer.ok);
-  if (ok) rememberMultiviewWarning(!!(answer && answer.suppress));
-  return !!ok;
-}
+if (typeof window.omniConfirm !== 'function') window.omniConfirm = matrixOwnConfirm;
 
 // ---- IP sort helpers ----
 function ipNum(ip){
@@ -640,14 +598,12 @@ function enqueueRouteWrite(decoderIp, encoderIp, mode) {
   const prior = routeQueues.get(decoderIp) || Promise.resolve();
   const run = prior.catch(()=>{}).then(async () => {
     if(routeLatest.get(decoderIp) !== token) return {ok: true, skipped: true, decoderIp};
-    // `exit_multiview` is the operator's answer travelling with the request.
-    // Without it the server refuses to take a decoder out of Multiview, so a
-    // route can never silently change what is on a display.
-    const target = (lastState?._rawDecoders || lastState?.decoders || [])
-      .find(d => d.ip === decoderIp);
+    // A normal route means single view. If the decoder is compositing, the
+    // server leaves the Multiview as part of the same verified transaction,
+    // so nothing here has to know or ask -- which also removes a way for this
+    // page's idea of the decoder to be stale and produce a refusal.
     const res = await postJSON('/api/route', {
       decoder: decoderIp, encoder: encoderIp, mode,
-      exit_multiview: !!decoderMultiview(target),
     });
     if(routeLatest.get(decoderIp) !== token) return {ok: true, skipped: true, decoderIp};
     routeLatest.delete(decoderIp);
@@ -670,8 +626,29 @@ function enqueueRouteWrite(decoderIp, encoderIp, mode) {
   return run;
 }
 
-// Group selection state for decoders
+// Group selection state for decoders. Held by identity, never by address: an address
+// is where a unit answered a moment ago, and a selection that follows it silently
+// moves to whichever unit takes the address next.
 let selectedDecoders = new Set();
+
+function decoderKey(d){
+  const mac = String((d && d.mac) || '').toLowerCase().replace(/[^0-9a-f]/g, '');
+  return mac.length === 12 ? 'mac:' + mac : 'ip:' + String((d && d.ip) || '');
+}
+
+// Forget selections whose unit is no longer in the inventory, so a unit that
+// arrives later (at an address the old one used) does not appear already ticked.
+function pruneDecoderSelection(dec){
+  const present = new Set((dec || []).map(decoderKey));
+  Array.from(selectedDecoders).forEach(key => { if (!present.has(key)) selectedDecoders.delete(key); });
+}
+
+// The addresses to route to: each ticked row's unit, resolved to where that unit is
+// now. A row that no longer maps to a current unit contributes nothing.
+function checkedDecoderIps(checkedKeys, dec){
+  const wanted = new Set(checkedKeys);
+  return (dec || []).filter(d => wanted.has(decoderKey(d))).map(d => d.ip);
+}
 
 // Filter state
 let encFilterValue = '';
@@ -769,11 +746,29 @@ function deviceMatchesFilter(dev, filter, type) {
   );
 }
 
+// Apply one /api/state response: sort, filter, remember, paint. Used for the
+// response that just arrived and for a snapshot prepared before this page opened.
+function applyMatrixState(s, options = {}){
+  // sort encoders left->right and decoders top->bottom by IP
+  const rawEncoders = sortByIpAsc(s.encoders||[]);
+  const rawDecoders = sortByIpAsc(s.decoders||[]);
+  // Apply filters
+  const usingConfigureFilter = !!document.getElementById('configureFilterInput');
+  const encoders = rawEncoders.filter(e => deviceMatchesFilter(e, usingConfigureFilter ? configureFilterValue : encFilterValue, 'enc'));
+  const decoders = rawDecoders.filter(d => deviceMatchesFilter(d, usingConfigureFilter ? configureFilterValue : decFilterValue, 'dec'));
+  lastState = {...s, encoders, decoders, _rawEncoders: rawEncoders, _rawDecoders: rawDecoders};
+  resolvePendingRoutes(lastState);
+  document.body.dataset.matrixPrepared = options.prepared ? '1' : '';
+  requestMatrixRender();
+  return rawDecoders;
+}
+
 async function refresh(options = {}){
-  // Show loading overlay
+  // The overlay is only for a page with nothing on it yet; a refresh over a
+  // painted grid updates it in place and does not cover it.
   const overlay = document.getElementById('matrix_loading_overlay');
-  if (overlay) overlay.classList.remove('hidden');
-  
+  if (overlay && !lastState) overlay.classList.remove('hidden');
+
   const seq = ++matrixStateSeq;
   try {
     const s = await getJSON('/api/state');
@@ -782,25 +777,22 @@ async function refresh(options = {}){
       return;
     }
     matrixStateApplied = seq;
-    // sort encoders left->right and decoders top->bottom by IP
-    const rawEncoders = sortByIpAsc(s.encoders||[]);
-    const rawDecoders = sortByIpAsc(s.decoders||[]);
-    // Apply filters
-    const usingConfigureFilter = !!document.getElementById('configureFilterInput');
-    const encoders = rawEncoders.filter(e => deviceMatchesFilter(e, usingConfigureFilter ? configureFilterValue : encFilterValue, 'enc'));
-    const decoders = rawDecoders.filter(d => deviceMatchesFilter(d, usingConfigureFilter ? configureFilterValue : decFilterValue, 'dec'));
-    lastState = {...s, encoders, decoders, _rawEncoders: rawEncoders, _rawDecoders: rawDecoders};
+    if (window.OmniMatrixPrep && s && s.ok) window.OmniMatrixPrep.store(s);
+    const rawDecoders = applyMatrixState(s);
     if (options.loadVideoWallSettings) {
-      await pollDecoderInputs(rawDecoders.map(d => d.ip), {force: true, render: false});
+      // The decoders' own settings are read after the grid is on screen. They
+      // used to be awaited first, so opening this page waited for every decoder
+      // to answer -- and for the timeout of any that did not -- before drawing
+      // a single crosspoint that /api/state had already provided.
+      pollDecoderInputs(rawDecoders.map(d => d.ip), {force: true, render: true}).catch(() => {});
     }
-    resolvePendingRoutes(lastState);
-    requestMatrixRender();
   } finally {
     // Hide loading overlay when done
     if (overlay) overlay.classList.add('hidden');
   }
 }
 
+const _decoderSweeps = new Set();
 async function pollDecoderInputs(decoderIpsOverride = null, options = {}){
   const force = !!options.force;
   const shouldRender = options.render !== false;
@@ -812,6 +804,11 @@ async function pollDecoderInputs(decoderIpsOverride = null, options = {}){
     return;
   }
   const decoderIps = hasDecoderOverride ? decoderIpsOverride : lastState.decoders.map(d => d.ip);
+  // Single flight per decoder set: a slow sweep must not have another stacked on
+  // top of it by an interval or a second caller.
+  const sweepKey = decoderIps.join(',');
+  if (_decoderSweeps.has(sweepKey)) return;
+  _decoderSweeps.add(sweepKey);
   try {
     const result = await fetch('/api/poll_decoders', {
       method: 'POST',
@@ -835,6 +832,8 @@ async function pollDecoderInputs(decoderIpsOverride = null, options = {}){
     }
   } catch(err) {
     console.error('[POLL] Failed to poll decoders:', err);
+  } finally {
+    _decoderSweeps.delete(sweepKey);
   }
 }
 
@@ -914,13 +913,13 @@ function buildSelectOptions(options, currentValue, placeholder) {
   }
   if (list.length === 0) {
     const label = placeholder || 'Loading...';
-    return `<option value="">${label}</option>`;
+    return `<option value="">${escAttr(label)}</option>`;
   }
-  return list.map(opt => `<option value="${opt}" ${opt === currentValue ? 'selected' : ''}>${opt}</option>`).join('');
+  return list.map(opt => `<option value="${escAttr(opt)}" ${opt === currentValue ? 'selected' : ''}>${escAttr(opt)}</option>`).join('');
 }
 
 function escAttr(value) {
-  return String(value ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(value ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, '&#39;');
 }
 
 function optionList(values, currentValue, labeler = value => value) {
@@ -1072,6 +1071,17 @@ function updateCodecMismatchWarning(encoders, decoders) {
   }
 }
 
+// A unit the server has seen not answer. Only an explicit false: no observation is not "offline", so a
+// unit nothing has looked at yet stays usable and the server decides when asked.
+function unitIsOffline(unit) {
+  return !!unit && unit.online === false;
+}
+function routeOfflineMessage(encoder, decoder) {
+  const names = [];
+  if (unitIsOffline(encoder)) names.push((encoder.host || encoder.ip) + ' (source)');
+  if (unitIsOffline(decoder)) names.push((decoder.host || decoder.ip) + ' (display)');
+  return names.join(' and ') + (names.length > 1 ? ' are' : ' is') + ' offline, so this route is not available.';
+}
 function routeCodecCompatible(encoder, decoder) {
   const encMode = String(encoder?.system_mode || '').trim();
   const decMode = String(decoder?.system_mode || '').trim();
@@ -1246,7 +1256,7 @@ function buildInputSelectOptions(options, currentValue, kind, decoder) {
   return list.map(opt => {
     const value = (opt ?? '') === '' ? 'notused' : opt;
     const label = formatDecoderInputOptionLabel(value, kind, decoder);
-    return `<option value="${value}" ${value === current ? 'selected' : ''}>${label}</option>`;
+    return `<option value="${escAttr(value)}" ${value === current ? 'selected' : ''}>${escAttr(label)}</option>`;
   }).join('');
 }
 
@@ -1297,22 +1307,22 @@ function buildEncoderInputSection(encoder) {
     const autoSwitchChecked = encoder.input_auto_switch ? 'checked' : '';
     const activeInputOptions = buildSelectOptions(getActiveInputOptions(encoder), encoder.active_input, 'Loading inputs...');
     const activeInputDisabled = encoder.input_auto_switch || getActiveInputOptions(encoder).length === 0 ? 'disabled' : '';
-    autoSwitchCell = colTd(`<input type="checkbox" class="enc-auto-switch-toggle" data-enc-ip="${encoder.ip}" ${autoSwitchChecked}>`, 'encInput');
-    activeInputCell = colTd(`<select class="enc-active-input-select" data-enc-ip="${encoder.ip}" ${activeInputDisabled}>${activeInputOptions}</select>`, 'encInput');
+    autoSwitchCell = colTd(`<input type="checkbox" class="enc-auto-switch-toggle" data-enc-ip="${escAttr(encoder.ip)}" ${autoSwitchChecked}>`, 'encInput');
+    activeInputCell = colTd(`<select class="enc-active-input-select" data-enc-ip="${escAttr(encoder.ip)}" ${activeInputDisabled}>${activeInputOptions}</select>`, 'encInput');
   }
   return `${cableCell}
         ${autoSwitchCell}
         ${activeInputCell}
-        ${colTd(`<select class="enc-edid-select" data-enc-ip="${encoder.ip}" ${edidDisabled}>${edidOptions}</select>`, 'encInput')}
-        ${colTd(`<select class="enc-hdcp-select" data-enc-ip="${encoder.ip}" ${hdcpDisabled}>${hdcpOptions}</select>`, 'encInput')}`;
+        ${colTd(`<select class="enc-edid-select" data-enc-ip="${escAttr(encoder.ip)}" ${edidDisabled}>${edidOptions}</select>`, 'encInput')}
+        ${colTd(`<select class="enc-hdcp-select" data-enc-ip="${escAttr(encoder.ip)}" ${hdcpDisabled}>${hdcpOptions}</select>`, 'encInput')}`;
 }
 
 function buildEncoderOutputLink(encoder) {
-  return colTd(`<button type="button" class="text-link enc-output-link" data-enc-ip="${encoder.ip}">Session</button>`, 'encOutput');
+  return colTd(`<button type="button" class="text-link enc-output-link" data-enc-ip="${escAttr(encoder.ip)}">Session</button>`, 'encOutput');
 }
 
 function buildEncoderEncodingLink(encoder) {
-  return colTd(`<button type="button" class="text-link enc-encoding-link" data-enc-ip="${encoder.ip}">Encoding</button>`, 'encEncoding');
+  return colTd(`<button type="button" class="text-link enc-encoding-link" data-enc-ip="${escAttr(encoder.ip)}">Encoding</button>`, 'encEncoding');
 }
 
 function buildUnitConfigActions(unit, groupKey) {
@@ -2187,7 +2197,7 @@ function buildDecoderInputSection(decoder) {
   const vwRotationOptions = buildSelectOptions(decoder.video_wall_rotation_options, decoder.video_wall_rotation, 'No rotation');
   const currentEdgeModeNorm = normalizeEdgeMode(decoder.video_wall_edge_mode);
   const vwEdgeModeOptions = (Array.isArray(decoder.video_wall_edge_mode_options) ? decoder.video_wall_edge_mode_options : [])
-    .map(opt => `<option value="${opt}" ${normalizeEdgeMode(opt) === currentEdgeModeNorm ? 'selected' : ''}>${formatEdgeModeLabel(opt)}</option>`)
+    .map(opt => `<option value="${escAttr(opt)}" ${normalizeEdgeMode(opt) === currentEdgeModeNorm ? 'selected' : ''}>${escAttr(formatEdgeModeLabel(opt))}</option>`)
     .join('') || `<option value="">No modes</option>`;
   const vwEdgeHidden = (currentEdgeModeNorm === 'none') ? 'is-hidden' : '';
   const vwIsPixels = isPixelVideoWallUnit(decoder.video_wall_unit);
@@ -2200,90 +2210,90 @@ function buildDecoderInputSection(decoder) {
       <div class="dec-vw-section">
         <div class="dec-vw-enable-row">
           <label>
-            <input type="checkbox" class="dec-vw-enabled-toggle" data-dec-ip="${decoder.ip}" ${vwEnabledChecked}> Enable
+            <input type="checkbox" class="dec-vw-enabled-toggle" data-dec-ip="${escAttr(decoder.ip)}" ${vwEnabledChecked}> Enable
           </label>
-          <button type="button" class="dec-vw-config-btn ${vwEnabled ? '' : 'is-hidden'}" data-dec-ip="${decoder.ip}" title="Configure Video Wall">Configure</button>
+          <button type="button" class="dec-vw-config-btn ${vwEnabled ? '' : 'is-hidden'}" data-dec-ip="${escAttr(decoder.ip)}" title="Configure Video Wall">Configure</button>
         </div>
-        <div class="video-wall-config-modal hidden" data-dec-ip="${decoder.ip}">
+        <div class="video-wall-config-modal hidden" data-dec-ip="${escAttr(decoder.ip)}">
           <div class="video-wall-config-card">
             <div class="video-wall-config-head">
               <div>
                 <h4>Video Wall</h4>
-                <select class="modal-unit-select video-wall-decoder-select" data-dec-ip="${decoder.ip}" aria-label="Select decoder">${buildUnitSelectOptions(getVideoWallDecoderUnits(), decoder.ip)}</select>
+                <select class="modal-unit-select video-wall-decoder-select" data-dec-ip="${escAttr(decoder.ip)}" aria-label="Select decoder">${buildUnitSelectOptions(getVideoWallDecoderUnits(), decoder.ip)}</select>
               </div>
-              <button type="button" class="video-wall-config-close" data-dec-ip="${decoder.ip}" aria-label="Close">x</button>
+              <button type="button" class="video-wall-config-close" data-dec-ip="${escAttr(decoder.ip)}" aria-label="Close">x</button>
             </div>
-            <div class="dec-vw-fields" data-dec-ip="${decoder.ip}">
+            <div class="dec-vw-fields" data-dec-ip="${escAttr(decoder.ip)}">
               <div class="dec-vw-row">
                 <span>Unit</span>
-                <select class="dec-vw-unit-select" data-dec-ip="${decoder.ip}">${vwUnitOptions}</select>
+                <select class="dec-vw-unit-select" data-dec-ip="${escAttr(decoder.ip)}">${vwUnitOptions}</select>
               </div>
               <div class="dec-vw-row dec-vw-pixel-source-row ${vwPixelSourceHidden}">
                 <span>Source resolution</span>
-                <select class="dec-vw-pixel-source-select" data-dec-ip="${decoder.ip}">${videoWallPixelSourceOptions(vwPixelSourceKey)}</select>
+                <select class="dec-vw-pixel-source-select" data-dec-ip="${escAttr(decoder.ip)}">${videoWallPixelSourceOptions(vwPixelSourceKey)}</select>
               </div>
               <div class="dec-vw-row dec-vw-total-size-row ${vwTotalSizeHidden}">
                 <span>Total display width</span>
-                <input type="number" class="dec-vw-total-width-input" data-dec-ip="${decoder.ip}" min="0.01" step="0.01" value="${decoder.video_wall_total_width ?? ''}">
+                <input type="number" class="dec-vw-total-width-input" data-dec-ip="${escAttr(decoder.ip)}" min="0.01" step="0.01" value="${escAttr(decoder.video_wall_total_width ?? '')}">
               </div>
               <div class="dec-vw-row dec-vw-total-size-row ${vwTotalSizeHidden}">
                 <span>Total display height</span>
-                <input type="number" class="dec-vw-total-height-input" data-dec-ip="${decoder.ip}" min="0.01" step="0.01" value="${decoder.video_wall_total_height ?? ''}">
+                <input type="number" class="dec-vw-total-height-input" data-dec-ip="${escAttr(decoder.ip)}" min="0.01" step="0.01" value="${escAttr(decoder.video_wall_total_height ?? '')}">
               </div>
               <div class="dec-vw-row">
                 <span>Width</span>
-                <input type="number" class="dec-vw-width-input" data-dec-ip="${decoder.ip}" min="0.01" step="0.01" value="${decoder.video_wall_width ?? ''}" ${vwPixelReadonly}>
+                <input type="number" class="dec-vw-width-input" data-dec-ip="${escAttr(decoder.ip)}" min="0.01" step="0.01" value="${escAttr(decoder.video_wall_width ?? '')}" ${vwPixelReadonly}>
               </div>
               <div class="dec-vw-row">
                 <span>Height</span>
-                <input type="number" class="dec-vw-height-input" data-dec-ip="${decoder.ip}" min="0.01" step="0.01" value="${decoder.video_wall_height ?? ''}" ${vwPixelReadonly}>
+                <input type="number" class="dec-vw-height-input" data-dec-ip="${escAttr(decoder.ip)}" min="0.01" step="0.01" value="${escAttr(decoder.video_wall_height ?? '')}" ${vwPixelReadonly}>
               </div>
               <div class="dec-vw-row">
                 <span>Horizontal</span>
-                <input type="number" class="dec-vw-horizontal-input" data-dec-ip="${decoder.ip}" min="0" step="0.01" value="${decoder.video_wall_horizontal ?? ''}">
+                <input type="number" class="dec-vw-horizontal-input" data-dec-ip="${escAttr(decoder.ip)}" min="0" step="0.01" value="${escAttr(decoder.video_wall_horizontal ?? '')}">
               </div>
               <div class="dec-vw-row">
                 <span>Vertical</span>
-                <input type="number" class="dec-vw-vertical-input" data-dec-ip="${decoder.ip}" min="0" step="0.01" value="${decoder.video_wall_vertical ?? ''}">
+                <input type="number" class="dec-vw-vertical-input" data-dec-ip="${escAttr(decoder.ip)}" min="0" step="0.01" value="${escAttr(decoder.video_wall_vertical ?? '')}">
               </div>
               <div class="dec-vw-row">
                 <span>Rotation</span>
-                <select class="dec-vw-rotation-select" data-dec-ip="${decoder.ip}">${vwRotationOptions}</select>
+                <select class="dec-vw-rotation-select" data-dec-ip="${escAttr(decoder.ip)}">${vwRotationOptions}</select>
               </div>
               <div class="dec-vw-row">
                 <span>Edge Comp</span>
-                <select class="dec-vw-edge-mode-select" data-dec-ip="${decoder.ip}">${vwEdgeModeOptions}</select>
+                <select class="dec-vw-edge-mode-select" data-dec-ip="${escAttr(decoder.ip)}">${vwEdgeModeOptions}</select>
               </div>
-              <div class="dec-vw-edge-fields ${vwEdgeHidden}" data-dec-ip="${decoder.ip}">
-                <div class="dec-vw-row"><span>Top</span><input type="number" class="dec-vw-edge-top-input" data-dec-ip="${decoder.ip}" min="0" step="0.01" value="${decoder.video_wall_edge_top ?? 0}"></div>
-                <div class="dec-vw-row"><span>Bottom</span><input type="number" class="dec-vw-edge-bottom-input" data-dec-ip="${decoder.ip}" min="0" step="0.01" value="${decoder.video_wall_edge_bottom ?? 0}"></div>
-                <div class="dec-vw-row"><span>Left</span><input type="number" class="dec-vw-edge-left-input" data-dec-ip="${decoder.ip}" min="0" step="0.01" value="${decoder.video_wall_edge_left ?? 0}"></div>
-                <div class="dec-vw-row"><span>Right</span><input type="number" class="dec-vw-edge-right-input" data-dec-ip="${decoder.ip}" min="0" step="0.01" value="${decoder.video_wall_edge_right ?? 0}"></div>
+              <div class="dec-vw-edge-fields ${vwEdgeHidden}" data-dec-ip="${escAttr(decoder.ip)}">
+                <div class="dec-vw-row"><span>Top</span><input type="number" class="dec-vw-edge-top-input" data-dec-ip="${escAttr(decoder.ip)}" min="0" step="0.01" value="${escAttr(decoder.video_wall_edge_top ?? 0)}"></div>
+                <div class="dec-vw-row"><span>Bottom</span><input type="number" class="dec-vw-edge-bottom-input" data-dec-ip="${escAttr(decoder.ip)}" min="0" step="0.01" value="${escAttr(decoder.video_wall_edge_bottom ?? 0)}"></div>
+                <div class="dec-vw-row"><span>Left</span><input type="number" class="dec-vw-edge-left-input" data-dec-ip="${escAttr(decoder.ip)}" min="0" step="0.01" value="${escAttr(decoder.video_wall_edge_left ?? 0)}"></div>
+                <div class="dec-vw-row"><span>Right</span><input type="number" class="dec-vw-edge-right-input" data-dec-ip="${escAttr(decoder.ip)}" min="0" step="0.01" value="${escAttr(decoder.video_wall_edge_right ?? 0)}"></div>
               </div>
               <div class="dec-vw-row">
-                <button type="button" class="dec-vw-picker-btn" data-dec-ip="${decoder.ip}">Video Wall Layout</button>
+                <button type="button" class="dec-vw-picker-btn" data-dec-ip="${escAttr(decoder.ip)}">Video Wall Layout</button>
               </div>
             </div>
             <div class="video-wall-config-actions">
-              <button type="button" class="dec-vw-save-btn" data-dec-ip="${decoder.ip}">Save</button>
-              <button type="button" class="video-wall-config-close" data-dec-ip="${decoder.ip}">Close</button>
+              <button type="button" class="dec-vw-save-btn" data-dec-ip="${escAttr(decoder.ip)}">Save</button>
+              <button type="button" class="video-wall-config-close" data-dec-ip="${escAttr(decoder.ip)}">Close</button>
             </div>
           </div>
         </div>
       </div>
     `, 'decVideoWall');
 
-  return `${sapCapable ? colTd(`<input type="checkbox" class="dec-sap-input-toggle" data-dec-ip="${decoder.ip}" ${checked}>`, 'decOutput') : colTd('N/A', 'decOutput')}
-        ${sapCapable ? colTd(`<select class="dec-input-session-select" data-dec-ip="${decoder.ip}" ${sessionDisabled}>${sessionOptions}</select>`, 'decOutput') : colTd('N/A', 'decOutput')}
-        ${colTd(`<select class="dec-hdcp-select" data-dec-ip="${decoder.ip}">${hdcpOptions}</select>`, 'decOutput')}
-        ${colTd(`<select class="dec-video-input-select" data-dec-ip="${decoder.ip}" ${avInputDisabled}>${videoInputOptions}</select>`, 'decOutput')}
-        ${colTd(`<select class="dec-audio-input-select" data-dec-ip="${decoder.ip}" ${avInputDisabled}>${audioInputOptions}</select>`, 'decOutput')}
-        ${colTd(`<select class="dec-stretch-crop-select" data-dec-ip="${decoder.ip}">${stretchCropOptions}</select>`, 'decResolution')}
-        ${colTd(`<select class="dec-resolution-select" data-dec-ip="${decoder.ip}">${resolutionOptions}</select>`, 'decResolution')}
-        ${colTd(`<select class="dec-framerate-select" data-dec-ip="${decoder.ip}">${framerateOptions}</select>`, 'decResolution')}
-        ${colTd(`<input type="checkbox" class="dec-fsm-enabled-toggle" data-dec-ip="${decoder.ip}" ${fsmChecked}>`, 'decFastSwitching')}
-        ${colTd(`<input type="number" class="dec-fsm-timeout-input" data-dec-ip="${decoder.ip}" min="0" value="${fsmTimeout}">`, 'decFastSwitching')}
-        ${hasFsColorspace ? colTd(`<select class="dec-fsm-colorspace-select" data-dec-ip="${decoder.ip}">${fsmColorOptions}</select>`, 'decFastSwitching') : colTd('N/A', 'decFastSwitching')}
+  return `${sapCapable ? colTd(`<input type="checkbox" class="dec-sap-input-toggle" data-dec-ip="${escAttr(decoder.ip)}" ${checked}>`, 'decOutput') : colTd('N/A', 'decOutput')}
+        ${sapCapable ? colTd(`<select class="dec-input-session-select" data-dec-ip="${escAttr(decoder.ip)}" ${sessionDisabled}>${sessionOptions}</select>`, 'decOutput') : colTd('N/A', 'decOutput')}
+        ${colTd(`<select class="dec-hdcp-select" data-dec-ip="${escAttr(decoder.ip)}">${hdcpOptions}</select>`, 'decOutput')}
+        ${colTd(`<select class="dec-video-input-select" data-dec-ip="${escAttr(decoder.ip)}" ${avInputDisabled}>${videoInputOptions}</select>`, 'decOutput')}
+        ${colTd(`<select class="dec-audio-input-select" data-dec-ip="${escAttr(decoder.ip)}" ${avInputDisabled}>${audioInputOptions}</select>`, 'decOutput')}
+        ${colTd(`<select class="dec-stretch-crop-select" data-dec-ip="${escAttr(decoder.ip)}">${stretchCropOptions}</select>`, 'decResolution')}
+        ${colTd(`<select class="dec-resolution-select" data-dec-ip="${escAttr(decoder.ip)}">${resolutionOptions}</select>`, 'decResolution')}
+        ${colTd(`<select class="dec-framerate-select" data-dec-ip="${escAttr(decoder.ip)}">${framerateOptions}</select>`, 'decResolution')}
+        ${colTd(`<input type="checkbox" class="dec-fsm-enabled-toggle" data-dec-ip="${escAttr(decoder.ip)}" ${fsmChecked}>`, 'decFastSwitching')}
+        ${colTd(`<input type="number" class="dec-fsm-timeout-input" data-dec-ip="${escAttr(decoder.ip)}" min="0" value="${escAttr(fsmTimeout)}">`, 'decFastSwitching')}
+        ${hasFsColorspace ? colTd(`<select class="dec-fsm-colorspace-select" data-dec-ip="${escAttr(decoder.ip)}">${fsmColorOptions}</select>`, 'decFastSwitching') : colTd('N/A', 'decFastSwitching')}
         ${videoWallSection}`;
 }
 
@@ -2363,66 +2373,109 @@ function applyLivePendingControlStates() {
   });
 }
 
-function render(s){
-  const enc = s.encoders||[], dec = s.decoders||[];
-  updateCodecMismatchWarning(enc, dec);
-  const t = document.querySelector('#matrix');
-  if (t) {
-  // Master checkbox for select all
-  const allChecked = dec.length > 0 && dec.every(d => selectedDecoders.has(d.ip));
-  const someChecked = dec.some(d => selectedDecoders.has(d.ip));
-  const head = `<tr><th class="row-head"><input type="checkbox" id="group-master-checkbox" ${allChecked ? 'checked' : ''} ${!allChecked && someChecked ? 'indeterminate' : ''}></th><th class="row-head">Decoders \\ Encoders</th>` + enc.map(e=>
-    `<th class="enc-head"><div class="col-header"><span class="enc-ip"><a href="http://${e.ip}" target="_blank" style="color:inherit;text-decoration:none;cursor:pointer;" title="Open ${e.ip} in new tab">${e.ip}</a></span><small class="enc-host">${escAttr(e.host || '')}</small></div></th>`
-  ).join('') + '</tr>';
-  const rows = dec.map(d=>{
-    const checkedGroup = selectedDecoders.has(d.ip) ? 'checked' : '';
-    const cells = enc.map(e=>{
-      const codecCompatible = routeCodecCompatible(e, d);
-      const pending = pendingRoutes.get(d.ip);
-      const videoMatch = (pending && (pending.mode === 'video' || pending.mode === 'av')) ?
-        (e.ip === pending.encoderIp) :
-        videoMatchesEncoder(d, e);
-      const audioMatch = (pending && (pending.mode === 'audio' || pending.mode === 'av')) ?
-        (e.ip === pending.encoderIp) :
-        audioMatchesEncoder(d, e);
-      const checked = videoMatch ? 'checked' : '';
-      const audioCls = audioMatch ? ' audio-on' : '';
-      const disabledCls = codecCompatible ? '' : ' codec-blocked';
-      const disabledAttr = codecCompatible ? '' : ' disabled';
-      const title = codecCompatible ? '' : ` title="${escAttr(routeCodecMismatchMessage(e, d))}"`;
-      return `<td class="cell${disabledCls}" data-dec="${d.ip}" data-enc="${e.ip}"${title}>
-                <span class="radio-wrap">
-                  <input type="radio" name="video-${d.ip}" ${checked}${disabledAttr} aria-label="Route video ${d.ip} -> ${e.ip}" data-preview-url="http://${e.ip}/thumbnail/thumbnail1.jpg"/>
-                  <span class="dot${audioCls}" aria-hidden="true"></span>
-                </span>
-              </td>`;
-    }).join('');
-    // A decoder compositing a Multiview says so on its own row, because no
-    // crosspoint on that row describes the picture.
-    const mvName = decoderMultiview(d);
-    const mvTitle = mvName
-      ? `Multiview is currently active on this decoder.\n\n`
-        + `Showing: ${mvName}\n\n`
-        + `Routing a normal A/V source to this decoder will exit Multiview and `
-        + `display the requested route. The saved Multiview is kept and can be `
-        + `shown again later.`
-      : '';
-    const mvBadge = mvName
-      ? `<br/><span class="mv-badge" title="${escAttr(mvTitle)}">MULTIVIEW</span>`
-      : '';
-    return `<tr class="${mvName ? 'dec-multiview' : ''}"><td style="width:28px;min-width:28px;max-width:28px;padding:0 1px;"><input type="checkbox" class="group-checkbox" data-dec-ip="${d.ip}" style="width:14px;height:14px;vertical-align:middle;" ${checkedGroup}></td><th class="row-head"${mvName ? ` title="${escAttr(mvTitle)}"` : ''}><a href="http://${d.ip}" target="_blank" style="color:inherit;text-decoration:none;cursor:pointer;" title="Open ${d.ip} in new tab">${d.ip}</a><br/><small>${escAttr(d.host || '')}</small>${mvBadge}</th>${cells}</tr>`;
-  }).join('');
-  t.innerHTML = head + rows;
+// ===== Matrix structure versus state ===============================================
+// The grid's structure is which encoders are columns, which decoders are rows and
+// which rows carry a MULTIVIEW badge. Everything else a state response changes
+// (the ticked crosspoint, the audio dot, a codec block) is state. A state-only
+// change is patched into the existing cells; the grid is rebuilt only when the
+// membership or identity of a row or column actually changes.
+let _matrixStructureKey = null;
 
-  t.querySelectorAll('.radio-wrap').forEach(wrap => {
-    const radio = wrap.querySelector('input[type="radio"]');
-    if (!radio) return;
-    wrap.addEventListener('mouseenter', (evt) => showMatrixHoverPreview(radio, evt));
-    wrap.addEventListener('mouseleave', () => hideMatrixHoverPreview());
+function matrixStructureKey(enc, dec){
+  // Whether a unit answers is part of the structure: it changes the row or column label and which
+  // cells are drawn disabled, and it flips rarely, so a rebuild on the flip is the right cost.
+  return enc.map(e => e.ip + '\u0001' + (e.host || '') + '\u0001' + (unitIsOffline(e) ? 'off' : '')).join('\u0002') + '\u0003'
+    + dec.map(d => d.ip + '\u0001' + decoderKey(d) + '\u0001' + (d.host || '') + '\u0001' + (decoderMultiview(d) || '') + '\u0001' + (unitIsOffline(d) ? 'off' : '')).join('\u0002');
+}
+
+function matrixCellFlags(d, e){
+  const codecCompatible = routeCodecCompatible(e, d);
+  const pending = pendingRoutes.get(d.ip);
+  const videoMatch = (pending && (pending.mode === 'video' || pending.mode === 'av')) ?
+    (e.ip === pending.encoderIp) : videoMatchesEncoder(d, e);
+  const audioMatch = (pending && (pending.mode === 'audio' || pending.mode === 'av')) ?
+    (e.ip === pending.encoderIp) : audioMatchesEncoder(d, e);
+  return {codecCompatible, videoMatch, audioMatch, offline: unitIsOffline(e) || unitIsOffline(d)};
+}
+
+function patchMatrixState(t, enc, dec){
+  const cells = t.querySelectorAll('td.cell');
+  let i = 0;
+  for (const d of dec) {
+    for (const e of enc) {
+      const td = cells[i++];
+      if (!td) return;
+      const f = matrixCellFlags(d, e);
+      const radio = td.querySelector('input[type="radio"]');
+      const dot = td.querySelector('.dot');
+      if (radio && radio.checked !== f.videoMatch) radio.checked = f.videoMatch;
+      if (dot && dot.classList.contains('audio-on') !== f.audioMatch) dot.classList.toggle('audio-on', f.audioMatch);
+      if (td.classList.contains('codec-blocked') === f.codecCompatible) {
+        td.classList.toggle('codec-blocked', !f.codecCompatible);
+        if (radio) radio.disabled = !f.codecCompatible || f.offline;
+        if (f.codecCompatible && !f.offline) td.removeAttribute('title');
+        else if (!f.codecCompatible) td.setAttribute('title', routeCodecMismatchMessage(e, d));
+      }
+      if (td.classList.contains('offline-blocked') !== (f.offline && f.codecCompatible)) {
+        const blocked = f.offline && f.codecCompatible;
+        td.classList.toggle('offline-blocked', blocked);
+        if (radio) radio.disabled = !f.codecCompatible || f.offline;
+        if (blocked) td.setAttribute('title', routeOfflineMessage(e, d));
+        else if (f.codecCompatible) td.removeAttribute('title');
+      }
+    }
+  }
+}
+
+function syncMasterCheckbox(t){
+  const master = document.getElementById('group-master-checkbox');
+  if (!master) return;
+  const all = Array.from(t.querySelectorAll('.group-checkbox'));
+  master.checked = all.length > 0 && all.every(c => c.checked);
+  master.indeterminate = !master.checked && all.some(c => c.checked);
+}
+
+// One set of listeners on the table, bound once. The grid used to attach two
+// hover listeners and a click listener to every cell on every render -- 30,000 at
+// 100 x 100 -- and a rebuild left the old ones for the garbage collector.
+function bindMatrixDelegation(t){
+  if (t.dataset.delegated) return;
+  t.dataset.delegated = '1';
+  const wrapOf = (node) => (node && node.closest) ? node.closest('.radio-wrap') : null;
+  t.addEventListener('mouseover', (evt) => {
+    const w = wrapOf(evt.target);
+    if (!w || (evt.relatedTarget && w.contains(evt.relatedTarget))) return;
+    const radio = w.querySelector('input[type="radio"]');
+    if (radio) showMatrixHoverPreview(radio, evt);
   });
+  t.addEventListener('mouseout', (evt) => {
+    const w = wrapOf(evt.target);
+    if (!w || (evt.relatedTarget && w.contains(evt.relatedTarget))) return;
+    hideMatrixHoverPreview();
+  });
+  t.addEventListener('click', (evt) => {
+    const cell = evt.target && evt.target.closest ? evt.target.closest('td.cell') : null;
+    if (cell) onMatrixCellClick(cell, evt, t);
+  });
+  t.addEventListener('change', (evt) => {
+    const el = evt.target;
+    if (!el || !el.matches) return;
+    if (el.matches('.group-checkbox')) {
+      const key = el.getAttribute('data-dec-key');
+      if (el.checked) selectedDecoders.add(key); else selectedDecoders.delete(key);
+      syncMasterCheckbox(t);
+    } else if (el.id === 'group-master-checkbox') {
+      t.querySelectorAll('.group-checkbox').forEach(cb => {
+        cb.checked = el.checked;
+        const key = cb.getAttribute('data-dec-key');
+        if (el.checked) selectedDecoders.add(key); else selectedDecoders.delete(key);
+      });
+      el.indeterminate = false;
+    }
+  });
+}
 
-  t.querySelectorAll('td.cell').forEach(cell=>{
-    cell.addEventListener('click', async (e)=>{
+async function onMatrixCellClick(cell, e, t){
       const dec = cell.getAttribute('data-dec');
       const enc = cell.getAttribute('data-enc');
       const mode = routeMode;
@@ -2433,37 +2486,34 @@ function render(s){
         e.stopPropagation();
         return;
       }
-
-      // A decoder that is compositing a Multiview has to leave it before it can
-      // show a routed source. Ask once per session, before anything is written.
-      const decodersNow = lastState?._rawDecoders || lastState?.decoders || [];
-      const mvTargets = [decoderUnit].filter(u => u && decoderMultiview(u));
-      if (mvTargets.length) {
-        const proceed = await confirmMultiviewExit(
-          decoderUnit, decoderMultiview(decoderUnit));
-        if (!proceed) {
-          // Cancel writes nothing at all.
-          e.stopPropagation();
-          return;
-        }
+      if (unitIsOffline(encoderUnit) || unitIsOffline(decoderUnit)) {
+        toast(routeOfflineMessage(encoderUnit, decoderUnit), false);
+        e.stopPropagation();
+        return;
       }
 
+      // A normal route means single view. If the decoder is compositing, the server
+      // leaves the Multiview inside the same verified transaction, so nothing here
+      // asks about it.
+
       // If any group checkboxes are checked, do group routing
-      const checkedDecoders = Array.from(document.querySelectorAll('.group-checkbox:checked')).map(cb => cb.getAttribute('data-dec-ip'));
+      const checkedDecoders = checkedDecoderIps(
+        Array.from(document.querySelectorAll('.group-checkbox:checked')).map(cb => cb.getAttribute('data-dec-key')),
+        lastState?._rawDecoders || lastState?.decoders || []);
       const groupRoute = checkedDecoders.length > 1 && checkedDecoders.includes(dec);
       const requestedTargets = groupRoute ? checkedDecoders : [dec];
       const targets = requestedTargets.filter(targetDec => {
         const targetUnit = (lastState?._rawDecoders || lastState?.decoders || []).find(d => d.ip === targetDec);
-        return routeCodecCompatible(encoderUnit, targetUnit);
+        return routeCodecCompatible(encoderUnit, targetUnit) && !unitIsOffline(targetUnit);
       });
       const blockedTargets = requestedTargets.filter(targetDec => !targets.includes(targetDec));
       if (!targets.length) {
-        toast('No route applied: selected decoder codec does not match the encoder codec', false);
+        toast('No route applied: the selected decoders are offline or their codec does not match the encoder codec', false);
         e.stopPropagation();
         return;
       }
       if (blockedTargets.length) {
-        toast(`Skipped ${blockedTargets.length} decoder(s) with codec mismatch`, false);
+        toast(`Skipped ${blockedTargets.length} decoder(s) that are offline or have a codec mismatch`, false);
       }
 
       targets.forEach(targetDec => recordPendingRoute(targetDec, enc, mode));
@@ -2517,39 +2567,71 @@ function render(s){
         toast('Route error: '+err.message, false);
       }
       e.stopPropagation();
-    });
-  });
+}
 
-  // Handle group checkbox changes
-  t.querySelectorAll('.group-checkbox').forEach(cb => {
-    cb.addEventListener('change', function() {
-      const ip = cb.getAttribute('data-dec-ip');
-      if (cb.checked) selectedDecoders.add(ip);
-      else selectedDecoders.delete(ip);
-      // Update master checkbox state
-      const master = document.getElementById('group-master-checkbox');
-      const all = Array.from(t.querySelectorAll('.group-checkbox'));
-      if (master) {
-        master.checked = all.every(c => c.checked);
-        master.indeterminate = !master.checked && all.some(c => c.checked);
-      }
-    });
-  });
-  // Master checkbox logic
-  const masterCheckbox = document.getElementById('group-master-checkbox');
-  if (masterCheckbox) {
-    const all = Array.from(t.querySelectorAll('.group-checkbox'));
-    masterCheckbox.checked = all.length > 0 && all.every(c => c.checked);
-    masterCheckbox.indeterminate = !masterCheckbox.checked && all.some(c => c.checked);
-    masterCheckbox.addEventListener('change', function() {
-      all.forEach(cb => {
-        cb.checked = masterCheckbox.checked;
-        const ip = cb.getAttribute('data-dec-ip');
-        if (masterCheckbox.checked) selectedDecoders.add(ip);
-        else selectedDecoders.delete(ip);
-      });
-    });
+function render(s){
+  const enc = s.encoders||[], dec = s.decoders||[];
+  updateCodecMismatchWarning(enc, dec);
+  const t = document.querySelector('#matrix');
+  if (t) {
+  const structureKey = matrixStructureKey(enc, dec);
+  if (_matrixStructureKey === structureKey && t.rows.length) {
+    // Same encoders, decoders and Multiview badges: only live state moved, so
+    // the grid is updated where it stands instead of being rebuilt.
+    patchMatrixState(t, enc, dec);
+  } else {
+  // Master checkbox for select all
+  pruneDecoderSelection(dec);
+  const allChecked = dec.length > 0 && dec.every(d => selectedDecoders.has(decoderKey(d)));
+  const someChecked = dec.some(d => selectedDecoders.has(decoderKey(d)));
+  const head = `<tr><th class="row-head select-all-head"><input type="checkbox" id="group-master-checkbox" ${allChecked ? 'checked' : ''} ${!allChecked && someChecked ? 'indeterminate' : ''}></th><th class="row-head">Decoders \\ Encoders</th>` + enc.map(e=>
+    `<th class="enc-head"><div class="col-header"><span class="enc-ip"><a href="http://${e.ip}" target="_blank" style="color:inherit;text-decoration:none;cursor:pointer;" title="Open ${e.ip} in new tab">${e.ip}</a></span><small class="enc-host">${escAttr(e.host || '')}</small>${unitIsOffline(e) ? '<span class="offline-badge">OFFLINE</span>' : ''}</div></th>`
+  ).join('') + '</tr>';
+  const rows = dec.map(d=>{
+    const checkedGroup = selectedDecoders.has(decoderKey(d)) ? 'checked' : '';
+    const cells = enc.map(e=>{
+      const codecCompatible = routeCodecCompatible(e, d);
+      const pending = pendingRoutes.get(d.ip);
+      const videoMatch = (pending && (pending.mode === 'video' || pending.mode === 'av')) ?
+        (e.ip === pending.encoderIp) :
+        videoMatchesEncoder(d, e);
+      const audioMatch = (pending && (pending.mode === 'audio' || pending.mode === 'av')) ?
+        (e.ip === pending.encoderIp) :
+        audioMatchesEncoder(d, e);
+      const checked = videoMatch ? 'checked' : '';
+      const audioCls = audioMatch ? ' audio-on' : '';
+      const unitOffline = unitIsOffline(e) || unitIsOffline(d);
+      const disabledCls = !codecCompatible ? ' codec-blocked' : (unitOffline ? ' offline-blocked' : '');
+      const disabledAttr = (!codecCompatible || unitOffline) ? ' disabled' : '';
+      const title = !codecCompatible ? ` title="${escAttr(routeCodecMismatchMessage(e, d))}"`
+        : (unitOffline ? ` title="${escAttr(routeOfflineMessage(e, d))}"` : '');
+      return `<td class="cell${disabledCls}" data-dec="${escAttr(d.ip)}" data-enc="${escAttr(e.ip)}"${title}>
+                <span class="radio-wrap">
+                  <input type="radio" name="video-${escAttr(d.ip)}" ${checked}${disabledAttr} aria-label="Route video ${escAttr(d.ip)} -> ${escAttr(e.ip)}" data-preview-url="http://${escAttr(e.ip)}/thumbnail/thumbnail1.jpg"/>
+                  <span class="dot${audioCls}" aria-hidden="true"></span>
+                </span>
+              </td>`;
+    }).join('');
+    // A decoder compositing a Multiview says so on its own row, because no
+    // crosspoint on that row describes the picture.
+    const mvName = decoderMultiview(d);
+    const mvTitle = mvName
+      ? `Multiview is currently active on this decoder.\n\n`
+        + `Showing: ${mvName}\n\n`
+        + `Routing a normal A/V source to this decoder will exit Multiview and `
+        + `display the requested route. The saved Multiview is kept and can be `
+        + `shown again later.`
+      : '';
+    const mvBadge = mvName
+      ? `<br/><span class="mv-badge" title="${escAttr(mvTitle)}">MULTIVIEW</span>`
+      : '';
+    return `<tr class="${mvName ? 'dec-multiview' : ''}"><td style="width:28px;min-width:28px;max-width:28px;padding:0 1px;"><input type="checkbox" class="group-checkbox" data-dec-key="${escAttr(decoderKey(d))}" data-dec-ip="${escAttr(d.ip)}" style="width:14px;height:14px;vertical-align:middle;" ${checkedGroup}></td><th class="row-head"${mvName ? ` title="${escAttr(mvTitle)}"` : ''}><a href="http://${d.ip}" target="_blank" style="color:inherit;text-decoration:none;cursor:pointer;" title="Open ${d.ip} in new tab">${d.ip}</a><br/><small>${escAttr(d.host || '')}</small>${unitIsOffline(d) ? '<br/><span class="offline-badge">OFFLINE</span>' : ''}${mvBadge}</th>${cells}</tr>`;
+  }).join('');
+  t.innerHTML = head + rows;
+  _matrixStructureKey = structureKey;
   }
+  bindMatrixDelegation(t);
+  syncMasterCheckbox(t);
   }
 
   const encTbl = document.querySelector('#encTbl');
@@ -3179,6 +3261,14 @@ function syncPollingMode() {
     startEncoderSettingsPolling();
   }
 }
+
+// Opening the page renders the state that was prepared when the inventory last
+// changed, if there is one and it is fresh; the request below then confirms or
+// corrects it. Nothing here is a substitute for reading the devices.
+(function paintPrepared(){
+  const prepared = window.OmniMatrixPrep && window.OmniMatrixPrep.read(60000);
+  if (prepared) applyMatrixState(prepared, {prepared: true});
+})();
 
 refresh({loadVideoWallSettings: true}).then(() => {
   // Load video wall settings once on page load; recurring refresh still follows the user preference.

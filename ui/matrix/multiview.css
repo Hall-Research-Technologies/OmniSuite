@@ -85,7 +85,7 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
  * list -- it may already be feeding an input -- but it says so. */
 .mv-source.unreachable{border-color:var(--state-warning);}
 .mv-source-warning{
-  font-size:11px; color:var(--state-warning); margin-top:3px; font-weight:500;
+  font-size:11px; color:var(--state-warning-text); margin-top:3px; font-weight:500;
 }
 .mv-source-name{font-weight:600; font-size:13px; line-height:1.25;}
 .mv-source-meta{font-size:11px; color:var(--muted); margin-top:2px; line-height:1.4;}
@@ -177,10 +177,10 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
  * what the operator was trying to keep. */
 .mv-actions .btn.danger{margin-left:18px;}
 .mv-reason{font-size:12px; color:var(--muted); line-height:1.4;}
-.mv-reason.blocking{color:var(--state-warning);}
+.mv-reason.blocking{color:var(--state-warning-text);}
 .mv-status{font-size:12px; color:var(--muted);}
-.mv-status.ok{color:var(--state-success);}
-.mv-status.bad{color:var(--state-error);}
+.mv-status.ok{color:var(--state-success-text);}
+.mv-status.bad{color:var(--state-error-text);}
 
 .mv-existing{display:flex; flex-direction:column; gap:8px;}
 .mv-existing-item{
@@ -192,8 +192,8 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
   display:inline-block; font-size:10px; padding:1px 6px; border-radius:99px;
   border:1px solid var(--border); color:var(--muted); margin-left:6px;
 }
-.mv-badge.on-output{border-color:var(--state-success); color:var(--state-success);}
-.mv-badge.custom{border-color:var(--state-warning); color:var(--state-warning);}
+.mv-badge.on-output{border-color:var(--state-success); color:var(--state-success-text);}
+.mv-badge.custom{border-color:var(--state-warning); color:var(--state-warning-text);}
 
 .mv-detail{margin-top:10px;}
 .mv-detail summary{cursor:pointer; font-size:12px; color:var(--muted);}
@@ -208,7 +208,7 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
 .mv-actions[hidden]{display:none;}
 .mv-actions-spacer{flex:1 1 auto;}
 .mv-shown{
-  font-size:12px; color:var(--state-success); display:inline-flex; align-items:center;
+  font-size:12px; color:var(--state-success-text); display:inline-flex; align-items:center;
   gap:6px;
 }
 .mv-shown[hidden]{display:none;}
@@ -307,7 +307,7 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
   margin-top:8px; font-size:11px; color:var(--muted);
 }
 .mv-preview-warning{
-  margin-top:6px; font-size:11px; font-weight:500; color:var(--state-warning);
+  margin-top:6px; font-size:11px; font-weight:500; color:var(--state-warning-text);
 }
 
 /* ---- the picture in the window ----
@@ -398,7 +398,7 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
 }
 .mv-editbar-fields{display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;}
 .mv-edit-state{font-weight:500; font-size:12px; color:var(--muted);}
-.mv-edit-state.unsaved{color:var(--state-warning);}
+.mv-edit-state.unsaved{color:var(--state-warning-text);}
 .mv-edit-state.saved{color:var(--muted);}
 .mv-action-row{display:flex; gap:8px; flex-wrap:wrap;}
 
@@ -595,7 +595,7 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
 .mv-output.is-multiview { border-color: var(--action-primary); }
 .mv-output.is-unknown { border-style: dashed; }
 .mv-output.is-error { border-color: var(--state-error); }
-.mv-output.is-live .mv-screen-label { color: var(--state-success); }
+.mv-output.is-live .mv-screen-label { color: var(--state-success-text); }
 .mv-output.is-multiview .mv-screen-label { color: var(--action-primary); }
 
 /* Armed only while a source that can actually be routed is being dragged, so
@@ -622,7 +622,7 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
   color: var(--text-muted);
 }
 .mv-output-badge.live {
-  color: var(--state-success);
+  color: var(--state-success-text);
   border-color: var(--state-success);
 }
 .mv-output-badge.multiview {
@@ -676,7 +676,7 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
   vertical-align: middle;
 }
 .mv-canvas-state.live {
-  color: var(--state-success);
+  color: var(--state-success-text);
   border-color: var(--state-success);
 }
 

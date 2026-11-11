@@ -66,7 +66,7 @@ const APPEARANCE_COLORS = [
 // The softer options are named for their colours. A palette is not a
 // demographic, and nothing here says who should pick one.
 const APPEARANCE_PRESETS = [
-  {id: 'default', name: 'Default', hint: 'OmniSuite blue',
+  {id: 'default', name: 'Default', hint: 'Hallway blue',
    swatch: ['#1e90ff', '#4ade80', '#eab308', '#e5534b'],
    colors: {accent: '#1e90ff', selection: '#1e90ff', success: '#4ade80', warning: '#eab308',
             error: '#e5534b', info: '#38bdf8', daisy: '#2dd4bf', minority: '#818cf8',

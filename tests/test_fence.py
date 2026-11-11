@@ -24,6 +24,7 @@ _fence.install()
 
 import os
 import pathlib
+import re
 import socket
 import subprocess
 import sys
@@ -113,6 +114,53 @@ class FenceTests(unittest.TestCase):
                 sock.connect(("192.0.2.10", 80))
         finally:
             sock.close()
+
+    def test_a_name_lookup_is_refused_before_any_packet_is_sent(self):
+        """A lookup is itself traffic to a resolver on the Internet."""
+        with self.assertRaises(_fence.FenceError):
+            socket.getaddrinfo("firmware.example.com", 443)
+        self.assertEqual(list(_fence.attempts), [("dns", "firmware.example.com")])
+        self.assertFalse(_fence.reachable("firmware.example.com") is False,
+                         "a refused lookup must count as a routable attempt")
+
+    def test_literals_and_loopback_resolve_without_a_lookup(self):
+        for host in ("127.0.0.1", "localhost", "192.0.2.7", "::1"):
+            with self.subTest(host=host):
+                socket.getaddrinfo(host, 80)
+        self.assertEqual(list(_fence.attempts), [])
+
+    def test_no_test_names_a_public_address_outside_the_refusal_suites(self):
+        """A public literal belongs only where a guard is proven to refuse it.
+
+        Those suites assert the refusal happens before any connection, and the
+        fence above would turn a regression into a failure. Anywhere else a
+        public address is a connection waiting to be written.
+        """
+        import ipaddress
+        allowed = {"test_remote_destinations.py", "test_fence.py"}
+        found = []
+        for path in sorted(pathlib.Path(__file__).parent.glob("test_*.py")):
+            if path.name in allowed:
+                continue
+            for number, line in enumerate(
+                    path.read_text(encoding="utf-8").splitlines(), 1):
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                for text in re.findall(
+                        r"(?<![0-9.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9.])", line):
+                    try:
+                        address = ipaddress.ip_address(text)
+                    except ValueError:
+                        continue
+                    # 1.x.y.z is overwhelmingly a four-part firmware version, so
+                    # only the public resolvers in that block are named outright.
+                    public = (address.is_global and not address.is_multicast
+                              and (int(text.split(".")[0]) >= 2
+                                   or text in ("1.1.1.1", "1.0.0.1")))
+                    if public:
+                        found.append("%s:%d %s" % (path.name, number, text))
+        self.assertEqual(found, [])
 
     def test_loopback_is_still_allowed(self):
         """A test that talks to a local server is talking to itself."""

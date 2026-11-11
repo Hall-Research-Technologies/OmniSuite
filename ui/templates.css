@@ -35,8 +35,15 @@
 
   /* States */
   --state-success: #4ade80;
+  --on-success: #0d1117;
   --state-warning: #eab308;
+  /* What goes ON the warning surface. Defined per palette rather than
+     left to a fallback: the warning colour is a bright amber here and a
+     dark one in light mode, so a single dark fallback measured 3.77:1
+     against the light palette -- unreadable, and silently so. */
+  --on-warning: #1a1205;
   --state-error: var(--danger, #e5534b);
+  --on-error: #0d1117;
   --state-selection: rgba(30, 144, 255, .16);
   --state-pending: rgba(148, 163, 184, .22);
 
@@ -124,8 +131,11 @@ body.light {
   --action-primary-text: #ffffff;
   --action-secondary-text: var(--text);
   --state-success: #15803d;
+  --on-success: #ffffff;
   --state-warning: #a16207;
+  --on-warning: #ffffff;
   --state-error: #b91c1c;
+  --on-error: #ffffff;
   --state-info: #0369a1;
   --state-selection: rgba(30, 144, 255, .12);
   --state-pending: rgba(100, 116, 139, .18);
@@ -233,7 +243,7 @@ body.light { background: var(--surface); color: var(--text); }
 [data-template="compact"] .btn:hover,
 [data-template="compact"] button:not(.switch):not(.action-btn):hover { background: var(--state-selection); }
 [data-template="compact"] .btn.danger,
-[data-template="compact"] button.danger { border-color: var(--state-error); color: var(--state-error); }
+[data-template="compact"] button.danger { border-color: var(--state-error); color: var(--state-error-text); }
 [data-template="compact"] #scan_btn,
 [data-template="compact"] #upgrade_btn,
 [data-template="compact"] .btn-primary {
@@ -527,6 +537,30 @@ tr.daisy-chained > td.daisy-cell {
 html.light,
 body.light { --state-info: #0369a1; }
 
+/* State colour as TEXT. A preset's green, amber, red and blue are fills: set on the
+   page by the preset itself, they measured 1.3:1 to 4.4:1 as text on a page. Text
+   takes them mixed toward white on a dark page and toward black on a light one, so
+   it follows the preset and stays readable. Declared where the preset writes its
+   colours (html and body) so the mix is resolved with the preset's own value, and
+   restated for light mode. The percentages sum to 100, which keeps the result
+   opaque. --link-text carries the accent the same way, replacing a literal. */
+:root,
+body {
+  --state-success-text: color-mix(in srgb, var(--state-success) 62%, #ffffff 38%);
+  --state-warning-text: color-mix(in srgb, var(--state-warning) 62%, #ffffff 38%);
+  --state-error-text: color-mix(in srgb, var(--state-error) 52%, #ffffff 48%);
+  --state-info-text: color-mix(in srgb, var(--state-info) 62%, #ffffff 38%);
+  --link-text: color-mix(in srgb, var(--accent, #1e90ff) 55%, #ffffff 45%);
+}
+html.light,
+body.light {
+  --state-success-text: color-mix(in srgb, var(--state-success) 50%, #000000 50%);
+  --state-warning-text: color-mix(in srgb, var(--state-warning) 50%, #000000 50%);
+  --state-error-text: color-mix(in srgb, var(--state-error) 55%, #000000 45%);
+  --state-info-text: color-mix(in srgb, var(--state-info) 55%, #000000 45%);
+  --link-text: color-mix(in srgb, var(--accent, #1e90ff) 50%, #000000 50%);
+}
+
 /* ------------------------------------------------ frozen identity columns */
 /*
  * IP and Hostname stay anchored while the rest of a wide configuration table
@@ -546,7 +580,11 @@ table.sticky-identity td:nth-child(1),
 table.sticky-identity th:nth-child(2),
 table.sticky-identity td:nth-child(2) {
   position: sticky;
-  background: var(--surface-raised);
+  /* Layered over the opaque page surface: --surface-raised is a colour-mix()
+     and any shortfall in its percentages is alpha, which would let the scrolling
+     columns read through a frozen cell. Longhands, so the underlay survives. */
+  background-color: var(--surface);
+  background-image: linear-gradient(var(--surface-raised), var(--surface-raised));
   z-index: 3;
 }
 table.sticky-identity th:nth-child(1),
@@ -557,7 +595,11 @@ table.sticky-identity td:nth-child(2) { left: var(--sticky-col2-offset, 0px); }
 /* Headers sit above the frozen body cells, and the two frozen headers above
    everything, so nothing scrolls over a corner. */
 table.sticky-identity th:nth-child(1),
-table.sticky-identity th:nth-child(2) { z-index: 5; background: var(--surface-elevated); }
+table.sticky-identity th:nth-child(2) {
+  z-index: 5;
+  background-color: var(--surface);
+  background-image: linear-gradient(var(--surface-elevated), var(--surface-elevated));
+}
 
 /* The boundary: a restrained divider so it is obvious the rest is scrolling
    behind the frozen pair. */
@@ -882,7 +924,65 @@ button.secondary:focus-visible {
   color: var(--on-error, #ffffff);
   border-color: var(--danger-ring);
 }
+/* Advisory, not a fault. "3 devices were kept because they are assigned to a
+   User" is the operator being told something, not something going wrong, so
+   it has its own semantic state rather than borrowing the danger treatment.
+   Without this rule the kind fell back to the plain toast and said nothing. */
+.toast.warn {
+  background-color: var(--state-warning);
+  color: var(--on-warning, #1a1205);
+  border-color: color-mix(in srgb, var(--state-warning) 60%, #000000 40%);
+}
 
 @media (prefers-reduced-motion: reduce) {
   .toast { transition: none; }
+}
+
+/* ==========================================================================
+   Button roles
+   --------------------------------------------------------------------------
+   The same six roles LumaSuite names, so a control means the same thing in both
+   products:
+
+     primary      the theme accent -- the action a surface exists for (Scan,
+                  Route, Save, Apply). A control with no role class is primary,
+                  as it always has been.
+     secondary    a neutral, theme-aware surface with a real border (Refresh,
+                  Cancel, Check)
+     success      green, for a genuine success or current state only
+     warn         amber, for caution only
+     danger       red, for destructive operations only
+     disabled     muted and still, whatever the role
+
+   Every colour derives from a semantic token a preset sets; nothing here names a
+   hue, so all ten presets and both modes reach every role by construction.
+   `.secondary`, `.warn` and `.danger` are defined above; these add the two the
+   family names that this product had no class for.
+   ========================================================================== */
+.btn.primary:not(:disabled),
+button.primary:not(:disabled) {
+  background-color: var(--action-primary);
+  color: var(--action-primary-text);
+  border-color: color-mix(in srgb, var(--action-primary) 60%, #000000 40%);
+}
+.btn.success:not(:disabled),
+button.success:not(:disabled) {
+  background-color: var(--state-success);
+  color: var(--on-success, #0d1117);
+  border-color: color-mix(in srgb, var(--state-success) 60%, #000000 40%);
+}
+
+/* --------------------------------------------- narrow windows: the shell wraps */
+/*
+ * The administrator pages are desktop pages, and their tables scroll inside their
+ * own frames. What may not happen is the navigation and the Settings gear sitting a
+ * horizontal scroll away: at 390 px the shell used to be 1000 px wide, so the gear
+ * was off screen and the tabs were clipped. Below the old minimum width the page no
+ * longer insists on it, and the header, its controls and its tabs wrap.
+ */
+@media (max-width: 1000px) {
+  body { min-width: 0 !important; }
+  .header { flex-wrap: wrap; gap: 8px; }
+  .header .controls { flex-wrap: wrap; }
+  .header .tabs { flex-wrap: wrap; }
 }

@@ -70,7 +70,7 @@ class VideoWallUnitTranslationTests(unittest.TestCase):
         with patch.object(server, "_ws_send_recv", side_effect=fake_ws_send_recv), \
              patch.object(server, "_ws_get_decoder_inputs", return_value={"video_wall_unit": "inches"}):
             result = server._ws_set_decoder_input_settings(
-                "192.168.200.154",
+                "198.18.200.154",
                 "admin",
                 "password",
                 80,
@@ -107,7 +107,7 @@ class VideoWallUnitTranslationTests(unittest.TestCase):
             raise AssertionError(f"Unexpected payload: {payload}")
 
         with patch.object(server, "_ws_send_recv", side_effect=fake_ws_send_recv):
-            fields = server._ws_get_decoder_inputs("192.168.200.154", "admin", "password", 80, "/ws", 4, attempts=1, delay=0)
+            fields = server._ws_get_decoder_inputs("198.18.200.154", "admin", "password", 80, "/ws", 4, attempts=1, delay=0)
 
         self.assertEqual(fields["video_wall_unit"], "mm")
         self.assertEqual(fields["video_wall_width"], 80)
@@ -134,7 +134,7 @@ class VideoWallUnitTranslationTests(unittest.TestCase):
         with patch.object(server, "_ws_send_recv", side_effect=fake_ws_send_recv), \
              patch.object(server, "_ws_get_decoder_inputs", return_value={"video_wall_edge_mode": "bezel compensation"}):
             result = server._ws_set_decoder_input_settings(
-                "192.168.200.154",
+                "198.18.200.154",
                 "admin",
                 "password",
                 80,

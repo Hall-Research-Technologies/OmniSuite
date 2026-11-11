@@ -1,5 +1,123 @@
 # Changelog
 
+## V1.2.0
+
+Optional secure remote access with administrator and user accounts, per-user routing, Display Groups,
+a fixed local port, backup and restore, firmware availability, and clearer scanning and first-launch
+behaviour on macOS. See RELEASE_NOTES_V1.2.0.md for the user-facing summary.
+
+### Remote Access
+
+- Added Remote Access: off by default on new installations and on upgrades, bound to a network adapter an
+  administrator chooses, and restored safely across a restart. Updating never turns it on.
+- A first-time setup starts on HTTP, labelled as not encrypted, and turning it on needs an explicit
+  acknowledgement. HTTPS is the recommended transport once a certificate exists and is one choice away. Once a
+  transport has been saved that choice is honoured; an HTTPS choice whose certificate cannot be used refuses to
+  start and says why. There is no fallback to plain HTTP, and no HTTP listener at all while HTTPS is active.
+- Added HTTPS with either a certificate OmniSuite generates or one the site supplies. A supplied certificate
+  and key stay in use across restarts and are never altered; a generated certificate is checked against the
+  address it will be served on and is never silently reissued.
+- Generated certificates carry the computer's Windows name as the common name, organisation Hall Research,
+  unit OmniSuite, subject alternative names for the computer name and the chosen adapter's address, and three
+  calendar years of validity. Earlier certificates keep the name and validity they were made with.
+- Settings describes the certificate that actually exists: certificate active, custom certificate active, or
+  certificate required. It never says "trusted".
+- The adapter OmniSuite starts on is a physical Ethernet port in preference to Wi-Fi and to virtual adapters.
+  A saved choice is never changed.
+- Opening the remote address in a browser shows the sign-in page. Browser security headers are sent. Sign out
+  is available on every screen reached through Remote Access.
+- Remote responses carry no device passwords; the local listener answers only to localhost / 127.0.0.1; a
+  second copy on the same data folder is refused; remote requests may only name devices OmniSuite already
+  knows (control) or non-public addresses (scan).
+
+### Accounts, permissions and routing
+
+- Added administrator and user accounts. The first administrator is created at the OmniSuite computer; there
+  is no default credential. Passwords are stored only as one-way hashes.
+- Added per-user permissions for features (A/V, USB), sources, displays and Display Groups, enforced on the
+  server for every request and again immediately before the device write.
+- Added a restricted screen for phones and tablets with Standard routing, the User Matrix (AV, Video, Audio),
+  or both, chosen per account. Sources can be dragged onto a display or group.
+- Added Display Groups: a named set of displays that receive one source, routed one display at a time with
+  each verified. A failed display does not stop the rest and nothing is rolled back. A group is its own
+  permission.
+- Added optional direct access links: a passwordless address for one non-administrator account, off by default.
+- Added friendly device names (kept by OmniSuite, never written to equipment), with duplicates distinguished by
+  the Location the unit reports.
+- Added an Activity history of sign-ins, refusals, routing and administrative changes, for administrators only
+  (30 days / 5 MB by default, configurable).
+- Operations on one display are serialized, and extra browsers do not multiply device traffic.
+- Routing a source to a display that is showing a Multiview simply does it: the display leaves the Multiview
+  in the same verified step and the saved Multiview is kept; a failed route puts it back. Multiview is not
+  offered to User accounts or direct access links.
+- Source pictures for Users come from the encoder's thumbnail, served without exposing device addresses; they
+  never block routing.
+- Clear Units and Remove Selected keep units that Users or Display Groups depend on while Remote Access is on.
+
+### Local application port
+
+- Added an optional fixed local application port (Settings > Local Application Port). The default is
+  unchanged: OmniSuite chooses 8080 or the next free port. Save and Restart restarts OmniSuite on the chosen
+  port; a busy port is never silently replaced and the launcher offers Retry, Start on Alternate Port,
+  Change Fixed Port and Exit. A damaged setting never stops OmniSuite starting.
+
+### Backup and restore
+
+- Added encrypted Configuration Backup (Export and Restore, at the OmniSuite computer). A restore is
+  authoritative for the sections the backup covers, is applied as a unit, puts everything back on failure and
+  says so if it cannot. Sessions of accounts the restore changes or removes are ended; unchanged accounts stay
+  signed in.
+
+### Firmware availability
+
+- Added a firmware availability check (once after start-up, then every seven days) shown as Up to Date,
+  Available or Unknown. It only reports.
+
+### Device Info, A/V Matrix and the interface
+
+- The A/V Matrix draws from the inventory before decoders answer and updates crosspoints in place.
+- Device Info sorts addresses, numbers and versions numerically, has keyboard-operable headers, shows uptime,
+  and lists standalone HW-OMNI-311/324 extenders as their own rows (never upgrade targets).
+- The Upgrade Manager is now the Device Manager. Settings sections were reordered and button styles unified.
+
+### Scanning and macOS
+
+- A scan that the operating system blocks is reported as a failed scan with a reason instead of "0 found",
+  and leaves the device list untouched. A target range that expands to no addresses is refused with an
+  explanation.
+- On macOS a notice under Scan explains Local Network access; the download includes READ-ME-FIRST-macOS.txt and
+  docs/INSTALL_MACOS.md explains approving an unsigned, un-notarized app.
+- Fixed the Intel macOS package, which failed on `import cryptography`.
+
+### Updates, releases and packaging
+
+- The in-app update check offers the newest release by version number and reports "unable to check" when none
+  is found. It contacts GitHub at start-up (cached for six hours) and when you press Check Now, and never
+  downloads anything.
+- Release identity is checked before anything is built. Installed V1.1.0 applications keep being offered
+  updates.
+- Dependencies are locked with a pinned PyInstaller; third-party licence texts ship with the application and
+  in every archive.
+
+### Fixes
+
+- A destructive request that says nothing no longer acts: Clear Units and the USB inventory clear now refuse a
+  missing or malformed request instead of clearing.
+- Malformed requests anywhere in the application are answered with a plain message instead of an internal
+  error, and never act as an instruction.
+- The Remote Access port is validated (1024-65535) before anything is changed.
+- A device address can no longer be mistaken for a hardware address in Display Groups or account grants.
+- A restricted User is no longer shown a stale Display Group member's hardware address.
+- A backup with out-of-range encryption parameters is refused as damaged.
+- A verification pass that began before Clear Units could write stale results back; it now discards them.
+- Restricted-user routing no longer fails on a display that was showing a Multiview.
+- Saved settings, the device-list cache and the restore path are protected against overlapping writes, and a
+  damaged cache is set aside rather than stopping discovery.
+- Passwords are no longer written to the logs when a command is sent to a device.
+- Text a device reports is escaped wherever it is shown.
+- Many presentation fixes (confirmation dialog styling, matrix select-all with Lock Headers, plain-text
+  warning no longer shown over an HTTPS selection).
+
 ## V1.1.0 - 2026-09-17
 
 Multiview: a decoder can show several encoders at once as a saved, editable

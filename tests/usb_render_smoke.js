@@ -233,25 +233,25 @@ function buildDom() {
 }
 
 // ---- representative live API payload --------------------------------------
-const E4521 = {kind: 'integrated', usb_key: '192.168.100.141', usb_mac: 'B8:98:B0:07:85:ED', ip: '192.168.100.141',
-               mac: 'B8:98:B0:07:85:ED', host: 'hw-omni-e4521-00002', usb_ip: '192.168.100.246',
+const E4521 = {kind: 'integrated', usb_key: '198.51.100.141', usb_mac: 'B8:98:B0:FA:CE:ED', ip: '198.51.100.141',
+               mac: 'B8:98:B0:FA:CE:ED', host: 'hw-omni-e4521-00001', usb_ip: '198.51.100.246',
                revision: '1.9.4', protocol: 'IP', type: 'LEX', host_port: 'FollowVideo', filter: 'Allow_All',
                classification: 'INTEGRATED', online: true};
-const D4511 = {kind: 'integrated', usb_key: '192.168.100.151', usb_mac: 'B8:98:B0:07:85:87', ip: '192.168.100.151',
-               mac: 'B8:98:B0:07:85:87', host: 'hw-omni-d4511-08586', usb_ip: '192.168.100.250',
+const D4511 = {kind: 'integrated', usb_key: '198.51.100.151', usb_mac: 'B8:98:B0:FA:CD:87', ip: '198.51.100.151',
+               mac: 'B8:98:B0:FA:CD:87', host: 'hw-omni-d4511-00001', usb_ip: '198.51.100.250',
                revision: '1.9.4', protocol: 'IP', type: 'REX', host_port: '', filter: 'Allow_All',
                classification: 'INTEGRATED', online: true};
-const OMNI311 = {kind: 'standalone', usb_key: '00:1B:13:04:E9:6E', usb_mac: '00:1B:13:04:E9:6E', ip: '192.168.100.128',
-                 mac: '00:1B:13:04:E9:6E', model: 'AT-OMNI-311', host: 'AT-OMNI-311',
-                 usb_ip: '192.168.100.128', revision: '1.9.4', protocol: 'IP', type: 'LEX',
+const OMNI311 = {kind: 'standalone', usb_key: '00:1B:13:FA:CE:22', usb_mac: '00:1B:13:FA:CE:22', ip: '198.51.100.128',
+                 mac: '00:1B:13:FA:CE:22', model: 'AT-OMNI-311', host: 'AT-OMNI-311',
+                 usb_ip: '198.51.100.128', revision: '1.9.4', protocol: 'IP', type: 'LEX',
                  classification: 'STANDALONE', online: true, pairing_eligible: true,
-                 pairing_state_fresh: true, paired_macs: ['00:1B:13:04:6A:EA'],
+                 pairing_state_fresh: true, paired_macs: ['00:1B:13:FA:CE:11'],
                  host_port: '', host_port_configurable: false, filter: '', filter_configurable: false};
-const OMNI324 = {kind: 'standalone', usb_key: '00:1B:13:04:6A:EA', usb_mac: '00:1B:13:04:6A:EA', ip: '192.168.100.127',
-                 mac: '00:1B:13:04:6A:EA', model: 'AT-OMNI-324', host: 'AT-OMNI-324',
-                 usb_ip: '192.168.100.127', revision: '1.9.4', protocol: 'IP', type: 'REX',
+const OMNI324 = {kind: 'standalone', usb_key: '00:1B:13:FA:CE:11', usb_mac: '00:1B:13:FA:CE:11', ip: '198.51.100.127',
+                 mac: '00:1B:13:FA:CE:11', model: 'AT-OMNI-324', host: 'AT-OMNI-324',
+                 usb_ip: '198.51.100.127', revision: '1.9.4', protocol: 'IP', type: 'REX',
                  classification: 'STANDALONE', online: true, pairing_eligible: true,
-                 pairing_state_fresh: true, paired_macs: ['00:1B:13:04:E9:6E'],
+                 pairing_state_fresh: true, paired_macs: ['00:1B:13:FA:CE:22'],
                  host_port: '', host_port_configurable: false, filter: '', filter_configurable: false};
 
 const cap = (state, enabled, path, label, detail, extra) => ({
@@ -293,12 +293,12 @@ const STATE = {
   lex: [E4521], rex: [D4511],
   matrix_lex: [E4521, OMNI311], matrix_rex: [D4511, OMNI324],
   capabilities: {
-    '192.168.100.151': {'192.168.100.141': ICRON, '00:1B:13:04:E9:6E': MIXED},
-    '00:1B:13:04:6A:EA': {'192.168.100.141': MIXED, '00:1B:13:04:E9:6E': UDP},
+    '198.51.100.151': {'198.51.100.141': ICRON, '00:1B:13:FA:CE:22': MIXED},
+    '00:1B:13:FA:CE:11': {'198.51.100.141': MIXED, '00:1B:13:FA:CE:22': UDP},
   },
-  standalone_routes: {'00:1B:13:04:6A:EA': {active: '00:1B:13:04:E9:6E', available: [], fresh: true, pairing_age: 3}},
+  standalone_routes: {'00:1B:13:FA:CE:11': {active: '00:1B:13:FA:CE:22', available: [], fresh: true, pairing_age: 3}},
   standalone_lex: [OMNI311], standalone_rex: [OMNI324],
-  pairings: {'192.168.100.151': {active: '192.168.100.141', available: []}},
+  pairings: {'198.51.100.151': {active: '198.51.100.141', available: []}},
   pairings_rex_side: {}, pairings_lex_side: {}, pairing_conflicts: {},
 };
 
@@ -357,7 +357,7 @@ check('render() runs with a mixed integrated/standalone payload', () => {
 check('matrix grid rendered both families', () => {
   const html = registry.get('usbMatrix').innerHTML;
   if (!html) throw new Error('matrix table is empty');
-  for (const needle of ['192.168.100.141', '192.168.100.151', '00:1B:13:04:E9:6E', '00:1B:13:04:6A:EA']) {
+  for (const needle of ['198.51.100.141', '198.51.100.151', '00:1B:13:FA:CE:22', '00:1B:13:FA:CE:11']) {
     if (!html.includes(needle)) throw new Error(`axis entry ${needle} missing from grid`);
   }
 });
@@ -382,8 +382,8 @@ check('no backend enum names appear in tooltip text', () => {
 
 check('experimental mixed cell is routable and marked as such', () => {
   const html = registry.get('usbMatrix').innerHTML;
-  const cell = html.match(/<td[^>]*data-lex="192\.168\.100\.141"[^>]*data-rex="00:1B:13:04:6A:EA"[^>]*>/)
-            || html.match(/<td[^>]*data-rex="00:1B:13:04:6A:EA"[^>]*data-lex="192\.168\.100\.141"[^>]*>/);
+  const cell = html.match(/<td[^>]*data-lex="198\.51\.100\.141"[^>]*data-rex="00:1B:13:FA:CE:11"[^>]*>/)
+            || html.match(/<td[^>]*data-rex="00:1B:13:FA:CE:11"[^>]*data-lex="198\.51\.100\.141"[^>]*>/);
   if (!cell) throw new Error('mixed cell not rendered');
   if (/class="cell[^"]*disabled/.test(cell[0])) throw new Error('mixed cell must be clickable so it can be tested');
   if (!/data-experimental="1"/.test(cell[0])) throw new Error('mixed cell must be marked experimental');
@@ -395,7 +395,7 @@ check('experimental mixed cell is routable and marked as such', () => {
 check('a genuinely unsupported cell stays disabled', () => {
   // Same render path, with a capability the server refuses.
   const blocked = JSON.parse(JSON.stringify(STATE));
-  blocked.capabilities['00:1B:13:04:6A:EA']['192.168.100.141'] = BLOCKED;
+  blocked.capabilities['00:1B:13:FA:CE:11']['198.51.100.141'] = BLOCKED;
   vm.runInContext('render(__BLOCKED__)', Object.assign(context, {__BLOCKED__: blocked}), {filename: 'render'});
   const html = registry.get('usbMatrix').innerHTML;
   if (!/class="cell[^"]*disabled/.test(html)) throw new Error('unsupported cell must not be clickable');
@@ -420,15 +420,15 @@ check('no native dialog is used in the route path', () => {
 
 check('standalone route renders as connected', () => {
   const html = registry.get('usbMatrix').innerHTML;
-  if (!/data-rex="00:1B:13:04:6A:EA" data-lex="00:1B:13:04:E9:6E"[^>]*data-active="true"/.test(html)) {
+  if (!/data-rex="00:1B:13:FA:CE:11" data-lex="00:1B:13:FA:CE:22"[^>]*data-active="true"/.test(html)) {
     throw new Error('311<->324 route not rendered active');
   }
 });
 
 check('LEX/REX inventory tables render both families', () => {
   const lex = registry.get('lexTbl').innerHTML, rex = registry.get('rexTbl').innerHTML;
-  if (!lex.includes('192.168.100.141') || !lex.includes('00:1B:13:04:E9:6E')) throw new Error('LEX table incomplete');
-  if (!rex.includes('192.168.100.151') || !rex.includes('00:1B:13:04:6A:EA')) throw new Error('REX table incomplete');
+  if (!lex.includes('198.51.100.141') || !lex.includes('00:1B:13:FA:CE:22')) throw new Error('LEX table incomplete');
+  if (!rex.includes('198.51.100.151') || !rex.includes('00:1B:13:FA:CE:11')) throw new Error('REX table incomplete');
 });
 
 check('each physical endpoint appears exactly once in the inventory', () => {
@@ -438,13 +438,13 @@ check('each physical endpoint appears exactly once in the inventory', () => {
   const rexRows = (rex.match(/<tr>/g) || []).length - 1;
   if (lexRows !== 2) throw new Error(`LEX inventory has ${lexRows} rows, expected 2`);
   if (rexRows !== 2) throw new Error(`REX inventory has ${rexRows} rows, expected 2`);
-  if (count(lex, '00:1B:13:04:E9:6E') !== 1) throw new Error('the standalone 311 is duplicated');
-  if (count(rex, '00:1B:13:04:6A:EA') !== 1) throw new Error('the standalone 324 is duplicated');
+  if (count(lex, '00:1B:13:FA:CE:22') !== 1) throw new Error('the standalone 311 is duplicated');
+  if (count(rex, '00:1B:13:FA:CE:11') !== 1) throw new Error('the standalone 324 is duplicated');
 });
 
 check('a standalone row does not inherit integrated-only controls', () => {
   const lex = registry.get('lexTbl').innerHTML;
-  const rows = lex.split('<tr>').filter(r => r.includes('00:1B:13:04:E9:6E'));
+  const rows = lex.split('<tr>').filter(r => r.includes('00:1B:13:FA:CE:22'));
   if (rows.length !== 1) throw new Error('expected exactly one standalone LEX row');
   const row = rows[0];
   if (/class="port-select"/.test(row)) throw new Error('standalone row offers a Host Port selector');
@@ -460,7 +460,7 @@ check('a standalone row does not inherit integrated-only controls', () => {
 
 check('an integrated row keeps its established controls', () => {
   const lex = registry.get('lexTbl').innerHTML;
-  const row = lex.split('<tr>').filter(r => r.includes('192.168.100.141'))[0] || '';
+  const row = lex.split('<tr>').filter(r => r.includes('198.51.100.141'))[0] || '';
   if (!/class="port-select"/.test(row)) throw new Error('integrated LEX lost its Host Port selector');
   if (!/class="filter-select"/.test(row)) throw new Error('integrated LEX lost its Device Filtering selector');
   if (!/class="type-select"/.test(row)) throw new Error('integrated LEX lost its Type selector');
@@ -472,7 +472,7 @@ check('the inventory shows live firmware and a separate link column', () => {
   if (!/<th>Link<\/th>/.test(lex)) throw new Error('Link column missing');
   if (/<th>Revision<\/th>/.test(lex)) throw new Error('Revision column should have been renamed');
   if (!lex.includes('1.9.4')) throw new Error('live firmware not rendered');
-  const standalone = lex.split('<tr>').filter(r => r.includes('00:1B:13:04:E9:6E'))[0];
+  const standalone = lex.split('<tr>').filter(r => r.includes('00:1B:13:FA:CE:22'))[0];
   if (!standalone.includes('Linked')) throw new Error('link state not rendered');
 });
 
@@ -491,7 +491,7 @@ check('render survives shuffled axis input (deterministic ordering)', () => {
   vm.runInContext('render(__SHUF__)', Object.assign(context, {__SHUF__: shuffled}), {filename: 'render3'});
   const html = registry.get('usbMatrix').innerHTML;
   const order = [...html.matchAll(/data-lex="([^"]+)"/g)].map(m => m[1]);
-  if (order[0] !== '192.168.100.141') throw new Error(`integrated LEX must sort first, got ${order[0]}`);
+  if (order[0] !== '198.51.100.141') throw new Error(`integrated LEX must sort first, got ${order[0]}`);
 });
 
 check('every helper the render path references is defined', () => {
@@ -646,7 +646,7 @@ const OUTCOMES = [
   ['an endpoint that cannot be reached', {ok: false, status: 'OFFLINE',
                                           error: 'The endpoint did not answer.'}],
   ['a route moved from another host', {ok: true, status: 'VERIFIED_SUCCESS',
-                                       reassigned_from: '00:1B:13:05:50:50'}],
+                                       reassigned_from: '00:1B:13:FA:CE:44'}],
   ['a release that could not be verified', {ok: false, status: 'REASSIGN_RELEASE_FAILED',
                                             error: 'The previous owner did not release it.'}],
   ['a rolled-back failure', {ok: false, status: 'FAILED_ROLLED_BACK',

@@ -1,0 +1,872 @@
+/*
+ * Shared styling for the remote-access surfaces: login, the restricted user
+ * shell, and user management.
+ *
+ * These pages are built on the same semantic tokens as the rest of OmniSuite
+ * (ui/templates.css), so they follow the operator's chosen palette and both
+ * appearance modes without naming a single colour of their own. The one thing
+ * they deliberately do NOT inherit is the administrative shell's
+ * `min-width: 1000px`: the user shell has to work on a phone held in one hand
+ * while somebody is teaching.
+ */
+
+:root {
+  --remote-max: 1100px;
+  --touch-target: 44px;          /* what a finger can reliably hit */
+}
+
+/*
+ * The base palette names, defined for pages that do not load matrix.css.
+ *
+ * settings.css owns the dialog vocabulary these pages reuse -- .modal-backdrop,
+ * .modal, .modal-row, .modal-buttons -- and it asks for `var(--card)`,
+ * `var(--border)` and `var(--fg)` with no fallback. Those are declared in
+ * ui/matrix/matrix.css, which the remote pages have no reason to load, so the
+ * user-management dialog rendered with `background: rgba(0,0,0,0)`: a
+ * completely transparent card with the page showing through its text. The
+ * backdrop, position and size were all correct, which is what made it look
+ * like a layout problem rather than a missing colour.
+ *
+ * These are the base values, not aliases of the semantic tokens. Defining
+ * `--card: var(--surface-raised)` was the obvious first attempt and produced a
+ * cycle: templates.css derives `--surface-raised` *from* `--card`, so each
+ * referred to the other and both resolved to the guaranteed-invalid value --
+ * leaving the card transparent exactly as before, and emptying
+ * `--surface-raised` for the whole page as well. The dependency runs one way,
+ * base to semantic, and this end of it has to be concrete.
+ *
+ * The values are matrix.css's, so a dialog looks the same wherever it is shown.
+ */
+:root {
+  --bg: #1d232a;
+  --card: #222a33;
+  --panel-2: #262f39;
+  --text: #e9eef5;
+  --fg: #e9eef5;
+  --muted: #9aa7b4;
+  --border: rgba(255, 255, 255, .08);
+  --accent: #1e90ff;
+  --danger: #e5534b;
+}
+
+html.light,
+body.light {
+  --bg: #f7f8fb;
+  --card: #ffffff;
+  --panel-2: #f2f5f8;
+  --text: #0d1117;
+  --fg: #0d1117;
+  --muted: #5a6b7a;
+  --border: rgba(0, 0, 0, .08);
+  --danger: #b91c1c;
+}
+
+html, body { height: 100%; margin: 0; }
+
+/*
+ * The `hidden` attribute has to win.
+ *
+ * It is honoured by a UA rule of `display: none`, which any class selector
+ * outranks -- so `.remote-tabs { display: flex }` quietly defeated
+ * `tabs.hidden = true`, and a single-feature account was shown a navigation
+ * bar with one tab in it while the action bar appeared on panels that have no
+ * action. Both were invisible to the unit tests, which assert on the property
+ * rather than on what renders, and showed up the moment the pages were opened
+ * at a phone size.
+ */
+[hidden] { display: none !important; }
+
+body.remote {
+  background: var(--surface);
+  color: var(--text);
+  font-family: Calibri, system-ui, "Segoe UI", Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  min-width: 0;                  /* NOT the admin shell's 1000px */
+  -webkit-text-size-adjust: 100%;
+}
+
+/* ------------------------------------------------------------ shell ---- */
+.remote-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  /* The same geometry as the shell header every other page carries (16px
+     gutter, 48px logo row, 8px rule), so the tabs and the gear sit where the
+     operator's eye has learned to find them. */
+  margin: 16px 16px 0;
+  padding: 0 0 8px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--edge);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.remote-header .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.remote-header .logo { height: 48px; width: auto; border-radius: 6px; }
+.remote-header h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.remote-header .who {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.remote-main {
+  max-width: var(--remote-max);
+  margin: 0 auto;
+  padding: 16px;
+}
+
+/* Feature tabs. Only what the account was granted is ever rendered. */
+.remote-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 0 16px 10px;
+  max-width: var(--remote-max);
+  margin: 0 auto;
+  flex-wrap: wrap;
+}
+.remote-tabs .tab {
+  min-height: var(--touch-target);
+  display: inline-flex;
+  align-items: center;
+  padding: 0 16px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+}
+.remote-tabs .tab[aria-selected="true"] {
+  background-color: var(--selected-tint-strong);
+  color: var(--text);
+  border-color: var(--selected-edge);
+  box-shadow: inset 0 -2px 0 0 var(--selected-fill);
+}
+
+/* Routing | Matrix. The same control as the feature tabs, one level down. */
+.mode-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 12px;
+  flex-wrap: wrap;
+}
+.mode-tabs .tab {
+  min-height: var(--touch-target);
+  display: inline-flex;
+  align-items: center;
+  padding: 0 16px;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: var(--surface-elevated);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 15px;
+}
+.mode-tabs .tab:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+/* A selected tab is FILLED, with the accent itself. --selected-fill is the
+   selection token and is a 12-16% tint by design (it tints table rows), which
+   measured as little as a barely visible step against the unselected tab on
+   this page; the fill, not the label, has to carry the difference. The accent
+   is opaque in every preset, and its readable foreground travels with it as
+   --on-accent. This page does not load the appearance module, so nothing sets
+   --on-accent here and the fallback decides: white on the default accent
+   measures 3.4:1, the near-black below 5.8:1, which is also what the module
+   itself computes for that accent. */
+.mode-tabs .tab:hover,
+.mx-modebtn:hover { background-image: linear-gradient(var(--control-hover-veil), var(--control-hover-veil)); }
+.mode-tabs .tab:active,
+.mx-modebtn:active {
+  background-image: linear-gradient(var(--control-hover-veil), var(--control-hover-veil)),
+                    linear-gradient(var(--control-hover-veil), var(--control-hover-veil));
+}
+.mode-tabs .tab[aria-selected="true"] {
+  background-color: var(--action-primary);
+  color: var(--on-accent, #101418);
+  border-color: var(--action-primary);
+  box-shadow: inset 0 0 0 1px var(--action-primary);
+}
+/* [hidden] loses to any class that sets display; restated beside the rules
+   that would otherwise win. */
+.mode-tabs[hidden], #standard_routing[hidden], #matrix_routing[hidden],
+#no_routing[hidden], .mx-scroll[hidden], .mx-preview[hidden] { display: none; }
+
+/* ------------------------------------------------------------ cards ---- */
+.panel {
+  background: var(--surface-raised);
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+.panel > h2 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.panel > .hint { margin: 0 0 10px; font-size: 13px; color: var(--text-muted); }
+
+/* A pickable device. Big enough for a finger, and it states its own state. */
+.pick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+}
+.pick {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 62px;
+  padding: 10px 12px;
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  background: var(--surface-elevated);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition: background-color .15s ease, box-shadow .15s ease;
+}
+.pick:hover:not(:disabled) {
+  background-image: linear-gradient(var(--control-hover-veil), var(--control-hover-veil));
+}
+.pick:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.pick[aria-pressed="true"] {
+  background-color: var(--selected-fill);
+  border-color: var(--selected-edge);
+  box-shadow: inset 0 0 0 1px var(--selected-edge);
+}
+.pick:disabled { opacity: var(--control-disabled-opacity); cursor: not-allowed; }
+.pick .pick-name { font-weight: 600; overflow-wrap: anywhere; }
+.pick .pick-state { font-size: 12px; color: var(--text-muted); }
+.pick[aria-pressed="true"] .pick-state { color: inherit; opacity: .85; }
+
+/* The offline marker has to survive every palette, so it is a word as well
+   as a colour. */
+.pick.offline .pick-state { color: var(--state-warning-text); }
+
+/* ------------------------------------------------------------ action --- */
+.action-bar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  background: var(--surface);
+  border-top: 1px solid var(--edge);
+}
+.action-bar .summary { flex: 1 1 auto; font-size: 14px; min-width: 0; }
+.action-bar .summary strong { color: var(--text); }
+.btn-primary-lg {
+  min-height: var(--touch-target);
+  padding: 0 22px;
+  border-radius: 9px;
+  border: 1px solid var(--edge);
+  background: var(--action-primary);
+  color: var(--on-accent, var(--action-primary-text));
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-primary-lg:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
+  filter: saturate(.4);
+}
+/* Unroute sits beside Show and must not read as the action the surface
+   exists for. A filled surface with a real border rather than a ghost
+   outline -- quiet is not the same as disabled-looking -- and it keeps its
+   own hover, press and focus. It is not painted with the critical colour
+   either: stopping a display is deliberate, not destructive, and the
+   confirmation carries the weight. */
+.btn-secondary-lg {
+  min-height: var(--touch-target);
+  padding: 0 18px;
+  border-radius: 9px;
+  border: 1px solid var(--edge-strong, var(--edge));
+  background: var(--surface-raised, var(--surface));
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-right: 10px;
+}
+.btn-secondary-lg:hover:not(:disabled) {
+  /* A translucent veil of the text colour, so one rule reads as hover in a
+     light palette and a dark one alike. */
+  background: color-mix(in srgb, var(--text) 8%, var(--surface-raised, var(--surface)) 92%);
+}
+.btn-secondary-lg:active:not(:disabled) {
+  background: color-mix(in srgb, var(--text) 14%, var(--surface-raised, var(--surface)) 86%);
+}
+.btn-secondary-lg:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.btn-secondary-lg:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
+}
+.btn-quiet {
+  min-height: var(--touch-target);
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: var(--surface-elevated);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 14px;
+}
+.btn-quiet:hover:not(:disabled) {
+  background-image: linear-gradient(var(--control-hover-veil), var(--control-hover-veil));
+}
+.btn-quiet:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+/* A control that cannot be used has to look like it. Disable and Delete are
+   refused for the only active administrator, and without this they were
+   indistinguishable from working buttons -- the operator finds out by
+   clicking, which is the thing the disabled state exists to prevent. */
+.btn-quiet:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
+  filter: saturate(.4);
+  background-image: none;
+}
+
+/* ------------------------------------------------------------ states --- */
+.empty {
+  padding: 28px 12px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+.notice-line {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 9px 11px;
+  margin-bottom: 12px;
+  border: 1px solid var(--state-warning);
+  border-left: 3px solid var(--state-warning);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--state-warning) 12%, transparent);
+  font-size: 13px;
+}
+.deferred {
+  padding: 22px 14px;
+  border: 1px dashed var(--edge);
+  border-radius: 10px;
+  color: var(--text-muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+/* ------------------------------------------------------------- login --- */
+.login-wrap {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+}
+.login-card {
+  width: min(100%, 380px);
+  background: var(--surface-raised);
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  padding: 24px;
+}
+.login-card .logo { height: 40px; width: auto; margin-bottom: 14px; }
+.login-card h1 { margin: 0 0 4px; font-size: 19px; font-weight: 600; }
+.login-card .sub { margin: 0 0 18px; font-size: 13px; color: var(--text-muted); }
+.field { margin-bottom: 12px; }
+.field label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.field input {
+  width: 100%;
+  min-height: var(--touch-target);
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: var(--surface-elevated);
+  color: var(--text);
+  font-size: 16px;            /* 16px stops iOS zooming the page on focus */
+  box-sizing: border-box;
+}
+.field input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.login-card .btn-primary-lg { width: 100%; margin-top: 4px; }
+.form-error {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--state-error-text);
+  min-height: 1.2em;
+}
+.form-note { margin: 14px 0 0; font-size: 12px; color: var(--text-muted); }
+
+/* Device-reported metadata in the administrative tables. Location is short and
+   earns a column; a description is free text of unpredictable length, so it
+   sits under the device name and is clamped to two lines -- a column would push
+   Address and Role off a laptop screen, and a native title tooltip renders as
+   one very wide line. */
+.device-description {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; max-width: 34ch;
+  font-size: 11px; font-style: italic; opacity: .85;
+}
+.device-location { max-width: 22ch; overflow-wrap: anywhere; }
+/* What refers to a device: a compact summary, expandable to the names. A real
+   button (keyboard reachable, announced), drawn as a quiet surface with a real
+   border rather than a ghost outline. */
+.assign-summary {
+  font: inherit; font-size: 12px; padding: 2px 8px; border-radius: 7px;
+  border: 1px solid var(--edge); background: var(--surface-elevated);
+  color: var(--text); cursor: pointer;
+}
+.assign-summary:hover { background: var(--surface); }
+.assign-summary:focus-visible { outline: 2px solid var(--focus-ring, var(--accent)); outline-offset: 2px; }
+.assign-detail { margin-top: 4px; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; max-width: 34ch; }
+/* Whether this connection is encrypted is not advisory colour on a muted
+   line -- it is the one fact on this page somebody may act on. Carry it with
+   a rule as well as a hue, so a palette where the two tints converge still
+   tells them apart, and keep the text itself at full contrast. */
+.form-note-ok,
+.form-note-warn { color: var(--text); padding-left: 10px; border-left: 3px solid; }
+.form-note-ok { border-left-color: var(--state-success); }
+.form-note-warn { border-left-color: var(--state-warning); }
+
+/* ------------------------------------------------------ borrowed dialog --
+ * The dialog vocabulary comes from settings.css, but the form controls inside
+ * it were only ever styled by ui/index.html's inline rules -- so on these
+ * pages they fell back to browser defaults: white boxes and a native select in
+ * the middle of a dark card. Styling the shared markup is part of sharing it.
+ */
+.modal input[type="text"],
+.modal input[type="password"],
+.modal input[type="number"],
+.modal select {
+  min-height: 34px;
+  padding: 5px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--edge);
+  background: var(--surface-elevated);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  box-sizing: border-box;
+}
+.modal input:focus-visible,
+.modal select:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.modal input:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
+}
+.modal .btn,
+.modal button {
+  min-height: 34px;
+  padding: 4px 14px;
+  border-radius: 7px;
+  border: 1px solid var(--edge);
+  background: var(--action-primary);
+  color: var(--on-accent, var(--action-primary-text));
+  font: inherit;
+  cursor: pointer;
+}
+.modal .btn.secondary,
+.modal button.secondary {
+  background: var(--surface-elevated);
+  color: var(--text);
+}
+.modal .btn:hover:not(:disabled),
+.modal button:hover:not(:disabled) {
+  background-image: linear-gradient(var(--control-hover-veil), var(--control-hover-veil));
+}
+.modal .btn:focus-visible,
+.modal button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* --------------------------------------------------------- user admin -- */
+.user-table { width: 100%; border-collapse: collapse; }
+.user-table th, .user-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--edge);
+  text-align: left;
+  font-size: 14px;
+  vertical-align: middle;
+}
+.user-table th {
+  background: var(--surface-elevated);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.role-pill, .state-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--edge);
+}
+.role-pill.admin { border-color: var(--state-info); color: var(--state-info-text); }
+.state-pill.disabled { border-color: var(--state-warning); color: var(--state-warning-text); }
+
+.assign-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.assign-toolbar input[type="search"] {
+  flex: 1 1 180px;
+  min-height: 34px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--edge);
+  background: var(--surface-elevated);
+  color: var(--text);
+  font-size: 14px;
+}
+.assign-count { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.assign-list {
+  max-height: 210px;
+  overflow-y: auto;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--surface-elevated);
+  padding: 4px;
+}
+.assign-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.assign-row:hover { background: var(--selected-tint); }
+.assign-row input { width: 17px; height: 17px; flex: 0 0 auto; }
+.assign-row .a-name { font-weight: 600; }
+.assign-row .a-meta { color: var(--text-muted); font-size: 12px; }
+.assign-row.hidden { display: none; }
+
+.feature-choice { display: flex; gap: 8px; flex-wrap: wrap; }
+.feature-choice label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--surface-elevated);
+  cursor: pointer;
+  font-size: 14px;
+}
+.feature-choice input { width: 17px; height: 17px; }
+
+/* ------------------------------------------------------------ phone ---- */
+@media (max-width: 560px) {
+  .remote-main { padding: 12px; }
+  .pick-grid { grid-template-columns: 1fr; }
+  .remote-header h1 { font-size: 15px; }
+  .remote-header .logo { height: 28px; }
+  .action-bar { padding: 10px 12px; }
+  .action-bar .summary { flex-basis: 100%; order: -1; }
+  .btn-primary-lg { flex: 1 1 auto; }
+  .user-table thead { display: none; }
+  .user-table tr {
+    display: block;
+    border: 1px solid var(--edge);
+    border-radius: 8px;
+    margin-bottom: 8px;
+    padding: 6px;
+  }
+  .user-table td { display: flex; justify-content: space-between; border: none; }
+  .user-table td::before {
+    content: attr(data-label);
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pick, .btn-primary-lg { transition: none; }
+}
+
+/* ------------------------------------------------------------- sheet --
+ * A sheet rather than a dialog because it is reached by tapping something on
+ * screen and dismissed by tapping away,
+ * which on a phone is what a list of choices should feel like.
+ */
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--backdrop-veil);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 30000;
+  padding: 16px;
+}
+.sheet {
+  width: min(100%, 560px);
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--surface-raised);
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  padding: 16px;
+}
+.sheet h3 { margin: 0 0 12px; font-size: 16px; font-weight: 600; }
+.sheet-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
+
+@media (min-width: 561px) {
+  .sheet-backdrop { align-items: center; }
+}
+
+/* The operator's own Direct Access link.
+   Possession of that URL is the credential, so the sheet that shows it says so
+   plainly. Advisory treatment rather than danger: having a link is a supported
+   thing, and what needs stating is what it does, not that something is wrong.
+   Semantic tokens only, so it follows every preset and both palettes. */
+.direct-note {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--state-warning, var(--accent));
+  border-left: 3px solid var(--state-warning, var(--accent));
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text, var(--fg));
+  font-size: 12px;
+  line-height: 1.45;
+}
+.direct-note strong { color: var(--text, var(--fg)); }
+
+/* ----------------------------------------------------- source previews --
+   The card IS the preview. An operator picking a source on a tablet should
+   recognise it from the picture, not read a hostname and hope -- and the whole
+   card stays the target, so there is no small control to aim at.
+
+   Preview is an identification aid and never a routing gate: a source whose
+   encoder is not generating thumbnails keeps an ordinary card and says so
+   quietly. The picture is decoration over a button that works either way. */
+.pick.has-preview {
+  padding: 0;
+  overflow: hidden;
+  gap: 0;
+}
+.pick .pick-shot {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--surface-sunken, #10141a);
+  display: block;
+  overflow: hidden;
+}
+.pick .pick-shot img {
+  width: 100%;
+  height: 100%;
+  /* Contain, not cover: a cropped preview can hide the very corner of the
+     screen somebody is using to tell two inputs apart. */
+  object-fit: contain;
+  display: block;
+}
+/* The text sits on a scrim so it survives a bright desktop and a dark camera
+   feed alike, rather than being legible over half the sources. */
+.pick.has-preview .pick-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px 10px;
+  background: var(--surface-elevated);
+}
+.pick.has-preview .pick-name { font-weight: 600; }
+/* Selection has to read at a glance over an arbitrary picture.
+   The footer tint measured deltaE 12.9 against the unselected footer, which is
+   a difference somebody can act on -- but the tint is 16% alpha, and 16% alpha
+   over a bright source is nothing at all. So the edge is drawn at FULL
+   strength from the accent the presets set, not from the selection tint: the
+   distinction survives a palette where the two hues sit close, and it survives
+   a white picture behind it. */
+.pick.has-preview[aria-pressed="true"] .pick-text {
+  background: var(--selected-fill);
+}
+.pick.has-preview[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 3px var(--action-primary);
+  border-color: var(--action-primary);
+}
+/* A quiet label where there is no picture to show. Never a broken image. */
+.pick .pick-shot.empty::after {
+  content: attr(data-note);
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+/* Dragging a source onto a display. The drop target says it will take it. */
+.pick[draggable="true"] { cursor: grab; }
+.pick.dragging { opacity: .55; }
+.pick.drop-ok {
+  box-shadow: inset 0 0 0 3px var(--action-primary);
+  border-color: var(--action-primary);
+}
+
+/* --------------------------------------------------------- the Matrix --
+   Sources are columns, displays and groups are rows. The ring is video and the
+   dot inside it is audio, as in the main Matrix. A group row says what is true
+   of all its members with a filled ring and of some of them with a dashed one,
+   so a partial route is never drawn as a whole one. */
+.mx-modes { display: inline-flex; gap: 6px; margin: 0 0 10px; }
+.mx-modebtn {
+  min-height: var(--touch-target);
+  padding: 0 16px;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--surface-elevated);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.mx-modebtn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.mx-modebtn.active {
+  background-color: var(--action-primary);
+  color: var(--on-accent, #101418);
+  border-color: var(--action-primary);
+  box-shadow: inset 0 0 0 1px var(--action-primary);
+}
+.mx-scroll {
+  overflow: auto;
+  max-height: 70vh;
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  background: var(--surface-elevated);
+}
+.mx { border-collapse: separate; border-spacing: 0; }
+.mx th, .mx td { padding: 6px; border-bottom: 1px solid var(--edge); border-right: 1px solid var(--edge); background: var(--surface-elevated); }
+.mx-corner { position: sticky; left: 0; top: 0; z-index: 3; }
+.mx-source-head {
+  position: sticky; top: 0; z-index: 2;
+  min-width: 56px; max-width: 120px;
+  vertical-align: bottom; text-align: center;
+  font-size: 12px; font-weight: 600; overflow-wrap: anywhere;
+}
+.mx-source-head:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.mx-source-head.offline .mx-source-name { color: var(--text-muted); }
+.mx-row-head {
+  position: sticky; left: 0; z-index: 1;
+  min-width: 150px; text-align: left; font-size: 13px; font-weight: 600;
+}
+.mx-row-name { display: block; overflow-wrap: anywhere; }
+.mx-row-kind { display: block; font-size: 11px; font-weight: 400; color: var(--text-muted); }
+.mx-group .mx-row-head { box-shadow: inset 3px 0 0 var(--edge-strong, var(--text-muted)); }
+.mx-chips { display: block; }
+.mx-chip {
+  display: inline-block; margin: 2px 4px 0 0; padding: 0 6px;
+  border: 1px solid var(--edge); border-radius: 999px;
+  font-size: 10px; font-weight: 700; letter-spacing: .03em; color: var(--text-muted);
+}
+.mx-chip.offline { color: var(--state-warning-text); border-color: var(--state-warning-text); }
+.mx-chip.unavailable { color: var(--state-warning-text); border-color: var(--state-warning-text); }
+.mx-chip.info { color: var(--state-info-text, var(--link-text)); border-color: var(--state-info-text, var(--link-text)); }
+.mx-td { text-align: center; }
+.mx-cell {
+  width: var(--touch-target); height: var(--touch-target);
+  min-width: 40px; min-height: 40px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 8px; background: transparent; cursor: pointer; padding: 0;
+}
+.mx-cell:hover:not(:disabled) { background-image: linear-gradient(var(--control-hover-veil), var(--control-hover-veil)); }
+.mx-cell:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.mx-cell:disabled { cursor: not-allowed; }
+.mx-cell.offline-blocked { opacity: var(--control-disabled-opacity); }
+.mx-ring {
+  position: relative; width: 22px; height: 22px; border-radius: 50%;
+  border: 2px solid var(--text-muted); box-sizing: border-box;
+  display: inline-block;
+}
+.mx-ring.video-all { border-color: var(--action-primary); background: var(--selected-fill); }
+.mx-ring.video-partial { border-color: var(--action-primary); border-style: dashed; }
+.mx-dot {
+  position: absolute; left: 50%; top: 50%; width: 8px; height: 8px;
+  margin: -4px 0 0 -4px; border-radius: 50%; background: transparent;
+  box-sizing: border-box;
+}
+.mx-dot.audio-all { background: var(--text); }
+.mx-dot.audio-partial { border: 2px dashed var(--text); }
+.mx-preview {
+  position: fixed; z-index: 20; width: 240px; aspect-ratio: 16 / 9;
+  background: var(--surface-sunken, #10141a);
+  border: 1px solid var(--edge); border-radius: 8px; overflow: hidden;
+  pointer-events: none;
+}
+.mx-preview img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.mx-preview.empty::after {
+  content: attr(data-note);
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  padding: 8px; text-align: center; font-size: 12px; color: var(--text-muted);
+}
+
+/* While a route is in flight, the display it targets says so. */
+.pick.routing { cursor: progress; }
+.pick.routing .pick-state { color: var(--state-info-text, var(--link-text)); }
+
+@media (max-width: 560px) {
+  /* One column on a phone, so the preview is big enough to recognise. */
+  .pick.has-preview .pick-text { padding: 8px 12px 10px; }
+}
+@media (min-width: 1200px) {
+  /* Wide screens get more cards rather than absurdly large pictures. */
+  .pick-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+}
+
+/* ---------------------------------------------------------------------------
+   Primary navigation on the Remote Access page.
+
+   The other pages carry this rule inline; the page is the same navigation, so it
+   is the same measurements: 8px 16px, 14px, weight 500, a 6px top radius, and a
+   36px square Settings gear at the end. Colours, hover and the selected fill come
+   from ui/templates.css, so a preset or the light palette reaches it with every
+   other tab.
+   --------------------------------------------------------------------------- */
+.remote-header .controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.remote-header .tabs { display: flex; gap: 0; flex-wrap: wrap; }
+.remote-header .tabs .tab {
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+  border-radius: 6px 6px 0 0;
+}
+.remote-header .gear-btn { width: 36px; height: 36px; display: inline-flex;
+  align-items: center; justify-content: center; border-radius: 8px;
+  border: 1px solid var(--edge, var(--border)); background: var(--surface-elevated, var(--panel-2));
+  cursor: pointer; font-size: 18px; color: var(--text, var(--fg)); }
