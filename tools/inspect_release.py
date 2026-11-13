@@ -47,7 +47,13 @@ _FORBIDDEN_NAME = re.compile("|".join([
     r"(^|/)__pycache__/",
 ]), re.IGNORECASE)
 # A public CA bundle is not key material; these licence texts are the only .pem allowance.
-_LABEL_OK_PATH = re.compile(r"^(third_party_licenses/|.*/third_party_licenses/)")
+# Two further exact allowances, both produced by the build tool itself rather than chosen by us:
+# PyInstaller's own `base_library.zip` (the interpreter's frozen standard library, present as a
+# file in the macOS bundle and the Linux folder, embedded inside the single Windows executable),
+# and certifi's public CA bundle `certifi/cacert.pem`. Neither is a licence text, a credential or
+# key material; the content scans below still run on every other member and are unaffected.
+_LABEL_OK_PATH = re.compile(r"^(third_party_licenses/|.*/third_party_licenses/)"
+                            r"|^(.*/)?base_library\.zip$|^(.*/)?certifi/cacert\.pem$")
 # The corresponding source of the LGPL component ships unmodified, so its own tests/ and tools/
 # folders are part of it and are not a leak.
 _UPSTREAM_SOURCE = re.compile(r"^(.*/)?third_party/pystray-0\.19\.5/")
@@ -122,10 +128,17 @@ def problems_for(path: Path, version: str, product=None, diagnostic: bool = Fals
     for required in REQUIRED_NAMES:
         if not any(n == required or n.endswith("/" + required) for n in names):
             found.append("%s has no %s (required by the LGPL component and the licence)" % (name, required))
-    licence = [d for n, d in listing if re.search(r"(^|/)LICENSE$", n)]
+    # The product's own licence is the shallowest LICENSE in the package. A macOS bundle or a Linux
+    # folder also holds LICENSE files of bundled libraries, deeper down; taking whichever came
+    # first made the answer depend on archive order.
+    licence_members = [(n, d) for n, d in listing if re.search(r"(^|/)LICENSE$", n)]
     marker = b"11A. COMPONENTS LICENSED UNDER THE GNU LESSER GENERAL PUBLIC LICENSE"
-    if licence and marker not in licence[0].replace(bytes([13, 10]), bytes([10])):
-        found.append("%s: LICENSE does not carry section 11A" % name)
+    if licence_members:
+        depth = min(n.count("/") for n, _ in licence_members)
+        for member_name, d in licence_members:
+            if member_name.count("/") == depth and marker not in d.replace(bytes([13, 10]), bytes([10])):
+                found.append("%s: LICENSE does not carry section 11A" % name)
+                break
     for member, data in listing:
         if _UPSTREAM_SOURCE.match(member):
             if _SECRET.search(data):

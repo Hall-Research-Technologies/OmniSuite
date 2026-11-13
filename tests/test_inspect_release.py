@@ -84,6 +84,28 @@ class InspectReleaseTests(unittest.TestCase):
     def test_a_pem_outside_the_licence_folder_is_key_material(self):
         self.assertTrue(self.check(dict(GOOD, **{"certs/server.pem": b"x"})))
 
+    def test_the_build_tools_own_files_are_not_findings_but_lookalikes_are(self):
+        # PyInstaller's frozen standard library and certifi's public CA bundle appear as files in
+        # the macOS bundle and the Linux folder. Exactly those names are allowed, nowhere else.
+        for ok in ("OmniSuite/_internal/base_library.zip", "OmniSuite/_internal/certifi/cacert.pem"):
+            with self.subTest(ok):
+                self.assertEqual(self.check(dict(GOOD, **{ok: b"x"})), [])
+        for bad in ("OmniSuite/_internal/other_library.zip", "OmniSuite/_internal/xbase_library.zip",
+                    "OmniSuite/_internal/certs/cacert.pem", "OmniSuite/_internal/certifi/server.pem"):
+            with self.subTest(bad):
+                self.assertTrue(self.check(dict(GOOD, **{bad: b"x"})))
+
+    def test_a_bundled_librarys_licence_does_not_decide_the_products_licence(self):
+        # Archive order used to decide which LICENSE was read. The product's is the shallowest.
+        deeper = {"OmniSuite/_internal/somelib/LICENSE": b"MIT licence of a bundled library"}
+        self.assertEqual(self.check(dict(GOOD, **deeper)), [])
+        ordered = dict(deeper)
+        ordered.update(GOOD)
+        self.assertEqual(self.check(ordered), [])
+        # ...and the shallowest one still has to carry section 11A.
+        weak = dict(GOOD, LICENSE=b"a licence without the section")
+        self.assertTrue(any("11A" in line for line in self.check(dict(deeper, **weak))))
+
     def test_text_members_are_scanned(self):
         private = b"see Omni" + b"Suite Pl" + b"us"
         for data, label in ((private, "private product"),
