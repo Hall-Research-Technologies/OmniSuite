@@ -61,7 +61,8 @@ jobs:
           cat > /tmp/probe_tk_http.py <<'PYEOF'
           # No OmniSuite code at all: does a Tk main loop, a worker thread that calls root.after, and a
           # plain HTTP server in a thread behave on this runner the way the launcher tests assume?
-          import json, sys, threading, time, urllib.request, http.server, os
+          import json, sys, threading, time, urllib.request, http.server, os, faulthandler
+          faulthandler.dump_traceback_later(100, exit=True)
           import tkinter as tk
           root = tk.Tk(); root.withdraw()
           R = {}
@@ -111,7 +112,7 @@ jobs:
           root.after(0, scenario)
           root.mainloop()
           PYEOF
-          timeout 120 python /tmp/probe_tk_http.py
+          python /tmp/probe_tk_http.py
 
       - name: The launcher tests, with the launcher log and stderr of every scenario printed
         shell: bash
