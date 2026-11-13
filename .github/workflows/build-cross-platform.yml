@@ -141,26 +141,25 @@ jobs:
           PYEOF
           python /tmp/probe_server.py
 
-      - name: Hostname resolution candidates, each timed in a fresh process
+      - name: DNS candidates, each timed in a fresh process
         run: |
           cat > /tmp/fq.py <<'PYEOF'
           import socket, time
           t = time.time(); r = socket.getfqdn("127.0.0.1"); print("   getfqdn", r, "%.2fs" % (time.time() - t))
           PYEOF
           echo "[baseline]"; python /tmp/fq.py
-          echo "[flush dscacheutil + HUP mDNSResponder]"; sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder || true; python /tmp/fq.py
-          echo "[scutil HostName/LocalHostName/ComputerName = omni-ci]"
-          sudo scutil --set HostName omni-ci; sudo scutil --set LocalHostName omni-ci; sudo scutil --set ComputerName omni-ci; python /tmp/fq.py
-          echo "[hosts: 127.0.0.1 omni-ci omni-ci.local]"
-          echo "127.0.0.1 omni-ci omni-ci.local" | sudo tee -a /etc/hosts >/dev/null; python /tmp/fq.py
-          echo "[state]"; scutil --dns | head -20; hostname; cat /etc/hosts
+          networksetup -listallnetworkservices
+          networksetup -getdnsservers "Ethernet" || true
+          echo "[resolver set to a local non-answering address 127.0.0.1 on every service]"
+          networksetup -listallnetworkservices | tail -n +2 | while read -r svc; do sudo networksetup -setdnsservers "$svc" 127.0.0.1 || true; done
+          sleep 2; python /tmp/fq.py
+          echo "[restore: Empty]"
+          networksetup -listallnetworkservices | tail -n +2 | while read -r svc; do sudo networksetup -setdnsservers "$svc" Empty || true; done
+          sleep 2; python /tmp/fq.py
+          echo "[python-level only: getnameinfo with NI_NUMERICHOST vs gethostbyaddr]"
           python - <<'PYX'
           import socket, time
-          for name, fn in (("gethostbyaddr", lambda: socket.gethostbyaddr("127.0.0.1")), ("getaddrinfo localhost", lambda: socket.getaddrinfo("localhost", 80)), ("gethostbyname hostname", lambda: socket.gethostbyname(socket.gethostname()))):
-              t = time.time()
-              try: r = fn()
-              except Exception as e: r = repr(e)
-              print(name, "%.2fs" % (time.time() - t), str(r)[:80])
+          t = time.time(); print(socket.getnameinfo(("127.0.0.1", 0), socket.NI_NAMEREQD), "getnameinfo %.2fs" % (time.time() - t))
           PYX
 
       - name: The launcher tests, with the full stdout and stderr of every scenario printed
