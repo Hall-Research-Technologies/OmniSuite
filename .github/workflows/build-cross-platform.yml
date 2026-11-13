@@ -157,10 +157,10 @@ jobs:
                   p = real_run(*a, **k)
               except subprocess.TimeoutExpired as exc:
                   if scenario:
-                      print("##### SCENARIO TIMEOUT %.1fs" + chr(10) + "--- stdout ---" + chr(10) + "%s" + chr(10) + "--- stderr ---" + chr(10) + "%s" % (time.time() - t0, str(exc.stdout)[-6000:], str(exc.stderr)[-3000:]))
+                      print(("##### SCENARIO TIMEOUT %.1fs" + chr(10) + "--- stdout ---" + chr(10) + "%s" + chr(10) + "--- stderr ---" + chr(10) + "%s") % (time.time() - t0, str(exc.stdout)[-6000:], str(exc.stderr)[-3000:]))
                   raise
               if scenario:
-                  print("##### SCENARIO %.1fs exit=%s" + chr(10) + "--- stdout (launcher log lines) ---" + chr(10) + "%s" + chr(10) + "--- stderr tail ---" + chr(10) + "%s" % (time.time() - t0, p.returncode, (p.stdout or "")[-6000:], (p.stderr or "")[-1500:])); sys.stdout.flush()
+                  print(("##### SCENARIO %.1fs exit=%s" + chr(10) + "--- stdout (launcher log lines) ---" + chr(10) + "%s" + chr(10) + "--- stderr tail ---" + chr(10) + "%s") % (time.time() - t0, p.returncode, (p.stdout or "")[-6000:], (p.stderr or "")[-1500:])); sys.stdout.flush()
               return p
           subprocess.run = recording_run
           T.subprocess.run = recording_run
