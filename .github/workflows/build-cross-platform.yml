@@ -153,6 +153,8 @@ jobs:
           def recording_run(*a, **k):
               scenario = bool(a) and isinstance(a[0], list) and len(a[0]) > 2 and a[0][1] == "-c" and "root.mainloop()" in str(a[0][2])
               t0 = time.time()
+              if scenario:
+                  a = (list(a[0][:2]) + ["import faulthandler, sys; faulthandler.dump_traceback_later(10, exit=False, file=sys.stderr)" + chr(10) + a[0][2]] + list(a[0][3:]),) + tuple(a[1:])
               try:
                   p = real_run(*a, **k)
               except subprocess.TimeoutExpired as exc:
@@ -160,7 +162,7 @@ jobs:
                       print(("##### SCENARIO TIMEOUT %.1fs" + chr(10) + "--- stdout ---" + chr(10) + "%s" + chr(10) + "--- stderr ---" + chr(10) + "%s") % (time.time() - t0, str(exc.stdout)[-6000:], str(exc.stderr)[-3000:]))
                   raise
               if scenario:
-                  print(("##### SCENARIO %.1fs exit=%s" + chr(10) + "--- stdout (launcher log lines) ---" + chr(10) + "%s" + chr(10) + "--- stderr tail ---" + chr(10) + "%s") % (time.time() - t0, p.returncode, (p.stdout or "")[-6000:], (p.stderr or "")[-1500:])); sys.stdout.flush()
+                  print(("##### SCENARIO %.1fs exit=%s" + chr(10) + "--- stdout (launcher log lines) ---" + chr(10) + "%s" + chr(10) + "--- stderr tail ---" + chr(10) + "%s") % (time.time() - t0, p.returncode, (p.stdout or "")[-6000:], (p.stderr or "")[:4500])); sys.stdout.flush()
               return p
           subprocess.run = recording_run
           T.subprocess.run = recording_run
