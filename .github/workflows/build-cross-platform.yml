@@ -114,33 +114,70 @@ jobs:
           PYEOF
           python /tmp/probe_tk_http.py
 
-      - name: The launcher tests, with the launcher log and stderr of every scenario printed
+      - name: The product's own server alone (no Tk, no launcher)
+        shell: bash
+        run: |
+          cat > /tmp/probe_server.py <<'PYEOF'
+          import os, sys, time, threading, urllib.request, faulthandler
+          faulthandler.dump_traceback_later(80, exit=True)
+          sys.path.insert(0, os.getcwd())
+          from flask import Flask
+          import omni_remote
+          a = Flask("s")
+          @a.route("/h")
+          def h(): return "ok"
+          t = time.time()
+          httpd = omni_remote.serve_tagged("127.0.0.1", 0, a, threaded=True)
+          port = httpd.server_port
+          threading.Thread(target=httpd.serve_forever, daemon=True).start()
+          print("serve_tagged bound", port, "%.3fs" % (time.time() - t))
+          for i in range(3):
+              t = time.time()
+              try:
+                  r = urllib.request.urlopen("http://127.0.0.1:%d/h" % port, timeout=5); print("GET ok", r.status, "%.3fs" % (time.time() - t))
+              except Exception as e:
+                  print("GET failed", repr(e), "%.3fs" % (time.time() - t))
+          os._exit(0)
+          PYEOF
+          python /tmp/probe_server.py
+
+      - name: The launcher tests, with the full stdout and stderr of every scenario printed
         shell: bash
         run: |
           cat > /tmp/diag_run.py <<'PYEOF'
-          import json, os, sys, time, unittest
+          import json, os, subprocess, sys, time, unittest
           ROOT = os.getcwd(); sys.path.insert(0, ROOT)
           import tests                      # installs the hardware fence, exactly as the suite does
           import tests.test_local_port_launcher as T
-          orig = T.run_scenario
-          def wrapped(body, data, extra_env=None, timeout=90):
+          real_run = subprocess.run
+          def recording_run(*a, **k):
+              scenario = bool(a) and isinstance(a[0], list) and len(a[0]) > 2 and a[0][1] == "-c" and "root.mainloop()" in str(a[0][2])
               t0 = time.time()
               try:
-                  res = orig(body, data, extra_env, timeout)
-              except BaseException as exc:
-                  print("##### SCENARIO RAISED after %.1fs:\n%s" % (time.time() - t0, str(exc)[:7000])); sys.stdout.flush()
+                  p = real_run(*a, **k)
+              except subprocess.TimeoutExpired as exc:
+                  if scenario:
+                      print("##### SCENARIO TIMEOUT %.1fs
+--- stdout ---
+%s
+--- stderr ---
+%s" % (time.time() - t0, str(exc.stdout)[-6000:], str(exc.stderr)[-3000:]))
                   raise
-              result, proc = res
-              print("##### SCENARIO %.1fs exit=%s RESULT=%s" % (time.time() - t0, proc.returncode, json.dumps(result)[:800]))
-              print("--- stdout tail ---\n" + (proc.stdout or "")[-3500:])
-              print("--- stderr tail ---\n" + (proc.stderr or "")[-3500:]); sys.stdout.flush()
-              return res
-          T.run_scenario = wrapped
+              if scenario:
+                  print("##### SCENARIO %.1fs exit=%s
+--- stdout (launcher log lines) ---
+%s
+--- stderr tail ---
+%s" % (time.time() - t0, p.returncode, (p.stdout or "")[-6000:], (p.stderr or "")[-1500:])); sys.stdout.flush()
+              return p
+          subprocess.run = recording_run
+          T.subprocess.run = recording_run
           suite = unittest.defaultTestLoader.loadTestsFromTestCase(T.LauncherTests)
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           print("TESTS RUN %d FAILURES %d ERRORS %d SKIPPED %d" % (result.testsRun, len(result.failures), len(result.errors), len(result.skipped)))
           PYEOF
-          python /tmp/diag_run.py 2>&1 | tee diag-output.txt | cut -c1-400
+          python /tmp/diag_run.py > diag-output.txt 2>&1 || true
+          cat diag-output.txt | cut -c1-400
 
       - name: Keep the output
         if: always()
