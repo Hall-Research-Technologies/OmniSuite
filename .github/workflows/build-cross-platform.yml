@@ -141,6 +141,19 @@ jobs:
           PYEOF
           python /tmp/probe_server.py
 
+      - name: Hostname resolution, before and after a hosts entry
+        run: |
+          cat > /tmp/fq.py <<'PYEOF'
+          import socket, time
+          print("hostname", socket.gethostname())
+          for i in range(3):
+              t = time.time(); r = socket.getfqdn("127.0.0.1"); print("getfqdn", r, "%.2fs" % (time.time() - t))
+          PYEOF
+          python /tmp/fq.py
+          echo "--- adding the machine's own hostname to /etc/hosts for 127.0.0.1"
+          echo "127.0.0.1 $(hostname)" | sudo tee -a /etc/hosts >/dev/null
+          python /tmp/fq.py
+
       - name: The launcher tests, with the full stdout and stderr of every scenario printed
         shell: bash
         run: |
