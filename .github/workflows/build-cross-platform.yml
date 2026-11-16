@@ -119,6 +119,36 @@ jobs:
         shell: bash
         run: |
           set +e
+          # CI environment only; nothing here reaches the packaged application.
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # The runner has no display. pystray's default Linux backend needs
+            # one at import time; the dummy backend is the library's own
+            # documented switch for a headless host.
+            export PYSTRAY_BACKEND=dummy
+          fi
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # GitHub's macOS runners take about 35 s to answer a reverse lookup of
+            # 127.0.0.1 (measured: gethostbyaddr, getnameinfo and getfqdn alike,
+            # on every fresh process; a DNS flush, a hostname change and a hosts
+            # entry did not change it). Werkzeug's server_bind performs that
+            # lookup before it binds, so the launcher scenario tests, which wait
+            # about 15 s, never see a server. A numeric loopback address needs no
+            # lookup, so for the test processes only getfqdn returns it as is.
+            # The shim lives in a temporary directory outside the repository and
+            # is not part of any package or of the product's behaviour.
+            shim="$RUNNER_TEMP/ci_resolver_shim"
+            mkdir -p "$shim"
+            cat > "$shim/sitecustomize.py" <<'PYEOF'
+          import socket as _socket
+          _real_getfqdn = _socket.getfqdn
+          def getfqdn(name=""):
+              if name in ("127.0.0.1", "::1", "localhost"):
+                  return name
+              return _real_getfqdn(name)
+          _socket.getfqdn = getfqdn
+          PYEOF
+            export PYTHONPATH="$shim${PYTHONPATH:+:$PYTHONPATH}"
+          fi
           python run_tests.py 2>&1 | tee test-output.txt
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
