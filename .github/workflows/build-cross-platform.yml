@@ -233,6 +233,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-lock.txt
           pip install pyinstaller==6.22.3 pyinstaller-hooks-contrib==2026.9
+          # The runner's own Python can carry packages that are not in the lock. PyInstaller bundles
+          # whatever an imported module can reach, and colorama (a BSD-licensed click helper) reached the
+          # packaged executable that way: not locked, not in the notices, absent from the qualified build.
+          # Removing it restores the locked set; it is not a dependency of the product.
+          python -m pip uninstall -y colorama
 
       - name: Use the verified release version
         id: version
