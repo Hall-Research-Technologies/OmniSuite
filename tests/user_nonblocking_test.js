@@ -45,6 +45,9 @@ const STATE = () => ({
 function world(options) {
   options = options || {};
   const state = STATE();
+  if (options.shown) {
+    state.destinations.forEach((d) => { d.showing = {mode: 'source', source_id: 'src1', source_name: 'Teacher PC'}; });
+  }
   const byId = new Map();
   [...HTML.matchAll(/<[^>]*\bid="([^"]+)"[^>]*>/g)].forEach((m) => {
     const n = new El('div'); n.id = m[1];
@@ -56,7 +59,7 @@ function world(options) {
     getElementById: (id) => byId.get(id) || null,
     querySelectorAll: (sel) => {
       const root = new El('div');
-      root.children = [...byId.get('sources').children, ...byId.get('destinations').children];
+      root.children = [...byId.get('sources').children, ...(byId.get('destination_groups') ? byId.get('destination_groups').children : []), ...byId.get('destinations').children];
       return root.querySelectorAll(sel);
     },
     createElement: (tag) => new El(tag),
@@ -103,7 +106,7 @@ function world(options) {
   const click = async (node) => {
     for (const fn of listeners.click) await fn({target: node, preventDefault() {}});
   };
-  const cardsOf = () => [...byId.get('sources').children, ...byId.get('destinations').children];
+  const cardsOf = () => [...byId.get('sources').children, ...(byId.get('destination_groups') ? byId.get('destination_groups').children : []), ...byId.get('destinations').children];
   const card = (kind, id) => cardsOf().find((c) => c.dataset.kind === kind && c.dataset.id === id);
   return {byId, calls, toasts, holds, click, card, state, document};
 }
@@ -122,7 +125,8 @@ suite.push(() => check('a second route is sent while the first is still being ve
   const first = w.byId.get('route_btn').fire('click');
   await settle();
   assert(posts(w).length === 1, 'the first route is out: ' + posts(w).length);
-  // Nothing has answered yet. The page must take the next choice and send it.
+  // Nothing has answered yet. The page must take the next choice and send it. The selection
+  // stays as it was, so dst1 is still chosen: it is already on its way and is left to finish.
   await w.click(w.card('source', 'src2'));
   await w.click(w.card('destination', 'dst2'));
   assert(w.byId.get('route_btn').disabled === false,
@@ -161,8 +165,9 @@ suite.push(() => check('five consecutive routes cause one read of the page, not 
   const w = world({});
   await settle();
   const baseline = stateReads(w);
-  await w.click(w.card('source', 'src1'));
   for (const id of ['dst1', 'dst2', 'dst3', 'dst1', 'dst2']) {
+    await w.byId.get('clear_btn').fire('click');
+    await w.click(w.card('source', 'src1'));
     await w.click(w.card('destination', id));
     await w.byId.get('route_btn').fire('click');
   }
@@ -199,6 +204,7 @@ suite.push(() => check('a failed route stays on its card and is not lost to a la
   await w.click(w.card('source', 'src1'));
   await w.click(w.card('destination', 'dst1'));
   await w.byId.get('route_btn').fire('click');
+  await w.click(w.card('destination', 'dst1'));            // out of the selection again
   await w.click(w.card('destination', 'dst2'));
   await w.byId.get('route_btn').fire('click');
   await settleRoute();
@@ -227,11 +233,10 @@ suite.push(() => check('a verified failure is not drawn while the route is only 
   await settleRoute();
 }));
 
-suite.push(() => check('Select several sends one request naming every display and group', async () => {
+suite.push(() => check('a selection of several displays and a group sends one request naming every one', async () => {
   const w = world({});
   await settle();
   await w.click(w.card('source', 'src1'));
-  await w.byId.get('multi_toggle').fire('click');
   await w.click(w.card('destination', 'dst1'));
   await w.click(w.card('destination', 'dst2'));
   await w.click(w.card('group', 'grp_a'));
@@ -247,16 +252,17 @@ suite.push(() => check('Select several sends one request naming every display an
   assert(JSON.stringify(sent.body) === JSON.stringify({
     source: 'src1', destinations: ['dst1', 'dst2'], groups: ['grp_a'], mode: 'av', interface: 'standard'}),
     JSON.stringify(sent.body));
-  // The selection is free for the next route at once.
+  // The selection is kept, as it is on LumaSuite's page: Clear selection is how it is emptied.
+  assert(w.card('destination', 'dst1').getAttribute('aria-pressed') === 'true');
+  await w.byId.get('clear_btn').fire('click');
   assert(w.card('destination', 'dst1').getAttribute('aria-pressed') === 'false');
 }));
 
-suite.push(() => check('Select several reports N of M and names what did not route', async () => {
+suite.push(() => check('several targets report N of M and name what did not route', async () => {
   const w = world({answer: () => ({body: {ok: false, routed: 2, total: 3,
     results: [{ok: true, name: 'Front'}, {ok: false, name: 'Side'}, {ok: true, name: 'Rooms A'}]}})});
   await settle();
   await w.click(w.card('source', 'src1'));
-  await w.byId.get('multi_toggle').fire('click');
   await w.click(w.card('destination', 'dst1'));
   await w.click(w.card('destination', 'dst2'));
   await w.byId.get('route_btn').fire('click');
@@ -271,6 +277,7 @@ suite.push(() => check('one display is still /api/user/route and one group still
   await w.click(w.card('source', 'src1'));
   await w.click(w.card('destination', 'dst1'));
   await w.byId.get('route_btn').fire('click');
+  await w.click(w.card('destination', 'dst1'));            // out of the selection again
   await w.click(w.card('group', 'grp_a'));
   await w.byId.get('route_btn').fire('click');
   await settleRoute();
@@ -278,21 +285,53 @@ suite.push(() => check('one display is still /api/user/route and one group still
     posts(w).map((p) => p.url).join());
 }));
 
-suite.push(() => check('turning Select several off returns to choosing one', async () => {
+suite.push(() => check('there is no one-or-several switch: choosing another display adds to the selection', async () => {
+  assert(!/multi_toggle|Select several|Select one/.test(HTML) && !/multi_toggle|Select several/.test(JS),
+    'the page still has a single/several mode');
   const w = world({});
   await settle();
   await w.click(w.card('source', 'src1'));
-  await w.byId.get('multi_toggle').fire('click');
   await w.click(w.card('destination', 'dst1'));
-  await w.click(w.card('destination', 'dst2'));
-  await w.byId.get('multi_toggle').fire('click');
-  assert(w.byId.get('multi_toggle').getAttribute('aria-pressed') === 'false');
   await w.click(w.card('destination', 'dst3'));
   assert(w.card('destination', 'dst3').getAttribute('aria-pressed') === 'true');
-  assert(w.card('destination', 'dst1').getAttribute('aria-pressed') === 'false');
+  assert(w.card('destination', 'dst1').getAttribute('aria-pressed') === 'true', 'the first stays chosen');
+  // A selection of one is just a selection: it goes to the single-display endpoint.
+  await w.click(w.card('destination', 'dst1'));
   await w.byId.get('route_btn').fire('click');
   await settleRoute();
   assert(posts(w).length === 1 && posts(w)[0].url === '/api/user/route' && posts(w)[0].body.destination === 'dst3');
+}));
+
+suite.push(() => check('Audio follows video off sends a video-only route; on sends audio and video', async () => {
+  const w = world({});
+  await settle();
+  await w.click(w.card('source', 'src1'));
+  await w.click(w.card('destination', 'dst1'));
+  await w.byId.get('route_btn').fire('click');
+  await settleRoute();
+  assert(posts(w)[0].body.mode === 'av', JSON.stringify(posts(w)[0].body));
+  const toggle = w.byId.get('afv_toggle');
+  toggle.checked = false;
+  await toggle.fire('change');
+  await w.click(w.card('destination', 'dst1'));            // out
+  await w.click(w.card('destination', 'dst2'));
+  await w.byId.get('route_btn').fire('click');
+  await settleRoute();
+  assert(posts(w)[1].body.mode === 'video', JSON.stringify(posts(w)[1].body));
+}));
+
+suite.push(() => check('Unroute sends only the chosen displays, needs no source, and leaves the rest', async () => {
+  const w = world({shown: true});
+  await settle();
+  assert(w.byId.get('unroute_btn').disabled === true, 'nothing chosen: nothing to unroute');
+  await w.click(w.card('destination', 'dst1'));
+  await w.click(w.card('destination', 'dst2'));
+  assert(w.byId.get('unroute_btn').disabled === false);
+  await w.byId.get('unroute_btn').fire('click');
+  await settleRoute();
+  assert(posts(w).length === 1 && posts(w)[0].url === '/api/user/unroute_many', JSON.stringify(posts(w)));
+  assert(JSON.stringify(posts(w)[0].body) === JSON.stringify({destinations: ['dst1', 'dst2'], groups: []}),
+    JSON.stringify(posts(w)[0].body));
 }));
 
 (async () => {

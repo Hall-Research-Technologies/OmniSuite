@@ -129,7 +129,7 @@ display name, the product name in the blocked-scan answer, and the page wiring.
 
 1. `python run_tests.py` on the release branch.
 2. Dispatch the workflow on that branch with a suffixed `release_version` such as
-   `V1.2.0-diag1`. It runs the identity job, all four test jobs and all four builds with
+   `V1.2.1-diag1`. It runs the identity job, all four test jobs and all four builds with
    smoke tests, and publishes nothing.
 3. Check the artifact names carry `OmniSuite-`.
 4. Only then create the tag, with approval.

@@ -50,7 +50,7 @@
   <script src="/ui/usb-prep.js?v=20261031-usbprep"></script>
   <script src="/ui/modal-stack.js"></script>
   <script src="/ui/clear-units.js?v=20261102-clear"></script>
-  <script src="/ui/adminnav.js?v=20261116-remotenav"></script>
+  <script src="/ui/adminnav.js?v=20261117-remotenav2"></script>
   <script src="/ui/diagnostics.js?v=20260911-diag"></script>
 <link rel="stylesheet" href="/ui/templates.css?v=20260910-templates">
 <link rel="stylesheet" href="/ui/settings.css?v=20260911-settings">
@@ -59,7 +59,7 @@
 <script src="/ui/toast.js?v=20260911-toast"></script>
 <script src="/ui/scan-notice.js?v=20261012-scannotice"></script>
 <script src="/ui/device-log.js?v=20260911-devicelog" defer></script>
-<script src="/ui/settings.js?v=20261116-pwforms"></script>
+<script src="/ui/settings.js?v=20261117-settings2"></script>
 <script src="/ui/firmware-status.js?v=20261030-firmware"></script>
 
   <div id="hover_preview" class="hover-preview"><img id="hover_preview_img" alt="preview"/></div>
@@ -671,7 +671,7 @@ function _checkFirmwareCompatibility(fwType, selectedIps) {
     const row = getRowByIp(ip);
     if (!row) return;
     
-    const modelCell = row.cells[10];
+    const modelCell = row.cells[DEVICE_COL.model];
     const model = modelCell ? modelCell.textContent.trim() : '';
     
     console.log(`[FIRMWARE_CHECK] ${ip}: model="${model}", compatible="${compatibleModels.some(m => model.toLowerCase().includes(m))}"`);
@@ -705,11 +705,19 @@ function unitRoleText(unit) {
   return String(unit?.type || unit?.role || '').toLowerCase();
 }
 
+// Device Info column positions, defined once. Every reader of a cell by index uses this
+// map; a literal index went stale when the Uptime column was added and left Timezone
+// showing in Uptime, the NTP server in Timezone and the firmware in Model.
+var DEVICE_COL = Object.freeze({
+  select: 0, ip: 1, hostname: 2, mac: 3, linkspeed: 4, codec: 5, uptime: 6,
+  timezone: 7, ntp: 8, type: 9, model: 10, version: 11, password: 12, status: 13
+});
+
 function updateUnitCounts(units = null) {
   const list = Array.isArray(units)
     ? units
     : Array.from($$('#units_table tr[data-ip]')).map(row => ({
-        type: row.cells?.[8]?.textContent || '',
+        type: row.cells?.[DEVICE_COL.type]?.textContent || '',
       }));
   const encoders = list.filter(unit => unitRoleText(unit).includes('encoder')).length;
   const decoders = list.filter(unit => unitRoleText(unit).includes('decoder')).length;
@@ -1166,7 +1174,7 @@ function initSlateManager() {
   };
   const rowUnit = (row) => ({
     ip: row.getAttribute('data-ip'),
-    type: (row.cells?.[8]?.textContent || '').trim().toLowerCase(),
+    type: (row.cells?.[DEVICE_COL.type]?.textContent || '').trim().toLowerCase(),
     label: `${row.getAttribute('data-ip') || ''} / ${(row.cells?.[2]?.textContent || '').trim()}`
   });
   const allUnits = () => Array.from($$('#units_table tr[data-ip]')).map(rowUnit).filter(u => u.ip);
@@ -1647,7 +1655,7 @@ async function loadFiles() {
         // Filter rows and update checkboxes
         const rows = Array.from($$('#units_table tr'));
         rows.forEach(row => {
-          const modelCell = row.cells[10];
+          const modelCell = row.cells[DEVICE_COL.model];
           const model = modelCell ? modelCell.textContent.trim() : '';
           const checkbox = row.querySelector('input[type="checkbox"].row-select');
           const isCompatible = model && compatibleModels.some(m => model.toLowerCase().includes(m));
@@ -2650,7 +2658,7 @@ function linkspeedMarkup(raw){
 
 function setStatus(ip, text, cls, holdMs){
   const row = getRowByIp(ip); if(!row) { console.log('[STATUS] No row for', ip); return; }
-  const statusCell = row.cells[13]; if(!statusCell) { console.log('[STATUS] No status cell for', ip); return; }
+  const statusCell = row.cells[DEVICE_COL.status]; if(!statusCell) { console.log('[STATUS] No status cell for', ip); return; }
   console.log(`[STATUS] Setting ${ip} to '${text}' (${cls}), holdMs=${holdMs}`);
   if (activeUpgradeIps.has(ip)) {
     activeUpgradeStatus.set(ip, {text, cls});
@@ -2933,8 +2941,8 @@ async function monitorUpgrade(ip, snapshotVersion, file = null){
   
   // Update version cell in table
   const row = getRowByIp(ip);
-  if(row && row.cells[11]){
-    row.cells[11].textContent = currentVersion || '(unknown)';
+  if(row && row.cells[DEVICE_COL.version]){
+    row.cells[DEVICE_COL.version].textContent = currentVersion || '(unknown)';
   }
   
   // Compare versions
@@ -3036,7 +3044,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
     activeUpgradeIps.add(ip);
     const row = getRowByIp(ip);
     if(row){
-      const verCell = row.cells[11];
+      const verCell = row.cells[DEVICE_COL.version];
       const ver = verCell ? verCell.textContent.trim() : '';
       snapVersions[ip] = ver;
       console.log(`[UPGRADE] Captured version for ${ip}: "${ver}"`);
@@ -3045,7 +3053,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
         console.warn(`[UPGRADE] WARNING: Version is empty for ${ip} - may cause issues detecting upgrade success`);
       }
       
-      const statusCell = row.cells[13];
+      const statusCell = row.cells[DEVICE_COL.status];
       if(statusCell){
         // Mark this row as under active upgrade monitoring so poller skips it
         statusCell.dataset.monitoring = '1';
@@ -3085,7 +3093,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
       activeUpgradeIps.delete(ip);
       activeUpgradeStatus.delete(ip);
     }
-    const statusCell = row && row.cells ? row.cells[13] : null;
+    const statusCell = row && row.cells ? row.cells[DEVICE_COL.status] : null;
     if(statusCell){ delete statusCell.dataset.monitoring; }
     const finalText = (statusCell?.textContent || '').toLowerCase();
     finishUpgradeMonitor(
@@ -3100,8 +3108,8 @@ $('#upgrade_btn').addEventListener('click', async () => {
   const uploadAndStartMonitor = async (ip) => {
     const row = getRowByIp(ip);
     const snap = snapVersions[ip] || '';
-    if(row && row.cells && row.cells[13]){
-      delete row.cells[13].dataset.holdUntil;
+    if(row && row.cells && row.cells[DEVICE_COL.status]){
+      delete row.cells[DEVICE_COL.status].dataset.holdUntil;
     }
     console.log(`[UPGRADE] Upload slot starting ${ip}`);
     setStatus(ip, 'Uploading', 's-uploading', 0);
@@ -3120,7 +3128,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
       if (uploadResult && !uploadResult.ok) {
         activeUpgradeIps.delete(ip);
         activeUpgradeStatus.delete(ip);
-        const statusCell = row && row.cells ? row.cells[13] : null;
+        const statusCell = row && row.cells ? row.cells[DEVICE_COL.status] : null;
         if(statusCell){ delete statusCell.dataset.monitoring; }
         const stage = uploadResult.stage || 'upload';
         const error = uploadResult.error || 'failed';
@@ -3134,7 +3142,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
     } catch (e) {
       activeUpgradeIps.delete(ip);
       activeUpgradeStatus.delete(ip);
-      const statusCell = row && row.cells ? row.cells[13] : null;
+      const statusCell = row && row.cells ? row.cells[DEVICE_COL.status] : null;
       if(statusCell){ delete statusCell.dataset.monitoring; }
       setStatus(ip, `Upload error: ${e.message}`, 's-error', 30000);
       finishUpgradeMonitor(false);
@@ -3183,9 +3191,9 @@ $('#upgrade_btn').addEventListener('click', async () => {
       // Clear the uploading status from selected devices since upgrade was rejected
       selected.forEach(ip => {
         const row = getRowByIp(ip);
-        if(row && row.cells && row.cells[13]){
-          row.cells[13].innerHTML = '<span class="status s-idle">Idle</span>';
-          delete row.cells[13].dataset.monitoring;
+        if(row && row.cells && row.cells[DEVICE_COL.status]){
+          row.cells[DEVICE_COL.status].innerHTML = '<span class="status s-idle">Idle</span>';
+          delete row.cells[DEVICE_COL.status].dataset.monitoring;
         }
       });
       return;
@@ -3224,13 +3232,13 @@ $('#upgrade_btn').addEventListener('click', async () => {
       const snap = snapVersions[ip] || '';
       // Clear the uploadinghold so monitor can show Upgrading now
       const row = getRowByIp(ip);
-      if(row && row.cells && row.cells[13]){
-        delete row.cells[13].dataset.holdUntil;
+      if(row && row.cells && row.cells[DEVICE_COL.status]){
+        delete row.cells[DEVICE_COL.status].dataset.holdUntil;
       }
       const uploadResult = results[ip];
       if (uploadResult && !uploadResult.ok) {
         activeUpgradeStatus.delete(ip);
-        const statusCell = row && row.cells ? row.cells[13] : null;
+        const statusCell = row && row.cells ? row.cells[DEVICE_COL.status] : null;
         if(statusCell){ delete statusCell.dataset.monitoring; }
         const stage = uploadResult.stage || 'upload';
         const error = uploadResult.error || 'failed';
@@ -3242,7 +3250,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
       // Pass file name so retry can be triggered if device doesn't reboot
       monitorUpgrade(ip, snap, file).finally(()=>{
         // Clear monitoring flag after monitor completes
-        const statusCell = row && row.cells ? row.cells[13] : null;
+        const statusCell = row && row.cells ? row.cells[DEVICE_COL.status] : null;
         if(statusCell){ delete statusCell.dataset.monitoring; }
 
         const finalText = (statusCell?.textContent || '').toLowerCase();
@@ -3440,7 +3448,7 @@ function setStatusDisabled() {
   const rows = $$('#units_table tr');
   rows.forEach(r => {
     if (r.hasAttribute && r.hasAttribute('data-extender-ip')) return;
-    const cell = r.cells && r.cells[13];
+    const cell = r.cells && r.cells[DEVICE_COL.status];
     if (cell) {
       // Don't change status if this device is currently being monitored for upgrade
       if (cell.dataset?.monitoring === '1') {
@@ -3499,7 +3507,7 @@ function updatePolledUnitDetails(row, unit, ip) {
 
   const linkSpeed = unit.linkspeed;
   if (linkSpeed !== undefined && linkSpeed !== null) {
-    const lsCell = row.querySelector('.linkspeed_cell') || row.cells[4];
+    const lsCell = row.querySelector('.linkspeed_cell') || row.cells[DEVICE_COL.linkspeed];
     if (lsCell) {
       const lsHtml = linkspeedMarkup(linkSpeed);
       if (lsCell.innerHTML !== lsHtml) lsCell.innerHTML = lsHtml;
@@ -3510,10 +3518,10 @@ function updatePolledUnitDetails(row, unit, ip) {
     }
   }
 
-  setTextIfChanged(2, firstPresent('hostname'));
-  setTextIfChanged(6, firstPresent('timezone', 'active_timezone'));
-  setTextIfChanged(7, firstPresent('ntp_server', 'ntpserver'));
-  setTextIfChanged(10, firstPresent('fw', 'version'));
+  setTextIfChanged(DEVICE_COL.hostname, firstPresent('hostname'));
+  setTextIfChanged(DEVICE_COL.timezone, firstPresent('timezone', 'active_timezone'));
+  setTextIfChanged(DEVICE_COL.ntp, firstPresent('ntp_server', 'ntpserver'));
+  setTextIfChanged(DEVICE_COL.version, firstPresent('fw', 'version'));
 }
 
 async function pollUnits() {
@@ -3544,11 +3552,11 @@ async function pollUnits() {
   for (const u of units) {
     console.log(`[POLL] Processing unit - ip: ${u.ip}, has cells: ${!!u.el.cells}, statusCell: ${u.el.cells?.[13]?.innerHTML}`);
     // Skip rows without IP or without a status cell
-    if (!u.ip || !u.el || !u.el.cells || !u.el.cells[13]) {
+    if (!u.ip || !u.el || !u.el.cells || !u.el.cells[DEVICE_COL.status]) {
       console.log(`[POLL] Skipping - missing ip(${!!u.ip}) el(${!!u.el}) cells(${!!u.el?.cells}) statusCell(${!!u.el?.cells?.[13]})`);
       continue;
     }
-    const statusCell = u.el.cells[13];
+    const statusCell = u.el.cells[DEVICE_COL.status];
     // Skip rows under active upgrade monitoring
     if (activeUpgradeIps.has(u.ip) || statusCell?.dataset?.monitoring === '1') {
       if (activeUpgradeIps.has(u.ip)) statusCell.dataset.monitoring = '1';
@@ -3685,7 +3693,7 @@ async function pollUnits() {
         try {
           const unit = data.unit || {};
           const version = String(unit.fw || unit.version || '').trim();
-          const versionCell = u.el.cells && u.el.cells[11];
+          const versionCell = u.el.cells && u.el.cells[DEVICE_COL.version];
           if (versionCell && version && versionCell.textContent.trim() !== version) {
             versionCell.textContent = version;
           }

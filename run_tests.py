@@ -40,7 +40,7 @@ JS_SUITES = ("usb_render_smoke.js", "usb_filter_test.js", "lldp_topology_test.js
              "matrix_multiview_test.js", "user_shell_test.js",
              "settings_remote_test.js", "csrf_test.js",
              "user_routing_test.js", "adminnav_test.js", "scan_notice_test.js",
-             "device_text_escaping_test.js", "device_manager_test.js", "matrix_lifecycle_test.js", "device_sort_test.js", "state_text_contrast_test.js", "adapter_default_test.js",
+             "device_text_escaping_test.js", "device_manager_test.js", "device_columns_test.js", "matrix_lifecycle_test.js", "device_sort_test.js", "state_text_contrast_test.js", "adapter_default_test.js",
              "firmware_status_test.js", "remote_nav_test.js",
              "remote_admin_ui_test.js", "user_groups_test.js", "usb_prep_test.js",
              "user_preview_refresh_test.js", "version_status_test.js",

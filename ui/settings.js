@@ -1361,6 +1361,18 @@ function initConfig() {
         if (!ok) return;
       }
       remoteToggle.disabled = true;
+      // Turning on reads the network adapters afresh (the decision is never made
+      // from a remembered list), which can take several seconds on Windows. Say
+      // so at once: a button that merely goes grey reads as "nothing happened",
+      // and a tab that arrives ten seconds later reads as "needs a refresh".
+      remoteToggle.setAttribute('aria-busy', 'true');
+      remoteToggle.textContent = turningOn ? 'Turning on…' : 'Turning off…';
+      const pendingLine = document.getElementById('cfg_remote_status');
+      if (pendingLine) {
+        pendingLine.textContent = turningOn
+          ? 'Turning on — checking the network. This can take several seconds.'
+          : 'Turning off…';
+      }
       let switched = false;
       try {
         const res = await fetch('/api/remote_access', {
@@ -1393,6 +1405,7 @@ function initConfig() {
         window.toast && window.toast('Could not reach OmniSuite', 'error');
       }
       remoteToggle.disabled = false;
+      remoteToggle.removeAttribute('aria-busy');
       await loadRemoteAccess(switched);
     });
   }

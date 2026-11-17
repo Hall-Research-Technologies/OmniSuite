@@ -64,7 +64,7 @@ function world(interfaces) {
     getElementById: (id) => byId.get(id) || null,
     querySelectorAll: (sel) => {
       const root = new El('div');
-      root.children = [...byId.get('sources').children, ...byId.get('destinations').children];
+      root.children = [...byId.get('sources').children, ...(byId.get('destination_groups') ? byId.get('destination_groups').children : []), ...byId.get('destinations').children];
       return root.querySelectorAll(sel);
     },
     createElement: (tag) => new El(tag),
@@ -111,7 +111,7 @@ function world(interfaces) {
   vm.runInContext(MATRIX_JS, sandbox);
   vm.runInContext(USER_JS, sandbox);
   const click = (node) => { for (const fn of listeners.click || []) fn({target: node, preventDefault() {}}); };
-  const cards = () => [...byId.get('sources').children, ...byId.get('destinations').children];
+  const cards = () => [...byId.get('sources').children, ...(byId.get('destination_groups') ? byId.get('destination_groups').children : []), ...byId.get('destinations').children];
   const card = (kind, id) => cards().find((c) => c.dataset.kind === kind && c.dataset.id === id);
   return {byId, log, click, card, listeners};
 }

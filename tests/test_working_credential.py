@@ -52,7 +52,10 @@ class FakeDevices:
         ok = self.accepts.get(address) == offered
         self.offers.append((address, node, "ok" if ok else "refused", self.cls(offered)))
         if not ok:
-            return {"id": payload.get("id"), "error": "Invalid username/password"}
+            # The shape a real device uses: a boolean flag, with the sentence elsewhere. A fake
+            # that put the sentence in "error" hid for a release that the refusal was never
+            # recognised.
+            return {"id": payload.get("id"), "error": True, "error_message": "Invalid username/password"}
         if "config_set" in payload:
             self.writes.append((address, node, self.cls(offered)))
             if node == "vc2":
@@ -327,6 +330,115 @@ class WorkingCredentialTests(base.ServerTestBase):
         [t.start() for t in threads]
         [t.join() for t in threads]
         self.assertEqual(failures, [])
+
+    # -- a recorded credential that is stale (found by a person, on hardware) -----------
+    #
+    # A unit discovered on the primary and later moved to the fallback keeps a recorded
+    # credential that no longer works. Every operation then failed -- Preview Set,
+    # Blink, a route to that display -- because the refusal was never recognised: the
+    # device flags it as {"error": true, "error_message": "..."} and only "error" was read.
+
+    def stale(self, address=ADDR_B, mac=MAC_B):
+        """The inventory believes the primary; the device accepts only the fallback."""
+        srv._ingest_working_credentials([{"ip": address, "mac": mac, "password": PRIMARY}], override=True)
+        self.seed_cache(address, mac, PRIMARY)
+
+    def test_the_refusal_is_recognised_in_the_shape_a_device_really_uses(self):
+        real = {"error": True, "error_message": "Invalid username/password"}
+        self.assertTrue(srv._looks_like_auth_refusal(real))
+        self.assertTrue(srv._looks_like_auth_refusal("Invalid username/password"))
+        self.assertFalse(srv._looks_like_auth_refusal({"error": True}))
+        self.assertFalse(srv._looks_like_auth_refusal({"error": "Invalid bitrate"}))
+        self.assertFalse(srv._looks_like_auth_refusal({"error": True, "error_message": "Invalid bitrate"}))
+
+    def test_a_stale_belief_is_corrected_on_the_next_call(self):
+        self.stale()
+        r = srv._ws_send_recv(self.url(ADDR_B), {"id": "1", "username": "admin",
+                                                 "password": PRIMARY, "config_get": "net"}, 1)
+        self.assertFalse(r.get("error"), "the unit answers to the fallback and was never offered it")
+        self.assertEqual(srv._working_credential(ADDR_B), FALLBACK)
+        self.devices.offers.clear()
+        srv._ws_send_recv(self.url(ADDR_B), {"id": "2", "username": "admin",
+                                             "password": PRIMARY, "config_get": "net"}, 1)
+        self.assertEqual([o[2:] for o in self.devices.offers], [("ok", "fallback")],
+                         "once corrected, the next call needs one attempt")
+
+    def test_a_stale_belief_does_not_override_the_fallback_a_caller_offers(self):
+        self.stale()
+        r = srv._ws_send_recv(self.url(ADDR_B), {"id": "1", "username": "admin",
+                                                 "password": FALLBACK, "config_get": "net"}, 1)
+        self.assertFalse(r.get("error"))
+
+    def test_the_resolver_offers_each_candidate_as_given(self):
+        self.stale()
+        r = srv._ws_send_recv_with_fallback(ADDR_B, {"id": "1", "username": "admin", "config_get": "net"},
+                                            1, 80, "/ws", PRIMARY)
+        self.assertFalse(r.get("error"))
+        self.assertIn(("ok", "fallback"), [o[2:] for o in self.devices.offers])
+
+    def test_blink_reaches_a_unit_on_the_fallback(self):
+        self.stale()
+        ok, reply = srv._omnistream_identify(ADDR_B)
+        self.assertTrue(ok, reply)
+        self.assertEqual(self.devices.writes, [], "identify is a method, not a configuration write")
+
+    def test_the_matrix_clients_calls_resolve_the_units_own_credential(self):
+        """Route and unroute build this client with one password; it must not be the only one tried."""
+        self.stale()
+        client = srv.omni_matrix_logic.user.WSClient("admin", PRIMARY, 1, 8080, "/ws")
+        config = client.config_get(ADDR_B, "ip_input")
+        self.assertTrue(config, "the read came back empty: the client presented its one password and stopped")
+
+    def test_a_mixed_installation_works_in_one_session(self):
+        self.stale()
+        srv._learn_working_credential(ADDR_A, PRIMARY, "")
+        for _ in range(2):
+            for address in (ADDR_A, ADDR_B):
+                r = srv._ws_send_recv(self.url(address), {"id": "x", "username": "admin",
+                                                          "password": PRIMARY, "config_get": "net"}, 1)
+                self.assertFalse(r.get("error"), address)
+        self.assertEqual(srv._working_credential(ADDR_A), PRIMARY)
+        self.assertEqual(srv._working_credential(ADDR_B), FALLBACK)
+
+    def test_healing_is_bounded_and_returns_the_refusal_when_nothing_works(self):
+        self.devices.accepts[ADDR_B] = THIRD
+        r = srv._ws_send_recv(self.url(ADDR_B), {"id": "1", "username": "admin",
+                                                 "password": PRIMARY, "config_get": "net"}, 1)
+        self.assertTrue(r.get("error"))
+        self.assertLessEqual(len(self.devices.offers), 2, "primary, then the one other known password")
+
+    def test_a_healthy_unit_pays_nothing_for_any_of_this(self):
+        srv._learn_working_credential(ADDR_A, PRIMARY, "")
+        srv._ws_send_recv(self.url(ADDR_A), {"id": "1", "username": "admin",
+                                             "password": PRIMARY, "config_get": "net"}, 1)
+        self.assertEqual(len(self.devices.offers), 1)
+
+    def test_no_credential_reaches_a_log_line(self):
+        self.stale()
+        with self.assertLogs("omni_upgrade", level="DEBUG") as captured:
+            srv._ws_send_recv(self.url(ADDR_B), {"id": "1", "username": "admin",
+                                                 "password": PRIMARY, "config_get": "net"}, 1)
+            srv.log.debug("probe")
+        text = "\n".join(captured.output)
+        for secret in (PRIMARY, FALLBACK, THIRD):
+            self.assertNotIn(secret, text)
+
+    def test_the_credential_a_unit_was_last_seen_to_accept_outranks_the_recorded_one(self):
+        """Paths that open their own socket choose their first candidate from here."""
+        self.seed_cache(ADDR_B, MAC_B, PRIMARY)                       # the record is stale
+        srv._learn_working_credential(ADDR_B, FALLBACK, MAC_B)       # what the unit was seen to accept
+        _user, preferred, _device = srv._device_credentials(ADDR_B)
+        self.assertEqual(preferred, FALLBACK)
+        _user, preferred, _device = srv._device_credentials("192.0.2.200")
+        self.assertEqual(preferred, PRIMARY, "a unit nothing is known about gets the configured one")
+
+    def test_the_resolver_offers_the_known_credential_first(self):
+        """A unit known to need the fallback is not asked for the primary on every read and write."""
+        srv._learn_working_credential(ADDR_B, FALLBACK, MAC_B)
+        r = srv._ws_send_recv_with_fallback(ADDR_B, {"id": "1", "username": "admin", "config_get": "net"},
+                                            1, 80, "/ws", PRIMARY)
+        self.assertFalse(r.get("error"))
+        self.assertEqual([o[2:] for o in self.devices.offers], [("ok", "fallback")])
 
 
 if __name__ == "__main__":

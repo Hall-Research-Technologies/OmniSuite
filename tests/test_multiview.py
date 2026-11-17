@@ -6136,7 +6136,12 @@ class SubframePruneTests(MultiviewTestBase):
                          "subframes": subframes}],
             ip_inputs=inputs, hdmi=hdmi)
 
-    def _switch_to_side_by_side(self):
+    def _switch_to_side_by_side(self, on_display=False):
+        # Save writes the object only while it is NOT the Multiview on the
+        # display (an edit of the displayed one waits for Show; see
+        # SaveOverDisplayedTests). These tests are about that write path.
+        if not on_display:
+            self.devices[DECODER_IP].nodes["hdmi_output"][0]["video"]["input"] = "ip_input1"
         return self.client.post("/api/multiview/apply", json={
             "decoder": DECODER_IP, "layout": "side-by-side", "canvas": "1920x1080",
             "object_name": "multiviewEdit", "update_existing": True,
@@ -6679,7 +6684,11 @@ class InputMovedBetweenSubframesTests(MultiviewTestBase):
         self._show(name)
         decoder.refuse_after["multiview"] = len([w for w in decoder.writes
                                                  if w[0] == "config_set" and w[1] == "multiview"])
-        body = self._resave(name, {"top_right": ENCODER_IP})
+        # Saving over the displayed Multiview writes nothing; the release and
+        # the bind happen at Show, where the device refuses.
+        saved = self._resave(name, {"top_right": ENCODER_IP})
+        self.assertTrue(saved.get("ok"))
+        body = self._show(name)
         self.assertFalse(body.get("ok"), str(body.get("status")))
         self.assertNotEqual(self._inputs(decoder, name)["top_right"], "ip_input2",
                             "a bind was attempted after the release failed")
@@ -7729,7 +7738,7 @@ class WindowLockTests(MultiviewTestBase):
         # The rest of the picture is live, so the operation is not undone --
         # but the condition is stated rather than swallowed.
         self.assertTrue(body["ok"], body)
-        self.assertEqual(body["status"], "VERIFIED — WINDOW NOT LOCKED")
+        self.assertEqual(body["status"], "PARTIAL — WINDOW NOT LOCKED")
         self.assertEqual([w["subframe"] for w in body["unlocked_windows"]],
                          ["right (960x544)"])
         self.assertIsNotNone(body["diagnostics"])
@@ -8971,6 +8980,10 @@ class RecallAfterDriftTests(MultiviewTestBase):
                                       "right": ENCODER2_IP}).get_json()
         self.assertTrue(body["ok"], body)
         self.assertEqual(body["plan"]["object_name"], name)
+        # The object is on the display, so the saved change is applied by Show.
+        self.assertIn(stray, self._subframe_names(name))
+        with mock.patch.object(srv, "MULTIVIEW_WINDOW_SETTLE", 0.0):
+            self.assertTrue(self.recall(name).get_json()["ok"])
         self.assertNotIn(stray, self._subframe_names(name))
 
     # ---- what the page shows afterwards -----------------------------------

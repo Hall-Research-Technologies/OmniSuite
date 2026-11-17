@@ -4006,8 +4006,9 @@ async function selectDecoder(ip) {
 
   await check('the notice explains when any of it happens at all', () => {
     const text = noticeBody();
-    assert(/not on the display|inactive/i.test(text)
-           && /changes nothing|nothing on any encoder/i.test(text),
+    assert(/changes nothing on any encoder/i.test(text)
+           && /saving an edit of the Multiview that is on the display/i.test(text)
+           && /until you press Show on Display/i.test(text),
       'the notice does not say that designing a preset changes nothing: '
       + text.slice(0, 600));
     assert(/Show on Display/i.test(text),

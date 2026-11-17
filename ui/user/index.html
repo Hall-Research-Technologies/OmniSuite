@@ -17,7 +17,7 @@
 <link rel="stylesheet" href="/ui/templates.css">
 <link rel="stylesheet" href="/ui/remote.css">
 </head>
-<body class="remote">
+<body class="remote user-page">
 
 <header class="remote-header">
   <div class="brand">
@@ -51,6 +51,23 @@
     </div>
 
     <div id="standard_routing">
+    <!-- The same two switches, in the same place, as the LumaSuite routing page.
+         Audio follows video decides whether a route carries sound with it;
+         Preview decides whether this page shows pictures at all. -->
+    <div class="user-toolbar">
+      <span class="selection-count" id="selection_count" aria-live="polite"></span>
+      <label class="toggle user-toggle" id="afv_toggle_label">
+        <input type="checkbox" id="afv_toggle" class="switch-input" checked>
+        <span class="label">Audio follows video</span>
+        <span class="switch" aria-hidden="true"><span class="knob"></span></span>
+      </label>
+      <label class="toggle user-toggle" id="preview_toggle_label">
+        <input type="checkbox" id="preview_toggle" class="switch-input" checked>
+        <span class="label">Preview</span>
+        <span class="switch" aria-hidden="true"><span class="knob"></span></span>
+      </label>
+    </div>
+
     <div class="panel">
       <h2>1 &middot; Choose a source</h2>
       <p class="hint">What do you want to route?</p>
@@ -60,11 +77,17 @@
       </div>
     </div>
 
+    <!-- One or many: choosing a display toggles it in or out of the selection.
+         There is no single/several switch; a single display is just a selection
+         of one. -->
     <div class="panel">
-      <h2>2 &middot; Choose a display</h2>
-      <p class="hint">Where do you want to route it?</p>
-      <button class="btn-secondary-lg multi-toggle" id="multi_toggle" type="button"
-              aria-pressed="false">Select several</button>
+      <h2>2 &middot; Choose displays</h2>
+      <p class="hint">Where do you want to route it? Choose one or more.</p>
+      <div id="destinations_groups_wrap" hidden>
+        <div class="section-label">Display groups</div>
+        <div class="pick-grid" id="destination_groups"></div>
+      </div>
+      <div class="section-label" id="destinations_label" hidden>Displays</div>
       <div class="pick-grid" id="destinations"></div>
       <div class="empty" id="destinations_empty" hidden>
         No displays have been assigned to your account.
@@ -76,16 +99,20 @@
          Built from what the server sent for this account; nothing is hidden
          out of a fuller list. -->
     <div id="matrix_routing" hidden>
-      <div class="panel">
-        <h2>Matrix</h2>
-        <p class="hint">Choose AV, Video or Audio, then tap where a source should go.
-          The ring is video and the dot inside it is audio.</p>
-        <div class="mx-modes" id="matrix_modes" role="radiogroup" aria-label="What to route"></div>
-        <div class="mx-scroll" id="matrix_scroll" hidden>
-          <div id="matrix_grid"></div>
-        </div>
-        <div class="empty" id="matrix_empty" hidden></div>
+      <div class="user-toolbar">
+        <div class="mx-modes" id="matrix_modes" role="radiogroup" aria-label="What a click routes"></div>
+        <label class="toggle user-toggle" id="preview_toggle_label_m">
+          <input type="checkbox" id="preview_toggle_m" class="switch-input" checked>
+          <span class="label">Preview</span>
+          <span class="switch" aria-hidden="true"><span class="knob"></span></span>
+        </label>
       </div>
+      <p class="hint mx-hint">Choose Audio + Video, Video or Audio, then tap where a source should go.
+        The ring is video and the dot inside it is audio.</p>
+      <div class="mx-scroll" id="matrix_scroll" hidden>
+        <div id="matrix_grid"></div>
+      </div>
+      <div class="empty" id="matrix_empty" hidden></div>
     </div>
   </section>
 
@@ -143,12 +170,14 @@
      incomplete: it says what is still missing. -->
 <div class="action-bar" id="action_bar" hidden>
   <div class="summary" id="summary">Choose a source and a display.</div>
-  <!-- Stopping a display is a separate, deliberate action, and it is kept
-       away from the primary one so the two cannot be hit for each other. It
-       appears only once a display is chosen, because it has nothing to act
-       on until then. -->
-  <button class="btn-secondary-lg" id="unroute_btn" type="button" hidden>Unroute</button>
-  <button class="btn-primary-lg" id="route_btn" type="button" disabled>Route</button>
+  <!-- Clear selection, Unroute, Route -- the same three, in the same order and
+       the same sizes, as the LumaSuite routing page. Stopping displays is a
+       separate, deliberate action kept apart from Route. Neither secondary
+       action is ever withdrawn: each is disabled while it has nothing to act
+       on, and the bar says what is still missing. -->
+  <button class="btn-secondary-lg btn-action" id="clear_btn" type="button" disabled>Clear selection</button>
+  <button class="btn-secondary-lg btn-action" id="unroute_btn" type="button" disabled>Unroute</button>
+  <button class="btn-primary-lg btn-route" id="route_btn" type="button" disabled>Route</button>
 </div>
 
 <script src="/ui/csrf.js"></script>

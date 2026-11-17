@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: "Diagnostic build name, with a suffix (example: V1.2.0-diag1). Never publishes."
+        description: "Diagnostic build name, with a suffix (example: V1.2.1-diag1). Never publishes."
         required: false
         type: string
   push:
@@ -265,7 +265,7 @@ jobs:
       # no test, tool, firmware, key, configuration, report, retired-product name, lab address or
       # build-machine path. Fails closed.
       #
-      # A run that cannot publish (a dispatch rehearsal such as V1.2.0-diag1) is inspected as a
+      # A run that cannot publish (a dispatch rehearsal such as V1.2.1-diag1) is inspected as a
       # diagnostic build, so it runs the same content checks and reaches the smoke test. A run
       # that can publish is inspected strictly; the publish job below never passes the flag.
       - name: Inspect the package contents

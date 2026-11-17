@@ -221,7 +221,7 @@ class HardwareStateBase(base.MultiviewTestBase):
 def _per_layout(layout):
     def test(self):
         assignment = distinct_assignment(layout)
-        name = self.store("Layout %s" % layout, layout, assignment)
+        name = self.store("Layout %s" % layout.replace("+", " plus "), layout, assignment)
         self.show_ok(name)
         self.assert_hardware_matches(name, layout, assignment)
     test.__name__ = "test_%s_leaves_the_devices_configured_for_it" % \
@@ -261,7 +261,7 @@ def hardware_state(case):
         # Only the object on the display. An inactive one keeps whatever pool inputs
         # it was last wired to, which another Multiview may since have taken; Show
         # rewires it, so its stale pointers are not state anything depends on.
-        "objects": {o["name"]: [(s["name"], s.get("input")) for s in o["subframes"]]
+        "objects": {o["name"]: sorted((s["name"], s.get("input")) for s in o["subframes"])
                     for o in case.dec.nodes["multiview"] if o["name"] == hdmi["video"]["input"]}}
     return state
 
@@ -644,9 +644,12 @@ class EditWhileActiveTests(HardwareStateBase):
         saved = self.save(layout="side-by-side", name="Reshape", assignments=pair,
                           object_name=name, update_existing=True).get_json()
         self.assertTrue(saved["ok"], saved)
+        # Save is save only: the object on the display still has its four windows.
+        self.assertEqual(len(self.obj(name)["subframes"]), 4,
+                         "saving over the displayed Multiview rewrote its live windows")
+        self.show_ok(name)
         self.assertEqual(sorted(s["name"].split(" (")[0] for s in self.obj(name)["subframes"]),
                          ["left", "right"], "windows of the old layout were left behind")
-        self.show_ok(name)
         self.assert_hardware_matches(name, "side-by-side", pair, strict_pool=False)
 
     def test_the_pool_inputs_of_windows_an_edit_removed_are_released(self):

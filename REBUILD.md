@@ -34,7 +34,7 @@ for the package installs. The same steps work on macOS and Linux with that platf
 
 6. Rebuild:
 
-       python tools/build_release.py --suffix windows --version V1.2.0
+       python tools/build_release.py --suffix windows --version V1.2.1
 
    The application is written to `dist\windows\OmniSuite.exe` and packaged in `release\`.
    It now runs against your pystray. To confirm that your copy is the one in the executable,

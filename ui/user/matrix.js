@@ -27,7 +27,7 @@
 (function (root) {
   'use strict';
 
-  var MODES = [['av', 'AV'], ['video', 'Video'], ['audio', 'Audio']];
+  var MODES = [['av', 'Audio + Video'], ['video', 'Video'], ['audio', 'Audio']];
   var MODE_WORDS = {av: 'audio and video', video: 'video only', audio: 'audio only'};
   var PLANE_WORDS = {all: 'All', partial: 'Partial', mixed: 'Mixed', unavailable: 'Unavailable'};
   var HOVER_DELAY_MS = 350;
@@ -297,8 +297,10 @@
     function openPreview(head) {
       var id = head.dataset.source;
       var source = ((data && data.sources) || []).filter(function (s) { return s.id === id; })[0];
-      // An offline source has no picture to ask for.
+      // An offline source has no picture to ask for, and nothing is asked for while the page's
+      // Preview switch is off.
       if (!source || source.online === false || !deps.fetchPreview) return;
+      if (deps.previewEnabled && !deps.previewEnabled()) return;
       if (!preview.card) {
         preview.card = el('div', 'mx-preview empty');
         preview.card.hidden = true;

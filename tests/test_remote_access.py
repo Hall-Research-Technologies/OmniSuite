@@ -186,6 +186,7 @@ class RestrictedUserSurfaceTests(unittest.TestCase):
             # action. Each resolved display is authorised on its own account,
             # on both sides of its lock; counts and names only.
             "/api/user/route_many",
+            "/api/user/unroute_many",
             # The routable grid for the caller's own permitted sources,
             # displays and groups. A projection built per account; the
             # handler also requires the Matrix routing interface.

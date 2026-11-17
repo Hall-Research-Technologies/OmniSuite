@@ -984,6 +984,7 @@
     'matrix.route': 'Routed from the Matrix',
     'matrix.route_group': 'Routed to a group from the Matrix',
     'route_many': 'Routed to several displays',
+    'unroute_many': 'Several displays cleared',
     'matrix.route_many': 'Routed to several displays from the Matrix',
     'user.routing_interfaces_changed': 'Routing interface changed',
     'group.created': 'Group created',

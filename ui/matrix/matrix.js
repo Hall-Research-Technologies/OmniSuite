@@ -194,8 +194,9 @@ function setMode(m){
   const modeLabel = document.getElementById('mode_label');
   if(modeLabel){
     const upper = (m||'').toUpperCase();
-    const label = upper==='AV' ? 'AV (Audio + Video)' : (upper==='VIDEO' ? 'Video Only' : 'Audio Only');
-    modeLabel.textContent = label;
+    modeLabel.textContent = upper==='AV' ? 'A click routes audio and video together (ring = video, dot = audio).'
+      : (upper==='VIDEO' ? 'A click routes the video only; the audio stays as it is.'
+         : 'A click routes the audio only; the video stays as it is.');
   }
 }
 document.addEventListener('click', (e)=>{

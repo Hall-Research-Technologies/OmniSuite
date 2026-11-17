@@ -3,8 +3,8 @@
 Nothing about a GitHub release says what product it is or whether this project
 made it, so the product is recognised from names this project controls:
 
-    tag       V1.2.0
-    artifact  OmniSuite-V1.2.0-<platform>
+    tag       V1.2.1
+    artifact  OmniSuite-V1.2.1-<platform>
 
 This module is the single definition of that identity. The in-app updater, the
 release workflow's identity guard and the tests all read it, so the rule cannot
@@ -70,7 +70,7 @@ class Product:
 
     # -- tags ---------------------------------------------------------------
     def parse_tag(self, tag) -> Optional[str]:
-        """The numeric core of a tag ('1.2.0'), or None if it is not this product's."""
+        """The numeric core of a tag ('1.2.1'), or None if it is not this product's."""
         match = self._tag.match(str(tag or ""))
         return match.group(1) if match else None
 
@@ -83,7 +83,7 @@ class Product:
 
     # -- artifacts ----------------------------------------------------------
     def parse_asset(self, name) -> Optional[dict]:
-        """{'version': '1.2.0', 'platform': 'macos-arm64'} for this product's artifact."""
+        """{'version': '1.2.1', 'platform': 'macos-arm64'} for this product's artifact."""
         match = self._asset.match(str(name or ""))
         if not match:
             return None

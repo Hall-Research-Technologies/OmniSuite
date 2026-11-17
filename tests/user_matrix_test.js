@@ -377,7 +377,7 @@ function world(options) {
     getElementById: (id) => byId.get(id) || null,
     querySelectorAll: (sel) => {
       const root = new El('div');
-      root.children = [...byId.get('sources').children, ...byId.get('destinations').children];
+      root.children = [...byId.get('sources').children, ...byId.get('destination_groups').children, ...byId.get('destinations').children];
       return root.querySelectorAll(sel);
     },
     createElement: (tag) => new El(tag),
@@ -760,7 +760,7 @@ function dragEvent(target) {
           preventDefault() { this.prevented = true; }};
 }
 const sourceCard = (w, id) => w.byId.get('sources').children.find((c) => c.dataset.id === id);
-const targetCard = (w, id) => w.byId.get('destinations').children.find((c) => c.dataset.id === id);
+const targetCard = (w, id) => [...w.byId.get('destination_groups').children, ...w.byId.get('destinations').children].find((c) => c.dataset.id === id);
 
 suite.push(() => check('a source card is draggable only while it is online', async () => {
   const state = PAGE_STATE(['standard']);

@@ -284,7 +284,10 @@
   // inactive one is a preset: a drop edits it and nothing happens until Save.
   function isLive() {
     const view = currentView();
-    return state.mode === MODE.EDIT && !!view && !!view.selected_on_output;
+    // An edit saved over the displayed Multiview has not reached the display
+    // yet, so the canvas is a form again until Show applies it.
+    return state.mode === MODE.EDIT && !!view && !!view.selected_on_output
+      && !view.pending_show;
   }
 
   function renderMode() {
@@ -530,12 +533,14 @@
     // say: most of what follows does not happen when you are just designing.
     whenHeading: 'When any of this happens',
     when: [
-      'Creating, installing, editing, copying or saving a Multiview that is '
-      + 'not on the display changes nothing on any encoder and nothing on the '
-      + 'screen. A saved Multiview is a description, not a booking.',
+      'Creating, installing, editing, copying or saving a Multiview changes '
+      + 'nothing on any encoder and nothing on the screen. That includes saving '
+      + 'an edit of the Multiview that is on the display: its windows, sources '
+      + 'and sound stay as they are until you press Show on Display. A saved '
+      + 'Multiview is a description, not a booking.',
       'Show on Display saves the Multiview you are looking at first, and then '
-      + 'shows what it saved. The changes below happen at that point, and when '
-      + 'you recall a different Multiview.',
+      + 'shows what it saved, in full. The changes below happen at that point, '
+      + 'and when you recall a different Multiview.',
       'They also happen when you add, change or clear a source on a Multiview '
       + 'that is already on the display — and that takes effect '
       + 'immediately, while it is on screen.',
@@ -1646,8 +1651,14 @@
       const live = isLive();
       mode.hidden = state.mode !== MODE.EDIT && state.mode !== MODE.CREATE;
       mode.className = 'mv-canvas-mode' + (live ? ' live' : '');
+      const shownView = currentView();
+      const waiting = state.mode === MODE.EDIT && !!shownView
+        && !!shownView.selected_on_output && !!shownView.pending_show;
       mode.textContent = live
         ? 'LIVE — changes made on this canvas are applied immediately'
+        : waiting
+          ? 'SAVED, NOT YET SHOWN — this Multiview is on the display and nothing '
+            + 'on it has changed. Press Show on Display to apply your saved change.'
         : state.mode === MODE.EDIT
           ? 'INACTIVE — saved on this decoder, not currently shown. These '
             + 'windows are the saved composition, not live subscriptions.'
@@ -1827,6 +1838,17 @@
   // The saved preset, in the same shape, so the two can be compared directly.
   function savedState(view) {
     if (!view) return null;
+    if (view.pending_show && view.pending) {
+      // Saved but not yet shown: the stored description is the pending one.
+      return JSON.stringify({
+        name: view.pending.friendly_name || view.name || '',
+        layout: view.pending.layout || '',
+        windows: (view.pending.windows || [])
+          .filter((pair) => pair[1])
+          .map((pair) => [pair[0], pair[1]])
+          .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)),
+      });
+    }
     const windows = (view.subframes || [])
       .filter((subframe) => subframe.source && subframe.source.ip)
       .map((subframe) => [subframe.cell, subframe.source.ip])
@@ -2524,8 +2546,9 @@
       reason = /FAIL|ROLL/i.test(status) && why !== status
         ? status + ' — ' + why : why;
     }
+    if (body.ok && body.pending_show) reason = body.message || 'Saved. Use Show on Display to apply it.';
     setStatus(reason, !!body.ok);
-    notify(body.ok ? 'Verified on the decoder.' : reason,
+    notify(body.ok ? (body.pending_show ? reason : 'Verified on the decoder.') : reason,
            body.ok ? 'ok' : undefined);
 
     const detail = node('details', 'mv-detail');
@@ -2633,13 +2656,22 @@
     if (!view) { state.editing = null; setMode(MODE.DECODER_SELECTED); return; }
     state.editing = name;
     state.nameTouched = true;               // an existing object keeps its name
-    if (view.layout) el('mv_layout').value = view.layout;
-    el('mv_name').value = view.name;
-    view.subframes.forEach((subframe) => {
-      if (subframe.source && subframe.source.ip) {
-        state.assignments[subframe.cell] = subframe.source.ip;
-      }
-    });
+    if (view.pending_show && view.pending) {
+      // The operator saved an edit of the displayed Multiview; show it as saved.
+      if (view.pending.layout) el('mv_layout').value = view.pending.layout;
+      el('mv_name').value = view.pending.friendly_name || view.name;
+      (view.pending.windows || []).forEach((pair) => {
+        if (pair[1]) state.assignments[pair[0]] = pair[1];
+      });
+    } else {
+      if (view.layout) el('mv_layout').value = view.layout;
+      el('mv_name').value = view.name;
+      view.subframes.forEach((subframe) => {
+        if (subframe.source && subframe.source.ip) {
+          state.assignments[subframe.cell] = subframe.source.ip;
+        }
+      });
+    }
     setMode(MODE.EDIT);
     state.savedBaseline = savedState(view);
     if (!view.layout) {

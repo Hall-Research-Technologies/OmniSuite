@@ -21,9 +21,9 @@
 A GitHub release does not say what it is, so identity is something this project has to
 establish. `omni_release.py` is the single definition; `omni_product.py` names the product.
 
-- Tag `V1.2.0`; artifacts `OmniSuite-V1.2.0-<platform>`; macOS bundle identifier `OmniSuite`
+- Tag `V1.2.1`; artifacts `OmniSuite-V1.2.1-<platform>`; macOS bundle identifier `OmniSuite`
   (unchanged since the first release).
-- A tag is never repaired. `v1.2.0`, `V1.2.0-rc1` and a tag with a trailing newline are not
+- A tag is never repaired. `v1.2.1`, `V1.2.1-rc1` and a tag with a trailing newline are not
   release tags; a release that had to be fixed to be understood was not understood. Match
   with `\Z`, never `$`.
 - The prerelease flag is a channel, not an identity. It decides whether a build is offered;

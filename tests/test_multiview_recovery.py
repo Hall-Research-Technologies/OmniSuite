@@ -83,7 +83,7 @@ class RecoveryTests(HardwareStateBase):
         window = self.subframe(self.quad, "top_right")["name"]
         self.dec.never_locks.update({"ip_input2", "ip_input4", "ip_input6", "ip_input8"})
         status, body = self.show(self.quad)
-        self.assertEqual(body["status"], "VERIFIED — WINDOW NOT LOCKED")
+        self.assertEqual(body["status"], "PARTIAL — WINDOW NOT LOCKED")
         self.assertFalse(body["recovery"]["cleared"])
         self.assertTrue(body["recovery"]["attempted"])
         self.assertTrue(body["unlocked_windows"])
@@ -118,7 +118,7 @@ class RecoveryTests(HardwareStateBase):
         status, body = self.show(self.quad)
         self.assertEqual(status, 200, body)
         self.assertFalse(body["recovery"]["attempted"])
-        self.assertEqual(body["status"], "VERIFIED — WINDOW NOT LOCKED")
+        self.assertEqual(body["status"], "PARTIAL — WINDOW NOT LOCKED")
         self.assertEqual(self.neutral_selections(), [])
 
     # ---- failure of the recovery itself ---------------------------------------

@@ -666,57 +666,27 @@ body.remote {
 .direct-note strong { color: var(--text, var(--fg)); }
 
 /* ----------------------------------------------------- source previews --
-   The card IS the preview. An operator picking a source on a tablet should
-   recognise it from the picture, not read a hostname and hope -- and the whole
-   card stays the target, so there is no small control to aim at.
-
-   Preview is an identification aid and never a routing gate: a source whose
-   encoder is not generating thumbnails keeps an ordinary card and says so
-   quietly. The picture is decoration over a button that works either way. */
-.pick.has-preview {
-  padding: 0;
-  overflow: hidden;
-  gap: 0;
-}
+   The card IS the preview: a 16:9 picture above the name and state, the whole card the
+   target. Preview is an identification aid and never a routing gate: a source whose encoder
+   is not generating thumbnails keeps an ordinary card and says so quietly. */
 .pick .pick-shot {
   position: relative;
-  width: 100%;
+  /* `.empty` is the page's "nothing here" block (padding and all); on a picture area it
+     only means "no picture yet". */
+  padding: 0;
   aspect-ratio: 16 / 9;
-  background: var(--surface-sunken, #10141a);
+  background: var(--screen-off, #0b0f14);
   display: block;
   overflow: hidden;
 }
 .pick .pick-shot img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   /* Contain, not cover: a cropped preview can hide the very corner of the
      screen somebody is using to tell two inputs apart. */
   object-fit: contain;
-  display: block;
-}
-/* The text sits on a scrim so it survives a bright desktop and a dark camera
-   feed alike, rather than being legible over half the sources. */
-.pick.has-preview .pick-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px 12px 10px;
-  background: var(--surface-elevated);
-}
-.pick.has-preview .pick-name { font-weight: 600; }
-/* Selection has to read at a glance over an arbitrary picture.
-   The footer tint measured deltaE 12.9 against the unselected footer, which is
-   a difference somebody can act on -- but the tint is 16% alpha, and 16% alpha
-   over a bright source is nothing at all. So the edge is drawn at FULL
-   strength from the accent the presets set, not from the selection tint: the
-   distinction survives a palette where the two hues sit close, and it survives
-   a white picture behind it. */
-.pick.has-preview[aria-pressed="true"] .pick-text {
-  background: var(--selected-fill);
-}
-.pick.has-preview[aria-pressed="true"] {
-  box-shadow: inset 0 0 0 3px var(--action-primary);
-  border-color: var(--action-primary);
 }
 /* A quiet label where there is no picture to show. Never a broken image. */
 .pick .pick-shot.empty::after {
@@ -726,10 +696,10 @@ body.remote {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 8px;
+  padding: 0 8px;
   text-align: center;
   font-size: 12px;
-  color: var(--text-muted);
+  color: #9aa7b4;
 }
 /* Dragging a source onto a display. The drop target says it will take it. */
 .pick[draggable="true"] { cursor: grab; }
@@ -853,13 +823,8 @@ body.remote {
 /* While a route is in flight, the display it targets says so. */
 .pick.routing { cursor: progress; }
 .pick.route-failed .pick-state { color: var(--danger); }
-.multi-toggle { margin: 0 0 8px; }
 .pick.routing .pick-state { color: var(--state-info-text, var(--link-text)); }
 
-@media (max-width: 560px) {
-  /* One column on a phone, so the preview is big enough to recognise. */
-  .pick.has-preview .pick-text { padding: 8px 12px 10px; }
-}
 @media (min-width: 1200px) {
   /* Wide screens get more cards rather than absurdly large pictures. */
   .pick-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
@@ -888,3 +853,173 @@ body.remote {
   align-items: center; justify-content: center; border-radius: 8px;
   border: 1px solid var(--edge, var(--border)); background: var(--surface-elevated, var(--panel-2));
   cursor: pointer; font-size: 18px; color: var(--text, var(--fg)); }
+
+/* ---------------------------------------------------------------------------
+   The routing page, in the family's look.
+
+   LumaSuite's routing page is the baseline for everything below, and the numbers were measured
+   from both pages rendered at the same size rather than copied across by eye. All of it hangs on
+   `body.user-page`, so the Remote Access page and the sign-in page, which share this file, keep
+   the shell geometry the other OmniSuite pages use.
+   --------------------------------------------------------------------------- */
+body.user-page button, body.user-page input, body.user-page select { font-family: inherit; }
+
+/* The family's selection and edge on this page: opaque accent edges and a 45% accent tint,
+   so a chosen card, an active tab and an enabled switch read at a glance. Derived from the
+   accent, so a preset still reaches them. */
+body.user-page {
+  --user-selection: color-mix(in srgb, var(--action-primary) 45%, transparent);
+}
+html:not(.light) body.user-page { --edge: #4a5561; }
+
+body.user-page .remote-header {
+  margin: 0;
+  padding: 10px 16px;
+  background: var(--surface-raised);
+}
+body.user-page .remote-header .logo { height: 34px; border-radius: 0; }
+body.user-page .remote-header h1 { font-size: 17px; }
+body.user-page .remote-header .btn-quiet {
+  min-height: 36px; padding: 6px 12px; font-size: 13.3333px; border-radius: 8px;
+}
+body.user-page .remote-main { padding: 16px 16px 120px; }
+
+body.user-page .mode-tabs { gap: 6px; margin: 0 0 14px; }
+body.user-page .mode-tabs .tab {
+  min-height: 36px; padding: 6px 12px; font-size: 13.3333px; font-weight: 600;
+  border-radius: 8px;
+}
+
+body.user-page .panel > h2 { font-weight: 700; }
+body.user-page .panel > .hint { margin: 0 0 12px; }
+
+/* A card: a picture inset above a body of name and state. */
+body.user-page .pick {
+  display: flex; flex-direction: column; align-items: stretch; gap: 0;
+  padding: 6px 12px; min-height: 62px; border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 13.3333px; line-height: normal;
+  background: var(--surface-elevated); color: var(--text);
+  box-shadow: none;
+}
+body.user-page .pick .pick-body {
+  padding: 9px 12px 10px; display: flex; flex-direction: column; gap: 2px;
+}
+body.user-page .pick .pick-name { font-size: 14px; }
+body.user-page .pick .pick-state, body.user-page .pick .pick-sub { font-size: 12px; }
+body.user-page .pick[aria-pressed="true"] {
+  background: var(--user-selection);
+  border-color: var(--action-primary);
+  box-shadow: inset 0 0 0 2px var(--action-primary);
+}
+body.user-page .pick[aria-pressed="true"] .pick-state { color: var(--text-muted); opacity: 1; }
+/* a chosen card says so in words and shape as well as colour */
+body.user-page .pick[aria-pressed="true"] .pick-name::before { content: "\2713\00a0"; }
+body.user-page .pick.offline, body.user-page .pick:disabled { opacity: .7; cursor: not-allowed; }
+body.user-page .pick.group { justify-content: center; }
+body.user-page .pick.group .group-badge {
+  align-self: flex-start; font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--edge); color: var(--text-muted); margin-bottom: 4px;
+}
+.section-label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--text-muted); margin: 14px 0 8px;
+}
+.section-label:first-child { margin-top: 0; }
+
+/* The action bar: pinned to the bottom edge so a long list can never push it away. */
+body.user-page .action-bar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 90; gap: 12px;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+  background: var(--surface-raised);
+  flex-wrap: nowrap;
+}
+body.user-page .action-bar .summary { overflow-wrap: anywhere; }
+body.user-page .action-bar .summary .muted { color: var(--text-muted); }
+body.user-page .action-bar .btn-action {
+  min-height: var(--touch-target); padding: 6px 12px; font-size: 14px; font-weight: 600;
+  border-radius: 8px; border: 1px solid var(--edge); margin-right: 0; white-space: nowrap;
+  background: var(--surface-elevated); color: var(--text);
+}
+body.user-page .action-bar .btn-route {
+  min-height: var(--touch-target); padding: 6px 12px; font-size: 16px; font-weight: 600;
+  border-radius: 8px; border: 1px solid transparent; white-space: nowrap;
+}
+@media (max-width: 560px) {
+  body.user-page .remote-main { padding: 12px 12px 130px; }
+  body.user-page .action-bar { flex-wrap: wrap; padding-left: 12px; padding-right: 12px; }
+  body.user-page .action-bar .summary { flex-basis: 100%; }
+  body.user-page .action-bar .btn-route, body.user-page .action-bar .btn-action { flex: 1; }
+}
+
+/* ---- the toolbar: how many are chosen, and the two switches ---------------- */
+.user-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+                margin: 0 0 12px; min-height: 28px; }
+.user-toolbar .selection-count { font-size: 13px; color: var(--text-muted); }
+.user-toggle { position: relative; display: inline-flex; align-items: center; gap: 8px;
+               cursor: pointer; user-select: none; margin-left: auto; font-size: 14px; }
+.user-toggle + .user-toggle { margin-left: 0; }
+/* The real checkbox stays in the tab order and the accessibility tree; it is clipped, not removed. */
+.toggle input[type="checkbox"].switch-input {
+  position: absolute; width: 1px; height: 1px; margin: -1px;
+  padding: 0; overflow: hidden; clip: rect(0 0 0 0);
+  clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+.user-toggle .switch { position: relative; width: 34px; height: 18px; border-radius: 999px;
+               background: var(--edge); border: 1px solid var(--edge); transition: background .15s; }
+.user-toggle .knob { position: absolute; top: 1px; left: 2px; width: 14px; height: 14px;
+               border-radius: 50%; background: var(--text-muted); transition: left .15s, background .15s; }
+.user-toggle input:checked ~ .switch { background: var(--user-selection, var(--selected-tint-strong));
+               border-color: var(--action-primary); }
+.user-toggle input:checked ~ .switch .knob { left: 18px; background: var(--action-primary); }
+.user-toggle input:focus-visible ~ .switch { outline: 2px solid var(--action-primary); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .user-toggle .switch, .user-toggle .knob { transition: none; } }
+
+/* ---- the Matrix, in the family's look ---------------------------------------------------
+   Mode choice reads as three radios (the buttons keep role=radio, so they are announced as
+   one), the grid fills the width, and a cell, a ring and a dot are the family's sizes. */
+body.user-page .mx-modes { display: inline-flex; gap: 14px; flex-wrap: wrap; margin: 0; }
+body.user-page .mx-modebtn,
+body.user-page .mx-modebtn.active {
+  min-height: 0; padding: 0; border: 0; border-radius: 0; box-shadow: none;
+  background: transparent; color: var(--text); font-size: 15px; font-weight: 400;
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+}
+body.user-page .mx-modebtn::before {
+  content: ""; width: 13px; height: 13px; border-radius: 50%; box-sizing: border-box;
+  border: 1px solid var(--text-muted); background: transparent;
+}
+body.user-page .mx-modebtn.active::before {
+  border-color: var(--action-primary);
+  background: radial-gradient(circle, var(--action-primary) 0 42%, transparent 48%);
+}
+body.user-page .mx-hint { margin: 6px 0 10px; font-size: 15px; color: var(--text); }
+body.user-page .mx-scroll {
+  overflow: auto; max-height: calc(100vh - 230px);
+  border: 1px solid var(--edge); border-radius: var(--panel-radius, 10px);
+  background: var(--surface-raised);
+}
+body.user-page .mx { min-width: 100%; }
+body.user-page .mx th, body.user-page .mx td {
+  padding: 6px 8px; background: var(--surface-raised); text-align: center;
+}
+body.user-page .mx thead th {
+  position: sticky; top: 0; z-index: 2; font-size: 15px; font-weight: 600;
+  vertical-align: bottom; min-width: 0; max-width: none; line-height: 1.45;
+}
+body.user-page .mx .mx-row-head {
+  position: sticky; left: 0; z-index: 1; text-align: left; min-width: 170px;
+  font-size: 15px; font-weight: 600; line-height: 1.45;
+}
+body.user-page .mx .mx-corner { position: sticky; left: 0; top: 0; z-index: 3; }
+body.user-page .mx-row-kind { font-size: 12px; }
+body.user-page .mx-cell {
+  width: 40px; height: 40px; min-width: 0; min-height: 0; padding: 0; border-radius: 8px;
+  background: var(--surface-elevated); color: var(--text); border: 1px solid var(--edge);
+  box-shadow: none;
+}
+body.user-page .mx-cell:disabled { cursor: not-allowed; }
+body.user-page .mx-ring.video-all { background: var(--action-primary); border-color: var(--action-primary); }
+body.user-page .mx-dot.audio-all { background: var(--text); }
+body.user-page .mx-ring.video-all .mx-dot.audio-all { background: var(--on-accent, #101418); outline: 1px solid var(--text); }

@@ -212,6 +212,19 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
         return jsonify(result)
 
     # ------------------------------------------------------ remote access
+    @app.route("/api/remote_access/status", methods=["GET"])
+    def api_remote_access_status():
+        """Is Remote Access on? Nothing else.
+
+        The navigation uses this to reconcile its Remote Access tab with the
+        server when a page comes back to the foreground. It must stay cheap:
+        `/api/remote_access` enumerates network adapters, which starts a
+        PowerShell child that takes seconds, and a tab bar must never be what
+        causes that.
+        """
+        return jsonify({"ok": True,
+                        "enabled": bool(listener.describe().get("enabled"))})
+
     @app.route("/api/remote_access", methods=["GET"])
     def api_remote_access_state():
         # Enumerated with a stable identity, so a selection can survive the
@@ -1043,10 +1056,13 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
         if mode not in _ROUTE_MODES:
             return None, None, (jsonify({"ok": False,
                                          "error": "mode must be av, video or audio"}), 400)
-        if mode != "av" and interface != omni_users.INTERFACE_MATRIX:
+        # The Standard page offers "Audio follows video": off sends a video-only route. That is
+        # the same write the Matrix makes for one display, narrower than A/V, and needs the same
+        # grants. Audio on its own stays a Matrix operation.
+        if mode == "audio" and interface != omni_users.INTERFACE_MATRIX:
             return None, None, (jsonify({
                 "ok": False,
-                "error": "video-only and audio-only routing is a Matrix operation"}), 400)
+                "error": "audio-only routing is a Matrix operation"}), 400)
         return interface, mode, None
 
     @app.route("/api/user/route", methods=["POST"])
@@ -1577,6 +1593,177 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
                 "reason": "resource_busy",
                 "error": "That display is busy with another change. "
                          "Try again in a moment."}), 409
+
+    @app.route("/api/user/unroute_many", methods=["POST"])
+    def api_user_unroute_many():
+        """Stop several permitted displays, and the members of several groups, in one action.
+
+        The same one-or-many selection Route uses, and the same rules: the request names
+        displays (`destinations`) and groups (`groups`) by stable identity; everything is
+        resolved NOW (group membership is read at action time and a display reached twice is
+        unrouted once); each resolved display is authorised again on its own account just
+        before its write, on the far side of its lock; and the displays are independent, so
+        one that fails does not stop the others and nothing already stopped is undone. The
+        answer is a truthful "N of M displays", each display's own outcome by name.
+
+        It adds no teardown logic. Every display goes through the same verified engine
+        `/api/user/unroute` uses, which leaves a Multiview through the established path first
+        and reads the device back afterwards. No source is involved: stopping a display needs
+        only the display.
+        """
+        data = _json_body()
+        raw_destinations = data.get("destinations") or []
+        raw_groups = data.get("groups") or []
+        if not isinstance(raw_destinations, list) or not isinstance(raw_groups, list):
+            return jsonify({"ok": False,
+                            "error": "destinations and groups must be lists"}), 400
+        if not (raw_destinations or raw_groups):
+            return jsonify({"ok": False,
+                            "error": "at least one destination or group required"}), 400
+        if len(raw_destinations) + len(raw_groups) > ROUTE_MANY_MAX_TARGETS:
+            return jsonify({"ok": False,
+                            "error": "too many destinations in one request"}), 400
+        requested_displays = []
+        for value in raw_destinations:
+            identity = omni_users._normalise_identity(value)
+            if not identity:
+                return jsonify({"ok": False, "error": "a destination was not valid"}), 400
+            if identity not in requested_displays:
+                requested_displays.append(identity)
+        requested_groups = []
+        for value in raw_groups:
+            gid = str(value or "").strip().lower()
+            if not gid:
+                return jsonify({"ok": False, "error": "a group was not valid"}), 400
+            if gid not in requested_groups:
+                requested_groups.append(gid)
+
+        def _base(account):
+            if not account.permissions.has_feature(omni_access.FEATURE_AV):
+                return "missing_feature:av"
+            if not account.permissions.interfaces:
+                return "interface_not_permitted"
+            return None
+
+        def _request_check(account):
+            reason = _base(account)
+            if reason is not None:
+                return reason
+            for identity in requested_displays:
+                if not account.permissions.may_control_destination(identity):
+                    return "destination_not_permitted"
+            for gid in requested_groups:
+                if not account.permissions.may_control_group(gid):
+                    return "group_not_permitted"
+            return None
+
+        # Before anything is resolved or queued: a request naming something this account may
+        # not control is refused whole, so a partial unroute is never the surprise.
+        refusal = _revalidate(_request_check, "/api/user/unroute_many")
+        if refusal is not None:
+            return refusal
+
+        found_groups = []
+        for gid in requested_groups:
+            group = groups.get(gid)
+            if group is None:
+                return jsonify({"ok": False,
+                                "error": "That group is not available."}), 404
+            found_groups.append(group)
+
+        # One entry per display, in a stable order: the ones named individually first, then
+        # group members in group order. `via` records how each was reached, because that
+        # decides which grant authorises it.
+        plan = {}
+        for identity in requested_displays:
+            plan.setdefault(identity, {"individual": True, "groups": []})
+            plan[identity]["individual"] = True
+        for group in found_groups:
+            for identity in group["members"]:
+                entry = plan.setdefault(identity, {"individual": False, "groups": []})
+                if group["id"] not in entry["groups"]:
+                    entry["groups"].append(group["id"])
+        order = list(plan)
+
+        # Captured here because the workers run outside this request.
+        token = request.cookies.get(SESSION_COOKIE)
+        is_local = bool(getattr(g, "is_local", False))
+        actor = _current_account()
+
+        def _refused_now(identity):
+            """Why this display may no longer be unrouted by this account, or None."""
+            if is_local:
+                return None
+            account, _session = store.resolve_session(token)
+            if account is None:
+                return "session_invalid"
+            if account.is_admin:
+                return None
+            reason = _base(account)
+            if reason is None:
+                via = plan[identity]
+                allowed = (via["individual"]
+                           and account.permissions.may_control_destination(identity)) \
+                    or any(account.permissions.may_control_group(gid)
+                           for gid in via["groups"])
+                reason = None if allowed else "destination_not_permitted"
+            if reason is not None:
+                store.audit("access.denied", actor=account, detail={
+                    "rule": "/api/user/unroute_many", "reason": reason})
+            return reason
+
+        def unroute_member(index, identity):
+            name = _member_label(identity)
+            refused = {"ok": False, "result": "refused", "name": name}
+            if _refused_now(identity) is not None:
+                return refused
+            try:
+                with locks.hold(locks.decoder(identity)):
+                    # Again, now that the wait is over and the next statement writes to
+                    # hardware.
+                    if _refused_now(identity) is not None:
+                        return refused
+                    decoder_ip, why = _resolve_addresses(identity)[identity]
+                    if why == "ambiguous":
+                        return {"ok": False, "result": "ambiguous", "name": name}
+                    if not decoder_ip:
+                        return {"ok": False, "result": "not_found", "name": name}
+                    with app.test_request_context(
+                            "/api/unroute", method="POST",
+                            json={"decoder": decoder_ip}):
+                        result = unroute_view()
+                    forget_observation("multiview:" + str(decoder_ip))
+                    status = (result[1] if isinstance(result, tuple)
+                              and len(result) > 1 else 200)
+                    body = _payload_of(result)
+                    ok = bool(body.get("ok")) and status < 400
+                    return {"ok": ok,
+                            "result": str(body.get("status") or
+                                          ("verified" if ok else "failed")).lower(),
+                            "name": name}
+            except omni_locks.ResourceBusy:
+                return {"ok": False, "result": "busy", "name": name}
+
+        began = time.monotonic()
+        # Before anything is written: the exact stable identities this request intends to
+        # change. Named fields only, never the request body.
+        log.info("[UNROUTE-MANY] displays=%d groups=%d intended=%s",
+                 len(requested_displays), len(found_groups), ",".join(order))
+        summary = omni_groups.run_concurrent(order, unroute_member,
+                                             workers=ROUTE_MANY_WORKERS)
+        log.info("[UNROUTE-MANY] stopped %d of %d in %.2fs", summary["routed"],
+                 summary["total"], time.monotonic() - began)
+        store.audit("unroute_many", actor=actor, detail={
+            "groups": [grp["id"] for grp in found_groups],
+            "routed": summary["routed"], "total": summary["total"],
+            "intended": order})
+        return jsonify({
+            "ok": summary["ok"], "routed": summary["routed"],
+            "total": summary["total"],
+            "results": [{"index": r["index"], "name": r.get("name") or "Display",
+                         "ok": bool(r.get("ok")),
+                         "result": r.get("result") or "failed"}
+                        for r in summary["results"]]})
 
     @app.route("/api/user/source_preview", methods=["GET"])
     def api_user_source_preview():

@@ -1,5 +1,26 @@
 # Changelog
 
+## V1.2.1
+
+First release containing everything in V1.2.0 (never published) together with the corrections found by its
+hardware acceptance test. See RELEASE_NOTES_V1.2.1.md for the user-facing summary.
+
+- Remote Access navigation: page responses that carry the Remote Access state are `no-store` with no ETag, so a
+  cached page can no longer show the old state; background pages re-check `/api/remote_access/status`; enabling
+  reports its progress.
+- Per-device working credentials on every authenticated path. A device's refusal is recognised from
+  `error_message` as well as `error`, a recorded credential that stops working is replaced by the next known one
+  after a single retry, and the matrix route/unroute and Blink go through the credentialed transport. `set_route`
+  no longer prints a device record containing a password.
+- Device Info reads its columns by name (`DEVICE_COL`) so adding a column cannot shift Model, Version, Time Zone,
+  NTP Server or Type.
+- Routing: one destination selection for displays and Display Groups, Clear selection, Unroute
+  (`/api/user/unroute_many`), Audio follows video and Preview switches, Luma-family spacing and typography;
+  the A/V Matrix mode choice follows the same wording.
+- Multiview: Save over a displayed Multiview writes nothing to any device (Show applies it, with the object's
+  windows and audio); names are validated (400 with the rules); Show reports `lock_verification`
+  (`INITIAL PASS`, `PASS AFTER RECOVERY`, `NOT LOCKED AFTER RECOVERY`) with one recovery attempt.
+
 ## V1.2.0
 
 Optional secure remote access with administrator and user accounts, per-user routing, Display Groups,

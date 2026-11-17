@@ -63,7 +63,7 @@ To publish a release (with approval):
 1. Finish on the release branch. `VERSION` holds the version being released, and it is the one
    place a version is typed: the application, the launcher, Settings, the User Guide, the
    artifact names and the Windows file properties all read it. Do not type a version into a page.
-2. Add `RELEASE_NOTES_<version>.md` (for example `RELEASE_NOTES_V1.2.0.md`). The workflow
+2. Add `RELEASE_NOTES_<version>.md` (for example `RELEASE_NOTES_V1.2.1.md`). The workflow
    refuses a tag whose notes file does not exist.
 3. Update the User Guide and `CHANGELOG.md`, and run `python run_tests.py`. If the release
    includes macOS builds, the release notes link to [docs/INSTALL_MACOS.md](docs/INSTALL_MACOS.md)

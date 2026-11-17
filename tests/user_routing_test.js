@@ -183,10 +183,13 @@ suite.push(() => check('the shared dialog carries its own styling', () => {
 suite.push(() => check('a source card carries the picture, not a button', () => {
   const body = code(SHELL_JS);
   assert(/pick-shot/.test(body), 'no preview element on the card');
-  assert(/has-preview/.test(body), 'the card does not become a preview card');
+  // The family's card: a picture area above a body of name and state. The picture area is
+  // part of the card for every source and display, whether or not a picture arrives.
+  assert(/button\.append\(shot\)/.test(body) && /button\.append\(body\)/.test(body),
+    'the card is a picture area above a body');
   // The whole card stays the selection target: the picture is inside the
   // same <button>, not a sibling with its own handler.
-  assert(/button\.append\(shot, text\)/.test(body),
+  assert(/const button = document\.createElement\('button'\)/.test(body),
     'the preview must be inside the card, so the whole card is tappable');
 }));
 
@@ -245,15 +248,15 @@ suite.push(() => check('the preview keeps its aspect and is not cropped', () => 
 
 suite.push(() => check('selection stays obvious over an arbitrary picture', () => {
   const css = code(REMOTE_CSS).replace(/\s+/g, '');
-  assert(/\.pick\.has-preview\[aria-pressed="true"\]/.test(css),
-    'a selected preview card needs its own treatment');
+  assert(/body\.user-page\.pick\[aria-pressed="true"\]/.test(css),
+    'a selected card needs its own treatment');
   // An edge, because a tint is what a busy picture swallows -- and at FULL
   // strength from the accent the presets set, because the selection token is
   // 16% alpha and 16% alpha over a white source is nothing at all. Measured:
   // the footer tint alone is deltaE 12.9, the edge is rgb(30,144,255) solid.
   assert(/box-shadow:inset000\d+px/.test(css),
     'selection should be carried by an edge');
-  assert(/box-shadow:inset000\d+pxvar\(--action-primary\)/.test(css),
+  assert(/body\.user-page\.pick\[aria-pressed="true"\]\{[^}]*box-shadow:inset000\d+pxvar\(--action-primary\)/.test(css),
     'the edge must be the full-strength accent, not the selection tint');
 }));
 

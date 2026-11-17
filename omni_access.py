@@ -139,6 +139,7 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     # display reached through a group needs that group's, and group membership
     # never grants the display individually.
     "/api/user/route_many": (Access.USER, FEATURE_AV),
+    "/api/user/unroute_many": (Access.USER, FEATURE_AV),
     # The routable grid, built for this account. USER and FEATURE_AV here; the
     # handler additionally requires the Matrix routing interface, because who
     # may use the grid is a separate decision from who may route at all.
@@ -184,6 +185,7 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     "/api/admin/certificate": (Access.ADMIN, None),
     "/api/admin/audit": (Access.ADMIN, None),
     "/api/remote_access": (Access.ADMIN, None),
+    "/api/remote_access/status": (Access.ADMIN, None),
 
     # ---- first-run bootstrap, local host only -------------------------
     # Creating the first administrator is reachable from the machine running

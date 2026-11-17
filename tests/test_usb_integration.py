@@ -3197,6 +3197,13 @@ class HardwareIsolationTests(ServerTestBase):
     noticed when one of them reached a live unit from a unit test.
     """
 
+    def test_identify_cannot_escape_the_fenced_transport(self):
+        with self.assertRaises(AssertionError):
+            self.real_identify("192.0.2.1")
+        self.assertEqual(len(_WS_WRITES), 1, "the attempt is recorded, not only raised")
+        self.assertEqual(_WS_WRITES[0][1], {"identify": {}})
+        del _WS_WRITES[:]
+
     def test_the_fence_refuses_a_method_call_not_only_a_config_set(self):
         """`method` is the API's third verb, and it writes.
 
@@ -3298,6 +3305,18 @@ class HardwareIsolationTests(ServerTestBase):
         self._patch_cache(FULL_CACHE_UNITS)
         self.seed(*OBSERVED_UDP)
         self.rules = {str(r.rule) for r in srv.app.url_map.iter_rules()}
+        # Blink travels through the credentialed transport, so it now meets this
+        # suite's fence, which fails any test that sends a `method`. The endpoint
+        # tests below exist to prove nothing escapes and to see how each endpoint
+        # answers when its unit cannot be reached, so at that one seam the unit is
+        # simply not there -- exactly what the socket fence used to make of it.
+        # test_identify_cannot_escape_the_fenced_transport drives the real
+        # operation and requires the fence to refuse it.
+        self.real_identify = srv._omnistream_identify
+
+        def unreachable(ip):
+            raise OSError("the network is unavailable in tests")
+        self.patch_srv("_omnistream_identify", unreachable)
 
     # ---- the fence itself ----
     def test_a_configuration_write_is_refused_by_the_transport(self):

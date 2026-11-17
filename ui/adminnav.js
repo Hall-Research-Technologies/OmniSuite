@@ -227,6 +227,38 @@
     remoteChannel = null;                       // no channel: this tab still follows
   }
 
+  // A page is not always shown the way it was left. It can be restored from the
+  // back-forward cache, or sit in a window that was in the background while
+  // Remote Access was switched somewhere else (another tab on another origin
+  // such as localhost versus 127.0.0.1 is invisible to the BroadcastChannel). The
+  // tab bar is reconciled with the server when the page becomes visible again:
+  // one small local read that touches no device and no adapter, at most once per
+  // few seconds, and never moves the operator off the page they are on.
+  let reconcileAt = 0;
+  let reconciling = false;
+  async function reconcileRemoteTab() {
+    if (reconciling || servedState() === null) return;
+    const now = Date.now();
+    if (now - reconcileAt < 3000) return;
+    reconciling = true;
+    reconcileAt = now;
+    try {
+      const res = await fetch('/api/remote_access/status', {credentials: 'same-origin'});
+      if (!res.ok) return;                      // not an administrator: leave it
+      const body = await res.json();
+      if (body && typeof body.enabled === 'boolean') applyRemoteState(body.enabled, false);
+    } catch (err) {
+      /* unknown: the bar stays as it is */
+    } finally {
+      reconciling = false;
+    }
+  }
+  window.addEventListener('pageshow', (event) => { if (event.persisted) reconcileRemoteTab(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') reconcileRemoteTab();
+  });
+  window.addEventListener('focus', () => { reconcileRemoteTab(); });
+
   window.addEventListener('omni:remote-access-changed', (event) => {
     const detail = (event && event.detail) || {};
     if (typeof detail.enabled !== 'boolean') return;

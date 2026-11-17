@@ -71,7 +71,7 @@ function element(tag) {
 
 // A page served with Remote Access in `served` state, `current` meaning the
 // page IS the Remote Access page.
-async function openPage({served, current}) {
+async function openPage({served, current, status}) {
   const tabs = element('div');
   ['Device Info', 'Configure', 'A/V Matrix', 'USB Matrix', 'Multiview'].forEach((t, i) => {
     const a = element('a'); a.textContent = t; a.href = '/x' + i; tabs.appendChild(a);
@@ -92,7 +92,9 @@ async function openPage({served, current}) {
     readyState: 'complete', createElement: element, getElementById: () => null,
     querySelector: (sel) => (/omni-remote-access/.test(sel) ? meta
       : (/\.tabs/.test(sel) ? tabs : null)),
-    querySelectorAll: () => [], addEventListener() {},
+    querySelectorAll: () => [],
+    addEventListener(type, fn) { listeners['document:' + type] = fn; },
+    visibilityState: 'visible',
   };
   const channels = [];
   class FakeChannel {
@@ -104,8 +106,15 @@ async function openPage({served, current}) {
     window, document, sessionStorage: {removeItem() {}},
     location: {replace() {}, assign(u) { navigations.push(u); }},
     BroadcastChannel: FakeChannel,
-    fetch: async (url) => { fetches.push(url); return {ok: true, json: async () => ({})}; },
-    Promise, JSON, Object, Array, console,
+    fetch: async (url) => {
+      fetches.push(url);
+      if (status && status.fail) throw new Error('network');
+      if (status && url === '/api/remote_access/status') {
+        return {ok: status.ok !== false, json: async () => ({ok: true, enabled: status.enabled})};
+      }
+      return {ok: true, json: async () => ({})};
+    },
+    Date, Promise, JSON, Object, Array, console,
   };
   vm.createContext(sandbox);
   vm.runInContext(NAV_JS, sandbox);
@@ -171,6 +180,61 @@ suite.push(() => check('a switch is told to other windows; a re-read is not', as
   assert(channel.sent.length === 1 && channel.sent[0].enabled === true);
   channel.onmessage({data: {enabled: false, leave: false}});
   assert(!p.names().includes('Remote Access'), 'another window turned it off');
+}));
+// ---- a page that was not on screen when the setting changed ------------------------------------
+suite.push(() => check('a page that missed the change catches up when it is shown again', async () => {
+  const p = await openPage({served: false, status: {enabled: true}});
+  assert(!p.names().includes('Remote Access'));
+  p.listeners['window:focus'] ? 0 : 0;
+  await p.listeners.focus({});
+  await new Promise((r) => setTimeout(r, 20));
+  assert(p.names().includes('Remote Access'), 'the tab never followed: ' + p.names().join('|'));
+  assert(p.meta.getAttribute() === '1');
+  assert(p.fetches.join() === '/api/remote_access/status',
+    'the reconcile must use the cheap status read, never the adapter-enumerating one: ' + p.fetches);
+  assert(p.navigations.length === 0);
+}));
+suite.push(() => check('coming back to a page that still shows an entry Remote Access no longer has removes it', async () => {
+  const p = await openPage({served: true, status: {enabled: false}});
+  await p.listeners['document:visibilitychange']({});
+  await new Promise((r) => setTimeout(r, 20));
+  assert(!p.names().includes('Remote Access'), p.names().join('|'));
+  assert(p.navigations.length === 0, 'a reconcile never moves anyone');
+}));
+suite.push(() => check('the page that IS the entry keeps it through a reconcile, and nobody is moved', async () => {
+  const p = await openPage({served: true, current: true, status: {enabled: false}});
+  await p.listeners.focus({});
+  await new Promise((r) => setTimeout(r, 20));
+  assert(p.names().includes('Remote Access'));
+  assert(p.navigations.length === 0);
+}));
+suite.push(() => check('repeated focus events cost one request, not one each', async () => {
+  const p = await openPage({served: false, status: {enabled: true}});
+  await p.listeners.focus({});
+  await new Promise((r) => setTimeout(r, 20));              // the first has finished
+  await p.listeners.focus({});
+  await p.listeners['document:visibilitychange']({});
+  await new Promise((r) => setTimeout(r, 20));
+  assert(p.fetches.filter((u) => u === '/api/remote_access/status').length === 1, p.fetches.join());
+}));
+suite.push(() => check('a failed or refused read leaves the bar exactly as it was', async () => {
+  for (const status of [{fail: true}, {ok: false, enabled: false}]) {
+    const p = await openPage({served: true, status});
+    await p.listeners.focus({});
+    await new Promise((r) => setTimeout(r, 20));
+    assert(p.names().includes('Remote Access'), 'unknown must not remove the entry');
+  }
+}));
+suite.push(() => check('Settings says it is working the moment turning on starts, before the slow request', () => {
+  const src = code(SETTINGS_JS);
+  const at = src.indexOf("'Turning on");
+  assert(at > 0, 'no pending label');
+  assert(/remoteToggle\.textContent = turningOn \? 'Turning on/.test(src),
+    'the control itself must say it is working, not only the status line');
+  const post = src.indexOf("fetch('/api/remote_access', {", at);
+  assert(post > at, 'the pending state must be shown before the POST is awaited');
+  assert(/aria-busy/.test(src), 'announced as well as painted');
+  assert(/several seconds/.test(src), 'the wait is explained');
 }));
 suite.push(() => check('settings announces what the server verified, after reading it back', () => {
   const src = code(SETTINGS_JS);
@@ -266,8 +330,8 @@ suite.push(() => check('the script versions were bumped so a cached page cannot 
   for (const page of ['index.html', 'admin/users.html', 'matrix/index.html', 'matrix/configure.html',
                       'matrix/usb.html', 'matrix/multiview.html']) {
     const html = read('ui', ...page.split('/'));
-    assert(/\/ui\/adminnav\.js\?v=20261116-remotenav/.test(html), page + ' adminnav');
-    assert(/\/ui\/settings\.js\?v=20261116-pwforms/.test(html), page + ' settings');
+    assert(/\/ui\/adminnav\.js\?v=20261117-remotenav2/.test(html), page + ' adminnav');
+    assert(/\/ui\/settings\.js\?v=20261117-settings2/.test(html), page + ' settings');
   }
 }));
 

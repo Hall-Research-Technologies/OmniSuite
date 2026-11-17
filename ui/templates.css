@@ -846,8 +846,9 @@ button.secondary:focus-visible {
 }
 
 .mode .modebtn {
-  background-color: transparent;
-  color: var(--text-muted);
+  /* A filled secondary surface with normal text, as in the family's other Matrix. */
+  background-color: var(--surface-elevated);
+  color: var(--text);
   border: 1px solid var(--edge);
 }
 .mode .modebtn:hover { color: var(--text); }

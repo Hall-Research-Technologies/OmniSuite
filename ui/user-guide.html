@@ -222,7 +222,7 @@
         <tr><td>About</td><td>Who publishes OmniSuite and on what terms.</td><td>Names the copyright holder and links to the <strong>License</strong>, which the application serves from the file the running build was made from. The summary in the dialog is a convenience; the licence text is what governs use.</td></tr>
         <tr><td>Username</td><td>Device login username.</td><td>Most Omni units use <code>admin</code>.</td></tr>
         <tr><td>Password</td><td>Primary device password.</td><td>The eye button reveals the stored value.</td></tr>
-        <tr><td>Fallback Password</td><td>Secondary password tried when the primary password fails.</td><td>Useful while normalizing mixed fleets.</td></tr>
+        <tr><td>Fallback Password</td><td>Secondary password tried when the primary password fails.</td><td>Useful while normalizing mixed fleets. Each unit remembers the password it last accepted, so units on the primary and units on the fallback can be used side by side &mdash; Preview, Blink, routing, Multiview and every other operation use that unit's own password, and a password that stops working is replaced by the one that works the next time you use the unit. Nothing is changed on the unit.</td></tr>
         <tr><td>WS Port</td><td>Selects HTTP/WebSocket or HTTPS/Secure WebSocket.</td><td>Use <code>80 (ws/http)</code> for normal Omni units. Use <code>443 (wss/https)</code> only when the unit's secure API path is working for the target action.</td></tr>
         <tr><td>Timeout</td><td>Per-request device timeout in seconds.</td><td>Increase on slow networks. Too low can make reachable units appear failed.</td></tr>
         <tr><td>Concurrency</td><td>Number of simultaneous scan/upgrade operations.</td><td>Higher is faster, but can make busy networks or units respond unevenly.</td></tr>
@@ -999,6 +999,13 @@
       <p>Things that change on their own never enable it: a source going quiet, a window's health, a preview refreshing, or the engineering figures updating. Those are readings, not edits.</p>
       <p>After a successful save it greys out again. If a save fails, what you typed is still there and Save is still available, so you can correct it and try again.</p>
 
+      <h3>Saving the Multiview that is on the display</h3>
+      <p>Save only ever stores. If you change the Multiview that is currently on the display &mdash; its layout, its name or which source is in a window &mdash; and press <strong>Save</strong>, <strong>nothing on the display changes</strong>: the windows, the sources, the encoders and the sound all stay exactly as they are. The canvas says the change is <strong>saved, not yet shown</strong>.</p>
+      <p>Press <strong>Show on Display</strong> to apply it. That is the one moment the picture changes, and it applies the whole saved configuration &mdash; windows, sources, encoder settings and audio &mdash; together. While a saved change is waiting to be shown, the canvas is a form again rather than the live display.</p>
+
+      <h3>Naming a Multiview</h3>
+      <p>A name may be 1 to 48 characters: letters, numbers and spaces, plus the marks <code>- &ndash; &mdash; _ + . , ( ) &amp;</code>, and it must contain at least one letter or number. A name that breaks these rules is <strong>refused, not quietly altered</strong>: Save explains what is wrong, lists the characters that are not allowed, and leaves what you typed in the box so you can correct it. Nothing is written to any device.</p>
+
       <h3>The Save confirmation</h3>
       <p>Saving lists what it will do and asks you to confirm, because it reconfigures encoders that other displays may be using. If you would rather not be asked, tick <strong>Do not ask again for this version</strong>.</p>
       <div class="note">That preference is remembered <strong>for this version of OmniSuite</strong>. When you upgrade, the confirmation appears once more, because a new release may do something different. You never have to clear it by hand, and turning it off here does not affect any other warning.</div>
@@ -1144,6 +1151,7 @@
       <table>
         <tr><th>The Multiview you have open</th><th>What the canvas says</th><th>What a drop does</th></tr>
         <tr><td>Not on the display</td><td><strong>INACTIVE</strong> &mdash; <em>saved on this decoder, not currently shown</em></td><td>Edits the saved layout. Nothing on screen changes until you Save and Show.</td></tr>
+        <tr><td>On the display, with a saved change waiting</td><td><strong>Saved &mdash; press Show on Display to apply it</strong></td><td>Edits the saved description. Nothing on screen changes until you press Show on Display.</td></tr>
         <tr><td>On the display</td><td><strong>LIVE &mdash; changes made on this canvas are applied immediately</strong>, with the canvas outlined</td><td><strong>Changes the picture straight away.</strong></td></tr>
       </table>
 
@@ -1243,11 +1251,14 @@
         <li>A layout can use at most four different sources.</li>
       </ul>
 
+      <h3>If a window starts dark</h3>
+      <p>Occasionally the decoder fails to start one window even though everything is configured correctly. After a Show, OmniSuite checks every window. If one is dark it makes <strong>one</strong> recovery attempt &mdash; the display briefly rests on another input and then returns to the Multiview &mdash; and checks again. The result says whether every window locked first time or only after that recovery, and names any window that still is not showing. If it still is not showing, OmniSuite stops and tells you rather than trying again and again; you can press Show once more.</p>
+
       <h3>Messages you may see</h3>
       <table>
         <tr><th>Message</th><th>Meaning</th></tr>
         <tr><td>VERIFIED</td><td>Everything was written and read back successfully.</td></tr>
-        <tr><td>VERIFIED &mdash; WINDOW NOT LOCKED</td><td>The change worked, but a window is not showing its stream, even after OmniSuite set the windows up again once. The rest of the picture is live; check that source.</td></tr>
+        <tr><td>PARTIAL &mdash; WINDOW NOT LOCKED</td><td>The change was applied and verified, but a window is not showing its stream, even after OmniSuite set the windows up again <strong>once</strong>. OmniSuite does not keep retrying. The rest of the picture is live; check that source.</td></tr>
         <tr><td>NO ACTIVE VIDEO &mdash; ROLLED BACK</td><td>A window never showed its picture, so the change was undone. Nothing was left half-applied.</td></tr>
         <tr><td>FAILED &mdash; ROLLED BACK</td><td>A device refused a change, so everything already written was put back.</td></tr>
         <tr><td>&hellip; is assigned to windows that need different sizes</td><td>One source cannot fill two differently sized windows. Change one of them.</td></tr>
@@ -1575,9 +1586,14 @@
       and it never starts an HTTPS connection it cannot secure.</p>
       <p><strong>The Remote Access tab follows the setting.</strong> When you
       turn Remote Access on or off, the Remote Access tab appears or disappears
-      straight away; you do not need to refresh the page. If you turn it off
-      while you are on a Remote Access page, you are taken back to the main
-      OmniSuite page.</p>
+      as soon as OmniSuite has confirmed the change; you do not need to refresh
+      the page. Turning it <em>on</em> checks the computer's network adapters
+      first, which can take several seconds &mdash; the button reads <em>Turning
+      on&hellip;</em> and the status line says so while it works, and nothing is
+      wrong. Turning it off is immediate. If you turn it off while you are on a
+      Remote Access page, you are taken back to the main OmniSuite page. A page
+      that was open in the background while the setting changed in another window
+      catches up when you bring it back to the front.</p>
       <p><strong>Your own files stay chosen.</strong> Once you choose
       <strong>Use my own files</strong>, OmniSuite uses that certificate and key
       every time Remote Access is turned on, including after a restart, until you
@@ -1872,9 +1888,10 @@
         would a display, and presses <strong>Route</strong>. OmniSuite routes each display in turn,
         checking each one before it moves to the next, and says how many took it &mdash; for example
         <em>3 of 4 displays routed</em> &mdash; and which did not.</li>
-        <li><strong>Several at once.</strong> <strong>Select several</strong> on the User screen lets a
-        User tick any mix of displays and groups and send one source to all of them with a single
-        <strong>Route</strong>. A display that is in more than one of the choices is routed once.
+        <li><strong>Several at once.</strong> On the User screen a User chooses a source and then any mix
+        of displays and groups &mdash; one or many, there is no separate mode &mdash; and sends the source
+        to all of them with a single <strong>Route</strong>. A display that is in more than one of the
+        choices is routed once.
         Group membership is read at the moment of the route. The displays are routed at the same time,
         not one after another, and the result is the same count &mdash; <em>5 of 6 displays routed</em>
         &mdash; with the names of any that did not take it. A display chosen on its own still needs its
@@ -2085,19 +2102,27 @@
       <h4>A/V</h4>
       <ol>
         <li>Choose a source &mdash; what to route.</li>
-        <li>Choose a display &mdash; where to route it.</li>
+        <li>Choose one or more displays or groups &mdash; where to route it.</li>
         <li>Press <strong>Route</strong>.</li>
       </ol>
-      <p>Any display groups you gave the account appear beside the displays in step 2, marked with
-      the number of displays in them. Choosing a group instead of a display routes the source to
-      every display in it, one after another, and the screen reports <em>N of M displays routed</em>.
-      A group has no picture of its own &mdash; it is several displays, not one.</p>
-      <p><strong>Select several.</strong> Press <strong>Select several</strong> above the displays to choose
-      more than one display or group before you press <strong>Route</strong>. The summary at the bottom
-      counts what you have chosen &mdash; for example <em>Route Teacher PC to 2 displays and 1 group</em>.
-      One press sends the source to all of them, at the same time, and the screen reports
-      <em>N of M displays routed</em>. Press <strong>Select one</strong> to go back to choosing a single
-      display or group.</p>
+      <p>Choosing a display or group <em>adds it to your selection</em>; choosing it again removes it.
+      There is nothing to switch between: one display is simply a selection of one. Any display groups
+      you gave the account appear above the displays in step 2, marked with the number of displays in
+      them. Choosing a group routes the source to every display in it, and the screen reports
+      <em>N of M displays routed</em>. A group has no picture of its own &mdash; it is several displays,
+      not one.</p>
+      <p>The summary at the bottom says what you have chosen &mdash; for example
+      <em>Route Teacher PC to 2 displays and 1 group</em>. One press sends the source to all of them,
+      at the same time. Your selection stays as it is after a route, so you can change the source and
+      route again; a display that is still being routed is left to finish and is not sent a second
+      request. <strong>Clear selection</strong> forgets the source and every display and group you
+      chose. It changes nothing on any display.</p>
+      <p>Two switches sit above the source cards, the same two LumaSuite has.
+      <strong>Audio follows video</strong> is on by default: a route carries the source's sound with its
+      picture. Turn it off and a route sends the picture only, leaving each display's sound where it
+      was. <strong>Preview</strong> shows or hides the pictures on this page; it is a preference for
+      this browser, and it is not the same thing as the per-unit Preview setting in Device Info, which
+      controls whether a unit produces a picture at all.</p>
       <p>Each display also says what is on it now. A display showing something
       the account is not allowed to use is reported as showing another source,
       without naming it.</p>
@@ -2115,8 +2140,8 @@
       administrator. The page opens on the one the person used last on that browser; that is
       only a preference, and if they no longer have it they are moved to the one they do.</p>
       <p>The Matrix is a grid: the sources the account may use across the top, and the displays and
-      display groups it may control down the side. Choose <strong>AV</strong>, <strong>Video</strong>
-      or <strong>Audio</strong> above the grid, then press the circle where a source meets a
+      display groups it may control down the side. Choose <strong>Audio + Video</strong>,
+      <strong>Video</strong> or <strong>Audio</strong> above the grid, then press the circle where a source meets a
       display. AV routes sound and picture together; Video or Audio changes only that one and
       leaves the other where it was, so a display can show one source's picture with another's
       sound. The ring is the picture and the dot inside it is the sound.</p>
@@ -2132,15 +2157,16 @@
         OmniSuite refuses a route to it. A display showing a Multiview says <em>Multiview</em>
         for its picture, and its sound is shown as usual.</li>
         <li>Rest the pointer on a source's name (or tab to it) to see its picture. Nothing is
-        loaded until you do, and a source with its preview turned off simply shows none.</li>
+        loaded until you do, and a source with its preview turned off simply shows none. The
+        <strong>Preview</strong> switch above the grid turns these pictures off for this browser.</li>
         <li>If an administrator changes what the account may use while the Matrix is open, rows
         and columns appear and disappear without signing out. If the Matrix itself is taken away,
         the page moves to Routing at once.</li>
         <li>An account that opens its page from a direct access link gets whichever interfaces the
         account has, and follows later changes the same way.</li>
       </ul>
-      <p>The display chosen last is remembered, so coming back to the screen or
-      refreshing it does not mean choosing it again. Nothing is ever chosen
+      <p>The displays and groups chosen last are remembered, so coming back to the screen or
+      refreshing it does not mean choosing them again. Nothing is ever chosen
       automatically &mdash; a person with one display still picks it &mdash; and
       if that display is later unassigned or removed, the selection is simply
       cleared rather than moved to another one.</p>
@@ -2153,16 +2179,22 @@
       <em>Multiview</em>. A display showing nothing says <em>Unrouted</em>.</p>
 
       <h4 id="user-unroute">Stopping a display</h4>
-      <p>Choosing a display puts an <strong>Unroute</strong> button beside
-      <strong>Route</strong>. It stops that display showing anything: the picture
-      goes, the sound goes, and the card then reads <em>Unrouted</em>.</p>
+      <p>The bar at the bottom has three buttons, always in the same order:
+      <strong>Clear selection</strong>, <strong>Unroute</strong> and
+      <strong>Route</strong>. <strong>Unroute</strong> acts on whatever displays and groups you have
+      chosen &mdash; one display, several, a group, several groups, or any mix &mdash; and needs no
+      source. It stops each of them showing anything: the picture goes, the sound goes, and the card
+      then reads <em>Unrouted</em>.</p>
       <p>OmniSuite asks before doing it, because unlike choosing a different
-      source there is nothing left on screen afterwards. If the display was
-      showing a Multiview, unrouting takes it out of the Multiview first and
-      then stops it; the saved Multiview itself is not deleted and can be shown
-      again later.</p>
-      <p>The button is greyed out when the display is already showing nothing,
-      and OmniSuite confirms with the display that it really has stopped before
+      source there is nothing left on screen afterwards. A display that is in more than one of your
+      choices is stopped once; group membership is read at the moment you confirm; and a display you
+      did not choose is never touched. The displays are stopped at the same time, one that cannot be
+      stopped does not hold up the rest, and the screen reports <em>N of M displays unrouted</em> with
+      the names of any that did not stop. If a display was showing a Multiview, unrouting takes it out
+      of the Multiview first and then stops it; the saved Multiview itself is not deleted and can be
+      shown again later.</p>
+      <p>The button is greyed out while nothing is chosen, or when every chosen display is already
+      showing nothing, and OmniSuite confirms with each display that it really has stopped before
       reporting success.</p>
 
       <h4 id="user-previews">Source pictures</h4>

@@ -21,9 +21,9 @@ OmniMatrix_upgrade_server_v7_6y.py           the in-app updater (see below)
 
 | | |
 |---|---|
-| Tag | `V1.2.0` |
-| Artifact | `OmniSuite-V1.2.0-<platform>` |
-| Notes file | `RELEASE_NOTES_V1.2.0.md` |
+| Tag | `V1.2.1` |
+| Artifact | `OmniSuite-V1.2.1-<platform>` |
+| Notes file | `RELEASE_NOTES_V1.2.1.md` |
 | Release repository | `Hall-Research-Technologies/OmniSuite` (`release_repo`). The workflow publishes there with a dedicated token and does not run there; installed V1.1.0 applications read its "latest" release |
 | macOS bundle identifier | `OmniSuite` (unchanged since the first release) |
 

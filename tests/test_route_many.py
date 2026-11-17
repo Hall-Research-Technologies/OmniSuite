@@ -267,10 +267,20 @@ class RouteManyRequestTests(RouteManyBase):
         reply = self.many(session, groups=["grp_missing"])
         self.assertEqual(reply.status_code, 404)
 
-    def test_video_only_is_a_matrix_operation(self):
+    def test_audio_only_is_a_matrix_operation(self):
+        session = self.grant_to_teacher(groups=[self.room_a])
+        reply = self.many(session, groups=[self.room_a], mode="audio")
+        self.assertEqual(reply.status_code, 400)
+
+    def test_video_only_is_what_audio_follows_video_off_sends(self):
+        # The Standard page's "Audio follows video" switch: off sends a video-only route. It is
+        # narrower than A/V and needs exactly the same grants.
         session = self.grant_to_teacher(groups=[self.room_a])
         reply = self.many(session, groups=[self.room_a], mode="video")
-        self.assertEqual(reply.status_code, 400)
+        self.assertEqual(reply.status_code, 200, reply.get_data(as_text=True))
+        self.assertTrue(all(r.get("mode") == "video" for r in self.routes), self.routes)
+        ungranted = self.many(session, [mac(5)], mode="video")
+        self.assertEqual(ungranted.status_code, 403, "video-only widens no grant")
 
     def test_the_route_is_classified_in_the_gate_table(self):
         rule = omni_access.ROUTES["/api/user/route_many"]
