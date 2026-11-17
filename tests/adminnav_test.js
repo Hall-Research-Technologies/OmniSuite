@@ -192,7 +192,7 @@ suite.push(() => check('every administrative page loads the shell', () => {
    'ui/matrix/usb.html', 'ui/matrix/multiview.html', 'ui/admin/users.html']
     .forEach((page) => {
       const html = read(...page.split('/'));
-      assert(/<script src="\/ui\/adminnav\.js"><\/script>/.test(html),
+      assert(/<script src="\/ui\/adminnav\.js(\?v=[\w-]+)?"><\/script>/.test(html),
         `${page} does not load the administrator's shell`);
     });
 }));

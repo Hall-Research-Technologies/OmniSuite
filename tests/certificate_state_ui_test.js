@@ -233,8 +233,8 @@ later.push(async () => {
   assert(noDialog.result === false, 'without the shared dialog the replacement must be refused');
 });
 check('the replacement flow source awaits the confirmation before any request', () => {
-  const flow = SETTINGS.slice(SETTINGS.indexOf("certGenerate.addEventListener('click'"));
-  const bounded = flow.slice(0, flow.indexOf("if (certSave) {"));
+  const flow = SETTINGS.slice(SETTINGS.indexOf('async function createCertificateFlow()'));
+  const bounded = flow.slice(0, flow.indexOf("if (certGenerate) {"));
   assert(bounded.indexOf('await confirmCertificateReplacement(') > 0
     && bounded.indexOf('await confirmCertificateReplacement(') < bounded.indexOf("fetch('/api/admin/certificate'"),
     'the request can precede the confirmation');
@@ -244,7 +244,7 @@ check('the replacement flow source awaits the confirmation before any request', 
   // so a sentence naming it cannot satisfy this with the code gone.
   const code = bounded.split('\n').map((l) => l.split('//')[0]).join('\n');
   const answered = code.indexOf('await confirmCertificateReplacement(');
-  const refused = code.indexOf('if (!go) return;', answered);
+  const refused = code.indexOf('if (!go) return false;', answered);
   const requested = code.indexOf("fetch('/api/admin/certificate'", answered);
   assert(refused > answered && refused < requested, 'Cancel does not stop the request');
 });

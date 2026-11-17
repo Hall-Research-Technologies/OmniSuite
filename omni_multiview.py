@@ -2245,6 +2245,10 @@ def _other_consumers(known_multiviews, source_ip, encoder_index, this_decoder):
     for record in known_multiviews or ():
         if record.get("decoder_ip") == this_decoder and record.get("current"):
             continue
+        # A record that says it is not on any display holds nothing. A record
+        # that does not say (older callers, other tools) counts, as before.
+        if record.get("active") is False:
+            continue
         for window in record.get("windows") or ():
             if (window.get("source_ip") == source_ip
                     and window.get("encoder_index") == encoder_index):

@@ -242,6 +242,40 @@ class GroupStore:
             return {"ok": True, "group": removed}
 
 
+def run_concurrent(items, route_one, workers: int = 4) -> dict:
+    """Route every item with bounded concurrency and report every outcome.
+
+    The same contract as `run_sequential` -- an exception is that item's failure
+    and nothing else, nothing already done is undone, and `results` is in the order
+    the items were given however the work finished -- except that up to `workers`
+    run at once. Each item takes its own per-display lock inside `route_one`, so two
+    items for one display still serialise; items for different displays do not wait
+    for each other.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    items = list(items)
+    results = [None] * len(items)
+
+    def one(index):
+        try:
+            outcome = route_one(index, items[index])
+            if not isinstance(outcome, dict) or "ok" not in outcome:
+                outcome = {"ok": False, "reason": "no_result"}
+        except Exception as exc:                  # an item's failure is only its own
+            log.warning("[GROUPS] item %d raised %s", index, type(exc).__name__)
+            outcome = {"ok": False, "reason": "error"}
+        results[index] = dict(outcome, index=index)
+
+    if items:
+        with ThreadPoolExecutor(max_workers=max(1, min(int(workers), len(items))),
+                                thread_name_prefix="route-many") as pool:
+            list(pool.map(one, range(len(items))))
+    routed = sum(1 for r in results if r.get("ok"))
+    return {"ok": bool(results) and routed == len(results),
+            "routed": routed, "total": len(results), "results": results}
+
+
 def run_sequential(members, route_one) -> dict:
     """Route each member in order, one at a time, and report every outcome.
 

@@ -199,6 +199,9 @@
       </select>
     </div>
 
+    <!-- A password field belongs to a form. display:contents keeps the rows laid
+         out exactly as they were; onsubmit is inert because Save is a button. -->
+    <form style="display:contents" onsubmit="return false" novalidate autocomplete="off">
     <div class="modal-row">
       <label for="f_username">Name</label>
       <input id="f_username" type="text" autocapitalize="none" spellcheck="false">
@@ -209,6 +212,7 @@
       <input id="f_password" type="password" autocomplete="new-password"
              placeholder="At least 8 characters">
     </div>
+    </form>
 
     <div id="user_only">
       <!-- Acts immediately rather than on Save, because enabling it mints a
@@ -344,11 +348,11 @@
 
 <script src="/ui/csrf.js"></script>
 <script src="/ui/modal-stack.js"></script>
-<script src="/ui/adminnav.js"></script>
+<script src="/ui/adminnav.js?v=20261116-remotenav"></script>
 <script src="/ui/appearance.js?v=20260910-appearance"></script>
 <script src="/ui/toast.js"></script>
 <script src="/ui/confirm.js"></script>
-<script src="/ui/settings.js?v=20260911-settings"></script>
+<script src="/ui/settings.js?v=20261116-pwforms"></script>
 <script src="/ui/admin/users.js"></script>
 </body>
 </html>

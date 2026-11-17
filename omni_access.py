@@ -134,6 +134,11 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     # One permitted source to every display of a permitted group, one display at
     # a time through the same verified route. The group is its own grant.
     "/api/user/route_group": (Access.USER, FEATURE_AV),
+    # One source to several displays and groups at once. Each resolved display is
+    # authorised on its own: a display chosen individually needs its own grant, a
+    # display reached through a group needs that group's, and group membership
+    # never grants the display individually.
+    "/api/user/route_many": (Access.USER, FEATURE_AV),
     # The routable grid, built for this account. USER and FEATURE_AV here; the
     # handler additionally requires the Matrix routing interface, because who
     # may use the grid is a separate decision from who may route at all.

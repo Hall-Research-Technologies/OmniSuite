@@ -80,7 +80,11 @@ class FinalInventoryTests(unittest.TestCase):
         # /api/user/matrix_state added: the routable grid built for the
         # caller's own permitted sources, displays and groups. The handler
         # additionally requires the Matrix routing interface.
-        self.assertEqual(counts[Access.USER], 7,
+        # /api/user/route_many added: one permitted source to several displays
+        # and groups. Each resolved display is authorised on its own account
+        # on both sides of its per-display lock, group membership grants no
+        # display individually, and the answer carries counts and names only.
+        self.assertEqual(counts[Access.USER], 8,
                          "what a restricted account may call changed")
         # Three moved to ADMIN in the release-candidate audit: the update
         # alert, its acknowledgement and the appearance reset all write or
@@ -125,7 +129,7 @@ class FinalInventoryTests(unittest.TestCase):
         self.assertEqual(counts[Access.ADMIN], 115,
                          "the administrative surface changed")
         self.assertEqual(sum(counts.values()), len(registered_rules()))
-        self.assertEqual(sum(counts.values()), 157)
+        self.assertEqual(sum(counts.values()), 158)
 
     def test_the_public_surface_is_still_only_what_signing_in_needs(self):
         public = {rule for rule, (access, _f) in omni_access.ROUTES.items()

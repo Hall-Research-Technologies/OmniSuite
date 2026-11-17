@@ -405,9 +405,25 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
                     "cert_path": cert_path, "key_path": key_path}
         context, tls_error = tls_context_for(proposed)
         if tls_error:
-            # Never start in the clear because TLS could not be arranged.
+            # Never start in the clear because TLS could not be arranged, and
+            # never make a certificate or choose HTTP on the administrator's
+            # behalf. The refusal says WHICH kind of problem it is, so the
+            # page can offer the decision (create one, use HTTP, or stop) and
+            # nothing here has to guess. A certificate the site supplied is
+            # never replaced by offering to create one: that case is reported
+            # as itself.
+            described = certificate_state()
+            supplied = bool(proposed["cert_path"])
+            if supplied:
+                reason = "supplied_certificate_unusable"
+            elif not described.get("present"):
+                reason = "no_certificate"
+            else:
+                reason = "certificate_unusable"
             return jsonify({"ok": False, "error": tls_error,
-                            "certificate": certificate_state()}), 400
+                            "reason": reason,
+                            "needs_certificate": not supplied,
+                            "certificate": described}), 400
 
         # A certificate for one address, about to be served on another.
         #
@@ -440,6 +456,7 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
                         f"for {address}. Create one for this network, then "
                         "turn remote access on."),
                     "needs_certificate": True,
+                    "reason": "certificate_mismatch",
                     "certificate": {**described, "for_address": address,
                                     "matches_address": False,
                                     "generated": True}}), 400
@@ -1288,6 +1305,204 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
         return jsonify({
             "ok": summary["ok"], "routed": summary["routed"],
             "total": summary["total"], "group": group["name"],
+            "results": [{"index": r["index"], "name": r.get("name") or "Display",
+                         "ok": bool(r.get("ok")),
+                         "result": r.get("result") or "failed"}
+                        for r in summary["results"]]})
+
+    #: The most displays and groups one request may name. Groups are small and this
+    #: is a bound on the work a single request can start, not a product limit.
+    ROUTE_MANY_MAX_TARGETS = 64
+    #: How many displays are routed at once. Each takes its own per-display lock and
+    #: talks to a different device; four keeps a room responsive without opening a
+    #: socket storm against a switch.
+    ROUTE_MANY_WORKERS = 4
+
+    @app.route("/api/user/route_many", methods=["POST"])
+    def api_user_route_many():
+        """Route one permitted source to several displays and groups in one action.
+
+        The request names displays (`destinations`) and groups (`groups`) by stable
+        identity. Everything is resolved NOW: group membership is read at route time,
+        a display named twice -- once alone, once through a group -- is routed once,
+        and each resolved display is authorised again on its own account just before
+        its write, on the far side of its lock.
+
+        What authority reaches a display: its own grant if it was named individually,
+        or the grant of a requested group that contains it. Membership of a group the
+        account holds does not grant the display on its own, and a display named
+        individually without a grant is refused even if some group contains it that
+        was not requested.
+
+        The displays are independent. One that fails does not stop the others and
+        nothing already routed is undone, so the answer is a truthful count,
+        "N of M displays routed", with each display's own outcome by name -- never by
+        address or identity.
+        """
+        data = _json_body()
+        source_id = omni_users._normalise_identity(data.get("source"))
+        raw_destinations = data.get("destinations") or []
+        raw_groups = data.get("groups") or []
+        interface, mode, malformed = _route_interface(data)
+        if malformed is not None:
+            return malformed
+        if not isinstance(raw_destinations, list) or not isinstance(raw_groups, list):
+            return jsonify({"ok": False,
+                            "error": "destinations and groups must be lists"}), 400
+        if not source_id or not (raw_destinations or raw_groups):
+            return jsonify({"ok": False,
+                            "error": "source and at least one destination or "
+                                     "group required"}), 400
+        if len(raw_destinations) + len(raw_groups) > ROUTE_MANY_MAX_TARGETS:
+            return jsonify({"ok": False,
+                            "error": "too many destinations in one request"}), 400
+        requested_displays = []
+        for value in raw_destinations:
+            identity = omni_users._normalise_identity(value)
+            if not identity:
+                return jsonify({"ok": False, "error": "a destination was not valid"}), 400
+            if identity not in requested_displays:
+                requested_displays.append(identity)
+        requested_groups = []
+        for value in raw_groups:
+            gid = str(value or "").strip().lower()
+            if not gid:
+                return jsonify({"ok": False, "error": "a group was not valid"}), 400
+            if gid not in requested_groups:
+                requested_groups.append(gid)
+
+        def _base(account):
+            if not account.permissions.has_feature(omni_access.FEATURE_AV):
+                return "missing_feature:av"
+            if not account.permissions.has_interface(interface):
+                return "interface_not_permitted"
+            if not account.permissions.may_use_source(source_id):
+                return "source_not_permitted"
+            return None
+
+        def _request_check(account):
+            reason = _base(account)
+            if reason is not None:
+                return reason
+            for identity in requested_displays:
+                if not account.permissions.may_control_destination(identity):
+                    return "destination_not_permitted"
+            for gid in requested_groups:
+                if not account.permissions.may_control_group(gid):
+                    return "group_not_permitted"
+            return None
+
+        # Before anything is resolved or queued: a request naming something this
+        # account may not use is refused whole, so a partial route is never the
+        # surprise.
+        refusal = _revalidate(_request_check, "/api/user/route_many")
+        if refusal is not None:
+            return refusal
+
+        found_groups = []
+        for gid in requested_groups:
+            group = groups.get(gid)
+            if group is None:
+                return jsonify({"ok": False,
+                                "error": "That group is not available."}), 404
+            found_groups.append(group)
+
+        # One entry per display, in a stable order: the ones named individually
+        # first, then group members in group order. `via` records how each was
+        # reached, because that decides which grant authorises it.
+        plan = {}
+        for identity in requested_displays:
+            plan.setdefault(identity, {"individual": True, "groups": []})
+            plan[identity]["individual"] = True
+        for group in found_groups:
+            for identity in group["members"]:
+                entry = plan.setdefault(identity, {"individual": False, "groups": []})
+                if group["id"] not in entry["groups"]:
+                    entry["groups"].append(group["id"])
+        order = list(plan)
+
+        # Captured here because the workers run outside this request.
+        token = request.cookies.get(SESSION_COOKIE)
+        is_local = bool(getattr(g, "is_local", False))
+
+        def _refused_now(identity):
+            """Why this display may no longer be routed by this account, or None."""
+            if is_local:
+                return None
+            account, _session = store.resolve_session(token)
+            if account is None:
+                return "session_invalid"
+            if account.is_admin:
+                return None
+            reason = _base(account)
+            if reason is None:
+                via = plan[identity]
+                allowed = (via["individual"]
+                           and account.permissions.may_control_destination(identity)) \
+                    or any(account.permissions.may_control_group(gid)
+                           for gid in via["groups"])
+                reason = None if allowed else "destination_not_permitted"
+            if reason is not None:
+                store.audit("access.denied", actor=account, detail={
+                    "rule": "/api/user/route_many", "reason": reason})
+            return reason
+
+        def route_member(index, identity):
+            name = _member_label(identity)
+            refused = {"ok": False, "result": "refused", "name": name}
+            if _refused_now(identity) is not None:
+                return refused
+            try:
+                with locks.hold(locks.decoder(identity)):
+                    # Again, now that the wait is over and the next statement
+                    # writes to hardware.
+                    if _refused_now(identity) is not None:
+                        return refused
+                    resolved = _resolve_addresses(source_id, identity)
+                    encoder_ip, encoder_why = resolved[source_id]
+                    decoder_ip, decoder_why = resolved[identity]
+                    if "ambiguous" in (encoder_why, decoder_why):
+                        return {"ok": False, "result": "ambiguous", "name": name}
+                    if not encoder_ip or not decoder_ip:
+                        return {"ok": False, "result": "not_found", "name": name}
+                    with app.test_request_context(
+                            "/api/route", method="POST",
+                            json={"encoder": encoder_ip, "decoder": decoder_ip,
+                                  "mode": mode}):
+                        result = route_view()
+                    status = (result[1] if isinstance(result, tuple)
+                              and len(result) > 1 else 200)
+                    body = _payload_of(result)
+                    ok = bool(body.get("ok")) and status < 400
+                    return {"ok": ok,
+                            "result": str(body.get("status") or
+                                          ("verified" if ok else "failed")).lower(),
+                            "name": name}
+            except omni_locks.ResourceBusy:
+                return {"ok": False, "result": "busy", "name": name}
+
+        began = time.monotonic()
+        # Before anything is written: the exact stable identities this request
+        # intends to change. Named fields only, never the request body.
+        log.info("[ROUTE-MANY] source=%s mode=%s interface=%s displays=%d groups=%d "
+                 "intended=%s", source_id, mode, interface, len(requested_displays),
+                 len(found_groups), ",".join(order))
+        summary = omni_groups.run_concurrent(order, route_member,
+                                             workers=ROUTE_MANY_WORKERS)
+        elapsed = time.monotonic() - began
+        log.info("[ROUTE-MANY] routed %d of %d in %.2fs", summary["routed"],
+                 summary["total"], elapsed)
+        store.audit(
+            "matrix.route_many" if interface == omni_users.INTERFACE_MATRIX
+            else "route_many", actor=_current_account(), detail={
+                "source": source_id, "source_label": _label(source_id),
+                "mode": mode, "interface": interface,
+                "groups": [grp["id"] for grp in found_groups],
+                "routed": summary["routed"], "total": summary["total"],
+                "intended": order})
+        return jsonify({
+            "ok": summary["ok"], "routed": summary["routed"],
+            "total": summary["total"],
             "results": [{"index": r["index"], "name": r.get("name") or "Display",
                          "ok": bool(r.get("ok")),
                          "result": r.get("result") or "failed"}
