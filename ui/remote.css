@@ -807,6 +807,22 @@ body.remote {
 .mx-cell:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .mx-cell:disabled { cursor: not-allowed; }
 .mx-cell.offline-blocked { opacity: var(--control-disabled-opacity); }
+/* Routing, not yet verified: a dashed ring that turns, and the progress cursor. The cell is
+   not disabled -- a disabled cell shows the not-allowed cursor, which reads as a refusal. */
+.mx-cell.pending, .mx-cell.row-pending { cursor: progress; }
+.mx-cell.pending .mx-ring { border-style: dashed; border-color: var(--action-primary); animation: mx-spin 1.2s linear infinite; }
+.mx-cell.row-pending { opacity: var(--control-disabled-opacity); }
+/* Verified failure: a solid edge at full strength and a cross drawn by shape, so it does not rely on
+   the hue surviving a preset. */
+.mx-cell.failed .mx-ring { border-color: var(--danger); border-style: solid; }
+.mx-cell.failed .mx-ring::before,
+.mx-cell.failed .mx-ring::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 12px; height: 2px;
+  margin: -1px 0 0 -6px; background: var(--danger); transform: rotate(45deg);
+}
+.mx-cell.failed .mx-ring::after { transform: rotate(-45deg); }
+@keyframes mx-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .mx-cell.pending .mx-ring { animation: none; } }
 .mx-ring {
   position: relative; width: 22px; height: 22px; border-radius: 50%;
   border: 2px solid var(--text-muted); box-sizing: border-box;
@@ -836,6 +852,8 @@ body.remote {
 
 /* While a route is in flight, the display it targets says so. */
 .pick.routing { cursor: progress; }
+.pick.route-failed .pick-state { color: var(--danger); }
+.multi-toggle { margin: 0 0 8px; }
 .pick.routing .pick-state { color: var(--state-info-text, var(--link-text)); }
 
 @media (max-width: 560px) {

@@ -128,6 +128,10 @@ class AdministrativeStateIsClosedTests(unittest.TestCase):
             # the same feature and the same destination check as routing to
             # it, delegating to the same engine and projected the same way.
             "/api/user/unroute",
+            # One permitted source to several displays and groups. Written for
+            # a restricted account, authorised per resolved display, and it
+            # answers with counts and names only.
+            "/api/user/route_many",
             "/api/user/usb_state", "/api/user/usb_route",
             # A still picture of one permitted source. It answers with an
             # image or a reason and never with device state -- no address, no
@@ -153,6 +157,8 @@ class AdministrativeStateIsClosedTests(unittest.TestCase):
         other, and this fails if it is neither.
         """
         projected = {"/api/user/state", "/api/user/route",
+                     # Counts and display names only; per-display authority.
+                     "/api/user/route_many",
                      # The grid is built from the account's own permitted
                      # lists by omni_projection.user_matrix -- named fields
                      # only, no address, no unpermitted device.

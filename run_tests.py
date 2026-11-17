@@ -47,7 +47,7 @@ JS_SUITES = ("usb_render_smoke.js", "usb_filter_test.js", "lldp_topology_test.js
              "clear_units_test.js", "settings_backup_test.js",
              "restore_impact_test.js", "restore_confirm_focus_test.js",
              "local_port_ui_test.js", "local_port_confirm_test.js",
-             "certificate_state_ui_test.js")
+             "certificate_state_ui_test.js", "remote_nav_live_test.js", "password_form_test.js")
 
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(TESTS))

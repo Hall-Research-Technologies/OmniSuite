@@ -37,6 +37,22 @@
     groups: [],
     group: null,
 
+    // "Select several": when on, displays and groups are toggled in and out of
+    // these two sets and one Route sends them all as one action. Off, the page
+    // behaves as it always did -- one display or one group.
+    multi: false,
+    destSel: new Set(),
+    groupSel: new Set(),
+
+    // Routes the page has sent and not yet had verified, by display and by group.
+    // A route in flight marks ITS target and nothing else: the rest of the page
+    // stays usable, because a verified route to one display has no bearing on
+    // the next route to another. `failed` is the targets whose last route
+    // reported a failure, kept on the card because a toast is replaced by the
+    // next one and a failure must not be lost to a later success.
+    inflight: {dest: new Set(), group: new Set()},
+    failed: {dest: new Set(), group: new Set()},
+
     // USB
     computers: [],
     peripherals: [],
@@ -369,14 +385,34 @@
     el(emptyId).hidden = items.length > 0;
   }
 
+  function isChosen(kind, id) {
+    if (state.multi && kind === 'destination') return state.destSel.has(id);
+    if (state.multi && kind === 'group') return state.groupSel.has(id);
+    const chosen = {
+      source: state.source, destination: state.destination,
+      group: state.group, computer: state.computer, peripheral: state.peripheral,
+    }[kind];
+    return id === chosen;
+  }
+
   function markSelected() {
     document.querySelectorAll('.pick').forEach((button) => {
-      const chosen = {
-        source: state.source, destination: state.destination,
-        group: state.group, computer: state.computer, peripheral: state.peripheral,
-      }[button.dataset.kind];
-      button.setAttribute('aria-pressed', String(button.dataset.id === chosen));
+      button.setAttribute('aria-pressed',
+        String(isChosen(button.dataset.kind, button.dataset.id)));
     });
+  }
+
+  // What the next Route will send: displays and groups by stable identity.
+  function currentTargets() {
+    if (state.multi) {
+      return {destinations: Array.from(state.destSel), groups: Array.from(state.groupSel)};
+    }
+    return {destinations: state.destination ? [state.destination] : [],
+            groups: state.group ? [state.group] : []};
+  }
+
+  function inFlightCount() {
+    return state.inflight.dest.size + state.inflight.group.size;
   }
 
   // ------------------------------------------------------------- summary
@@ -410,6 +446,37 @@
 
     if (state.busy) {
       summary.textContent = 'Working…';
+      action.disabled = true;
+      return;
+    }
+
+    if (state.tab === 'av' && state.multi) {
+      // Several targets: the count is the honest description, because a group's
+      // members may overlap an individually chosen display and are only counted
+      // once the server resolves them.
+      const a = named(state.sources, state.source);
+      const n = state.destSel.size;
+      const m = state.groupSel.size;
+      const parts = [];
+      if (n) parts.push(n + ' display' + (n === 1 ? '' : 's'));
+      if (m) parts.push(m + ' group' + (m === 1 ? '' : 's'));
+      action.textContent = 'Route';
+      if (a && parts.length) {
+        summary.replaceChildren();
+        const s = document.createElement('strong'); s.textContent = a;
+        const d = document.createElement('strong'); d.textContent = parts.join(' and ');
+        summary.append('Route ', s, ' to ', d);
+        const chosenSource = state.sources.find((x) => x.id === state.source);
+        if (chosenSource && chosenSource.online === false) {
+          summary.textContent = a + ' is offline.';
+          action.disabled = true;
+          return;
+        }
+        action.disabled = false;
+        return;
+      }
+      summary.textContent = !a && !parts.length ? 'Choose a source and some displays.'
+        : (!a ? 'Now choose a source.' : 'Now choose one or more displays or groups.');
       action.disabled = true;
       return;
     }
@@ -543,8 +610,12 @@
   // A display that is mid-route does not accept another selection. Stated on
   // the card rather than relying on the operator not to tap twice.
   function busyWith(node) {
-    return !!state.routingTo && node.dataset.kind === 'destination'
-           && node.dataset.id === state.routingTo;
+    if (node.dataset.kind === 'destination') {
+      return (!!state.routingTo && node.dataset.id === state.routingTo)
+             || state.inflight.dest.has(node.dataset.id);
+    }
+    if (node.dataset.kind === 'group') return state.inflight.group.has(node.dataset.id);
+    return false;
   }
 
   document.addEventListener('click', (event) => {
@@ -557,6 +628,16 @@
     if (busyWith(button)) return;
     const kind = button.dataset.kind;
     const id = button.dataset.id;
+
+    // Select several: displays and groups are toggled in and out of two sets, and
+    // nothing is cleared by choosing another kind.
+    if (state.multi && (kind === 'destination' || kind === 'group')) {
+      const set = kind === 'group' ? state.groupSel : state.destSel;
+      if (set.has(id)) set.delete(id); else set.add(id);
+      markSelected();
+      renderAction();
+      return;
+    }
 
     // Tapping the chosen one again clears it.
     const field = {source: 'source', destination: 'destination',
@@ -600,55 +681,150 @@
     }
   }
 
-  // The one Route operation. The button, a drop and (through its own cells) the
-  // Matrix all end in a request to the same two endpoints; this is the
-  // Standard interface's side of that.
-  async function routeSelected() {
-    if (state.busy) return;
-    const av = state.tab === 'av';
-    if (av && (!state.source || !(state.destination || state.group))) return;
-    if (!av && (!state.computer || !state.peripheral)) return;
+  // The single read that redraws the page after routing. Trailing and single
+  // flight: every finished route asks for it, only the last one to finish while
+  // nothing else is in flight actually runs it, and a read already running is not
+  // stacked on. Without this each route re-read and rebuilt the whole page before
+  // the next could start, which is what made consecutive routing feel serial.
+  const RECONCILE_DELAY_MS = 120;
+  let reconcileTimer = null;
+  let reconciling = false;
 
-    state.busy = true;
-    // The display this route targets is marked in flight, so a second tap on
-    // the same display is refused by the page rather than queued behind a
-    // lock on the server.
-    state.routingTo = av ? state.destination : null;
+  function scheduleReconcile() {
+    if (reconcileTimer !== null) window.clearTimeout(reconcileTimer);
+    reconcileTimer = window.setTimeout(runReconcile, RECONCILE_DELAY_MS);
+  }
+
+  async function runReconcile() {
+    reconcileTimer = null;
+    if (inFlightCount() > 0 || state.busy) return;   // the last to finish asks again
+    if (reconciling) { scheduleReconcile(); return; }
+    reconciling = true;
+    const at = Date.now();
+    try {
+      await refreshAfterRoute(at);
+    } catch (err) { /* the next route or the permission check reads again */ }
+    finally {
+      reconciling = false;
+      // The read rebuilt the cards; anything still routing is marked again.
+      renderRoutingState();
+    }
+  }
+
+  // What the operator is told, and what the card keeps, when a route has been
+  // verified or has failed. `ok` is the server's verified answer, never a guess.
+  function settleTargets(targets, result, group) {
+    const reply = result.body || {};
+    const ok = result.status === 200 && reply.ok === true;
+    targets.destinations.forEach((id) => {
+      if (ok) state.failed.dest.delete(id); else state.failed.dest.add(id);
+    });
+    targets.groups.forEach((id) => {
+      if (ok) state.failed.group.delete(id); else state.failed.group.add(id);
+    });
+    if (group && reply.results && result.status === 200 && reply.ok !== true) {
+      // Partial: the page cannot say which cards failed (members are not named
+      // by identity), so the toast carries the names and the group stays marked.
+    }
+  }
+
+  async function routeAv() {
+    if (!state.source) return;
+    const targets = currentTargets();
+    const total = targets.destinations.length + targets.groups.length;
+    if (!total) return;
+    // A display or group already being routed does not take a second request.
+    if (targets.destinations.some((id) => state.inflight.dest.has(id))
+        || targets.groups.some((id) => state.inflight.group.has(id))) return;
+
+    const sent = {destinations: targets.destinations.slice(), groups: targets.groups.slice()};
+    sent.destinations.forEach((id) => { state.inflight.dest.add(id); state.failed.dest.delete(id); });
+    sent.groups.forEach((id) => { state.inflight.group.add(id); state.failed.group.delete(id); });
     renderAction();
     renderRoutingState();
+    // Free the selection straight away in the several-targets case: the sets were
+    // copied into `sent`, so the operator can build the next route at once.
+    if (state.multi) { state.destSel.clear(); state.groupSel.clear(); markSelected(); renderAction(); }
     try {
       let result;
-      if (av && state.group) {
-        result = await api('/api/user/route_group', {
-          method: 'POST',
-          body: JSON.stringify({source: state.source, group: state.group,
-                                interface: 'standard'}),
-        });
-        announceRoute(result, true);
-        await refreshAfterRoute(Date.now());
-        return;
-      }
-      if (av) {
+      let group = false;
+      if (total === 1 && sent.destinations.length === 1) {
         result = await api('/api/user/route', {
           method: 'POST',
           body: JSON.stringify({source: state.source,
-                                destination: state.destination, mode: 'av',
+                                destination: sent.destinations[0], mode: 'av',
+                                interface: 'standard'}),
+        });
+      } else if (total === 1) {
+        group = true;
+        result = await api('/api/user/route_group', {
+          method: 'POST',
+          body: JSON.stringify({source: state.source, group: sent.groups[0],
                                 interface: 'standard'}),
         });
       } else {
-        const peripheral = state.peripherals.find((p) => p.id === state.peripheral);
-        const attached = peripheral && peripheral.attached_to
-          && peripheral.attached_to.computer_id === state.computer;
-        result = await api('/api/user/usb_route', {
+        group = true;
+        result = await api('/api/user/route_many', {
           method: 'POST',
-          body: JSON.stringify({computer: state.computer,
-                                peripherals: state.peripheral,
-                                detach: !!attached}),
+          body: JSON.stringify({source: state.source,
+                                destinations: sent.destinations, groups: sent.groups,
+                                mode: 'av', interface: 'standard'}),
         });
       }
-      if (av) {
-        announceRoute(result, false);
-      } else if (result.status === 200 && result.body.ok) {
+      announceRoute(result, group);
+      settleTargets(sent, result, group);
+    } catch (err) {
+      sent.destinations.forEach((id) => state.failed.dest.add(id));
+      sent.groups.forEach((id) => state.failed.group.add(id));
+      if (String(err.message) !== 'signed out') {
+        window.toast && window.toast('Could not reach OmniSuite', 'error');
+      }
+    } finally {
+      sent.destinations.forEach((id) => state.inflight.dest.delete(id));
+      sent.groups.forEach((id) => state.inflight.group.delete(id));
+      renderAction();
+      renderRoutingState();
+      scheduleReconcile();
+    }
+  }
+
+  // The one Route operation. The button, a drop and (through its own cells) the
+  // Matrix all end in a request to the same endpoints; this is the Standard
+  // interface's side of that.
+  //
+  // An A/V route does not hold the page. It marks the display or group it sent to
+  // as routing, sends the request and returns: the operator can choose the next
+  // source and the next display while this one is being verified, and the one read
+  // that redraws the page waits until nothing is in flight (see scheduleReconcile).
+  // USB keeps the older flow below, which holds the page until it is done.
+  async function routeSelected() {
+    if (state.busy) return;
+    if (state.tab === 'av') return routeAv();
+    return routeUsb();
+  }
+
+  // USB attach and detach hold the page until the transaction is read back: they
+  // move one peripheral between two computers, and offering a second choice while
+  // the first is in flight describes a state nobody has yet.
+  async function routeUsb() {
+    if (state.busy) return;
+    if (!state.computer || !state.peripheral) return;
+
+    state.busy = true;
+    state.routingTo = null;
+    renderAction();
+    renderRoutingState();
+    try {
+      const peripheral = state.peripherals.find((p) => p.id === state.peripheral);
+      const attached = peripheral && peripheral.attached_to
+        && peripheral.attached_to.computer_id === state.computer;
+      const result = await api('/api/user/usb_route', {
+        method: 'POST',
+        body: JSON.stringify({computer: state.computer,
+                              peripherals: state.peripheral,
+                              detach: !!attached}),
+      });
+      if (result.status === 200 && result.body.ok) {
         window.toast && window.toast('Routed', 'ok');
       } else {
         window.toast && window.toast(
@@ -677,7 +853,8 @@
   // chooses the source and the destination exactly as two taps would and then
   // calls routeSelected, so the request is the one the Route button sends.
   const drag = window.OmniUserDrag ? window.OmniUserDrag.create({
-    enabled: () => !state.busy && state.tab === 'av' && state.surface === 'standard',
+    enabled: () => !state.busy && state.tab === 'av' && state.surface === 'standard'
+      && !state.multi,
     canDrag: (id) => state.sources.some((s) => s.id === id && s.online !== false),
     canDrop: (kind, id) => (kind === 'group'
       ? state.groups.some((g) => g.id === id)
@@ -697,6 +874,25 @@
       return routeSelected();
     },
   }) : null;
+
+  // ------------------------------------------------- select several
+  const multiToggle = el('multi_toggle');
+  if (multiToggle) {
+    multiToggle.addEventListener('click', () => {
+      state.multi = !state.multi;
+      state.destSel.clear();
+      state.groupSel.clear();
+      if (state.multi) {
+        // Carry the current choice over so turning the mode on does not lose it.
+        if (state.destination) state.destSel.add(state.destination);
+        if (state.group) state.groupSel.add(state.group);
+      }
+      multiToggle.setAttribute('aria-pressed', String(state.multi));
+      multiToggle.textContent = state.multi ? 'Select one' : 'Select several';
+      markSelected();
+      renderAction();
+    });
+  }
   if (drag) {
     ['dragstart', 'dragover', 'dragleave', 'drop', 'dragend'].forEach((type) => {
       document.addEventListener(type, drag[type]);
@@ -760,18 +956,32 @@
 
   // Which display is mid-route, said on the display's own card.
   function renderRoutingState() {
-    document.querySelectorAll('.pick[data-kind="destination"]').forEach((node) => {
-      const routing = !!state.routingTo && node.dataset.id === state.routingTo;
-      node.classList.toggle('routing', routing);
-      const line = node.querySelector('.pick-state');
-      if (routing) {
-        node.dataset.was = line ? line.textContent : '';
-        if (line) line.textContent = 'Routing\u2026';
-      } else if (node.dataset.was !== undefined) {
-        if (line && node.dataset.was) line.textContent = node.dataset.was;
-        delete node.dataset.was;
-      }
-    });
+    document.querySelectorAll('.pick[data-kind="destination"], .pick[data-kind="group"]')
+      .forEach((node) => {
+        const kind = node.dataset.kind;
+        const id = node.dataset.id;
+        const set = kind === 'group' ? 'group' : 'dest';
+        const routing = (kind === 'destination' && !!state.routingTo && id === state.routingTo)
+          || state.inflight[set].has(id);
+        const failed = !routing && state.failed[set].has(id);
+        node.classList.toggle('routing', routing);
+        node.classList.toggle('route-failed', failed);
+        node.setAttribute('aria-busy', String(routing));
+        const line = node.querySelector('.pick-state');
+        if ((routing || failed) && node.dataset.was === undefined) {
+          node.dataset.was = line ? line.textContent : '';
+        }
+        if (routing) {
+          if (line) line.textContent = 'Routing\u2026';
+        } else if (failed) {
+          // Verified failure, said on the card and kept there: the next toast
+          // replaces this one and a failure must not be lost to a later success.
+          if (line) line.textContent = 'Not routed \u2014 try again';
+        } else if (node.dataset.was !== undefined) {
+          if (line && node.dataset.was) line.textContent = node.dataset.was;
+          delete node.dataset.was;
+        }
+      });
   }
 
   // ------------------------------------------------------------- Matrix
@@ -823,12 +1033,37 @@
     if (status === 200 && body && body.ok) matrix.render(body);
   }
 
+  // Matrix routes in flight, by row. A route marks ITS row pending and nothing
+  // else: a click on another row is free at once, and the grid is read again once,
+  // after the last one has settled.
+  const mxPending = new Map();
+  let mxReconcileTimer = null;
+  let mxReconciling = false;
+
+  function scheduleMatrixReconcile() {
+    if (mxReconcileTimer !== null) window.clearTimeout(mxReconcileTimer);
+    mxReconcileTimer = window.setTimeout(runMatrixReconcile, RECONCILE_DELAY_MS);
+  }
+
+  async function runMatrixReconcile() {
+    mxReconcileTimer = null;
+    if (mxPending.size > 0 || state.busy) return;   // the last to settle asks again
+    if (mxReconciling) { scheduleMatrixReconcile(); return; }
+    mxReconciling = true;
+    try { await loadMatrix(); } catch (err) { /* the next return reads again */ }
+    finally { mxReconciling = false; }
+  }
+
   async function routeFromMatrix(request) {
-    if (state.busy || !matrix) return;
-    state.busy = true;
-    matrix.setBusy(true);
-    // Anything read before this finishes describes the world before it.
+    if (!matrix) return;
+    const key = request.kind + ':' + request.id;
+    // One route at a time per row; every other row is untouched.
+    if (mxPending.has(key)) return;
+    mxPending.set(key, request.source);
+    matrix.setPending(request.kind, request.id, request.source, true);
+    // A read that began before this finishes describes the world before it.
     matrixSeq += 1;
+    let settled = 'failed';
     try {
       const group = request.kind === 'group';
       const common = {source: request.source, mode: request.mode, interface: 'matrix'};
@@ -838,14 +1073,22 @@
                                    : Object.assign({destination: request.id}, common)),
       });
       announceRoute(result, group);
-      await loadMatrix();
+      if (result.status === 200 && result.body && result.body.ok === true) {
+        settled = 'verified';
+      }
     } catch (err) {
       if (String(err.message) !== 'signed out') {
         window.toast && window.toast('Could not reach OmniSuite', 'error');
       }
     } finally {
-      state.busy = false;
-      if (matrix) matrix.setBusy(false);
+      mxPending.delete(key);
+      matrixSeq += 1;
+      if (matrix) {
+        // Verified: the cell shows what the server confirmed, before the grid is
+        // read again. Failed: it says so and keeps saying so.
+        matrix.settle(request.kind, request.id, request.source, request.mode, settled);
+      }
+      scheduleMatrixReconcile();
     }
   }
 
@@ -956,6 +1199,12 @@
 
     if (!state.sources.some((s) => s.id === state.source)) state.source = null;
     if (!state.groups.some((g) => g.id === state.group)) state.group = null;
+    Array.from(state.destSel).forEach((id) => {
+      if (!state.destinations.some((d) => d.id === id)) state.destSel.delete(id);
+    });
+    Array.from(state.groupSel).forEach((id) => {
+      if (!state.groups.some((g) => g.id === id)) state.groupSel.delete(id);
+    });
     // The display survives a refresh and a completed route, but only if the
     // server still lists it for this account. Nothing is selected merely
     // because the list happens to hold one.
@@ -1098,7 +1347,7 @@
   // nothing runs in a hidden tab.
   let revisionBusy = false;
   async function checkRevision() {
-    if (revisionBusy || state.busy || document.hidden || !state.revision) return;
+    if (revisionBusy || state.busy || inFlightCount() > 0 || document.hidden || !state.revision) return;
     revisionBusy = true;
     try {
       const {status, body} = await api('/api/user/revision');
@@ -1113,7 +1362,8 @@
   // one request to this server, no device read -- because what is routed may
   // have been changed by somebody else while the page was away.
   async function refreshMatrixIfShowing() {
-    if (document.hidden || state.busy || state.surface !== 'matrix' || state.tab !== 'av') return;
+    if (document.hidden || state.busy || inFlightCount() > 0 || mxPending.size > 0
+        || state.surface !== 'matrix' || state.tab !== 'av') return;
     try { await loadMatrix(); } catch (err) { /* the next return tries again */ }
   }
   document.addEventListener('visibilitychange', checkRevision);

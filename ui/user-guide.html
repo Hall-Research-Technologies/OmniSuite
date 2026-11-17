@@ -1008,7 +1008,7 @@
 
       <h3>When a source does not answer</h3>
       <p>If a source cannot be reached, OmniSuite tries a few times before giving up, then tells you which one it was and that <strong>nothing was changed</strong>. That is different from a Multiview that cannot be built &mdash; the message says which it is, so you know whether to fix the layout or go and look at the equipment.</p>
-      <div class="note">Very occasionally a window stays black after a layout change even though everything is configured correctly. OmniSuite notices and says which window rather than reporting success. Showing a different Multiview and then showing this one again clears it.</div>
+      <div class="note">Very occasionally a window stays black after a layout change even though everything is configured correctly. OmniSuite notices, briefly moves the display to the decoder's first input and back to set the windows up again, and says which window if that does not clear it.</div>
 
       <h3>What Multiview actually uses</h3>
       <p>This section is the detail behind the notice OmniSuite shows the first time you use Multiview. You do not need it to use the feature, but it is here when a Multiview will not start and you want to know why.</p>
@@ -1063,7 +1063,9 @@
       <p>OmniSuite will not switch off Video Wall or Fast Switching for you. They are there because somebody wanted them.</p>
 
       <h4>When a window stays black</h4>
-      <p>Occasionally a window is configured correctly, the stream is arriving, and the window still shows nothing. OmniSuite notices and tells you which window rather than reporting success. Showing a different Multiview and then showing this one again clears it. This is a decoder firmware behaviour and is not something OmniSuite can fix.</p>
+      <p>Occasionally a window is configured correctly, the stream is arriving, and the window still shows nothing. This is a decoder behaviour: it did not set the window up when the Multiview was selected.</p>
+      <p>When OmniSuite sees this it fixes it for you, once. The display moves to the decoder's first input for about a second and then returns to the Multiview, which makes the decoder set every window up again. You will see the picture flicker. A Show that needed this takes a few seconds longer, and the result says whether it worked.</p>
+      <p>If the window is still black after that, OmniSuite says which window rather than reporting success, and leaves the rest of the picture running. Showing a different Multiview and then showing this one again is the manual remedy.</p>
 
       <h4>If a Multiview will not start</h4>
       <table>
@@ -1245,7 +1247,7 @@
       <table>
         <tr><th>Message</th><th>Meaning</th></tr>
         <tr><td>VERIFIED</td><td>Everything was written and read back successfully.</td></tr>
-        <tr><td>VERIFIED &mdash; WINDOW NOT LOCKED</td><td>The change worked, but a window is not showing its stream yet. The rest of the picture is live; check that source.</td></tr>
+        <tr><td>VERIFIED &mdash; WINDOW NOT LOCKED</td><td>The change worked, but a window is not showing its stream, even after OmniSuite set the windows up again once. The rest of the picture is live; check that source.</td></tr>
         <tr><td>NO ACTIVE VIDEO &mdash; ROLLED BACK</td><td>A window never showed its picture, so the change was undone. Nothing was left half-applied.</td></tr>
         <tr><td>FAILED &mdash; ROLLED BACK</td><td>A device refused a change, so everything already written was put back.</td></tr>
         <tr><td>&hellip; is assigned to windows that need different sizes</td><td>One source cannot fill two differently sized windows. Change one of them.</td></tr>
@@ -1556,6 +1558,26 @@
         and its private key. Browsers that already trust your organisation show
         no warning at all.</td></tr>
       </table>
+      <p><strong>If you turn Remote Access on over HTTPS without a usable
+      certificate,</strong> OmniSuite stops and asks you what to do. Nothing is
+      created or changed until you answer:</p>
+      <ul>
+        <li><strong>Create Certificate</strong> opens the same certificate
+        creation described above. When it succeeds you continue turning Remote
+        Access on.</li>
+        <li><strong>Change to HTTP</strong> switches the Security setting to
+        HTTP (not encrypted) and lets you continue; you are then asked to
+        confirm that you want an unencrypted connection.</li>
+        <li><strong>Cancel</strong> changes nothing and leaves Remote Access
+        off.</li>
+      </ul>
+      <p>OmniSuite never creates a certificate or switches to HTTP on its own,
+      and it never starts an HTTPS connection it cannot secure.</p>
+      <p><strong>The Remote Access tab follows the setting.</strong> When you
+      turn Remote Access on or off, the Remote Access tab appears or disappears
+      straight away; you do not need to refresh the page. If you turn it off
+      while you are on a Remote Access page, you are taken back to the main
+      OmniSuite page.</p>
       <p><strong>Your own files stay chosen.</strong> Once you choose
       <strong>Use my own files</strong>, OmniSuite uses that certificate and key
       every time Remote Access is turned on, including after a restart, until you
@@ -1850,6 +1872,13 @@
         would a display, and presses <strong>Route</strong>. OmniSuite routes each display in turn,
         checking each one before it moves to the next, and says how many took it &mdash; for example
         <em>3 of 4 displays routed</em> &mdash; and which did not.</li>
+        <li><strong>Several at once.</strong> <strong>Select several</strong> on the User screen lets a
+        User tick any mix of displays and groups and send one source to all of them with a single
+        <strong>Route</strong>. A display that is in more than one of the choices is routed once.
+        Group membership is read at the moment of the route. The displays are routed at the same time,
+        not one after another, and the result is the same count &mdash; <em>5 of 6 displays routed</em>
+        &mdash; with the names of any that did not take it. A display chosen on its own still needs its
+        own assignment: belonging to a group the User holds does not give them that display by itself.</li>
         <li><strong>One display failing does not stop the rest</strong>, and displays already routed are
         not put back. A group makes no promise that all of its displays change together.</li>
         <li><strong>It is an ordinary route.</strong> Each display gets the same single-view route a
@@ -2063,6 +2092,12 @@
       the number of displays in them. Choosing a group instead of a display routes the source to
       every display in it, one after another, and the screen reports <em>N of M displays routed</em>.
       A group has no picture of its own &mdash; it is several displays, not one.</p>
+      <p><strong>Select several.</strong> Press <strong>Select several</strong> above the displays to choose
+      more than one display or group before you press <strong>Route</strong>. The summary at the bottom
+      counts what you have chosen &mdash; for example <em>Route Teacher PC to 2 displays and 1 group</em>.
+      One press sends the source to all of them, at the same time, and the screen reports
+      <em>N of M displays routed</em>. Press <strong>Select one</strong> to go back to choosing a single
+      display or group.</p>
       <p>Each display also says what is on it now. A display showing something
       the account is not allowed to use is reported as showing another source,
       without naming it.</p>
@@ -2171,9 +2206,17 @@
       <h4 id="user-routing-states">While a display is changing</h4>
       <p>After <strong>Route</strong>, the display's card reads
       <strong>Routing&hellip;</strong> until the change is confirmed, and will
-      not take another selection until it finishes. When it is done a short
-      <strong>Routed</strong> message appears. Waiting a moment is normal; a
+      not take another route until it finishes. <em>Nothing else on the screen waits:</em>
+      you can choose the next source and display and press <strong>Route</strong> again while the
+      first is still being checked, and the page is refreshed once, after the last route has finished.
+      When a route is confirmed a short <strong>Routed</strong> message appears. A route that could
+      not be confirmed leaves <strong>Not routed &mdash; try again</strong> on that display, and it stays
+      there until you try again, so a later success cannot hide it. Waiting a moment is normal; a
       route usually takes a second or two.</p>
+      <p>In the <strong>Matrix</strong> the same applies to a single row. The cell you pressed turns
+      into a slowly turning dashed ring while OmniSuite checks the route, the rest of that row waits,
+      and every other row stays available. A cell with a cross in it means the last route to that
+      display could not be confirmed.</p>
       <p>Messages that can appear instead:</p>
       <table>
         <tr><th>Message</th><th>What it means</th></tr>

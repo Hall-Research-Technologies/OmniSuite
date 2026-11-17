@@ -50,7 +50,7 @@
   <script src="/ui/usb-prep.js?v=20261031-usbprep"></script>
   <script src="/ui/modal-stack.js"></script>
   <script src="/ui/clear-units.js?v=20261102-clear"></script>
-  <script src="/ui/adminnav.js"></script>
+  <script src="/ui/adminnav.js?v=20261116-remotenav"></script>
   <script src="/ui/diagnostics.js?v=20260911-diag"></script>
 <link rel="stylesheet" href="/ui/templates.css?v=20260910-templates">
 <link rel="stylesheet" href="/ui/settings.css?v=20260911-settings">
@@ -59,7 +59,7 @@
 <script src="/ui/toast.js?v=20260911-toast"></script>
 <script src="/ui/scan-notice.js?v=20261012-scannotice"></script>
 <script src="/ui/device-log.js?v=20260911-devicelog" defer></script>
-<script src="/ui/settings.js?v=20260911-settings"></script>
+<script src="/ui/settings.js?v=20261116-pwforms"></script>
 <script src="/ui/firmware-status.js?v=20261030-firmware"></script>
 
   <div id="hover_preview" class="hover-preview"><img id="hover_preview_img" alt="preview"/></div>
@@ -448,18 +448,22 @@
           <input id="sync_target_primary" type="radio" name="sync_target" value="primary" checked>
           <span>Sync to Primary</span>
         </label>
+        <form style="display:contents" onsubmit="return false" novalidate autocomplete="off">
         <div style="display:flex;gap:6px;align-items:center;">
           <input id="sync_primary_password" type="password" readonly style="flex:1;"/>
           <button id="sync_primary_eye" class="btn small secondary" type="button">👁️</button>
         </div>
+        </form>
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
           <input id="sync_target_fallback" type="radio" name="sync_target" value="fallback">
           <span>Sync to Fallback</span>
         </label>
+        <form style="display:contents" onsubmit="return false" novalidate autocomplete="off">
         <div style="display:flex;gap:6px;align-items:center;">
           <input id="sync_fallback_password" type="password" readonly style="flex:1;"/>
           <button id="sync_fallback_eye" class="btn small secondary" type="button">👁️</button>
         </div>
+        </form>
       </div>
     </div>
     <div id="sync_pwd_error" class="modal-error"></div>
@@ -598,15 +602,18 @@
          A backup passphrase is a credential: the browser's own string box
          shows it in the clear, carries no explanation, and is a native
          dialog this project does not use. -->
-    <label id="confirm_field" class="confirm-field" style="display:none;">
-      <span id="confirm_field_label" class="confirm-field-label"></span>
-      <input id="confirm_field_input" class="confirm-field-input"
-             type="password" autocomplete="off" spellcheck="false">
-      <span class="confirm-field-hint" style="display:none;"></span>
-      <span class="confirm-field-error" role="alert" style="display:none;"></span>
-    </label>
+    <form style="display:contents" onsubmit="return false" novalidate autocomplete="off">
+      <label id="confirm_field" class="confirm-field" style="display:none;">
+        <span id="confirm_field_label" class="confirm-field-label"></span>
+        <input id="confirm_field_input" class="confirm-field-input"
+               type="password" autocomplete="off" spellcheck="false">
+        <span class="confirm-field-hint" style="display:none;"></span>
+        <span class="confirm-field-error" role="alert" style="display:none;"></span>
+      </label>
+    </form>
     <div class="modal-buttons">
       <button id="confirm_cancel" class="btn secondary" type="button">Cancel</button>
+      <button id="confirm_alt" class="btn secondary" type="button" hidden></button>
       <button id="confirm_ok" class="btn" type="button">Continue</button>
     </div>
   </div>
@@ -1744,6 +1751,7 @@ function omniConfirm(options = {}) {
   const listEl = $('#confirm_list');
   const okBtn = $('#confirm_ok');
   const cancelBtn = $('#confirm_cancel');
+  const altBtn = $('#confirm_alt');
   if (!backdrop || !okBtn || !cancelBtn) {
     // `requireDialog` is for a confirmation whose whole purpose is to stop
     // something expensive or irreversible. Degrading that to a native confirm
@@ -1833,6 +1841,12 @@ function omniConfirm(options = {}) {
   // backdrop still close it, and the promise still resolves, so callers that
   // await it are unaffected.
   cancelBtn.hidden = !!options.acknowledge;
+  // `alternateText` offers a third button; same contract as ui/confirm.js.
+  // It resolves the string 'alternate' and never stands in for Cancel.
+  if (altBtn) {
+    altBtn.textContent = options.alternateText || '';
+    altBtn.hidden = !options.alternateText;
+  }
   okBtn.classList.toggle('danger', !!options.danger);
   // `defaultAction: 'cancel'` is for a dialog where the costly answer is Yes.
   // Cancel takes both the focus and the primary treatment, so the keyboard
@@ -1870,6 +1884,10 @@ function omniConfirm(options = {}) {
       backdrop.style.display = 'none';
       if (window.omniModalStack) window.omniModalStack.release(backdrop);
       cancelBtn.hidden = false;
+      if (altBtn) {
+        altBtn.hidden = true;
+        altBtn.removeEventListener('click', onAlt);
+      }
       // Back to the arrangement in the markup, so the next caller is not
       // styled by whatever the previous one asked for.
       okBtn.classList.remove('secondary');
@@ -1901,6 +1919,7 @@ function omniConfirm(options = {}) {
     };
     const onOk = () => commit();
     const onCancel = () => cleanup(false);
+    const onAlt = () => cleanup('alternate');
     const onBackdrop = (event) => {
       if (event.target === backdrop) cleanup(false);
     };
@@ -1915,6 +1934,7 @@ function omniConfirm(options = {}) {
     };
     okBtn.addEventListener('click', onOk);
     cancelBtn.addEventListener('click', onCancel);
+    if (altBtn && options.alternateText) altBtn.addEventListener('click', onAlt);
     backdrop.addEventListener('click', onBackdrop);
     document.addEventListener('keydown', onKeydown);
     // Focus goes back where it came from. Without this, dismissing a dialog

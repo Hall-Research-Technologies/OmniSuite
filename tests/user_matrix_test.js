@@ -30,6 +30,9 @@ function check(name, fn) {
 }
 function assert(c, m) { if (!c) throw new Error(m || 'assertion failed'); }
 const settle = () => new Promise((r) => setTimeout(r, 40));
+// The grid is read again once, after the last route in flight has settled and a short quiet period
+// (RECONCILE_DELAY_MS in user.js). A test about that read waits for it by name rather than by luck.
+const settleRoute = () => new Promise((r) => setTimeout(r, 500));
 
 function sandboxWith(extra) {
   const sandbox = Object.assign({
@@ -547,7 +550,7 @@ suite.push(() => check('a Matrix click posts one request that claims the Matrix 
   const cell = w.byId.get('matrix_grid').querySelectorAll('.mx-cell')
     .find((c) => c.dataset.row === 'd1' && c.dataset.source === 's2');
   await w.byId.get('matrix_scroll').fire('click', {target: cell});
-  await settle();
+  await settleRoute();
   const posts = w.calls.filter((c) => c.method === 'POST');
   assert(posts.length === 1, 'one request: ' + posts.length);
   assert(posts[0].url === '/api/user/route');
@@ -585,7 +588,7 @@ suite.push(() => check('a refused Matrix route says why and leaves the page usab
   assert(!w.byId.get('matrix_grid').querySelectorAll('.mx-cell')[0].disabled, 'not left disabled');
 }));
 
-suite.push(() => check('a second click while a route is out sends nothing', async () => {
+suite.push(() => check('a second click on the row being routed sends nothing; another row is free', async () => {
   let release;
   const hold = new Promise((r) => { release = r; });
   const w = world({state: PAGE_STATE(['matrix']), hold});
@@ -594,14 +597,26 @@ suite.push(() => check('a second click while a route is out sends nothing', asyn
   const first = w.byId.get('matrix_scroll').fire('click', {target: cells[0]});
   await settle();
   assert(w.calls.filter((c) => c.method === 'POST').length === 1, 'the first route is out');
-  assert(cells[1].disabled === true, 'every cell says so while it is');
-  await w.byId.get('matrix_scroll').fire('click', {target: cells[1]});
+  assert(cells[0].classList.contains('pending'), 'the cell says it is waiting for verification');
+  assert(cells[0].disabled === false,
+    'a disabled cell shows the not-allowed cursor, which reads as a refusal rather than as waiting');
+  const sameRow = cells.find((c) => c !== cells[0] && c.dataset.row === cells[0].dataset.row
+                                    && c.dataset.kind === cells[0].dataset.kind);
+  const otherRow = cells.find((c) => !c.disabled && (c.dataset.row !== cells[0].dataset.row
+                                     || c.dataset.kind !== cells[0].dataset.kind));
+  assert(sameRow && otherRow, 'the fixture has a second source and a second row');
+  await w.byId.get('matrix_scroll').fire('click', {target: sameRow});
+  assert(w.calls.filter((c) => c.method === 'POST').length === 1,
+    'a tap on the row being routed was queued behind it');
+  const second = w.byId.get('matrix_scroll').fire('click', {target: otherRow});
+  await settle();
+  assert(w.calls.filter((c) => c.method === 'POST').length === 2,
+    'another row had to wait for the first route to be verified');
   release();
   await first;
-  await settle();
-  assert(w.calls.filter((c) => c.method === 'POST').length === 1,
-    'a tap during the first route was queued behind it');
-  assert(cells[1].disabled === false, 'usable again afterwards');
+  await second;
+  await settleRoute();
+  assert(!cells[0].classList.contains('pending'), 'settled once verified');
 }));
 
 suite.push(() => check('the Matrix withdrawn while it is showing moves the operator to Standard routing', async () => {
@@ -635,7 +650,7 @@ suite.push(() => check('a 403 from the grid itself re-reads what the account hol
   w.live.matrixStatus = 403;
   const cell = w.byId.get('matrix_grid').querySelectorAll('.mx-cell')[0];
   await w.byId.get('matrix_scroll').fire('click', {target: cell});
-  await settle();
+  await settleRoute();
   assert(shown(w).join() === 'standard_routing', shown(w).join());
 }));
 
@@ -889,7 +904,7 @@ suite.push(() => check('the Standard Route button and a drop both go through the
 suite.push(() => check('every request the shell makes states the interface it came from', async () => {
   const code = USER_JS.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
   const standardBodies = code.match(/interface: 'standard'/g) || [];
-  assert(standardBodies.length === 2, 'single and group Standard routes: ' + standardBodies.length);
+  assert(standardBodies.length === 3, 'single, group and several-target Standard routes: ' + standardBodies.length);
   assert(/interface: 'matrix'/.test(code));
   assert(!/localStorage|sessionStorage\.setItem\('omni_user/.test(code), 'the shell writes no storage');
 }));

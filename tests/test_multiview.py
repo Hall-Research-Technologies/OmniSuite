@@ -198,6 +198,20 @@ class FakeDevice:
         # a rollback is made to fail after the forward write already landed.
         self.refuse_after = {}
         self._write_counts = {}
+        # Measured on hardware: a subframe handed an input that another subframe
+        # of the same object still holds, in the same write, never locks. It stays
+        # dead until the input is released (written empty) again.
+        self.stuck_subframes = set()
+        # Measured on hardware (omni lab, 2026-11): the decoder can miss the channel
+        # allocation for a window when a Multiview is selected, leaving it dark with
+        # every field correct and its packets arriving. No write to the window's own
+        # input repairs it. Leaving the composite for a neutral input and selecting
+        # it again does -- provided the display rests there for about a second,
+        # which this model records rather than waits for. A test names the windows
+        # (object, subframe label) the decoder will miss on the next selection.
+        self.miss_on_next_select = set()
+        self.dark_until_reselect = set()
+        self.selection_log = []
 
     def handle(self, payload):
         if self.unreachable:
@@ -233,6 +247,10 @@ class FakeDevice:
                 # is enabled and its packets are arriving. `never_locks` models
                 # exactly that, so the recovery path can be tested.
                 active = target in live and target not in self.never_locks
+                if (obj.get("name"), subframe.get("name")) in self.stuck_subframes:
+                    active = False
+                if (obj.get("name"), subframe.get("name")) in self.dark_until_reselect:
+                    active = False
                 subframe.setdefault("video", {})
                 subframe["video"]["input"] = {"active": active}
                 subframe["video"]["output"] = {"active": active}
@@ -248,6 +266,10 @@ class FakeDevice:
         if node in self.refuse_after and seen >= self.refuse_after[node]:
             return {"error": True, "error_message": "device busy"}
         existing = self.nodes.setdefault(node, [])
+        if node == "multiview":
+            self._note_input_moves(existing, entries)
+        if node == "hdmi_output":
+            self._note_selection(existing, entries)
         for entry in entries:
             name = entry.get("name")
             if self.swallow.get(name, 0) > 0:
@@ -261,6 +283,66 @@ class FakeDevice:
             else:
                 _merge(target, entry)
         return {"error": False}
+
+    def _note_selection(self, existing, entries):
+        """Selecting a Multiview allocates its channels afresh; the decoder may miss one.
+
+        A test names the windows the decoder will miss on the NEXT selection. That
+        selection leaves them dark; selecting the object again after leaving it
+        allocates from scratch and they come back. Selecting the value it already
+        holds changes nothing, which is why re-writing the same selection is no
+        remedy (the model follows what the hardware did).
+        """
+        objects = {o.get("name") for o in self.nodes.get("multiview") or []}
+        for entry in entries:
+            wanted = (entry.get("video") or {}).get("input")
+            if wanted is None:
+                continue
+            wanted = str(wanted)
+            current = next((o for o in existing if o.get("name") == entry.get("name")), {})
+            old = str(((current.get("video") or {}).get("input")) or "")
+            self.selection_log.append((old, wanted))
+            if wanted not in objects or wanted == old:
+                continue
+            missed = {k for k in self.miss_on_next_select if k[0] == wanted}
+            if missed:
+                self.dark_until_reselect |= missed
+                self.miss_on_next_select -= missed
+            else:
+                self.dark_until_reselect = {k for k in self.dark_until_reselect if k[0] != wanted}
+
+    def _note_input_moves(self, existing, entries):
+        """The measured rules, applied to the entries in the order they arrive.
+
+        1. Taking an input in the same write that takes it away from its previous
+           holder leaves the new owner dead. Sharing an input the holder keeps is
+           fine, and so is binding after the holder let go.
+        2. CLEARING an input that a later (higher priority number) subframe still
+           shares leaves that one dead, even if it is rebound afterwards. Moving
+           the first owner to a different input does not (measured: un-sharing).
+        A dead subframe revives when its input is written empty.
+        """
+        for entry in entries:
+            obj = next((o for o in existing if o.get("name") == entry.get("name")), None)
+            if obj is None:
+                continue
+            state = {s.get("name"): str(s.get("input") or "") for s in obj.get("subframes") or []}
+            priority = {s.get("name"): int(s.get("priority") or 0) for s in obj.get("subframes") or []}
+            wanted = {s.get("name"): str(s.get("input") or "")
+                      for s in entry.get("subframes") or [] if "input" in s}
+            for label, new in wanted.items():
+                held_by_others = {o for o, v in state.items() if o != label and v and v == new}
+                if not new:
+                    self.stuck_subframes.discard((entry["name"], label))
+                elif held_by_others and any(wanted.get(o, new) != new for o in held_by_others):
+                    self.stuck_subframes.add((entry["name"], label))
+                old = state.get(label, "")
+                if old and not new:
+                    for other, value in state.items():
+                        if (other != label and value == old
+                                and priority.get(other, 0) > priority.get(label, 0)):
+                            self.stuck_subframes.add((entry["name"], other))
+                state[label] = new
 
     def _method(self, request):
         for name, options in request.items():
@@ -357,6 +439,11 @@ class MultiviewTestBase(unittest.TestCase):
                                     self._transport)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # The decoder's settle after releasing an input is a real delay on
+        # hardware and only a delay here.
+        settle = mock.patch.object(srv, "MULTIVIEW_RELEASE_SETTLE", 0)
+        settle.start()
+        self.addCleanup(settle.stop)
         # The source preflight is a second network path: a raw TCP connect, not a
         # WebSocket. run_tests.py blocks it at the socket, so it is fenced, but it
         # would then report every simulated device as unreachable. Answer it from
@@ -5083,13 +5170,61 @@ class ApplyTransactionTests(MultiviewTestBase):
         non_multiview = [d for d in second["applied"] if "multiview" not in d.lower()]
         self.assertEqual(non_multiview, [], non_multiview)
 
-    def _other_decoder_uses_the_encoder_at(self, scaler_format):
+    def _other_decoder_uses_the_encoder_at(self, scaler_format, showing=True):
+        """Another decoder holds a Multiview drawing on this encoder.
+
+        A saved Multiview depends on nothing; only one a decoder is displaying
+        does. `showing` states which, by the other decoder's own output.
+        """
         srv._record_multiview_meta(
             {"ip": "192.0.2.99", "mac": "00:00:5E:00:53:99", "hostname": "dec-b"},
             "multiviewOther",
             {"layout": "2x2", "windows": [{"source_ip": ENCODER_IP,
                                            "encoder_index": 2,
                                            "scaler_format": scaler_format}]})
+        hdmi = _hdmi_output()
+        hdmi[0]["video"]["input"] = "multiviewOther" if showing else "ip_input1"
+        self.decoder(ip="192.0.2.99", hdmi=hdmi)
+        self.addCleanup(lambda: srv._forget_multiview_meta(
+            {"ip": "192.0.2.99", "mac": "00:00:5E:00:53:99"}, "multiviewOther"))
+
+    def test_a_multiview_merely_saved_on_another_decoder_is_not_a_conflict(self):
+        """Found on hardware: Show was refused with HTTP 409 because other
+        decoders merely *stored* Multiviews wanting this source at another size.
+        A saved Multiview is a description, not a reservation."""
+        self.decoder()
+        self.encoder()
+        self._other_decoder_uses_the_encoder_at("1280x720", showing=False)
+        saved = self.save().get_json()
+        self.assertTrue(saved["ok"], saved)
+        shown = self.client.post("/api/multiview/show", json={
+            "decoder": DECODER_IP, "name": saved["plan"]["object_name"]})
+        self.assertEqual(shown.status_code, 200, shown.get_json())
+        self.assertNotEqual(shown.get_json().get("status"), "conflict")
+
+    def test_a_decoder_that_cannot_be_read_is_not_a_consumer(self):
+        """If the other decoder does not answer, nothing proves it is showing."""
+        self.decoder()
+        self.encoder()
+        self._other_decoder_uses_the_encoder_at("1280x720", showing=True)
+        del self.devices["192.0.2.99"]
+        saved = self.save().get_json()
+        self.assertTrue(saved["ok"], saved)
+        shown = self.client.post("/api/multiview/show", json={
+            "decoder": DECODER_IP, "name": saved["plan"]["object_name"]})
+        self.assertEqual(shown.status_code, 200, shown.get_json())
+
+    def test_the_other_decoders_display_is_read_now_not_remembered(self):
+        """Displayed state is the device's, so a Multiview shown elsewhere after
+        it was saved still protects the encoder under it."""
+        self.decoder()
+        self.encoder()
+        self._other_decoder_uses_the_encoder_at("1280x720", showing=True)
+        saved = self.save().get_json()
+        self.assertTrue(saved["ok"], saved)
+        body = self.client.post("/api/multiview/show", json={
+            "decoder": DECODER_IP, "name": saved["plan"]["object_name"]}).get_json()
+        self.assertEqual(body["status"], "conflict", body)
 
     def test_a_conflicting_scaler_may_be_saved_and_is_refused_at_show(self):
         """Two saved layouts wanting one encoder at two sizes is normal.
@@ -5872,10 +6007,14 @@ class HardwareIsolationTests(unittest.TestCase):
         # If a future change gave the Multiview code its own socket, the fence
         # would not see it. Assert both write helpers go through the shared one.
         import inspect
-        for helper in (srv._mv_set, srv._mv_method):
+        for helper in (srv._mv_set_once, srv._mv_method):
             source = inspect.getsource(helper)
             self.assertIn("_ws_send_recv_with_fallback", source)
             self.assertNotIn("create_connection", source)
+        # _mv_set orders the writes and delegates every one to _mv_set_once.
+        wrapper = inspect.getsource(srv._mv_set)
+        self.assertIn("_mv_set_once", wrapper)
+        self.assertNotIn("create_connection", wrapper)
 
 
 class StageOrderingTests(unittest.TestCase):
@@ -6403,6 +6542,147 @@ class CanvasAvailabilityUnitTests(unittest.TestCase):
     def test_an_unknown_canvas_in_metadata_is_ignored(self):
         self.assertTrue(mv.can_create_multiview(
             [{"object_name": "a", "canvas": "2560x1440"}]))
+
+
+class InputMovedBetweenSubframesTests(MultiviewTestBase):
+    """A decoder input handed from one subframe to another must be released first.
+
+    Found on hardware: re-pointing a window at a source moved the pool input from
+    the window that used to carry it to another window of the same Multiview, in
+    one write, and the new window stayed black while every field read correct and
+    the packets arrived. The device stays that way until another Multiview is
+    shown. Released in an earlier write, with a moment to settle, it locks.
+    """
+
+    def _ready(self, assignments):
+        decoder = self.devices.get(DECODER_IP) or self.decoder()
+        if ENCODER_IP not in self.devices:
+            self.encoder()
+        saved = self.client.post("/api/multiview/apply", json={
+            "decoder": DECODER_IP, "layout": "2x2", "canvas": mv.ACTIVE_CANVAS,
+            "name": "2x2", "assignments": assignments}).get_json()
+        name = saved["plan"]["object_name"]
+        decoder.nodes["hdmi_output"][0]["video"]["available_inputs"].append(name)
+        return decoder, name
+
+    def _show(self, name):
+        return self.client.post("/api/multiview/show", json={
+            "decoder": DECODER_IP, "name": name}).get_json()
+
+    def _resave(self, name, assignments):
+        return self.client.post("/api/multiview/apply", json={
+            "decoder": DECODER_IP, "layout": "2x2", "canvas": mv.ACTIVE_CANVAS,
+            "name": "2x2", "object_name": name, "update_existing": True,
+            "assignments": assignments}).get_json()
+
+    def _inputs(self, decoder, name):
+        obj = next(o for o in decoder.nodes["multiview"] if o["name"] == name)
+        return {s["name"].split(" ")[0]: s.get("input") for s in obj["subframes"]}
+
+    def _locked(self, decoder, name):
+        obj = next(o for o in decoder.nodes["multiview"] if o["name"] == name)
+        decoder._apply_window_activity([obj])
+        return {s["name"].split(" ")[0]: bool(s["video"]["input"]["active"])
+                for s in obj["subframes"] if s.get("input")}
+
+    def test_the_rule_names_the_subframe_that_has_to_let_go(self):
+        release = srv._inputs_to_release_first
+        # the input moves from top_left to top_right
+        self.assertEqual(release({"a": "ip_input2", "b": ""},
+                                 [{"name": "a", "input": ""}, {"name": "b", "input": "ip_input2"}]),
+                         ["a"])
+        # nothing is taken from anybody
+        self.assertEqual(release({"a": "ip_input2", "b": ""},
+                                 [{"name": "b", "input": "ip_input4"}]), [])
+        # a plain repoint to an input nobody holds needs no release
+        self.assertEqual(release({"a": "ip_input2"}, [{"name": "a", "input": "ip_input4"}]), [])
+        # two subframes sharing an input, one of them moving off it, is not a hand-over
+        self.assertEqual(release({"a": "ip_input2", "b": "ip_input2"},
+                                 [{"name": "b", "input": "ip_input4"}]), [])
+        # a swap releases both before either is bound
+        self.assertEqual(sorted(release({"a": "ip_input2", "b": "ip_input4"},
+                                        [{"name": "a", "input": "ip_input4"},
+                                         {"name": "b", "input": "ip_input2"}])),
+                         ["a", "b"])
+        # a write that does not mention inputs releases nothing
+        self.assertEqual(release({"a": "ip_input2"}, [{"name": "a", "x": 3}]), [])
+
+    def test_inside_one_write_the_last_window_goes_first(self):
+        order = srv._last_window_first
+        self.assertEqual(order(["tl", "tr", "bl"], {"tl": 1, "tr": 2, "bl": 3}), ["bl", "tr", "tl"])
+        self.assertEqual(order(["tl", "tr"], {"tl": 2, "tr": 1}), ["tl", "tr"])
+
+    def test_a_source_moved_to_another_window_still_locks(self):
+        decoder, name = self._ready({"top_left": ENCODER_IP})
+        self.assertEqual(self._show(name)["status"], "VERIFIED")
+        self.assertEqual(self._inputs(decoder, name)["top_left"], "ip_input2")
+        self._resave(name, {"top_right": ENCODER_IP})
+        body = self._show(name)
+        self.assertEqual(body["status"], "VERIFIED", str(body.get("status")))
+        self.assertFalse(body.get("unlocked_windows"), body.get("unlocked_windows"))
+        inputs = self._inputs(decoder, name)
+        self.assertEqual(inputs["top_right"], "ip_input2")
+        self.assertEqual(inputs["top_left"], "")
+        self.assertEqual(self._locked(decoder, name), {"top_right": True})
+        self.assertEqual(decoder.stuck_subframes, set())
+
+    def test_a_shared_pair_leaving_a_shared_input_locks_the_window_that_moves(self):
+        """The 2x2 case from the bench: two windows on one stream, one of them moves
+        to another stream while the other empties. Releasing the first owner before
+        the second leaves the moved window black."""
+        self.encoder(ip=ENCODER2_IP)
+        decoder, name = self._ready({"top_left": ENCODER_IP, "top_right": ENCODER_IP,
+                                     "bottom_left": ENCODER2_IP})
+        self.assertEqual(self._show(name)["status"], "VERIFIED")
+        self._resave(name, {"top_right": ENCODER2_IP})
+        body = self._show(name)
+        self.assertEqual(body["status"], "VERIFIED", str(body.get("status")))
+        self.assertFalse(body.get("unlocked_windows"))
+        self.assertEqual(decoder.stuck_subframes, set())
+        locked = self._locked(decoder, name)
+        self.assertEqual(locked, {"top_right": True})
+
+    def test_the_old_owner_is_released_in_a_write_of_its_own_before_the_bind(self):
+        decoder, name = self._ready({"top_left": ENCODER_IP})
+        self._show(name)
+        decoder.writes.clear()
+        self._resave(name, {"top_right": ENCODER_IP})
+        self._show(name)
+        sets = [w for w in decoder.writes if w[0] == "config_set" and w[1] == "multiview"]
+        flat = [[(s["name"].split(" ")[0], s.get("input")) for s in e.get("subframes") or []]
+                for w in sets for e in w[2]]
+        release = next((i for i, w in enumerate(flat) if ("top_left", "") in w
+                        and ("top_right", "ip_input2") not in w), None)
+        bind = next((i for i, w in enumerate(flat) if ("top_right", "ip_input2") in w), None)
+        self.assertIsNotNone(release, "the old owner was never released on its own: %s" % flat)
+        self.assertIsNotNone(bind, flat)
+        self.assertLess(release, bind, "the bind came before the release: %s" % flat)
+
+    def test_a_save_that_moves_an_input_releases_first_too(self):
+        # Show writes the binds, Save writes the object: both go through one helper.
+        decoder, name = self._ready({"top_left": ENCODER_IP})
+        self._show(name)
+        decoder.stuck_subframes.clear()
+        write = {"name": name, "subframes": [
+            {"name": next(s["name"] for s in next(o for o in decoder.nodes["multiview"]
+                                                   if o["name"] == name)["subframes"]
+                          if s["name"].startswith("top_left")), "input": ""},
+            {"name": next(s["name"] for s in next(o for o in decoder.nodes["multiview"]
+                                                   if o["name"] == name)["subframes"]
+                          if s["name"].startswith("top_right")), "input": "ip_input2"}]}
+        ok, message = srv._mv_set(DECODER_IP, "multiview", write)
+        self.assertTrue(ok, message)
+        self.assertEqual(decoder.stuck_subframes, set())
+
+    def test_a_failed_release_is_reported_and_nothing_is_bound(self):
+        decoder, name = self._ready({"top_left": ENCODER_IP})
+        self._show(name)
+        decoder.refuse_after["multiview"] = len([w for w in decoder.writes
+                                                 if w[0] == "config_set" and w[1] == "multiview"])
+        body = self._resave(name, {"top_right": ENCODER_IP})
+        self.assertFalse(body.get("ok"), str(body.get("status")))
+        self.assertNotEqual(self._inputs(decoder, name)["top_right"], "ip_input2",
+                            "a bind was attempted after the release failed")
 
 
 class ShowOnDisplayTests(MultiviewTestBase):

@@ -91,6 +91,8 @@ function world(state, routeAnswer, live) {
   return {byId, calls, toasts, click, listeners, live, document};
 }
 const settle = () => new Promise((r) => setTimeout(r, 40));
+// The page is read again once, after the last route in flight has settled and a short quiet period.
+const settleRoute = () => new Promise((r) => setTimeout(r, 500));
 const cards = (w, id) => w.byId.get(id).children;
 const label = (card) => card.textContent;
 
@@ -116,7 +118,7 @@ suite.push(() => check('a completed route asks for the pictures on screen again,
   await w.click(cards(w, 'sources')[0]);
   await w.click(cards(w, 'destinations').find((c) => c.dataset.kind === 'group'));
   await w.byId.get('route_btn').fire('click');
-  await settle();
+  await settleRoute();
   const after = pictures();
   assert(after - before === 2, 'the rebuilt cards load once each and the route adds nothing on top: ' + (after - before));
 }));
@@ -240,7 +242,7 @@ suite.push(() => check('a group the server stops listing is dropped from the sel
   STATE.groups = [];
   try {
     await w.byId.get('route_btn').fire('click');
-    await settle();
+    await settleRoute();
   } finally {
     STATE.groups = [{id: 'grp_aaaa', name: 'Front rooms', displays: 4}];
   }

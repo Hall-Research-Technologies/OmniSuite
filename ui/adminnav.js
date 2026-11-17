@@ -153,7 +153,8 @@
     const served = servedState();
     if (served === true) placeRemoteTab(tabs);
     // The page was served with the answer; asking again would only open a
-    // window in which the bar could change. A toggle reloads the page.
+    // window in which the bar could change. A toggle is announced by the
+    // `omni:remote-access-changed` event, which applyRemoteState handles.
     if (served !== null) return;
     let enabled = false;
     try {
@@ -173,6 +174,69 @@
       existing.remove();
     }
   }
+
+  // Remote Access was switched on or off WHILE this page is open.
+  //
+  // The tab is drawn from what the page was served with, and a page that was
+  // served before the switch keeps describing the world before it: the tab
+  // stayed (or stayed missing) until the browser was refreshed, because the
+  // comment above promised "a toggle reloads the page" and nothing did. The
+  // state change is announced instead, by whoever verified it, and the bar
+  // follows it in place -- no reload, no request, and nothing to flicker,
+  // because the entry is only added or removed when the answer changed.
+  //
+  // `leave` is for the page the operator is standing on. Turning Remote Access
+  // off while on one of its own pages leaves them on a page about accounts
+  // nobody can sign in with, so they are taken to the application instead.
+  // A state merely re-read (nothing was switched) never moves anyone.
+  const LEAVE_TO = '/';
+  function applyRemoteState(enabled, leave) {
+    const on = enabled === true;
+    const meta = document.querySelector('meta[name="omni-remote-access"]');
+    if (meta) meta.setAttribute('content', on ? '1' : '0');
+    const tabs = document.querySelector('.header .tabs, .remote-header .tabs');
+    if (!tabs) return;
+    const existing = tabs.querySelector('a[data-nav="remote"]');
+    if (on) {
+      if (!existing) placeRemoteTab(tabs);
+      return;
+    }
+    if (!existing) return;
+    const onItsPage = existing.getAttribute('aria-current') === 'page';
+    if (onItsPage && !leave) return;            // the page that IS the entry keeps it
+    existing.remove();
+    if (onItsPage && leave && typeof location !== 'undefined') {
+      location.assign(LEAVE_TO);
+    }
+  }
+
+  // Other tabs of the same browser hear about it too, so a second OmniSuite
+  // window does not go on offering an entry the first one just retired.
+  let remoteChannel = null;
+  try {
+    if (typeof BroadcastChannel === 'function') {
+      remoteChannel = new BroadcastChannel('omni-remote-access');
+      remoteChannel.onmessage = (message) => {
+        const data = message && message.data;
+        if (data && typeof data.enabled === 'boolean') {
+          applyRemoteState(data.enabled, !!data.leave);
+        }
+      };
+    }
+  } catch (err) {
+    remoteChannel = null;                       // no channel: this tab still follows
+  }
+
+  window.addEventListener('omni:remote-access-changed', (event) => {
+    const detail = (event && event.detail) || {};
+    if (typeof detail.enabled !== 'boolean') return;
+    applyRemoteState(detail.enabled, !!detail.leave);
+    // Only a switch somebody made is worth telling other windows about.
+    if (detail.switched && remoteChannel) {
+      try { remoteChannel.postMessage({enabled: detail.enabled, leave: true}); }
+      catch (err) { /* a closed channel is not an error worth showing */ }
+    }
+  });
 
   async function install() {
     syncRemoteAccessTab().catch(() => {});

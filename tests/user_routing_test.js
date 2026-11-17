@@ -95,9 +95,10 @@ suite.push(() => check('an unreachable device is not "that did not work"', () =>
 
 function routeHandlerSource() {
   // The Route operation is one function; the button, a drop and the tests all end in it.
-  const start = SHELL_JS.indexOf('async function routeSelected()');
+  // The A/V route is its own function; routeSelected only chooses between it and USB.
+  const start = SHELL_JS.indexOf('async function routeAv()');
   assert(start >= 0, 'the route function is not where this expects it');
-  const end = SHELL_JS.indexOf("\n  }\n\n  el('route_btn')", start);
+  const end = SHELL_JS.indexOf("\n  }\n\n  // The one Route operation", start);
   assert(end > start, 'the end of the route function is not where this expects it');
   return SHELL_JS.slice(start, end);
 }
@@ -270,12 +271,17 @@ suite.push(() => check('a display mid-route does not accept another tap', () => 
 }));
 
 suite.push(() => check('the page is usable again after a failure', () => {
-  const body = code(SHELL_JS);
+  const body = code(routeHandlerSource());
   const finallyBlock = body.slice(body.indexOf('} finally {'));
-  assert(/state\.busy = false/.test(finallyBlock),
-    'a failed route must not leave the action bar disabled');
-  assert(/state\.routingTo = null/.test(finallyBlock),
-    'and must not leave a display marked as routing for ever');
+  assert(/inflight\.dest\.delete/.test(finallyBlock) && /inflight\.group\.delete/.test(finallyBlock),
+    'a failed route must not leave a display or group marked as routing for ever');
+  assert(/renderAction\(\)/.test(finallyBlock),
+    'and must not leave the action bar describing a route that is over');
+  // USB still holds the page, and still releases it on every path.
+  const usb = code(SHELL_JS.slice(SHELL_JS.indexOf('async function routeUsb()')));
+  const usbFinally = usb.slice(usb.indexOf('} finally {'));
+  assert(/state\.busy = false/.test(usbFinally) && /state\.routingTo = null/.test(usbFinally),
+    'a failed USB route must not leave the action bar disabled');
 }));
 
 suite.push(() => check('success says Routed rather than Done', () => {
