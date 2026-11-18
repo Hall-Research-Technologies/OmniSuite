@@ -280,11 +280,14 @@ suite.push(() => check('the page is usable again after a failure', () => {
     'a failed route must not leave a display or group marked as routing for ever');
   assert(/renderAction\(\)/.test(finallyBlock),
     'and must not leave the action bar describing a route that is over');
-  // USB still holds the page, and still releases it on every path.
-  const usb = code(SHELL_JS.slice(SHELL_JS.indexOf('async function routeUsb()')));
-  const usbFinally = usb.slice(usb.indexOf('} finally {'));
-  assert(/state\.busy = false/.test(usbFinally) && /state\.routingTo = null/.test(usbFinally),
-    'a failed USB route must not leave the action bar disabled');
+  // USB routes from its own dots: the module releases the device's row on every path and reads
+  // the state again whatever the answer was.
+  const usbModule = code(fs.readFileSync(path.join(ROOT, 'ui', 'user', 'usb-matrix.js'), 'utf8')
+    .split('\r\n').join('\n'));
+  const usbFinally = usbModule.slice(usbModule.indexOf('} finally {'));
+  assert(/delete pending\[peripheralId\]/.test(usbFinally) && /deps\.reload\(\)/.test(usbFinally),
+    'a failed USB route must not leave its row pending or its state unread');
+  assert(!/function routeUsb/.test(code(SHELL_JS)), 'the Connect/Disconnect flow is gone');
 }));
 
 suite.push(() => check('success says Routed rather than Done', () => {

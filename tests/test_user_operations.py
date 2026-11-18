@@ -173,7 +173,7 @@ class UsbProjectionTests(OperationTestBase):
 
     def test_the_projection_has_only_the_expected_fields(self):
         projected = self.usb()
-        self.assertEqual(set(projected), {"ok", "computers", "peripherals"})
+        self.assertEqual(set(projected), {"ok", "computers", "peripherals", "cells"})
         for computer in projected["computers"]:
             self.assertEqual(set(computer), {"id", "name", "online"})
         for peripheral in projected["peripherals"]:

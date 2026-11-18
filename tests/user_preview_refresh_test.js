@@ -357,10 +357,11 @@ function rig(answers) {
     assert(/previews\.track\(shot, sourceId/.test(page), 'cards are tracked');
     assert(/visibilityObserver = new IntersectionObserver/.test(page) && /previews\.setVisible\(/.test(page), 'continuous visibility');
     assert(/async function refreshAfterRoute\(at\)\s*\{\s*await refresh\(\);\s*previews\.routeCompleted\(at\);/.test(page), 'route completion refreshes');
-    // USB and unroute call it directly. A/V routes no longer do: they ask for one trailing read
-    // (runReconcile) once nothing is in flight, and that read is what calls it.
+    // Unroute calls it directly. A/V routes do not: they ask for one trailing read (runReconcile)
+    // once nothing is in flight, and that read is what calls it. USB carries no pictures: it
+    // reads its own state again from the matrix module.
     const calls = (page.match(/refreshAfterRoute\(Date\.now\(\)\)/g) || []).length;
-    assert(calls === 2, 'USB and unroute use it directly: ' + calls);
+    assert(calls === 1, 'unroute uses it directly: ' + calls);
     assert(/await refreshAfterRoute\(at\)/.test(page),
       'the trailing read after A/V routing completes the route for the pictures too');
     assert(/visibilitychange', \(\) => previews\.setHidden\(document\.hidden\)/.test(page), 'a hidden page stops');

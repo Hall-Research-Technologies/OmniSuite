@@ -4154,6 +4154,12 @@ function openPreviewWindow(url) {
 // ===== Initialize =====
 (async () => {
   console.log('[INIT] Starting initialization IIFE...');
+  // These controls read the page, not the loaded data, so they are bound as soon as they exist: the
+  // first load after a start waits ~10 s for the adapter scan, and a button that does nothing for
+  // that long reads as broken.
+  initPasswordSync();
+  initSetNtp();
+  initInventoryExtraToggle();
   const start = performance.now();
   await Promise.all([loadAdapters(), loadFiles(), loadUnits(), loadScanResults()]);
   const elapsed = performance.now() - start;
@@ -4163,10 +4169,7 @@ function openPreviewWindow(url) {
   // three pages and starts itself.
   refreshUsbExtenderCount();
   setInterval(refreshUsbExtenderCount, 10000);
-  initPasswordSync();
-  initSetNtp();
   initSlateManager();
-  initInventoryExtraToggle();
   console.log('[INIT] About to call initPolling...');
   initPolling();
   console.log('[INIT] initPolling called');

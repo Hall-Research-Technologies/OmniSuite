@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import re
 import time
 
 from flask import Response, g, jsonify, redirect, request
@@ -24,6 +25,7 @@ import omni_locks
 import omni_projection
 import omni_remote
 import omni_requests
+import omni_usb_cells
 import omni_users
 from omni_gate import CSRF_HEADER, SESSION_COOKIE
 from omni_users import Permissions
@@ -38,6 +40,11 @@ log = logging.getLogger(__name__)
 #: attribute itself to -- that is the whole point of answering the same way
 #: whatever the reason.
 _DIRECT_THROTTLE_KEY = "\x00direct-access-link"
+
+#: A USB endpoint identity as the user API accepts it: a canonical MAC. An address is not one.
+_MAC_IDENTITY = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\Z")
+#: A machine-readable reason, nothing else: no sentence, address or identity can pass.
+_SLUG = re.compile(r"^[a-z][a-z0-9_]{0,63}\Z")
 
 
 #: What somebody sees when a Direct Access link no longer works.
@@ -101,6 +108,7 @@ def _is_local():
 def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
              route_view, remote_enabled, set_remote_state, remote_config,
              usb_state, usb_pair_view, usb_unpair_view,
+             usb_icron_pair_view=None, usb_icron_unpair_view=None,
              forget_observation, locks, tls, cert_paths, tls_context_for,
              certificate_state, source_preview, credential_report,
              unroute_view, user_shell):
@@ -2053,20 +2061,33 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
 
     @app.route("/api/user/usb_route", methods=["POST"])
     def api_user_usb_route():
-        """Give a permitted computer a permitted set of peripherals, or take
-        them away.
+        """Give a permitted computer a permitted peripheral, or take it away.
 
-        Adds no USB logic. It authorises both endpoints by stable identity,
-        then hands the same two MACs to the verified pair/unpair path, which
-        keeps its own eligibility, read-back and rollback behaviour.
+        The Remote User USB Matrix is the Admin matrix with this account's subset
+        projected into it, so this endpoint decides exactly as the Admin page does:
+        every cell is derived once (omni_usb_cells) from the administrative payload
+        read during THIS operation, and the control path -- the parent's usb_icron
+        pairing for E4521/D4511 endpoints, the standalone UDP service only for a true
+        standalone unit -- comes from that derivation, never from the browser.
+
+        Adds no USB logic of its own. It authorises both endpoints by stable
+        identity, refuses what the Admin matrix would not offer (including a
+        different USB network, before any device is read or written), and hands the
+        same two endpoints to the verified pair/unpair path, which keeps its own
+        eligibility, read-back and rollback behaviour. Nothing the browser sends
+        other than the two identities and the direction is used.
         """
         data = _json_body()
         computer = omni_users._normalise_identity(data.get("computer"))
         peripherals = omni_users._normalise_identity(data.get("peripherals"))
         detach = bool(data.get("detach"))
         if not computer or not peripherals:
-            return jsonify({"ok": False,
+            return jsonify({"ok": False, "reason": "bad_request",
                             "error": "computer and peripherals required"}), 400
+        if not (_MAC_IDENTITY.match(computer) and _MAC_IDENTITY.match(peripherals)):
+            return jsonify({"ok": False, "reason": "bad_request",
+                            "error": "computer and peripherals must be USB endpoint "
+                                     "identities"}), 400
 
         def _check(account):
             if not account.permissions.has_feature(omni_access.FEATURE_USB):
@@ -2084,15 +2105,55 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
         if refusal is not None:
             return refusal
 
-        view = usb_unpair_view if detach else usb_pair_view
         try:
             # Both endpoints, sorted by hold(), so an attach and a detach
             # racing over the same pair cannot each hold one of them.
             with locks.hold(*locks.usb_pair(computer, peripherals)):
+                # State is read for THIS operation, after the wait: a cached
+                # observation describes a world another request may have changed.
+                forget_observation("usb")
+                state = usb_state()
                 # The wait is over and the next statement reaches hardware.
                 refusal = _revalidate(_check, "/api/user/usb_route")
                 if refusal is not None:
                     return refusal
+                cell = omni_usb_cells.derive(state).get((peripherals, computer))
+                if cell is None:
+                    return jsonify({"ok": False, "status": "unknown_endpoint",
+                                    "reason": "unknown_endpoint",
+                                    "error": "That USB endpoint is not known to "
+                                             "OmniSuite."}), 404
+                public = cell["public"]
+                if detach and not cell["routed"]:
+                    return jsonify({"ok": True, "status": "not_routed",
+                                    "changed": False})
+                if not detach and cell["routed"]:
+                    return jsonify({"ok": True, "status": "already_routed",
+                                    "changed": False})
+                if not cell["can_act"]:
+                    # Exactly the Admin matrix's refusal: the cell is not offered.
+                    sentence = public["label"]
+                    if public["detail"]:
+                        sentence += ". " + public["detail"]
+                    return jsonify({"ok": False, "status": "refused",
+                                    "reason": public["reason"] or "not_routable",
+                                    "error": sentence}), 409
+                path = cell["path"]
+                view = None
+                if path == "usb_icron":
+                    view = usb_icron_unpair_view if detach else usb_icron_pair_view
+                    url = "/api/usb_unpair" if detach else "/api/usb_pair"
+                    body = {"rex": cell["rex_key"], "lex": cell["lex_key"]}
+                    if not detach:
+                        body.update({"makeActive": False, "replaceExisting": True})
+                elif path == "standalone_udp":
+                    view = usb_unpair_view if detach else usb_pair_view
+                    url = "/api/usb_route/unpair" if detach else "/api/usb_route/pair"
+                    body = {"lex_mac": cell["lex_mac"], "rex_mac": cell["rex_mac"]}
+                if view is None:
+                    return jsonify({"ok": False, "status": "refused",
+                                    "reason": "no_control_path",
+                                    "error": "This route cannot be changed from here."}), 409
                 store.audit("usb.detach" if detach else "usb.attach",
                             actor=_current_account(),
                             detail={"computer": computer,
@@ -2100,19 +2161,65 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
                                     "computer_label": _label(computer),
                                     "peripherals_label": _label(peripherals)})
                 try:
-                    with app.test_request_context(
-                            "/api/usb_route", method="POST",
-                            json={"lex_mac": computer, "rex_mac": peripherals}):
-                        return view()
+                    with app.test_request_context(url, method="POST", json=body):
+                        result = view()
                 finally:
                     # This just changed what a USB read would report.
                     forget_observation("usb")
+                return _user_usb_result(result, detach)
         except omni_locks.ResourceBusy as busy:
             log.warning("[USER-USB] busy: %s", busy.resource)
             return jsonify({"ok": False,
                             "reason": "resource_busy",
                             "error": "That equipment is busy with another "
                                      "change. Try again in a moment."}), 409
+
+    def _user_usb_result(result, detach):
+        """What a user may be told about a pair or unpair, from an allowlist.
+
+        The verified paths answer with addresses, MACs of other hosts, protocol
+        replies and commands. None of that reaches a restricted account: the body
+        is rebuilt from named fields, and the sentence is scrubbed of anything
+        that looks like an address. A command that was accepted but not confirmed
+        by a fresh read is its own outcome, never a success.
+        """
+        response, code = ((result[0], result[1]) if isinstance(result, tuple)
+                          else (result, 200))
+        try:
+            raw = response.get_json(silent=True) or {}
+        except Exception:
+            raw = {}
+        reason = raw.get("reason") or raw.get("status")
+        reason = reason.lower() if isinstance(reason, str) and _SLUG.match(reason.lower()) else None
+        if raw.get("ok"):
+            return jsonify({"ok": True, "status": "verified", "changed": True})
+        if code == 200:
+            # Accepted, and a fresh read did not agree.
+            code, status = 502, "unverified"
+            sentence = ("The device accepted the command but a fresh read did not "
+                        "confirm it, so the route is not reported as changed.")
+        elif code == 409:
+            status = "refused"
+            sentence = (omni_usb_cells.clean_text(raw.get("error"))
+                        or "That route is not available right now.")
+        elif code == 404:
+            status = "unknown_endpoint"
+            sentence = "That USB endpoint is not known to OmniSuite."
+        elif code == 400:
+            status = "bad_request"
+            sentence = "That request could not be understood."
+        elif code in (502, 503, 504):
+            # The pair path could not read or reach a unit: an upstream condition, said as one.
+            code, status = 502, "unreachable"
+            sentence = "A unit did not answer, so the route was not changed."
+        else:
+            # Anything else is a device-side failure. Its text is for the log, not for a browser.
+            code, status = 502, "failed"
+            sentence = "The route could not be changed."
+        body = {"ok": False, "status": status, "error": sentence, "changed": False}
+        if reason:
+            body["reason"] = reason
+        return jsonify(body), code
 
     def _usb_permitted_endpoints(account):
         """The USB endpoint identities this account may act on.

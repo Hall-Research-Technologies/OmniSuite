@@ -27,6 +27,7 @@ device traffic as none.
 from __future__ import annotations
 
 import omni_access
+import omni_usb_cells
 import omni_users
 from omni_users import _normalise_identity
 
@@ -657,14 +658,41 @@ def project_usb_state(usb_state, units, account, aliases=None) -> dict:
             joined[target] = {"mode": "other", "computer_id": None,
                               "computer_name": None}
 
+    # Every cell of the administrative matrix, derived once (omni_usb_cells) from the same
+    # payload the Admin page renders. Restricted to endpoints this account may see on both
+    # axes; what an operator is not offered is not described.
+    derived = omni_usb_cells.derive(usb_state)
+    visible_peripherals = {p["id"] for p in peripherals}
+    cells = {}
+    routed_to = {}
+    for (rex_id, lex_id), record in derived.items():
+        if rex_id not in visible_peripherals:
+            continue
+        if record["routed"]:
+            routed_to.setdefault(rex_id, lex_id)
+        if lex_id in visible_computers:
+            cells.setdefault(rex_id, {})[lex_id] = record["public"]
+
     for peripheral in peripherals:
-        peripheral["attached_to"] = joined.get(
-            peripheral["id"], {"mode": "none", "computer_id": None,
-                               "computer_name": None})
+        attached = joined.get(peripheral["id"])
+        if attached is None:
+            # An integrated (usb_icron) route is held in the pairing table, not in the
+            # UDP-observed routes above. Same rule: a computer this account cannot see is
+            # reported as "another computer" without naming it.
+            owner = routed_to.get(peripheral["id"])
+            if owner is None:
+                attached = {"mode": "none", "computer_id": None, "computer_name": None}
+            elif owner in visible_computers:
+                attached = {"mode": "computer", "computer_id": owner,
+                            "computer_name": visible_computers[owner]}
+            else:
+                attached = {"mode": "other", "computer_id": None, "computer_name": None}
+        peripheral["attached_to"] = attached
 
     disambiguate(computers, lambda c: usb_device_names.get(c["id"], ""))
     disambiguate(peripherals, lambda p: usb_device_names.get(p["id"], ""))
 
     computers.sort(key=lambda c: c["name"].lower())
     peripherals.sort(key=lambda p: p["name"].lower())
-    return {"ok": True, "computers": computers, "peripherals": peripherals}
+    return {"ok": True, "computers": computers, "peripherals": peripherals,
+            "cells": cells}

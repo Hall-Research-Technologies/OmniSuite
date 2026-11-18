@@ -55,11 +55,10 @@
     inflight: {dest: new Set(), group: new Set()},
     failed: {dest: new Set(), group: new Set()},
 
-    // USB
+    // USB: the matrix the server projected for this account. A dot is a request, so nothing is
+    // chosen first and nothing is remembered.
     computers: [],
     peripherals: [],
-    computer: null,
-    peripheral: null,
 
     // True when this browser got here through a Direct Access link. The page
     // then presents itself as a dedicated control panel rather than as
@@ -398,10 +397,7 @@
   function isChosen(kind, id) {
     if (kind === 'destination') return state.destSel.has(id);
     if (kind === 'group') return state.groupSel.has(id);
-    const chosen = {
-      source: state.source, computer: state.computer, peripheral: state.peripheral,
-    }[kind];
-    return id === chosen;
+    return kind === 'source' && id === state.source;
   }
 
   function markSelected() {
@@ -453,7 +449,8 @@
     // The bar ships hidden so it is not drawn before there is anything to route; it is shown from the
     // first render on and stays put, saying what is still missing rather than going away. The Matrix
     // routes from its own cells and the no-routing state has nothing to route, so neither shows it.
-    const bar = !(state.tab === 'av' && (state.surface === 'matrix' || state.surface === 'none'));
+    // The USB tab routes from its own dots, as the Matrix does, so it never shows the bar either.
+    const bar = state.tab === 'av' && !(state.surface === 'matrix' || state.surface === 'none');
     el('action_bar').hidden = !bar;
     if (!bar) return;
 
@@ -536,26 +533,6 @@
       action.disabled = true;
       return;
     }
-
-    // USB
-    const computer = named(state.computers, state.computer);
-    const peripheral = state.peripherals.find((p) => p.id === state.peripheral);
-    const attached = peripheral && peripheral.attached_to
-      && peripheral.attached_to.computer_id === state.computer;
-    action.textContent = attached ? 'Disconnect' : 'Connect';
-    if (computer && peripheral) {
-      summary.replaceChildren();
-      const c = document.createElement('strong'); c.textContent = computer;
-      const p = document.createElement('strong'); p.textContent = peripheral.name;
-      summary.append(attached ? 'Disconnect ' : 'Connect ', p,
-                     attached ? ' from ' : ' to ', c);
-      action.disabled = false;
-      return;
-    }
-    summary.textContent = !computer && !peripheral
-      ? 'Choose a computer and its USB devices.'
-      : (!computer ? 'Now choose a computer.' : 'Now choose the USB devices.');
-    action.disabled = true;
   }
 
   // ------------------------------------------------------------- A/V
@@ -596,27 +573,35 @@
   }
 
   // ------------------------------------------------------------- USB
-  function describePeripheral(item) {
-    const attached = item.attached_to || {};
-    if (attached.mode === 'computer') return 'Connected to ' + attached.computer_name;
-    if (attached.mode === 'other') return 'Connected to another computer';
-    return 'Not connected';
+  // The grid is built once, on first use. The module owns every cell and every request; this
+  // file supplies how a request is sent and how the state is read again.
+  let usbMatrix = null;
+  function ensureUsbMatrix() {
+    if (usbMatrix || !window.OmniUserUsbMatrix) return usbMatrix;
+    usbMatrix = window.OmniUserUsbMatrix.create({
+      document,
+      wrap: el('usb_wrap'),
+      table: el('usbMatrix'),
+      empty: el('usb_empty'),
+      status: el('usb_status'),
+      legend: el('usb_legend'),
+      request: (computer, peripheral, detach) => api('/api/user/usb_route', {
+        method: 'POST',
+        body: JSON.stringify({computer, peripherals: peripheral, detach: !!detach}),
+      }),
+      reload: () => loadUsb(),
+      failureText,
+      toast: (text, kind) => { if (window.toast) window.toast(text, kind); },
+    });
+    return usbMatrix;
   }
 
   async function loadUsb() {
     const {body} = await api('/api/user/usb_state');
     state.computers = body.computers || [];
     state.peripherals = body.peripherals || [];
-    if (!state.computers.some((c) => c.id === state.computer)) state.computer = null;
-    if (!state.peripherals.some((p) => p.id === state.peripheral)) {
-      state.peripheral = null;
-    }
-    renderList('usb_computers', 'usb_computers_empty', state.computers,
-               'computer', () => 'Ready');
-    renderList('usb_peripherals', 'usb_peripherals_empty', state.peripherals,
-               'peripheral', describePeripheral);
-    markSelected();
-    renderAction();
+    const matrix = ensureUsbMatrix();
+    if (matrix) matrix.render(body);
   }
 
   // A route (or an unroute) has finished: the state is read again, which rebuilds the cards, and the
@@ -825,53 +810,9 @@
   // as routing, sends the request and returns: the operator can choose the next
   // source and the next display while this one is being verified, and the one read
   // that redraws the page waits until nothing is in flight (see scheduleReconcile).
-  // USB keeps the older flow below, which holds the page until it is done.
   async function routeSelected() {
     if (state.busy) return;
     if (state.tab === 'av') return routeAv();
-    return routeUsb();
-  }
-
-  // USB attach and detach hold the page until the transaction is read back: they
-  // move one peripheral between two computers, and offering a second choice while
-  // the first is in flight describes a state nobody has yet.
-  async function routeUsb() {
-    if (state.busy) return;
-    if (!state.computer || !state.peripheral) return;
-
-    state.busy = true;
-    state.routingTo = null;
-    renderAction();
-    renderRoutingState();
-    try {
-      const peripheral = state.peripherals.find((p) => p.id === state.peripheral);
-      const attached = peripheral && peripheral.attached_to
-        && peripheral.attached_to.computer_id === state.computer;
-      const result = await api('/api/user/usb_route', {
-        method: 'POST',
-        body: JSON.stringify({computer: state.computer,
-                              peripherals: state.peripheral,
-                              detach: !!attached}),
-      });
-      if (result.status === 200 && result.body.ok) {
-        window.toast && window.toast('Routed', 'ok');
-      } else {
-        window.toast && window.toast(
-          failureText(result.body, result.status), 'error');
-      }
-      await refreshAfterRoute(Date.now());
-    } catch (err) {
-      if (String(err.message) !== 'signed out') {
-        window.toast && window.toast('Could not reach OmniSuite', 'error');
-      }
-    } finally {
-      // Always, on every path: a failed route must leave the page usable
-      // without a reload.
-      state.busy = false;
-      state.routingTo = null;
-      renderAction();
-      renderRoutingState();
-    }
   }
 
   el('route_btn').addEventListener('click', routeSelected);
@@ -1271,7 +1212,7 @@
     });
     renderTabs();
     renderAction();
-    if (id === 'usb' && !state.computers.length) loadUsb().catch(() => {});
+    if (id === 'usb') loadUsb().catch(() => {});
   }
 
   // -------------------------------------------------------------- load

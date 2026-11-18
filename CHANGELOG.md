@@ -8,6 +8,10 @@ hardware acceptance test. See RELEASE_NOTES_V1.2.1.md for the user-facing summar
 - Remote Access navigation: page responses that carry the Remote Access state are `no-store` with no ETag, so a
   cached page can no longer show the old state; background pages re-check `/api/remote_access/status`; enabling
   reports its progress.
+- Device Manager Password column reports the credential the device accepts (working credential) before the
+  one discovery recorded.
+- Device Info binds Set NTP, Sync all Passwords and the inventory toggle before the initial data loads
+  complete, so they respond during the first-load adapter scan.
 - Per-device working credentials on every authenticated path. A device's refusal is recognised from
   `error_message` as well as `error`, a recorded credential that stops working is replaced by the next known one
   after a single retry, and the matrix route/unroute and Blink go through the credentialed transport. `set_route`
@@ -17,6 +21,12 @@ hardware acceptance test. See RELEASE_NOTES_V1.2.1.md for the user-facing summar
 - Routing: one destination selection for displays and Display Groups, Clear selection, Unroute
   (`/api/user/unroute_many`), Audio follows video and Preview switches, Luma-family spacing and typography;
   the A/V Matrix mode choice follows the same wording.
+- Remote User USB: `/api/user/usb_route` took every request through the standalone-extender path, which refuses
+  integrated E4521/D4511 endpoints (HTTP 404/409). The user USB screen is now the Admin dot matrix with the
+  account's subset in it; every cell is derived once on the server (`omni_usb_cells`) from the administrative
+  payload, the route takes its control path from that derivation (parent usb_icron path for integrated
+  endpoints, the extender service only for standalone units), refuses what the Admin matrix would not offer
+  (including a different USB network, before any device is read) and rebuilds its answer from an allowlist.
 - Multiview: Save over a displayed Multiview writes nothing to any device (Show applies it, with the object's
   windows and audio); names are validated (400 with the rules); Show reports `lock_verification`
   (`INITIAL PASS`, `PASS AFTER RECOVERY`, `NOT LOCKED AFTER RECOVERY`) with one recovery attempt.

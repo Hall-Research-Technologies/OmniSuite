@@ -10560,7 +10560,9 @@ def api_cache_dup():
         unit_copy["codec"] = unit_copy.get("codec") or _codec_label(system_mode)
         unit_copy["supported_system_modes"] = unit_copy.get("supported_system_modes") or si_cfg.get("supported_system_modes") or []
         unit_copy["codec_configurable"] = unit_copy.get("codec_configurable") if unit_copy.get("codec_configurable") is not None else _is_codec_configurable_model(unit_copy.get("model"))
-        used_pwd = unit_copy.get("password") or primary_pwd
+        # What this device was last seen to ACCEPT outranks what discovery recorded: a password changed
+        # on the unit afterwards would otherwise keep reading as the old class until the next scan.
+        used_pwd = _working_credential(unit_copy.get("ip")) or unit_copy.get("password") or primary_pwd
         unit_copy["password_source"] = "Primary" if used_pwd == primary_pwd else "Fallback"
         unit_copy["uptime_seconds"] = _uptime_seconds(unit_copy)
         units_with_password_source.append(unit_copy)
@@ -19983,6 +19985,10 @@ omni_remote_api.register(
     usb_state=_usb_state_snapshot,
     usb_pair_view=api_usb_route_pair,
     usb_unpair_view=api_usb_route_unpair,
+    # The parent's own pairing path, for an integrated E4521/D4511 endpoint -- the same two
+    # views the Admin USB Matrix calls for that cell.
+    usb_icron_pair_view=api_usb_pair,
+    usb_icron_unpair_view=api_usb_unpair,
     forget_observation=_forget_user_observation,
     credential_report=credential_report,
     unroute_view=api_unroute_matrix,

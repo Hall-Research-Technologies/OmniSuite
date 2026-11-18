@@ -1757,6 +1757,32 @@
         cannot create accounts or change their own permissions.</td></tr>
       </table>
 
+      <h3 id="remote-usb">USB on the User screen</h3>
+      <p>A User who has been given USB sees the same dot grid as the administrator's USB Matrix, with only
+      their own equipment in it: <strong>each row is a USB device</strong> (a keyboard, a camera, a hub on a
+      remote extender) and <strong>each column is a computer</strong>. There is no Connect button. Tap a dot to
+      make that computer use that device; tap a dot that is already connected to disconnect it.</p>
+      <ul>
+        <li><strong>An empty ring</strong> is available. <strong>A blue ring</strong> is connected, and a blue
+        ring with a dot in it is connected and in use. While a request is on its way the dot pulses and the
+        screen says what it is doing.</li>
+        <li><strong>The result is checked.</strong> OmniSuite reads both ends again before it says
+        <em>Route created and verified</em> or <em>Route removed and verified</em>. If a unit accepted the
+        change but did not confirm it, the screen says so and does not claim the route changed.</li>
+        <li><strong>The same rules as the administrator's matrix.</strong> A device is not offered to a
+        computer on a different USB network (a USB link is not carried across a router), when either unit is
+        not answering or not yet recognised, or when that computer already has its maximum number of devices.
+        Hover over or focus a dot to read why. These rules are applied by OmniSuite itself, so a changed web
+        page cannot get around them.</li>
+        <li><strong>Only what you were given.</strong> A User never sees, and cannot route, a computer or device
+        they were not assigned. Their permission is checked again at the moment of each change.</li>
+        <li><strong>One change at a time per device.</strong> A device is connected to one computer at a time;
+        tapping another dot on the same row waits until the first request has finished. If somebody else is
+        changing the same equipment, the screen says it is busy and to try again.</li>
+      </ul>
+      <p>The grid scrolls sideways when there are more computers than fit, with a second scroll bar above it,
+      and the device names stay in view while it does.</p>
+
       <h3 id="device-names">Giving devices friendly names</h3>
       <p>Equipment arrives with names like <code>at-omni-111-00001</code>. That
       is fine for an engineer and useless to a teacher, so OmniSuite lets you

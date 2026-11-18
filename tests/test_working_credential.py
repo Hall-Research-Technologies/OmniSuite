@@ -132,6 +132,23 @@ class WorkingCredentialTests(base.ServerTestBase):
                                              "password": PRIMARY, "config_get": "net"}, 1)
         self.assertEqual([o[2:] for o in self.devices.offers], [("ok", "fallback")])
 
+    def test_the_password_column_follows_what_the_device_accepts(self):
+        """A password changed on the unit after discovery must not keep reading as the old class."""
+        self.seed_cache(ADDR_B, MAC_B, password=PRIMARY)        # discovery recorded the primary
+        srv._learn_working_credential(ADDR_B, FALLBACK, MAC_B)  # ...but the unit accepts the fallback
+        srv._cache_startup_verified = True
+        units = {u["ip"]: u for u in self.client.get("/api/cache").get_json()["units"]}
+        self.assertEqual(units[ADDR_B]["password_source"], "Fallback")
+        srv._learn_working_credential(ADDR_B, PRIMARY, MAC_B)   # changed back
+        units = {u["ip"]: u for u in self.client.get("/api/cache").get_json()["units"]}
+        self.assertEqual(units[ADDR_B]["password_source"], "Primary")
+
+    def test_the_password_column_falls_back_to_the_recorded_credential(self):
+        self.seed_cache(ADDR_B, MAC_B, password=FALLBACK)       # nothing learned this session
+        srv._cache_startup_verified = True
+        units = {u["ip"]: u for u in self.client.get("/api/cache").get_json()["units"]}
+        self.assertEqual(units[ADDR_B]["password_source"], "Fallback")
+
     def test_a_device_on_the_configured_credential_is_untouched(self):
         srv._learn_working_credential(ADDR_A, PRIMARY, "")
         srv._learn_working_credential(ADDR_B, FALLBACK, MAC_B)
