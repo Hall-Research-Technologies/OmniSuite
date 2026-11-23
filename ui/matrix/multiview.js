@@ -212,17 +212,36 @@
     state.excluded = body.excluded || [];
   }
 
-  async function loadDecoderState(ip, keepEditing) {
+  // `opts.quiet` re-reads the decoder behind a workspace that is already on
+  // screen. The default announces "Loading" and withdraws the workspace, which
+  // is right for choosing a different decoder and wrong after a drop: the
+  // operator's canvas vanished for as long as the read took and came back
+  // looking like a page refresh. A quiet read swaps the state in place.
+  async function loadDecoderState(ip, keepEditing, opts) {
     const token = ++stateSeq;
-    setMode(MODE.LOADING);
+    const quiet = !!(opts && opts.quiet) && !!state.decoderState;
+    const modeBefore = state.mode === MODE.SAVING && state.previousMode
+      ? state.previousMode : state.mode;
+    if (!quiet) setMode(MODE.LOADING);
     try {
       const body = await getJSON('/api/multiview/state?ip=' + encodeURIComponent(ip));
       if (token !== stateSeq) return;               // a newer selection won
+      // A read that finished while a change was still queued describes the
+      // world before that change. Discarding it is not the same as never
+      // asking: the queue reads again once it is empty.
+      if (live.ops.length) return;
+      live.cleared = {};
       state.decoderState = body;
       state.availability = body.canvases || [];
       state.canCreate = !!body.can_create;
       populateTargets();
-      if (keepEditing && !activeView(body) && (body.multiviews || [])
+      // An in-place re-read the operator caused (Save, Show, install, Reload)
+      // stays on the layout they were working on, whether or not the display
+      // is compositing another one: jumping to the live layout would discard
+      // the editing context they had just saved. Opening a decoder (no `quiet`)
+      // is different, and there what the display shows outranks a bookmark.
+      const stay = !!(opts && opts.quiet);
+      if (keepEditing && (stay || !activeView(body)) && (body.multiviews || [])
           .some((view) => view.name === keepEditing)) {
         loadIntoEditor(keepEditing);
         return;
@@ -242,6 +261,13 @@
         ? MODE.DECODER_SELECTED : MODE.DECODER_SELECTED_EMPTY);
     } catch (err) {
       if (token !== stateSeq) return;
+      if (quiet) {
+        // Keep what the operator is looking at and say the read failed. The
+        // stale picture is labelled by the message, not silently trusted.
+        setMode(modeBefore);
+        notify('Could not re-read the decoder: ' + err.message);
+        return;
+      }
       state.decoderState = null;
       // "Unable to read" and "none configured" are different conditions and
       // must never be presented as the same one.
@@ -284,7 +310,20 @@
   // inactive one is a preset: a drop edits it and nothing happens until Save.
   function isLive() {
     const view = currentView();
-    return state.mode === MODE.EDIT && !!view && !!view.selected_on_output;
+    // An edit saved over the displayed Multiview has not reached the display
+    // yet, so the canvas is a form again until Show applies it.
+    return state.mode === MODE.EDIT && !!view && !!view.selected_on_output
+      && !view.pending_show && !layoutChanged(view);
+  }
+
+  // The operator has picked a different layout from the one the display is
+  // compositing. The canvas then draws geometry the decoder does not have, so a
+  // drop on it cannot be a live switch: it would change one window of the old
+  // layout while the page showed the new one. It is an edit until it is saved
+  // and shown.
+  function layoutChanged(view) {
+    const chosen = el('mv_layout') ? el('mv_layout').value : '';
+    return !!view && !!view.layout && !!chosen && chosen !== view.layout;
   }
 
   function renderMode() {
@@ -313,13 +352,18 @@
     // Multiview being created: Show on Display saves first, so an operator
     // never has to press Save to get to it. It is withdrawn only for the one
     // that is already on the display.
-    show('mv_show', (state.mode === MODE.EDIT && view && !view.selected_on_output)
+    // Also for the displayed Multiview once it is no longer a live surface: an
+    // edit saved over it, or a different layout chosen for it, reaches the
+    // display only through Show.
+    show('mv_show', (state.mode === MODE.EDIT && view && !isLive())
                     || creating);
     show('mv_shown', state.mode === MODE.EDIT && !!view);
     show('mv_delete', state.mode === MODE.EDIT);
     show('mv_cancel', working);
 
-    const busy = mode === MODE.SAVING;
+    // Page-level actions wait for an operation in flight. The windows do not:
+    // they carry their own per-window pending state.
+    const busy = mode === MODE.SAVING || live.ops.length > 0;
     // A decoder holds as many saved Multiviews as the operator wants, so the
     // only thing that withdraws New is an operation already in flight.
     el('mv_new').disabled = busy;
@@ -530,12 +574,14 @@
     // say: most of what follows does not happen when you are just designing.
     whenHeading: 'When any of this happens',
     when: [
-      'Creating, installing, editing, copying or saving a Multiview that is '
-      + 'not on the display changes nothing on any encoder and nothing on the '
-      + 'screen. A saved Multiview is a description, not a booking.',
+      'Creating, installing, editing, copying or saving a Multiview changes '
+      + 'nothing on any encoder and nothing on the screen. That includes saving '
+      + 'an edit of the Multiview that is on the display: its windows, sources '
+      + 'and sound stay as they are until you press Show on Display. A saved '
+      + 'Multiview is a description, not a booking.',
       'Show on Display saves the Multiview you are looking at first, and then '
-      + 'shows what it saved. The changes below happen at that point, and when '
-      + 'you recall a different Multiview.',
+      + 'shows what it saved, in full. The changes below happen at that point, '
+      + 'and when you recall a different Multiview.',
       'They also happen when you add, change or clear a source on a Multiview '
       + 'that is already on the display — and that takes effect '
       + 'immediately, while it is on screen.',
@@ -1026,7 +1072,28 @@
     }
   }
 
+  // A drag that is in progress belongs to the tile it started on. Replacing that
+  // node -- which every full render does -- cancels the drag without a drop, so
+  // a refresh or a plan result landing mid-drag silently ate the operator's
+  // gesture (measured on the bench: the drop reached no handler and no request
+  // was made). The tiles are redrawn once the drag has ended. Bounded, so a
+  // drag whose end event was lost cannot freeze the list.
+  const DRAG_DEFER_LIMIT_MS = 30000;
+  function dragInProgress() {
+    return !!state.dragging && !!state.draggingAt
+      && (Date.now() - state.draggingAt) < DRAG_DEFER_LIMIT_MS;
+  }
+  function endDrag() {
+    state.dragging = null;
+    state.draggingAt = 0;
+    if (state.sourcesDeferred) {
+      state.sourcesDeferred = false;
+      renderSources();
+    }
+  }
+
   function renderSources() {
+    if (dragInProgress()) { state.sourcesDeferred = true; return; }
     const container = el('mv_sources');
     closePreview();
     container.replaceChildren();
@@ -1102,13 +1169,14 @@
         // Recorded for the targets, which cannot read dataTransfer while the
         // drag is over them, and so arms only the ones that would accept it.
         state.dragging = {ip: source.ip, multiview: ready, normal: routable};
+        state.draggingAt = Date.now();
         renderDisplayOutputArming();
         event.dataTransfer.setData('text/plain', source.ip);
         event.dataTransfer.effectAllowed = 'copy';
       });
       tile.addEventListener('dragend', () => {
         tile.classList.remove('dragging');
-        state.dragging = null;
+        endDrag();
         renderDisplayOutputArming();
       });
       tile.addEventListener('click', () => {
@@ -1164,13 +1232,14 @@
           closePreview();
           tile.classList.add('dragging');
           state.dragging = {ip: entry.ip, multiview: false, normal: true};
+          state.draggingAt = Date.now();
           renderDisplayOutputArming();
           event.dataTransfer.setData('text/plain', entry.ip);
           event.dataTransfer.effectAllowed = 'copy';
         });
         tile.addEventListener('dragend', () => {
           tile.classList.remove('dragging');
-          state.dragging = null;
+          endDrag();
           renderDisplayOutputArming();
         });
         detail.appendChild(tile);
@@ -1461,6 +1530,37 @@
     return layout.canvases[state.canvas] || null;
   }
 
+  // The decoder's subscription for a window, for the Multiview that is on the
+  // display only. For anything else the window shows what the editor holds.
+  function liveSubframe(cell) {
+    if (!isLive() || live.cleared[cell]) return null;
+    return subframeFor(cell);
+  }
+
+  // Whether a window in an editor differs from what is stored: "unsaved" is a
+  // claim about the preset, and "saved" is only ever said about one the server
+  // reports as stored.
+  function windowEditState(cell, assignedIp) {
+    const creating = state.mode === MODE.CREATE;
+    let saved = {};
+    if (!creating) {
+      const view = currentView();
+      const baseline = state.savedBaseline !== null && state.savedBaseline !== undefined
+        ? state.savedBaseline : savedState(view);
+      try {
+        (JSON.parse(baseline || '{}').windows || []).forEach((pair) => { saved[pair[0]] = pair[1]; });
+      } catch (err) { saved = {}; }
+    }
+    if ((saved[cell] || '') !== (assignedIp || '')) {
+      return {cls: 'unsaved', text: 'Unsaved change'};
+    }
+    if (!assignedIp) return null;
+    const view = currentView();
+    return view && view.selected_on_output && view.pending_show
+      ? {cls: 'saved', text: 'Saved · not yet shown'}
+      : {cls: 'saved', text: 'Saved · not shown'};
+  }
+
   function renderCanvas() {
     const stage = el('mv_stage');
     const caption = el('mv_caption');
@@ -1477,7 +1577,7 @@
     const onCanvas = [];
     geometry.windows.forEach((window_) => {
       const ip = state.assignments[window_.cell]
-        || ((subframeFor(window_.cell) || {}).source || {}).ip;
+        || ((liveSubframe(window_.cell) || {}).source || {}).ip;
       if (ip && onCanvas.indexOf(ip) < 0) onCanvas.push(ip);
     });
     windowPreview.visible = onCanvas;
@@ -1503,7 +1603,11 @@
 
       const assignedIp = state.assignments[window_.cell];
       const source = state.sources.find((s) => s.ip === assignedIp);
-      const subframe = subframeFor(window_.cell);
+      // The decoder's own subscription is what the display is showing, so it is
+      // only ever drawn for the Multiview that is on the display. An editor
+      // that has had a window emptied must not draw the saved source back in.
+      const subframe = liveSubframe(window_.cell);
+      const pending = pendingFor(window_.cell);
       box.classList.toggle('assigned', !!assignedIp || !!(subframe && subframe.subscribed));
       if (subframe && subframe.health) {
         box.classList.add('health-' + subframe.health.replace(/ /g, '-'));
@@ -1525,6 +1629,7 @@
         box.classList.add('has-shot');
       }
 
+      box.dataset.cell = window_.cell;
       box.appendChild(node('div', 'mv-window-index', 'W' + (index + 1)));
 
       const overlay = node('div', 'mv-window-overlay');
@@ -1533,13 +1638,15 @@
         clear.type = 'button';
         clear.title = 'Clear this window';
         clear.setAttribute('aria-label', 'Clear window ' + (index + 1));
+        // Pending while an operation on this window is in flight; the button
+        // stays where it is so it does not appear and disappear under the
+        // pointer, and it is live again the moment the server has answered.
+        clear.disabled = !!pendingFor(window_.cell);
         clear.addEventListener('click', (event) => {
           event.stopPropagation();
           // Clearing a window of the Multiview on the display is a change to
           // the display, so it takes the same verified path a drop does.
-          if (isLive()) { switchLive(window_.cell, ''); return; }
-          delete state.assignments[window_.cell];
-          render();
+          assign(window_.cell, '');
         });
         box.appendChild(clear);
         overlay.appendChild(node('div', 'mv-window-title',
@@ -1584,13 +1691,21 @@
                                  'Preview unavailable'));
       }
 
-      // What is happening to this window right now, while it happens.
-      const busy = state.switching;
-      if (busy && busy.cell === window_.cell) {
+      // What is happening to this window right now, while it happens -- and,
+      // when nothing is, which of editing, saved and live it is in. Three
+      // different claims, never drawn the same way.
+      if (pending) {
         box.classList.add('switching');
-        overlay.appendChild(node('div', 'mv-window-state', 'Switching…'));
+        const text = pending.status !== 'running' ? 'Queued…'
+          : (pending.cell === window_.cell && pending.source ? 'Switching…' : 'Clearing…');
+        overlay.appendChild(node('div', 'mv-window-state', text));
       } else if (subframe && subframe.health === 'live') {
         overlay.appendChild(node('div', 'mv-window-state mv-window-live', 'Live'));
+      } else if (!isLive() && (state.mode === MODE.EDIT || state.mode === MODE.CREATE)) {
+        const kind = windowEditState(window_.cell, assignedIp);
+        if (kind) {
+          overlay.appendChild(node('div', 'mv-window-state mv-window-' + kind.cls, kind.text));
+        }
       }
       box.appendChild(overlay);
 
@@ -1637,17 +1752,29 @@
     if (canvasState) {
       const view = currentView();
       const shown = !!view && !!view.selected_on_output;
+      const editingShown = shown && layoutChanged(view) && !view.pending_show;
       canvasState.hidden = state.mode !== MODE.EDIT || !view;
-      canvasState.className = 'mv-canvas-state' + (shown ? ' live' : '');
-      canvasState.textContent = shown ? 'LIVE' : 'INACTIVE';
+      canvasState.className = 'mv-canvas-state' + (shown && !editingShown ? ' live' : '');
+      canvasState.textContent = editingShown ? 'EDITING' : (shown ? 'LIVE' : 'INACTIVE');
     }
     const mode = el('mv_canvas_mode');
     if (mode) {
       const live = isLive();
       mode.hidden = state.mode !== MODE.EDIT && state.mode !== MODE.CREATE;
       mode.className = 'mv-canvas-mode' + (live ? ' live' : '');
+      const shownView = currentView();
+      const waiting = state.mode === MODE.EDIT && !!shownView
+        && !!shownView.selected_on_output && !!shownView.pending_show;
       mode.textContent = live
         ? 'LIVE — changes made on this canvas are applied immediately'
+        : waiting
+          ? 'SAVED, NOT YET SHOWN — this Multiview is on the display and nothing '
+            + 'on it has changed. Press Show on Display to apply your saved change.'
+        : (state.mode === MODE.EDIT && !!shownView && !!shownView.selected_on_output
+           && layoutChanged(shownView))
+          ? 'EDITING — this Multiview is on the display, and you have chosen a '
+            + 'different layout. Nothing on the display changes until you save '
+            + 'and press Show on Display.'
         : state.mode === MODE.EDIT
           ? 'INACTIVE — saved on this decoder, not currently shown. These '
             + 'windows are the saved composition, not live subscriptions.'
@@ -1692,67 +1819,244 @@
       .replace(/\b\w/g, (c) => c.toUpperCase());
   }
 
-  function assign(cell, ip) {
-    if (isLive()) { switchLive(cell, ip); return; }
-    if (ip) state.assignments[cell] = ip;
-    else delete state.assignments[cell];
+  // ---- window assignment -------------------------------------------------
+  //
+  // Every change to a window -- a drop, a click on a picked source, the X --
+  // goes through here, and the rules live here once.
+  //
+  //   * One source may fill several windows only when they are the same size.
+  //     A source has ONE Encoder 2 scaler, so two windows of different sizes
+  //     cannot both be right. The comparison is the effective window size the
+  //     server computed (the same numbers it writes to the decoder), never a
+  //     layout label. Dropping a source onto a window of a different size while
+  //     it is in another window asks first; Cancel changes nothing.
+  //   * An inactive preset is edited locally and atomically: the replaced
+  //     window is emptied and the new one filled in the same step, so the page
+  //     can never show a source in two windows the server would refuse.
+  //   * On the Multiview that is on the display a change is a verified device
+  //     transaction. It is queued, one at a time, and the page shows the
+  //     CONFIRMED assignment with a per-window pending marker until the server
+  //     answers. A refused or failed operation leaves the window as it was --
+  //     the page never presents as accepted what the server did not keep.
+  //   * Nothing disables the page while that happens. Windows that are not
+  //     pending stay usable, and operations on a window already pending queue
+  //     behind it.
+  const live = {
+    ops: [],          // {id, cell, source, clear[], status}; the head is running
+    running: false,
+    seq: 0,
+    // Windows the server has confirmed empty since the decoder was last read.
+    // The decoder's own subscription for such a window is about to go; until the
+    // re-read says so, it must not be drawn back in.
+    cleared: {},
+    confirming: false,
+  };
+
+  function windowOf(cell) {
+    const geometry = currentGeometry();
+    return geometry ? (geometry.windows.find((w) => w.cell === cell) || null) : null;
+  }
+
+  function sizeOf(cell) {
+    const w = windowOf(cell);
+    return w ? (w.width + 'x' + w.height) : '';
+  }
+
+  function windowNumber(cell) {
+    const geometry = currentGeometry();
+    const index = geometry ? geometry.windows.findIndex((w) => w.cell === cell) : -1;
+    return index < 0 ? prettyCell(cell) : 'Window ' + (index + 1);
+  }
+
+  // What the assignments will be once every queued change has been applied.
+  // Decisions about the next change are made against this, not against a world
+  // the queue is already in the middle of altering.
+  function projectedAssignments() {
+    const out = Object.assign({}, state.assignments);
+    live.ops.forEach((op) => {
+      op.clear.forEach((cell) => { delete out[cell]; });
+      if (op.source) out[op.cell] = op.source; else delete out[op.cell];
+    });
+    return out;
+  }
+
+  // Windows that already hold `ip` and are a different size from `cell`.
+  function sizeConflicts(cell, ip, assignments) {
+    const wanted = sizeOf(cell);
+    return Object.keys(assignments)
+      .filter((other) => other !== cell && assignments[other] === ip
+                         && sizeOf(other) !== wanted)
+      .sort();
+  }
+
+  function pendingFor(cell) {
+    let found = null;
+    live.ops.forEach((op) => {
+      if (op.cell === cell || op.clear.indexOf(cell) >= 0) found = op;
+    });
+    return found;
+  }
+
+  function sourceName(ip) {
+    const source = state.sources.find((s) => s.ip === ip);
+    return source ? source.hostname : ip;
+  }
+
+  async function confirmReplace(cell, ip, conflicts) {
+    if (typeof window.omniConfirm !== 'function') {
+      // The sentence is the point of this question; a browser string box would
+      // not carry it, so without the shared dialog the change is refused.
+      notify('This source is assigned to a window of a different size, and the '
+             + 'confirmation dialog is unavailable, so nothing was changed.');
+      return false;
+    }
+    const summary = [{label: 'Source', value: sourceName(ip)}];
+    conflicts.forEach((other) => {
+      summary.push({label: 'Currently in',
+                    value: windowNumber(other) + ' (' + sizeOf(other) + ')'});
+    });
+    summary.push({label: 'Dropped on',
+                  value: windowNumber(cell) + ' (' + sizeOf(cell) + ')'});
+    const answer = await window.omniConfirm({
+      title: 'Replace assignment?',
+      message: 'This source is currently assigned to another window with a '
+        + 'different size. Replace that assignment?',
+      summary: summary,
+      confirmText: 'Replace',
+      cancelDefault: true,
+    });
+    return answer === true || !!(answer && answer.ok);
+  }
+
+  async function assign(cell, ip) {
+    if (state.mode === MODE.SAVING) {
+      notify('Wait for the current operation to finish.');
+      return;
+    }
+    if (!ip) { applyChange({cell: cell, source: '', clear: []}); return; }
+    if (live.confirming) return;                    // one question at a time
+    if (projectedAssignments()[cell] === ip) return;
+    let clear = [];
+    const conflicts = sizeConflicts(cell, ip, projectedAssignments());
+    if (conflicts.length) {
+      live.confirming = true;
+      let agreed = false;
+      try { agreed = await confirmReplace(cell, ip, conflicts); }
+      finally { live.confirming = false; }
+      if (!agreed) return;                          // Cancel: both stay as they were
+      // The world may have moved while the question was open.
+      if (state.mode === MODE.SAVING) return;
+      clear = sizeConflicts(cell, ip, projectedAssignments());
+    }
+    applyChange({cell: cell, source: ip, clear: clear});
+  }
+
+  function applyChange(change) {
+    if (!change.source && !projectedAssignments()[change.cell]) return;   // nothing to remove
+    if (isLive()) { enqueueLive(change); return; }
+    if (state.mode === MODE.SAVING) return;
+    change.clear.forEach((cell) => { delete state.assignments[cell]; });
+    if (change.source) state.assignments[change.cell] = change.source;
+    else delete state.assignments[change.cell];
     render();
   }
 
-  // A live switch on an ACTIVE Multiview is applied immediately.
-  //
-  // There is no confirmation dialog. The canvas already says "LIVE -- changes
-  // made on this canvas are applied immediately", and asking again on every
-  // drop turns that warning into a formality people click through. What is NOT
-  // removed is any of the safety: the whole Multiview is still replanned, every
-  // rule still applies, every write is still read back, and a switch that
-  // cannot be verified is still rolled back.
+  function enqueueLive(change) {
+    live.seq += 1;
+    live.ops.push({id: 'op' + live.seq + '-' + Date.now().toString(36),
+                   cell: change.cell, source: change.source || '',
+                   clear: change.clear || [], status: 'queued'});
+    // A decoder read already in flight describes a world this change is about
+    // to alter; whatever it brings back must be discarded, not applied.
+    stateSeq += 1;
+    render();
+    pumpLive();
+  }
+
   // In group context a source change is a group operation: it is planned across
   // every member, refused if one encoder would be asked for two window sizes,
   // applied to all of them and rolled back together. Doing it one decoder at a
   // time is exactly what the group exists to prevent.
-  async function switchLiveOnGroup(cell, ip) {
+  async function runLiveOp(op) {
     const view = currentView();
     const group = groups.context;
-    if (!view || !group) return;
-    await runTransaction(
-      'Changing ' + prettyCell(cell) + ' on ' + group.name + '…',
-      '/api/multiview/groups/show',
-      {group: group.id, source_decoder: readingDecoder(),
-       name: view.name, cell: cell, source: ip || ''},
-      async (body) => {
-        if (body.ok) await checkGroup();
+    if (!view) throw new Error('No Multiview is open.');
+    const url = group ? '/api/multiview/groups/show' : '/api/multiview/switch';
+    const payload = group
+      ? {group: group.id, source_decoder: readingDecoder(), name: view.name,
+         cell: op.cell, source: op.source, clear_cells: op.clear, op_id: op.id}
+      : {decoder: readingDecoder(), name: view.name, cell: op.cell,
+         source: op.source, clear_cells: op.clear, op_id: op.id};
+    setStatus((op.source ? 'Switching ' : 'Clearing ') + prettyCell(op.cell) + '…', null);
+    let body;
+    let thrown = null;
+    try {
+      body = await getJSON(url, {method: 'POST',
+                                 headers: {'Content-Type': 'application/json'},
+                                 body: JSON.stringify(payload)});
+    } catch (err) {
+      thrown = err;
+      body = err.body || {ok: false, error: err.message};
+    }
+    if (thrown) {
+      state.outcome = 'ERROR';
+      const message = operatorReason(body);
+      setStatus('FAILED — ' + message, false);
+      notify(message);
+    } else {
+      showResult(body);
+    }
+    if (body.ok) {
+      op.clear.forEach((cell) => {
+        delete state.assignments[cell];
+        live.cleared[cell] = true;
       });
+      if (op.source) {
+        state.assignments[op.cell] = op.source;
+        delete live.cleared[op.cell];
+      } else {
+        delete state.assignments[op.cell];
+        live.cleared[op.cell] = true;
+      }
+    } else if (Object.prototype.hasOwnProperty.call(body, 'restored_source')) {
+      // The decoder rolled back, so the window goes back to what it is still
+      // showing rather than what was asked for.
+      if (body.restored_source) state.assignments[op.cell] = body.restored_source;
+      else delete state.assignments[op.cell];
+    }
   }
 
-  async function switchLive(cell, ip) {
-    if (inGroupContext()) {
-      await switchLiveOnGroup(cell, ip);
-      return;
+  async function pumpLive() {
+    if (live.running) return;
+    live.running = true;
+    try {
+      do {
+        while (live.ops.length) {
+          const op = live.ops[0];
+          op.status = 'running';
+          render();
+          try {
+            await runLiveOp(op);
+          } catch (err) {
+            state.outcome = 'ERROR';
+            setStatus('FAILED — ' + err.message, false);
+            notify(err.message);
+          }
+          // The confirmed state and the queue change in the same step, so there
+          // is no frame in which a change is both pending and applied.
+          live.ops.shift();
+          render();
+        }
+        // The server is the authority: one read, once the queue is empty.
+        const keep = state.editing;
+        if (keep) rememberTarget(keep);
+        await loadDecoderState(readingDecoder(), keep, {quiet: true});
+        if (activeGroup()) await checkGroup();
+      } while (live.ops.length);
+    } finally {
+      live.running = false;
     }
-    const view = currentView();
-    if (!view) return;
-    const previous = state.assignments[cell] || null;
-
-    // Optimistic only as far as saying something is happening. The source is
-    // not presented as switched until the decoder has confirmed it.
-    state.switching = {cell: cell, to: ip, from: previous};
     render();
-
-    await runTransaction((ip ? 'Switching ' : 'Clearing ') + prettyCell(cell) + '…',
-                         '/api/multiview/switch',
-                         {decoder: readingDecoder(), name: view.name,
-                          cell: cell, source: ip},
-                         (body) => {
-      state.switching = null;
-      if (body.ok) return;
-      // The decoder rolled back, so the window goes back to the source it is
-      // still showing rather than the one that was asked for.
-      const restored = body.restored_source || previous;
-      if (restored) state.assignments[cell] = restored;
-      else delete state.assignments[cell];
-    });
-    state.switching = null;
   }
 
   // ---------------------------------------------------------------- existing
@@ -1827,6 +2131,17 @@
   // The saved preset, in the same shape, so the two can be compared directly.
   function savedState(view) {
     if (!view) return null;
+    if (view.pending_show && view.pending) {
+      // Saved but not yet shown: the stored description is the pending one.
+      return JSON.stringify({
+        name: view.pending.friendly_name || view.name || '',
+        layout: view.pending.layout || '',
+        windows: (view.pending.windows || [])
+          .filter((pair) => pair[1])
+          .map((pair) => [pair[0], pair[1]])
+          .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)),
+      });
+    }
     const windows = (view.subframes || [])
       .filter((subframe) => subframe.source && subframe.source.ip)
       .map((subframe) => [subframe.cell, subframe.source.ip])
@@ -2120,6 +2435,7 @@
   // there, which is exactly how this page lost its Save button.
   function saveBlocker() {
     if (state.mode === MODE.SAVING) return 'Working…';
+    if (live.ops.length) return 'Working…';
     const assigned = Object.keys(state.assignments).length;
     if (!assigned) return 'Assign a source to at least one window.';
     // Nothing to save is not a problem to report; it is the ordinary state of
@@ -2189,6 +2505,7 @@
   // ---------------------------------------------------------------- actions
 
   async function save() {
+    if (live.ops.length) return;
     const plan = state.plan;
     if (!plan || !plan.ok) return;
     const mutations = plan.mutations || [];
@@ -2312,6 +2629,7 @@
   // display needs the encoder at a different size -- and the operator's work
   // is kept either way. Only the display rolls back.
   async function showOnDisplay() {
+    if (live.ops.length) return;
     const group = activeGroup();
     const view = currentView();
     const creating = state.mode === MODE.CREATE
@@ -2391,6 +2709,7 @@
   }
 
   async function remove() {
+    if (live.ops.length) return;
     const view = currentView();
     if (!view) return;
     // Deleting is per decoder even in group context: removing a saved preset
@@ -2472,7 +2791,7 @@
     if (keep) rememberTarget(keep);
     // For a group this re-reads one member, which is where the canvas comes
     // from; the group's own state is refreshed by checkGroup().
-    await loadDecoderState(readingDecoder(), keep);
+    await loadDecoderState(readingDecoder(), keep, {quiet: true});
     if (activeGroup()) await checkGroup();
     // A failed transaction changed nothing on the device, so the editor must
     // still show what the operator was trying to save -- and Save must still
@@ -2524,8 +2843,9 @@
       reason = /FAIL|ROLL/i.test(status) && why !== status
         ? status + ' — ' + why : why;
     }
+    if (body.ok && body.pending_show) reason = body.message || 'Saved. Use Show on Display to apply it.';
     setStatus(reason, !!body.ok);
-    notify(body.ok ? 'Verified on the decoder.' : reason,
+    notify(body.ok ? (body.pending_show ? reason : 'Verified on the decoder.') : reason,
            body.ok ? 'ok' : undefined);
 
     const detail = node('details', 'mv-detail');
@@ -2548,6 +2868,12 @@
     (body.retried_reads || []).forEach((entry) => {
       lines.push('[retried] ' + entry.device + ' ' + entry.node
         + ' answered on attempt ' + entry.attempt);
+    });
+    // A window that was dark and was lit again by the one repair. A recovery,
+    // said as one: it is never folded into an ordinary pass.
+    ((body.healing || {}).healed || []).forEach((label) => {
+      lines.push('[repaired] ' + String(label).replace(/ \(.*$/, '')
+        + ' was dark although its stream was arriving, and has been repaired');
     });
     (body.unreachable || []).forEach((entry) => {
       lines.push('[unreachable] ' + entry.hostname + ' (' + entry.ip + ') for '
@@ -2601,7 +2927,7 @@
       setStatus(body.message || 'Installed.', !!body.ok);
       notify(body.message || 'Standard layouts installed.', 'ok');
       (body.conflicts || []).forEach((conflict) => notify(conflict.reason));
-      await loadDecoderState(readingDecoder(), state.editing);
+      await loadDecoderState(readingDecoder(), state.editing, {quiet: true});
     } catch (err) {
       setStatus('FAILED — ' + err.message, false);
       notify(err.message);
@@ -2633,13 +2959,22 @@
     if (!view) { state.editing = null; setMode(MODE.DECODER_SELECTED); return; }
     state.editing = name;
     state.nameTouched = true;               // an existing object keeps its name
-    if (view.layout) el('mv_layout').value = view.layout;
-    el('mv_name').value = view.name;
-    view.subframes.forEach((subframe) => {
-      if (subframe.source && subframe.source.ip) {
-        state.assignments[subframe.cell] = subframe.source.ip;
-      }
-    });
+    if (view.pending_show && view.pending) {
+      // The operator saved an edit of the displayed Multiview; show it as saved.
+      if (view.pending.layout) el('mv_layout').value = view.pending.layout;
+      el('mv_name').value = view.pending.friendly_name || view.name;
+      (view.pending.windows || []).forEach((pair) => {
+        if (pair[1]) state.assignments[pair[0]] = pair[1];
+      });
+    } else {
+      if (view.layout) el('mv_layout').value = view.layout;
+      el('mv_name').value = view.name;
+      view.subframes.forEach((subframe) => {
+        if (subframe.source && subframe.source.ip) {
+          state.assignments[subframe.cell] = subframe.source.ip;
+        }
+      });
+    }
     setMode(MODE.EDIT);
     state.savedBaseline = savedState(view);
     if (!view.layout) {
@@ -3034,7 +3369,7 @@
     // A drag abandoned outside any target still ends, so the armed styling is
     // cleared from one place rather than from every target.
     document.addEventListener('dragend', () => {
-      state.dragging = null;
+      endDrag();
       renderDisplayOutputArming();
     }, true);
     document.addEventListener('visibilitychange', syncWindowPreviewTimer);
@@ -3152,7 +3487,7 @@
       const ip = el('mv_decoder').value;
       if (!ip) { notify('Select a decoder first.'); return; }
       state.planSignature = '';
-      await loadDecoderState(ip, state.editing);
+      await loadDecoderState(ip, state.editing, {quiet: true});
       notify('Decoder reloaded.', 'ok');
     });
     el('mv_notice_close').addEventListener('click', closeNotice);

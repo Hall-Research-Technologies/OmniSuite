@@ -45,8 +45,11 @@ class EditorOrderTests(unittest.TestCase):
         self.assertIn("Anyone with this link can use the controls assigned to this "
                       "account. Treat the link like a password.", text)
 
-    def test_there_is_no_multiview_control_left(self):
-        self.assertNotRegex(EDITOR.lower(), r"multiview")
+    def test_multiview_is_a_feature_and_a_per_layout_list_with_no_all_control(self):
+        self.assertIn('value="multiview" class="f-feature"', EDITOR)
+        section = EDITOR[EDITOR.index('id="mv_section"'):EDITOR.index('id="mv_list"')]
+        self.assertNotIn("data-all", section)
+        self.assertNotIn("data-none", section)
 
     def test_display_groups_are_a_permission_alongside_sources_and_displays(self):
         for heading in ("Sources they may route", "Displays they may control",

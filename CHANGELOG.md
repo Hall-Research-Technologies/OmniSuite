@@ -1,5 +1,73 @@
 # Changelog
 
+## V1.2.1
+
+First release containing everything in V1.2.0 (never published) together with the corrections found by its
+hardware acceptance test. See RELEASE_NOTES_V1.2.1.md for the user-facing summary.
+
+- Documentation and release notes for V1.2.1: `RELEASE_NOTES_V1.2.1.md` rewritten as the customer-facing summary
+  (no pre-release history); the User Guide gains 35 numbered figures with callouts (images in `ui/guide/`, served
+  by the existing `/ui/` route and packaged with `ui`), a Supported platforms section, and the certificate button
+  named as the application names it ("Create one for this network"); the README shows five current screenshots
+  from `docs/images/` (published documentation, not packaged: the `docs` directory remains forbidden in the
+  build). Screenshots were taken from this version against simulated units on loopback addresses.
+- Remote User Multiview: the person chooses the source of each window of an assigned layout from their own
+  sources (same engine and rules as the administrator's Show, including the same-size source rule and the
+  Replace / Cancel question); the administrator still owns layouts, decoders and which sources are given.
+- Remote Access reports when the computer's address moves while it is on, and the Direct Access link follows the
+  address that is actually working. A silent unit is looked at again on a capped, jittered back-off (10 s up to
+  120 s) instead of on every poll, and the A/V Matrix state-only refresh no longer reads every crosspoint.
+- Distributed platforms reduced to Windows x86-64 and macOS Apple Silicon (arm64). The macOS Intel and Ubuntu
+  jobs, artifacts and `--suffix` values are removed outright; the macOS runner is a named native arm64 runner
+  (`macos-15`) and CI asserts the runner, the interpreter and every Mach-O file in the bundle are arm64 and
+  not universal. The update check on any other computer reports the update and that there is no supported
+  update package. Installed V1.1.0 and V1.2.0 behaviour against the new release is pinned by
+  `tests/test_updater_proof.py` and `tests/test_release_compatibility.py`.
+- The package table-of-contents check also requires the licence texts (`LICENSE`, the notices, the pystray GPL
+  and LGPL texts) to be present in the Windows executable.
+
+- Remote Access navigation: page responses that carry the Remote Access state are `no-store` with no ETag, so a
+  cached page can no longer show the old state; background pages re-check `/api/remote_access/status`; enabling
+  reports its progress.
+- Device Manager Password column reports the credential the device accepts (working credential) before the
+  one discovery recorded.
+- Device Info binds Set NTP, Sync all Passwords and the inventory toggle before the initial data loads
+  complete, so they respond during the first-load adapter scan.
+- Per-device working credentials on every authenticated path. A device's refusal is recognised from
+  `error_message` as well as `error`, a recorded credential that stops working is replaced by the next known one
+  after a single retry, and the matrix route/unroute and Blink go through the credentialed transport. `set_route`
+  no longer prints a device record containing a password.
+- Device Info reads its columns by name (`DEVICE_COL`) so adding a column cannot shift Model, Version, Time Zone,
+  NTP Server or Type.
+- Routing: one destination selection for displays and Display Groups, Clear selection, Unroute
+  (`/api/user/unroute_many`), Audio follows video and Preview switches, Luma-family spacing and typography;
+  the A/V Matrix mode choice follows the same wording.
+- Multiview drag and drop: `loadDecoderState` announced Loading and hid the workspace for the length of the
+  post-transaction read, which read as a page refresh. A `quiet` re-read swaps the state in place; the workspace is
+  never withdrawn by a drop, a save or a reload of the decoder. `/api/multiview/switch` plans every window nobody
+  touched from the decoder's live subscriptions (`_live_window_sources`), not only from the saved record, so a
+  record with no sources no longer has its other windows rewritten empty and the switch rolled back.
+- Multiview: an in-place re-read the operator caused (Save, Show, install, Reload) keeps the layout being edited
+  (`loadDecoderState` `quiet` implies stay). Only opening a decoder lets the live Multiview outrank a bookmark.
+- Settings: the dialog is "Settings", uses Luma's content width, and offers Classic and Compact only. The retired
+  `modern` and `workspace` layouts map to `classic` when read (server and page) and are rewritten on the next save.
+- Remote User Multiview: feature `multiview` plus per-layout assignments, `<decoder MAC>/<layout id>`. A saved
+  Multiview record carries an opaque `mv_` id that survives saves and renames and is new for a re-created layout.
+  `/api/admin/multiviews` (picker), `/api/user/multiview_state`, `/api/user/multiview_show`; the server resolves the
+  decoder and layout from its own records, re-checks the grant after waiting for the display's lock, calls the same
+  `_show_multiview_on` engine as the administrator, and answers from an allowlist with addresses scrubbed. New
+  assignments are accepted only for an eligible decoder and an existing layout; an existing one is preserved and
+  inactive while its decoder is not eligible. Name-based approvals from earlier builds are dropped on read.
+- Remote User USB: `/api/user/usb_route` took every request through the standalone-extender path, which refuses
+  integrated E4521/D4511 endpoints (HTTP 404/409). The user USB screen is now the Admin dot matrix with the
+  account's subset in it; every cell is derived once on the server (`omni_usb_cells`) from the administrative
+  payload, the route takes its control path from that derivation (parent usb_icron path for integrated
+  endpoints, the extender service only for standalone units), refuses what the Admin matrix would not offer
+  (including a different USB network, before any device is read) and rebuilds its answer from an allowlist.
+- Multiview: Save over a displayed Multiview writes nothing to any device (Show applies it, with the object's
+  windows and audio); names are validated (400 with the rules); Show reports `lock_verification`
+  (`INITIAL PASS`, `PASS AFTER RECOVERY`, `NOT LOCKED AFTER RECOVERY`) with one recovery attempt.
+
 ## V1.2.0
 
 Optional secure remote access with administrator and user accounts, per-user routing, Display Groups,

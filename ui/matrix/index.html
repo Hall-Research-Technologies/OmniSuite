@@ -5,7 +5,7 @@
   <title>Omni Matrix</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <link rel="icon" href="/ui/favicon.ico"/>
-  <link rel="stylesheet" href="/ui/matrix/matrix.css?v=20260821-codec-route"/>
+  <link rel="stylesheet" href="/ui/matrix/matrix.css?v=20261117-tokens"/>
   <style>
     .tabs{display:flex;gap:0;}
     .tab{padding:8px 16px;cursor:pointer;background:transparent;color:var(--muted);border:none;font-size:14px;font-weight:500;border-bottom:2px solid transparent;transition:all .16s;text-decoration:none;border-radius:6px 6px 0 0}
@@ -21,14 +21,14 @@
   </style>
   <script src="/ui/csrf.js"></script>
   <script src="/ui/modal-stack.js"></script>
-  <script src="/ui/confirm.js?v=20260915-confirm"></script>
-  <script src="/ui/adminnav.js"></script>
+  <script src="/ui/confirm.js?v=20261117-settings2"></script>
+  <script src="/ui/adminnav.js?v=20261117-remotenav2"></script>
   <script src="/ui/diagnostics.js?v=20260911-diag"></script>
-<link rel="stylesheet" href="/ui/templates.css?v=20260910-templates">
-<link rel="stylesheet" href="/ui/settings.css?v=20260911-settings">
+<link rel="stylesheet" href="/ui/templates.css?v=20261120-fields">
+<link rel="stylesheet" href="/ui/settings.css?v=20261120-fields">
   <script src="/ui/appearance.js?v=20260910-appearance"></script>
   <script src="/ui/toast.js?v=20260911-toast"></script>
-<script src="/ui/settings.js?v=20260911-settings"></script>
+<script src="/ui/settings.js?v=20261120-settings3"></script>
   <!-- The route grid grows a column per encoder and a row per decoder, so it
        overflows sideways as soon as an install is real. data-mirror-scroll
        puts a synchronised scrollbar above it. -->
@@ -83,11 +83,11 @@
       <button id="reloadCacheBtn" class="secondary" style="margin-left:8px;">Reload Cache</button>
       <div class="divider"></div>
       <div class="mode" role="radiogroup" aria-label="Routing mode">
-        <span id="mode_label" class="mode-label">AV (Audio + Video)</span>
-        <button class="modebtn active" data-mode="av" role="radio" aria-checked="true" title="Route both audio and video">AV</button>
+        <button class="modebtn active" data-mode="av" role="radio" aria-checked="true" title="Route both audio and video">AV (Audio + Video)</button>
         <button class="modebtn" data-mode="video" role="radio" aria-checked="false" title="Route video only (outer ring)">Video</button>
         <button class="modebtn" data-mode="audio" role="radio" aria-checked="false" title="Route audio only (inner dot)">Audio</button>
       </div>
+      <span id="mode_label" class="small" aria-live="polite">A click routes audio and video together (ring = video, dot = audio).</span>
       <div class="divider"></div>
       <label class="toggle" id="sticky_headers_label">
         <input type="checkbox" id="sticky_headers_toggle" class="switch-input" />

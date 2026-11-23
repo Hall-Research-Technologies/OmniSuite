@@ -153,7 +153,8 @@
     const served = servedState();
     if (served === true) placeRemoteTab(tabs);
     // The page was served with the answer; asking again would only open a
-    // window in which the bar could change. A toggle reloads the page.
+    // window in which the bar could change. A toggle is announced by the
+    // `omni:remote-access-changed` event, which applyRemoteState handles.
     if (served !== null) return;
     let enabled = false;
     try {
@@ -173,6 +174,101 @@
       existing.remove();
     }
   }
+
+  // Remote Access was switched on or off WHILE this page is open.
+  //
+  // The tab is drawn from what the page was served with, and a page that was
+  // served before the switch keeps describing the world before it: the tab
+  // stayed (or stayed missing) until the browser was refreshed, because the
+  // comment above promised "a toggle reloads the page" and nothing did. The
+  // state change is announced instead, by whoever verified it, and the bar
+  // follows it in place -- no reload, no request, and nothing to flicker,
+  // because the entry is only added or removed when the answer changed.
+  //
+  // `leave` is for the page the operator is standing on. Turning Remote Access
+  // off while on one of its own pages leaves them on a page about accounts
+  // nobody can sign in with, so they are taken to the application instead.
+  // A state merely re-read (nothing was switched) never moves anyone.
+  const LEAVE_TO = '/';
+  function applyRemoteState(enabled, leave) {
+    const on = enabled === true;
+    const meta = document.querySelector('meta[name="omni-remote-access"]');
+    if (meta) meta.setAttribute('content', on ? '1' : '0');
+    const tabs = document.querySelector('.header .tabs, .remote-header .tabs');
+    if (!tabs) return;
+    const existing = tabs.querySelector('a[data-nav="remote"]');
+    if (on) {
+      if (!existing) placeRemoteTab(tabs);
+      return;
+    }
+    if (!existing) return;
+    const onItsPage = existing.getAttribute('aria-current') === 'page';
+    if (onItsPage && !leave) return;            // the page that IS the entry keeps it
+    existing.remove();
+    if (onItsPage && leave && typeof location !== 'undefined') {
+      location.assign(LEAVE_TO);
+    }
+  }
+
+  // Other tabs of the same browser hear about it too, so a second OmniSuite
+  // window does not go on offering an entry the first one just retired.
+  let remoteChannel = null;
+  try {
+    if (typeof BroadcastChannel === 'function') {
+      remoteChannel = new BroadcastChannel('omni-remote-access');
+      remoteChannel.onmessage = (message) => {
+        const data = message && message.data;
+        if (data && typeof data.enabled === 'boolean') {
+          applyRemoteState(data.enabled, !!data.leave);
+        }
+      };
+    }
+  } catch (err) {
+    remoteChannel = null;                       // no channel: this tab still follows
+  }
+
+  // A page is not always shown the way it was left. It can be restored from the
+  // back-forward cache, or sit in a window that was in the background while
+  // Remote Access was switched somewhere else (another tab on another origin
+  // such as localhost versus 127.0.0.1 is invisible to the BroadcastChannel). The
+  // tab bar is reconciled with the server when the page becomes visible again:
+  // one small local read that touches no device and no adapter, at most once per
+  // few seconds, and never moves the operator off the page they are on.
+  let reconcileAt = 0;
+  let reconciling = false;
+  async function reconcileRemoteTab() {
+    if (reconciling || servedState() === null) return;
+    const now = Date.now();
+    if (now - reconcileAt < 3000) return;
+    reconciling = true;
+    reconcileAt = now;
+    try {
+      const res = await fetch('/api/remote_access/status', {credentials: 'same-origin'});
+      if (!res.ok) return;                      // not an administrator: leave it
+      const body = await res.json();
+      if (body && typeof body.enabled === 'boolean') applyRemoteState(body.enabled, false);
+    } catch (err) {
+      /* unknown: the bar stays as it is */
+    } finally {
+      reconciling = false;
+    }
+  }
+  window.addEventListener('pageshow', (event) => { if (event.persisted) reconcileRemoteTab(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') reconcileRemoteTab();
+  });
+  window.addEventListener('focus', () => { reconcileRemoteTab(); });
+
+  window.addEventListener('omni:remote-access-changed', (event) => {
+    const detail = (event && event.detail) || {};
+    if (typeof detail.enabled !== 'boolean') return;
+    applyRemoteState(detail.enabled, !!detail.leave);
+    // Only a switch somebody made is worth telling other windows about.
+    if (detail.switched && remoteChannel) {
+      try { remoteChannel.postMessage({enabled: detail.enabled, leave: true}); }
+      catch (err) { /* a closed channel is not an error worth showing */ }
+    }
+  });
 
   async function install() {
     syncRemoteAccessTab().catch(() => {});

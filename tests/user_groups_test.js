@@ -48,7 +48,7 @@ function world(state, routeAnswer, live) {
     getElementById: (id) => byId.get(id) || null,
     querySelectorAll: (sel) => {
       const root = new El('div');
-      root.children = [...byId.get('sources').children, ...byId.get('destinations').children];
+      root.children = [...byId.get('sources').children, ...(byId.get('destination_groups') ? byId.get('destination_groups').children : []), ...byId.get('destinations').children];
       return root.querySelectorAll(sel);
     },
     createElement: (tag) => new El(tag),
@@ -91,18 +91,22 @@ function world(state, routeAnswer, live) {
   return {byId, calls, toasts, click, listeners, live, document};
 }
 const settle = () => new Promise((r) => setTimeout(r, 40));
+// The page is read again once, after the last route in flight has settled and a short quiet period.
+const settleRoute = () => new Promise((r) => setTimeout(r, 500));
 const cards = (w, id) => w.byId.get(id).children;
 const label = (card) => card.textContent;
 
 const suite = [];
 
-suite.push(() => check('a group card appears beside the displays, with its size', async () => {
+suite.push(() => check('a group card appears above the displays, with its size', async () => {
   const w = world(STATE);
   await settle();
-  const list = cards(w, 'destinations');
-  assert(list.length === 2, 'one display and one group: ' + list.length);
-  const group = list.find((c) => c.dataset.kind === 'group');
-  assert(group, 'no group card');
+  assert(cards(w, 'destinations').length === 1, 'one display: ' + cards(w, 'destinations').length);
+  const groups = cards(w, 'destination_groups');
+  assert(groups.length === 1, 'one group: ' + groups.length);
+  const group = groups[0];
+  assert(group.dataset.kind === 'group', 'no group card');
+  assert(w.byId.get('destinations_groups_wrap').hidden === false, 'the groups section is shown');
   assert(/Front rooms/.test(label(group)) && /4 displays/.test(label(group)), label(group));
   assert(w.byId.get('destinations_empty').hidden === true);
 }));
@@ -114,9 +118,9 @@ suite.push(() => check('a completed route asks for the pictures on screen again,
   const before = pictures();
   assert(before === 2, 'the first load of each source card: ' + before);
   await w.click(cards(w, 'sources')[0]);
-  await w.click(cards(w, 'destinations').find((c) => c.dataset.kind === 'group'));
+  await w.click(cards(w, 'destination_groups')[0]);
   await w.byId.get('route_btn').fire('click');
-  await settle();
+  await settleRoute();
   const after = pictures();
   assert(after - before === 2, 'the rebuilt cards load once each and the route adds nothing on top: ' + (after - before));
 }));
@@ -124,7 +128,7 @@ suite.push(() => check('a completed route asks for the pictures on screen again,
 suite.push(() => check('a group card carries no picture and no identity beyond its opaque id', async () => {
   const w = world(STATE);
   await settle();
-  const group = cards(w, 'destinations').find((c) => c.dataset.kind === 'group');
+  const group = cards(w, 'destination_groups')[0];
   assert(!group.querySelector('.pick-shot'), 'a composite thumbnail would be invented');
   assert(group.dataset.id === 'grp_aaaa');
 }));
@@ -135,33 +139,37 @@ suite.push(() => check('Route stays disabled until a source and a group or displ
   assert(w.byId.get('route_btn').disabled === true);
   await w.click(cards(w, 'sources')[0]);
   assert(w.byId.get('route_btn').disabled === true);
-  const group = cards(w, 'destinations').find((c) => c.dataset.kind === 'group');
+  const group = cards(w, 'destination_groups')[0];
   await w.click(group);
   assert(w.byId.get('route_btn').disabled === false);
   assert(/Front rooms/.test(w.byId.get('summary').textContent)
     && /4 displays/.test(w.byId.get('summary').textContent), w.byId.get('summary').textContent);
 }));
 
-suite.push(() => check('choosing a group clears a chosen display, and the reverse', async () => {
+suite.push(() => check('a display and a group can be chosen together, and choosing either again removes it', async () => {
   const w = world(STATE);
   await settle();
   await w.click(cards(w, 'sources')[0]);
   const display = cards(w, 'destinations').find((c) => c.dataset.kind === 'destination');
-  const group = cards(w, 'destinations').find((c) => c.dataset.kind === 'group');
+  const group = cards(w, 'destination_groups')[0];
   await w.click(display);
   assert(display.getAttribute('aria-pressed') === 'true');
   await w.click(group);
-  assert(group.getAttribute('aria-pressed') === 'true' && display.getAttribute('aria-pressed') === 'false',
-    'a route goes to one target');
+  assert(group.getAttribute('aria-pressed') === 'true' && display.getAttribute('aria-pressed') === 'true',
+    'one selection holds displays and groups together');
+  assert(/1 display and 1 group chosen/.test(w.byId.get('selection_count').textContent),
+    w.byId.get('selection_count').textContent);
   await w.click(display);
-  assert(display.getAttribute('aria-pressed') === 'true' && group.getAttribute('aria-pressed') === 'false');
+  assert(display.getAttribute('aria-pressed') === 'false' && group.getAttribute('aria-pressed') === 'true');
+  await w.click(group);
+  assert(group.getAttribute('aria-pressed') === 'false');
 }));
 
 suite.push(() => check('Route to a group makes exactly one request, to the group endpoint', async () => {
   const w = world(STATE);
   await settle();
   await w.click(cards(w, 'sources')[0]);
-  await w.click(cards(w, 'destinations').find((c) => c.dataset.kind === 'group'));
+  await w.click(cards(w, 'destination_groups')[0]);
   w.calls.length = 0;
   await w.byId.get('route_btn').fire('click');
   await settle();
@@ -178,7 +186,7 @@ suite.push(() => check('the aggregate result is reported as N of M displays rout
               {name: 'Back Display', ok: false, result: 'failed'}]}});
   await settle();
   await w.click(cards(w, 'sources')[0]);
-  await w.click(cards(w, 'destinations').find((c) => c.dataset.kind === 'group'));
+  await w.click(cards(w, 'destination_groups')[0]);
   await w.byId.get('route_btn').fire('click');
   await settle();
   const [message, kind] = w.toasts[w.toasts.length - 1];
@@ -191,7 +199,7 @@ suite.push(() => check('a complete result is a success', async () => {
   const w = world(STATE);
   await settle();
   await w.click(cards(w, 'sources')[0]);
-  await w.click(cards(w, 'destinations').find((c) => c.dataset.kind === 'group'));
+  await w.click(cards(w, 'destination_groups')[0]);
   await w.byId.get('route_btn').fire('click');
   await settle();
   const [message, kind] = w.toasts[w.toasts.length - 1];
@@ -203,7 +211,7 @@ suite.push(() => check('a refusal is worded, not shown as a count', async () => 
                                               reason: 'group_not_permitted'}});
   await settle();
   await w.click(cards(w, 'sources')[0]);
-  await w.click(cards(w, 'destinations').find((c) => c.dataset.kind === 'group'));
+  await w.click(cards(w, 'destination_groups')[0]);
   await w.byId.get('route_btn').fire('click');
   await settle();
   const [message, kind] = w.toasts[w.toasts.length - 1];
@@ -222,29 +230,56 @@ suite.push(() => check('a single display still routes through the ordinary endpo
   assert(post.url === '/api/user/route' && post.body.destination === 'dst1' && post.body.mode === 'av');
 }));
 
-suite.push(() => check('Unroute is not offered for a group', async () => {
+suite.push(() => check('Unroute acts on a chosen group through the many-display endpoint, after a confirmation', async () => {
   const w = world(STATE);
   await settle();
-  await w.click(cards(w, 'sources')[0]);
-  await w.click(cards(w, 'destinations').find((c) => c.dataset.kind === 'group'));
-  assert(w.byId.get('unroute_btn').hidden === true,
-    'one tap must not stop a room full of displays');
+  // Never withdrawn, but disabled while nothing is chosen -- and it needs no source.
+  assert(w.byId.get('unroute_btn').hidden === false && w.byId.get('unroute_btn').disabled === true);
+  await w.click(cards(w, 'destination_groups')[0]);
+  assert(w.byId.get('unroute_btn').disabled === false, 'a chosen group can be unrouted without a source');
+  w.calls.length = 0;
+  await w.byId.get('unroute_btn').fire('click');
+  await settle();
+  const posts = w.calls.filter((c) => c.method === 'POST');
+  assert(posts.length === 1 && posts[0].url === '/api/user/unroute_many', JSON.stringify(posts));
+  assert(JSON.stringify(posts[0].body.groups) === '["grp_aaaa"]' && posts[0].body.destinations.length === 0,
+    JSON.stringify(posts[0].body));
+  assert(!('source' in posts[0].body), 'stopping a display needs only the display');
 }));
 
 suite.push(() => check('a group the server stops listing is dropped from the selection', async () => {
   const w = world(STATE);
   await settle();
   await w.click(cards(w, 'sources')[0]);
-  await w.click(cards(w, 'destinations').find((c) => c.dataset.kind === 'group'));
+  await w.click(cards(w, 'destination_groups')[0]);
   // The next state has no groups: the selection must not outlive it.
   STATE.groups = [];
   try {
     await w.byId.get('route_btn').fire('click');
-    await settle();
+    await settleRoute();
   } finally {
     STATE.groups = [{id: 'grp_aaaa', name: 'Front rooms', displays: 4}];
   }
   assert(w.byId.get('route_btn').disabled === true);
+  assert(w.byId.get('clear_btn').disabled === false, 'the source is still chosen');
+}));
+
+suite.push(() => check('Clear selection forgets the source, the displays and the groups, and writes nothing', async () => {
+  const w = world(STATE);
+  await settle();
+  assert(w.byId.get('clear_btn').disabled === true, 'nothing to clear yet');
+  await w.click(cards(w, 'sources')[0]);
+  await w.click(cards(w, 'destinations').find((c) => c.dataset.kind === 'destination'));
+  await w.click(cards(w, 'destination_groups')[0]);
+  assert(w.byId.get('clear_btn').disabled === false);
+  w.calls.length = 0;
+  await w.byId.get('clear_btn').fire('click');
+  await settle();
+  assert(cards(w, 'sources')[0].getAttribute('aria-pressed') === 'false', 'the source is cleared');
+  assert(cards(w, 'destinations').every((c) => c.getAttribute('aria-pressed') === 'false'));
+  assert(cards(w, 'destination_groups').every((c) => c.getAttribute('aria-pressed') === 'false'));
+  assert(w.byId.get('route_btn').disabled === true && w.byId.get('clear_btn').disabled === true);
+  assert(w.calls.filter((c) => c.method === 'POST').length === 0, 'clearing a selection writes nothing');
 }));
 
 suite.push(() => check('a User never gets a Multiview tab in this release', async () => {

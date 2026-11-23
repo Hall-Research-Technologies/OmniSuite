@@ -17,6 +17,12 @@ class DeviceManagerFrontend(unittest.TestCase):
                               cwd=str(ROOT), capture_output=True, text=True, timeout=120)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
 
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_every_cell_holds_the_field_its_header_names(self):
+        done = subprocess.run(["node", str(ROOT / "tests" / "device_columns_test.js")],
+                              cwd=str(ROOT), capture_output=True, text=True, timeout=120)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,9 +21,9 @@ OmniMatrix_upgrade_server_v7_6y.py           the in-app updater (see below)
 
 | | |
 |---|---|
-| Tag | `V1.2.0` |
-| Artifact | `OmniSuite-V1.2.0-<platform>` |
-| Notes file | `RELEASE_NOTES_V1.2.0.md` |
+| Tag | `V1.2.1` |
+| Artifact | `OmniSuite-V1.2.1-<platform>` |
+| Notes file | `RELEASE_NOTES_V1.2.1.md` |
 | Release repository | `Hall-Research-Technologies/OmniSuite` (`release_repo`). The workflow publishes there with a dedicated token and does not run there; installed V1.1.0 applications read its "latest" release |
 | macOS bundle identifier | `OmniSuite` (unchanged since the first release) |
 
@@ -124,8 +124,11 @@ images), reads the package's table of contents back and fails if anything forbid
 `LICENSE`, `THIRD_PARTY_NOTICES.md` and `third_party_licenses/` beside the application in every archive,
 because a recipient cannot read the copies inside a one-file executable. `tools/collect_licenses.py` is
 the single list of what is considered shipped. The Windows executable carries a version resource
-generated from the build version. The platforms are Windows x86-64, macOS arm64, macOS x86-64 and
-Ubuntu x86-64 (the runner that was built and tested, not Linux in general).
+generated from the build version. Two platforms are distributed, Windows x86-64 and macOS arm64
+(Apple Silicon); macOS Intel, Linux and a universal macOS binary are not built. The artifact names state the
+architecture, and the workflow reads the macOS bundle's Mach-O headers to refuse anything but thin arm64.
+When the updater runs on a computer that is not one of the two, it reports the update and says there is no
+supported update package, rather than offering a download that would not run.
 
 On macOS the build adds `NSLocalNetworkUsageDescription` to the built app's
 `Info.plist` (the sentence macOS shows when it asks whether the app may reach

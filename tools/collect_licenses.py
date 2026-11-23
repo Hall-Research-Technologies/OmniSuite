@@ -42,8 +42,9 @@ SHIPPED = (
     "setuptools", "six", "urllib3", "websocket-client", "werkzeug",
 )
 
-# Not in the lock because pip resolves them from a platform marker, so they are
-# not pinned. pystray needs python-xlib on Linux and pyobjc on macOS. They are
+# Platform-conditional. pystray needs python-xlib on Linux (not pinned: no Linux
+# package is distributed) and pyobjc on macOS (pinned in the lock under a darwin
+# marker, to the versions the macOS arm64 CI build resolved). They are
 # listed as conditional: whether a given build embeds them depends on what pip
 # resolved on that runner, and nothing here claims more than that.
 CONDITIONAL = ("python-xlib", "pyobjc-framework-cocoa", "pyobjc-framework-quartz")

@@ -40,14 +40,17 @@ JS_SUITES = ("usb_render_smoke.js", "usb_filter_test.js", "lldp_topology_test.js
              "matrix_multiview_test.js", "user_shell_test.js",
              "settings_remote_test.js", "csrf_test.js",
              "user_routing_test.js", "adminnav_test.js", "scan_notice_test.js",
-             "device_text_escaping_test.js", "device_manager_test.js", "matrix_lifecycle_test.js", "device_sort_test.js", "state_text_contrast_test.js", "adapter_default_test.js",
+             "device_text_escaping_test.js", "device_manager_test.js", "device_columns_test.js", "matrix_lifecycle_test.js", "device_sort_test.js", "state_text_contrast_test.js", "adapter_default_test.js",
              "firmware_status_test.js", "remote_nav_test.js",
              "remote_admin_ui_test.js", "user_groups_test.js", "usb_prep_test.js",
              "user_preview_refresh_test.js", "version_status_test.js",
              "clear_units_test.js", "settings_backup_test.js",
              "restore_impact_test.js", "restore_confirm_focus_test.js",
              "local_port_ui_test.js", "local_port_confirm_test.js",
-             "certificate_state_ui_test.js")
+             "certificate_state_ui_test.js", "remote_nav_live_test.js", "password_form_test.js",
+             "user_usb_matrix_test.js",
+             "user_multiview_test.js", "user_multiview_editor_test.js", "admin_multiview_assign_test.js",
+             "remote_enable_flow_test.js")
 
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(TESTS))

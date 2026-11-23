@@ -68,7 +68,8 @@ class NoticeListsEveryShippedComponentTests(unittest.TestCase):
 
     def test_every_locked_distribution_is_classified(self):
         """A new pin must be decided: shipped, or build-only. Neither is a silent default."""
-        known = set(collect.SHIPPED) | set(collect.BUILD_ONLY)
+        known = (set(collect.SHIPPED) | set(collect.BUILD_ONLY)
+                 | set(collect.CONDITIONAL) | set(collect.CONDITIONAL_NO_TEXT))   # pinned under a darwin marker
         unclassified = sorted(_lock_names() - known)
         self.assertEqual(unclassified, [],
                          "requirements-lock.txt has distributions that are neither in "
@@ -165,12 +166,6 @@ class BuildBundlesTheTextsTests(unittest.TestCase):
                 names = set(archive.namelist())
         self.assertLessEqual({"OmniSuite.exe", "LICENSE", "THIRD_PARTY_NOTICES.md",
                               "third_party_licenses/python/LICENSE.txt"}, names)
-
-    def test_a_linux_folder_receives_the_same_files(self):
-        with tempfile.TemporaryDirectory() as folder:
-            build.copy_notices_into(Path(folder))
-            self.assertTrue((Path(folder) / "LICENSE").is_file())
-            self.assertTrue((Path(folder) / "third_party_licenses" / "python" / "LICENSE.txt").is_file())
 
     def test_adding_the_folder_did_not_open_the_package_gate(self):
         self.assertNotIn("firmware", build.ALLOWED_DATA)

@@ -3568,6 +3568,10 @@ image is the header logo, which is theme-aware and loads.
 
 ### The release matrix as it now stands
 
+> **Superseded for V1.2.1.** The table below is the V1.0.7 matrix, kept as the record of that release. From V1.2.1
+> only Windows x86-64 and macOS arm64 (`macos-15`) are built; the macOS Intel and Ubuntu rows and the `x86_64` and
+> `linux` suffixes were removed. See `tests/test_platform_matrix.py`.
+
 | Target | Runner | PyInstaller | Output | Artifact |
 |---|---|---|---|---|
 | Windows x86-64 | `windows-latest` | `--onefile --windowed` | `OmniSuite.exe` | `OmniSuite-{v}-Windows-x86_64.zip` |

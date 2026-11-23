@@ -67,6 +67,20 @@ class El {
       return key in this.dataset;
     }
     if ((m = /^([a-z]+)$/i.exec(sel))) return this.tagName === m[1].toUpperCase();
+    // A compound selector: any classes, then any [attr] or [attr="value"] tests, as in
+    // `.pick[data-kind="group"]`. Without it a page that selects by attribute silently
+    // matches nothing, which reads as the page doing nothing.
+    if ((m = /^((?:\.[\w-]+)*)((?:\[[\w-]+(?:="[^"]*")?\])*)$/.exec(sel)) && sel) {
+      const classes = (m[1].match(/\.[\w-]+/g) || []).map((c) => c.slice(1));
+      if (!classes.every((c) => this.classList.contains(c))) return false;
+      const attrs = m[2].match(/\[[\w-]+(?:="[^"]*")?\]/g) || [];
+      return attrs.every((a) => {
+        const parts = /^\[([\w-]+)(?:="([^"]*)")?\]$/.exec(a);
+        const key = parts[1].replace(/^data-/, '').replace(/-(\w)/g, (_x, c) => c.toUpperCase());
+        const own = parts[1].startsWith('data-') ? this.dataset[key] : this._attrs[parts[1]];
+        return parts[2] === undefined ? own !== undefined && own !== null : String(own) === parts[2];
+      });
+    }
     return false;
   }
   querySelectorAll(selector) {

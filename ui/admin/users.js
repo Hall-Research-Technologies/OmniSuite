@@ -14,6 +14,10 @@
     devices: [],
     editing: null,        // the account being edited, or null when creating
     selected: {sources: new Set(), destinations: new Set(), groups: new Set()},
+    // Multiview layouts, as "<display>/<layout>" assignment keys. `held` is what the account
+    // had when the editor opened: those are kept and removable whatever the display is doing
+    // now. `catalogue` is read from the displays on demand, never with the page.
+    multiview: {selected: new Set(), held: new Set(), catalogue: null, phase: 'idle', token: 0},
     // Display groups, as the server describes them (members named, never
     // addressed), and the one being edited in the group dialog.
     groups: [],
@@ -53,18 +57,26 @@
   // ------------------------------------------------------------- table
   function featureSummary(user) {
     if (user.role === 'admin') return 'Everything';
-    const names = {av: 'A/V', usb: 'USB'};
+    const names = {av: 'A/V', usb: 'USB', multiview: 'Multiview'};
     const features = (user.permissions && user.permissions.features) || [];
     if (!features.length) return 'Nothing assigned yet';
     const counts = user.permissions || {};
     const parts = features.map((f) => names[f] || f);
-    const sources = (counts.sources || []).length;
-    const destinations = (counts.destinations || []).length;
-    const groups = (counts.groups || []).length;
-    return parts.join(', ') + ' · ' + sources + ' source' +
-      (sources === 1 ? '' : 's') + ', ' + destinations + ' display' +
-      (destinations === 1 ? '' : 's') +
-      (groups ? ', ' + groups + ' group' + (groups === 1 ? '' : 's') : '');
+    const routes = features.some((f) => f !== 'multiview');
+    const layouts = (counts.multiviews || []).length;
+    const detail = [];
+    if (routes) {
+      const sources = (counts.sources || []).length;
+      const destinations = (counts.destinations || []).length;
+      const groups = (counts.groups || []).length;
+      detail.push(sources + ' source' + (sources === 1 ? '' : 's'));
+      detail.push(destinations + ' display' + (destinations === 1 ? '' : 's'));
+      if (groups) detail.push(groups + ' group' + (groups === 1 ? '' : 's'));
+    }
+    if (features.indexOf('multiview') !== -1) {
+      detail.push(layouts + ' layout' + (layouts === 1 ? '' : 's'));
+    }
+    return parts.join(', ') + ' · ' + detail.join(', ');
   }
 
   function cell(row, label, node) {
@@ -233,6 +245,7 @@
       (user && user.permissions && user.permissions.destinations) || []);
     state.selected.groups = new Set(
       (user && user.permissions && user.permissions.groups) || []);
+    resetMultiview((user && user.permissions && user.permissions.multiviews) || []);
 
     el('editor_title').textContent = user ? 'Edit ' + user.username : 'Add account';
     el('f_username').value = user ? user.username : '';
@@ -256,6 +269,7 @@
       box.checked = interfaces.has(box.value);
     });
     applyInterfaceVisibility();
+    applyMultiviewVisibility();
 
     renderAssign('sources', 'src_list', 'src_count', 'src_filter');
     renderAssign('destinations', 'dst_list', 'dst_count', 'dst_filter');
@@ -303,12 +317,18 @@
     box.checked = !!info.enabled;
     detail.hidden = !info.enabled;
     el('direct_link').value = (payload && payload.link) || '';
+    renderDirectAddress(payload);
 
     if (!info.enabled) {
       status.textContent = 'No active direct link.';
       return;
     }
-    if (payload && payload.note) {
+    if (payload && payload.address_moved && payload.link) {
+      // The link works where the listener is; it must not read as current at the new address.
+      status.textContent = payload.address_moved.message + ' The link above is for '
+        + payload.address_moved.from + ', where it works until Remote Access is moved; it changes '
+        + 'to ' + payload.address_moved.to + ' when it is.';
+    } else if (payload && payload.note) {
       status.textContent = payload.note;
     } else if (payload && !payload.recoverable) {
       status.textContent = 'This link cannot be shown on this computer. '
@@ -317,6 +337,29 @@
       status.textContent = 'Direct access is on. Regenerating stops the old '
         + 'link working immediately.';
     }
+  }
+
+  // The address remote access serves changed after this link was handed out.
+  // Said in words and kept until the administrator acknowledges it; the notice
+  // is dismissible, the fact that old copies of the link point elsewhere is
+  // not, which is why acknowledging records the address rather than hiding a box.
+  function renderDirectAddress(payload) {
+    const notice = el('direct_address');
+    const changed = !!(payload && payload.address_changed && payload.link);
+    notice.hidden = !changed;
+    if (!changed) return;
+    el('direct_address_text').textContent = directAddressText(
+      payload.issued_origin, payload.link_origin);
+  }
+
+  function directAddressText(oldOrigin, newOrigin) {
+    return 'This link was last handed out for ' + oldOrigin + '. Remote access '
+      + 'now serves ' + newOrigin + ', so the link shown here is already the '
+      + 'new address. The code in it has not changed: it works at the new '
+      + 'address, and nobody can reach the old one because nothing is '
+      + 'listening there any more. Send the new link to anyone who has the old '
+      + 'one. If the old address may now belong to a different device, use '
+      + 'Regenerate instead.';
   }
 
   async function loadDirect() {
@@ -361,6 +404,7 @@
   function closeEditor() {
     el('editor_backdrop').style.display = 'none';
     state.editing = null;
+    state.multiview.token++;         // an answer that arrives now describes a closed editor
   }
 
   function showEditorError(message) {
@@ -378,6 +422,10 @@
       sources: Array.from(state.selected.sources),
       destinations: Array.from(state.selected.destinations),
       groups: Array.from(state.selected.groups),
+      // The whole set, every time: the server replaces permissions wholesale, so a save that
+      // left this out would take every layout away. It is sent even while the Multiview
+      // capability is unticked, so switching the capability off and on again forgets nothing.
+      multiviews: Array.from(state.multiview.selected).sort(),
       interfaces: Array.from(document.querySelectorAll('.f-interface'))
         .filter((b) => b.checked).map((b) => b.value),
     };
@@ -442,7 +490,9 @@
   el('f_role').addEventListener('change', applyInterfaceVisibility);
   document.querySelectorAll('.f-feature').forEach((box) => {
     box.addEventListener('change', applyInterfaceVisibility);
+    box.addEventListener('change', applyMultiviewVisibility);
   });
+  el('mv_retry').addEventListener('click', () => { loadMultiview(); });
 
   // Each of these is one deliberate action against the server, not a field in
   // a form that gets saved later.
@@ -461,6 +511,10 @@
     });
     if (!ok) return;
     directAction('regenerate')
+      .catch(() => showEditorError('Could not reach OmniSuite.'));
+  });
+  el('direct_address_ack').addEventListener('click', () => {
+    directAction('acknowledge_address')
       .catch(() => showEditorError('Could not reach OmniSuite.'));
   });
   el('direct_copy').addEventListener('click', async () => {
@@ -724,6 +778,176 @@
     }
   });
 
+  // ------------------------------------------------------ Multiview layouts
+  //
+  // Layouts are given one by one. What is shown is the display's name and the layout's name; the
+  // key that is stored is an identity and is never put in front of an administrator.
+  const MV_NOT_ANSWERING = 'Not answering right now';
+  const MV_NOT_AVAILABLE = 'Multiview is not available on this display';
+
+  function resetMultiview(held) {
+    const mv = state.multiview;
+    mv.token++;
+    mv.selected = new Set(held);
+    mv.held = new Set(held);
+    mv.catalogue = null;
+    mv.phase = 'idle';
+  }
+
+  function multiviewWanted() {
+    return Array.from(document.querySelectorAll('.f-feature'))
+      .some((b) => b.value === 'multiview' && b.checked) && el('f_role').value !== 'admin';
+  }
+
+  function applyMultiviewVisibility() {
+    const on = multiviewWanted();
+    el('mv_section').hidden = !on;
+    // Read the first time the section is opened, not before, and not again until the editor is
+    // opened again: it asks each display, which takes seconds.
+    if (on && state.multiview.phase === 'idle') loadMultiview();
+    else renderMultiview();
+  }
+
+  async function loadMultiview() {
+    const mv = state.multiview;
+    const token = ++mv.token;
+    mv.phase = 'loading';
+    renderMultiview();
+    let reply = null;
+    try {
+      reply = await api('/api/admin/multiviews');
+    } catch (err) {
+      if (String(err.message) === 'signed out') return;
+    }
+    if (token !== mv.token) return;            // the editor was closed or reopened meanwhile
+    const ok = reply && reply.status === 200 && reply.body && reply.body.ok
+      && Array.isArray(reply.body.decoders);
+    mv.catalogue = ok ? reply.body.decoders : null;
+    // A failed read is "could not load", never "there is no Multiview".
+    mv.phase = ok ? 'ready' : 'error';
+    renderMultiview();
+  }
+
+  function mvRow(box, nameText, metaText) {
+    const row = document.createElement('label');
+    row.className = 'assign-row';
+    const text = document.createElement('span');
+    const name = document.createElement('span');
+    name.className = 'a-name';
+    name.textContent = nameText;
+    text.appendChild(name);
+    if (metaText) {
+      const meta = document.createElement('span');
+      meta.className = 'a-meta';
+      meta.textContent = ' \u00b7 ' + metaText;
+      text.appendChild(meta);
+    }
+    row.append(box, text);
+    return row;
+  }
+
+  function renderMultiview() {
+    const mv = state.multiview;
+    const host = el('mv_list');
+    const count = el('mv_count');
+    host.replaceChildren();
+    el('mv_retry').hidden = mv.phase !== 'error';
+    count.textContent = mv.selected.size + ' selected';
+    if (mv.phase === 'idle') return;
+    if (mv.phase === 'loading') {
+      host.appendChild(emptyNote('Reading the displays\u2026 this can take a few seconds.'));
+      return;
+    }
+    if (mv.phase === 'error') {
+      host.appendChild(emptyNote('The Multiview layouts could not be loaded. Layouts already '
+        + 'given to this account are kept as they are.'));
+      return;
+    }
+    const known = new Set();
+    const decoders = mv.catalogue || [];
+    decoders.forEach((decoder) => {
+      (decoder.layouts || []).forEach((layout) => known.add(layout.key));
+    });
+    const withLayouts = decoders.filter((d) => (d.layouts || []).length);
+    if (!withLayouts.length) {
+      host.appendChild(emptyNote('No Multiview layouts have been saved on any display yet.'));
+    }
+    withLayouts.forEach((decoder) => {
+      const group = document.createElement('div');
+      group.className = 'assign-group';
+      const head = document.createElement('div');
+      head.className = 'assign-group-head';
+      const title = document.createElement('span');
+      title.className = 'a-name';
+      title.textContent = decoder.name || 'Display';
+      head.appendChild(title);
+      const reason = decoder.eligible ? ''
+        : (decoder.status === 'unreachable' ? MV_NOT_ANSWERING : MV_NOT_AVAILABLE);
+      if (reason) {
+        const why = document.createElement('span');
+        why.className = 'a-meta';
+        why.textContent = ' \u00b7 ' + reason;
+        head.appendChild(why);
+      }
+      group.appendChild(head);
+      decoder.layouts.forEach((layout) => {
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.value = layout.key;
+        box.checked = mv.selected.has(layout.key);
+        // A layout on a display that cannot take it now is not newly assignable. One the
+        // account already has stays checkable, so it can be removed and put back.
+        box.disabled = !decoder.eligible && !mv.held.has(layout.key);
+        box.addEventListener('change', () => {
+          if (box.checked) mv.selected.add(layout.key);
+          else mv.selected.delete(layout.key);
+          count.textContent = mv.selected.size + ' selected';
+        });
+        const row = mvRow(box, layout.name || 'Layout', layout.layout_label || '');
+        if (box.disabled) row.classList.add('disabled');
+        group.appendChild(row);
+      });
+      host.appendChild(group);
+    });
+
+    // An assignment the displays no longer list at all: shown, kept, and removable, so an
+    // administrator can clean it up and a save never drops it behind their back.
+    const lost = Array.from(mv.selected).filter((key) => !known.has(key)).sort();
+    if (lost.length) {
+      const group = document.createElement('div');
+      group.className = 'assign-group';
+      const head = document.createElement('div');
+      head.className = 'assign-group-head';
+      head.textContent = 'Unavailable \u2014 kept';
+      group.appendChild(head);
+      lost.forEach((key, i) => {
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'btn-quiet small';
+        remove.textContent = 'Remove';
+        remove.setAttribute('aria-label', 'Remove unavailable layout ' + (i + 1));
+        remove.addEventListener('click', () => {
+          mv.selected.delete(key);
+          renderMultiview();
+        });
+        const row = document.createElement('div');
+        row.className = 'assign-row';
+        const text = document.createElement('span');
+        const name = document.createElement('span');
+        name.className = 'a-name';
+        name.textContent = 'Unavailable layout ' + (i + 1);
+        const meta = document.createElement('span');
+        meta.className = 'a-meta';
+        meta.textContent = ' \u00b7 The display or layout is not listed any more. '
+          + 'It stays on the account until removed.';
+        text.append(name, meta);
+        row.append(text, remove);
+        group.appendChild(row);
+      });
+      host.appendChild(group);
+    }
+  }
+
   // ------------------------------------------------------ display groups
   //
   // A group is a name and a set of displays, held by identity. Which accounts
@@ -978,11 +1202,15 @@
     'usb.attach': 'USB connected',
     'usb.detach': 'USB disconnected',
     'multiview.show': 'Multiview shown',
+    'multiview.compose': 'Multiview shown with chosen sources',
     'multiview.switch': 'Multiview window changed',
     'activity.retention_changed': 'Activity retention changed',
     'route_group': 'Routed to a group',
     'matrix.route': 'Routed from the Matrix',
     'matrix.route_group': 'Routed to a group from the Matrix',
+    'route_many': 'Routed to several displays',
+    'unroute_many': 'Several displays cleared',
+    'matrix.route_many': 'Routed to several displays from the Matrix',
     'user.routing_interfaces_changed': 'Routing interface changed',
     'group.created': 'Group created',
     'group.updated': 'Group changed',
@@ -995,6 +1223,7 @@
     'direct_access.disabled': 'Direct link removed',
     'direct_access.regenerated': 'Direct link replaced',
     'direct_access.used': 'Direct link used',
+    'direct_access.address_acknowledged': 'Direct link address acknowledged',
     'certificate.generated': 'Certificate created',
     'certificate.configured': 'Certificate configured',
     'certificate.removed': 'Certificate removed',

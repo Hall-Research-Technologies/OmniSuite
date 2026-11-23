@@ -24,6 +24,7 @@ from __future__ import annotations
 import socket
 import threading
 import time
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 
 #: An observation younger than this is believed by a gate without asking the unit again.
@@ -35,6 +36,37 @@ FRESH_OFFLINE_SECONDS = 4.0
 PROBE_TIMEOUT_SECONDS = 0.6
 #: Bounded, so an operation that names many units cannot open an unbounded number of sockets.
 MAX_PROBE_WORKERS = 8
+#: Consecutive unanswered looks before a unit is treated as quiet and looked at on the back-off schedule.
+MISS_LIMIT = 2
+#: First step of the schedule, and the longest a quiet unit goes unlooked-at. A unit that answers clears
+#: its misses and is due at once; an operator's explicit refresh passes `force`.
+BACKOFF_BASE_SECONDS = 10.0
+BACKOFF_CAP_SECONDS = 120.0
+
+
+def jitter(key):
+    """A fixed factor in [0.75, 1.25) for `key`, so units that went quiet together are not looked at together.
+
+    Without it every unit that missed in the same batch waits exactly the same time, and at the cap the whole
+    crowd falls due at once every BACKOFF_CAP_SECONDS. Deterministic: nothing is stored, a test can predict it.
+    """
+    return 0.75 + 0.5 * ((zlib.crc32(str(key).encode("utf-8", "replace")) % 1000) / 1000.0)
+
+
+def backoff_seconds(misses):
+    """How long after its last look a unit with `misses` consecutive unanswered looks waits to be looked at.
+
+    Exponential with a cap: nothing for a unit that has missed fewer than MISS_LIMIT (one dropped read is
+    not "gone"), then BACKOFF_BASE, twice that, and so on up to BACKOFF_CAP. Measured with 250 silent units:
+    without it every one of them cost a worker and up to several seconds on every poll, for ever.
+    """
+    try:
+        over = int(misses) - MISS_LIMIT
+    except (TypeError, ValueError):
+        return 0.0
+    if over < 0:
+        return 0.0
+    return min(BACKOFF_CAP_SECONDS, BACKOFF_BASE_SECONDS * (2 ** min(over, 10)))
 
 
 # The probe is the one place this module reaches a network, so it is the one place a test replaces.
@@ -68,6 +100,7 @@ class UnitLiveness:
         self._lock = threading.Lock()
         self._refresh_gate = threading.Lock()   # one look-again batch at a time
         self._seen = {}          # ip -> (reachable, at, source)
+        self._misses = {}        # ip -> consecutive "not answering" observations (additive; never persisted)
 
     # ---------------------------------------------------------------- recording
     def record(self, ip, reachable, source=""):
@@ -77,14 +110,17 @@ class UnitLiveness:
             return
         with self._lock:
             self._seen[ip] = (bool(reachable), self._now(), str(source or ""))
+            self._misses[ip] = 0 if reachable else min(self._misses.get(ip, 0) + 1, 1000)
 
     def forget(self, ip=None):
         """Drop one unit's record, or all of them (the inventory was cleared)."""
         with self._lock:
             if ip is None:
                 self._seen.clear()
+                self._misses.clear()
             else:
                 self._seen.pop(str(ip or "").strip(), None)
+                self._misses.pop(str(ip or "").strip(), None)
 
     # ------------------------------------------------------------------ reading
     def known(self, ip):
@@ -99,11 +135,37 @@ class UnitLiveness:
                     for ip, (r, at, src) in self._seen.items()}
 
     def stale_offline(self, min_age=10.0):
-        """The units recorded as not answering and not looked at for `min_age` seconds. Reads only."""
+        """The units recorded as not answering and due for another look. Reads only.
+
+        Due means `min_age` seconds since the last look, or the back-off for its run of misses if that is
+        longer -- a unit silent for a long time is not asked every ten seconds.
+        """
         with self._lock:
             now = self._now()
             return [ip for ip, (reachable, at, _source) in self._seen.items()
-                    if not reachable and now - at >= min_age]
+                    if not reachable
+                    and now - at >= max(min_age, backoff_seconds(self._misses.get(ip, 0)) * jitter(ip))]
+
+    def due(self, ip, force=False):
+        """Whether `ip` should be looked at now by a poll.
+
+        Unknown units, units that answered, units within MISS_LIMIT and anything under `force` are due.
+        A quiet unit is due once its back-off since the last look has elapsed. Reads only.
+        """
+        if force:
+            return True
+        ip = str(ip or "").strip()
+        with self._lock:
+            entry = self._seen.get(ip)
+            misses = self._misses.get(ip, 0)
+        if entry is None or entry[0]:
+            return True
+        wait = backoff_seconds(misses)
+        return wait <= 0 or self._now() - entry[1] >= wait * jitter(ip)
+
+    def misses(self, ip):
+        with self._lock:
+            return self._misses.get(str(ip or "").strip(), 0)
 
     def refresh_offline(self, min_age=10.0):
         """Look again, once, at units recorded as not answering and not looked at for `min_age` seconds.

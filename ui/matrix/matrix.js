@@ -194,8 +194,9 @@ function setMode(m){
   const modeLabel = document.getElementById('mode_label');
   if(modeLabel){
     const upper = (m||'').toUpperCase();
-    const label = upper==='AV' ? 'AV (Audio + Video)' : (upper==='VIDEO' ? 'Video Only' : 'Audio Only');
-    modeLabel.textContent = label;
+    modeLabel.textContent = upper==='AV' ? 'A click routes audio and video together (ring = video, dot = audio).'
+      : (upper==='VIDEO' ? 'A click routes the video only; the audio stays as it is.'
+         : 'A click routes the audio only; the video stays as it is.');
   }
 }
 document.addEventListener('click', (e)=>{
@@ -2398,14 +2399,35 @@ function matrixCellFlags(d, e){
   return {codecCompatible, videoMatch, audioMatch, offline: unitIsOffline(e) || unitIsOffline(d)};
 }
 
+// What each crosspoint was last made to show, as one byte per cell, per table. A state-only refresh used to
+// read six DOM properties and run two selector queries on every cell to find out that nothing moved:
+// measured at 1,000 units (190,000 crosspoints) that was 1.7-2.2 s of main thread per refresh, and a refresh
+// arrives every poll. Now the flags are worked out in memory, compared with this, and only a cell whose flags
+// differ is touched. Anything that writes cell state outside this function must drop the snapshot so the next
+// patch re-asserts every cell (the click handler's optimistic radio does, and so does a rebuild).
+const _matrixPatchSnapshots = new WeakMap();
+
+function matrixFlagBits(f){
+  return (f.codecCompatible ? 1 : 0) | (f.videoMatch ? 2 : 0) | (f.audioMatch ? 4 : 0) | (f.offline ? 8 : 0);
+}
+
 function patchMatrixState(t, enc, dec){
-  const cells = t.querySelectorAll('td.cell');
+  const total = enc.length * dec.length;
+  const previous = _matrixPatchSnapshots.get(t);
+  const known = previous && previous.length === total ? previous : null;
+  const next = new Uint8Array(total);
+  let cells = null;
   let i = 0;
   for (const d of dec) {
     for (const e of enc) {
-      const td = cells[i++];
-      if (!td) return;
+      const index = i++;
       const f = matrixCellFlags(d, e);
+      const bits = matrixFlagBits(f);
+      next[index] = bits;
+      if (known && known[index] === bits) continue;
+      if (!cells) cells = t.querySelectorAll('td.cell');
+      const td = cells[index];
+      if (!td) { _matrixPatchSnapshots.delete(t); return; }
       const radio = td.querySelector('input[type="radio"]');
       const dot = td.querySelector('.dot');
       if (radio && radio.checked !== f.videoMatch) radio.checked = f.videoMatch;
@@ -2425,6 +2447,7 @@ function patchMatrixState(t, enc, dec){
       }
     }
   }
+  _matrixPatchSnapshots.set(t, next);
 }
 
 function syncMasterCheckbox(t){
@@ -2518,7 +2541,9 @@ async function onMatrixCellClick(cell, e, t){
 
       targets.forEach(targetDec => recordPendingRoute(targetDec, enc, mode));
 
-      // Set radios and UI for all targets
+      // Set radios and UI for all targets. This writes cell state by hand, so the patch snapshot is dropped:
+      // the next state refresh then re-asserts every cell, which is what puts a failed route's radio back.
+      _matrixPatchSnapshots.delete(t);
       for (const targetDec of targets) {
         if(mode === 'video' || mode === 'av'){
           const radio = t.querySelector(`td.cell[data-dec="${targetDec}"][data-enc="${enc}"] input[type=radio]`);
@@ -2587,6 +2612,10 @@ function render(s){
   const head = `<tr><th class="row-head select-all-head"><input type="checkbox" id="group-master-checkbox" ${allChecked ? 'checked' : ''} ${!allChecked && someChecked ? 'indeterminate' : ''}></th><th class="row-head">Decoders \\ Encoders</th>` + enc.map(e=>
     `<th class="enc-head"><div class="col-header"><span class="enc-ip"><a href="http://${e.ip}" target="_blank" style="color:inherit;text-decoration:none;cursor:pointer;" title="Open ${e.ip} in new tab">${e.ip}</a></span><small class="enc-host">${escAttr(e.host || '')}</small>${unitIsOffline(e) ? '<span class="offline-badge">OFFLINE</span>' : ''}</div></th>`
   ).join('') + '</tr>';
+  // The flags each crosspoint is drawn with, kept so the first state refresh after this build is as cheap as
+  // the rest (see _matrixPatchSnapshots). Filled in the same order the grid is, row by row.
+  const snapshotBits = new Uint8Array(enc.length * dec.length);
+  let snapshotAt = 0;
   const rows = dec.map(d=>{
     const checkedGroup = selectedDecoders.has(decoderKey(d)) ? 'checked' : '';
     const cells = enc.map(e=>{
@@ -2601,6 +2630,7 @@ function render(s){
       const checked = videoMatch ? 'checked' : '';
       const audioCls = audioMatch ? ' audio-on' : '';
       const unitOffline = unitIsOffline(e) || unitIsOffline(d);
+      snapshotBits[snapshotAt++] = matrixFlagBits({codecCompatible, videoMatch, audioMatch, offline: unitOffline});
       const disabledCls = !codecCompatible ? ' codec-blocked' : (unitOffline ? ' offline-blocked' : '');
       const disabledAttr = (!codecCompatible || unitOffline) ? ' disabled' : '';
       const title = !codecCompatible ? ` title="${escAttr(routeCodecMismatchMessage(e, d))}"`
@@ -2628,6 +2658,7 @@ function render(s){
     return `<tr class="${mvName ? 'dec-multiview' : ''}"><td style="width:28px;min-width:28px;max-width:28px;padding:0 1px;"><input type="checkbox" class="group-checkbox" data-dec-key="${escAttr(decoderKey(d))}" data-dec-ip="${escAttr(d.ip)}" style="width:14px;height:14px;vertical-align:middle;" ${checkedGroup}></td><th class="row-head"${mvName ? ` title="${escAttr(mvTitle)}"` : ''}><a href="http://${d.ip}" target="_blank" style="color:inherit;text-decoration:none;cursor:pointer;" title="Open ${d.ip} in new tab">${d.ip}</a><br/><small>${escAttr(d.host || '')}</small>${unitIsOffline(d) ? '<br/><span class="offline-badge">OFFLINE</span>' : ''}${mvBadge}</th>${cells}</tr>`;
   }).join('');
   t.innerHTML = head + rows;
+  _matrixPatchSnapshots.set(t, snapshotBits);
   _matrixStructureKey = structureKey;
   }
   bindMatrixDelegation(t);

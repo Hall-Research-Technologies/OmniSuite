@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import re
 import time
 
 from flask import Response, g, jsonify, redirect, request
@@ -24,6 +25,7 @@ import omni_locks
 import omni_projection
 import omni_remote
 import omni_requests
+import omni_usb_cells
 import omni_users
 from omni_gate import CSRF_HEADER, SESSION_COOKIE
 from omni_users import Permissions
@@ -38,6 +40,14 @@ log = logging.getLogger(__name__)
 #: attribute itself to -- that is the whole point of answering the same way
 #: whatever the reason.
 _DIRECT_THROTTLE_KEY = "\x00direct-access-link"
+
+#: A USB endpoint identity as the user API accepts it: a canonical MAC. An address is not one.
+_MAC_IDENTITY = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\Z")
+#: A machine-readable reason, nothing else: no sentence, address or identity can pass.
+_SLUG = re.compile(r"^[a-z][a-z0-9_]{0,63}\Z")
+#: The engine's own outcome words ("VERIFIED", "FAILED — ROLLED BACK", ...). Only
+#: capitals, spaces and a dash are passed on, so no sentence rides inside one.
+_STATUS_WORDS = re.compile(r"^[A-Z][A-Z \u2014-]{0,63}\Z")
 
 
 #: What somebody sees when a Direct Access link no longer works.
@@ -101,9 +111,17 @@ def _is_local():
 def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
              route_view, remote_enabled, set_remote_state, remote_config,
              usb_state, usb_pair_view, usb_unpair_view,
+             usb_icron_pair_view=None, usb_icron_unpair_view=None,
              forget_observation, locks, tls, cert_paths, tls_context_for,
              certificate_state, source_preview, credential_report,
-             unroute_view, user_shell):
+             unroute_view, user_shell,
+             multiview_catalog=lambda identities=None: [],
+             multiview_geometry=lambda layout: None,
+             multiview_show=lambda address, name: ({"ok": False, "error": "Multiview is not available."}, 409),
+             multiview_windows=lambda address, name: {"ok": False, "error": "Multiview is not available."},
+             multiview_sources=lambda: [],
+             multiview_compose=lambda address, name, wanted, base: (
+                 {"ok": False, "error": "Multiview is not available."}, 409)):
     """Attach the remote-access API.
 
     Everything the module needs is passed in rather than imported from the
@@ -212,6 +230,19 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
         return jsonify(result)
 
     # ------------------------------------------------------ remote access
+    @app.route("/api/remote_access/status", methods=["GET"])
+    def api_remote_access_status():
+        """Is Remote Access on? Nothing else.
+
+        The navigation uses this to reconcile its Remote Access tab with the
+        server when a page comes back to the foreground. It must stay cheap:
+        `/api/remote_access` enumerates network adapters, which starts a
+        PowerShell child that takes seconds, and a tab bar must never be what
+        causes that.
+        """
+        return jsonify({"ok": True,
+                        "enabled": bool(listener.describe().get("enabled"))})
+
     @app.route("/api/remote_access", methods=["GET"])
     def api_remote_access_state():
         # Enumerated with a stable identity, so a selection can survive the
@@ -289,6 +320,12 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
             "configured_address": saved.get("address") or "",
             "configured_adapter": saved.get("adapter_id") or "",
             "configured_adapter_name": saved.get("adapter_name") or "",
+            # The listener is bound to one address and its adapter now carries another. Said
+            # plainly; never acted on (no rebind, no new certificate).
+            "address_moved": _address_moved(state, saved, enumerated),
+            # Direct links last handed out for another address than the one now
+            # being served. Names only; never a token or a URL.
+            "direct_links_stale": _stale_direct_links(),
             "configured_available": bool(configured and available),
             "restore_error": saved.get("restore_error") or "",
             "has_admin": store.has_admin,
@@ -405,9 +442,25 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
                     "cert_path": cert_path, "key_path": key_path}
         context, tls_error = tls_context_for(proposed)
         if tls_error:
-            # Never start in the clear because TLS could not be arranged.
+            # Never start in the clear because TLS could not be arranged, and
+            # never make a certificate or choose HTTP on the administrator's
+            # behalf. The refusal says WHICH kind of problem it is, so the
+            # page can offer the decision (create one, use HTTP, or stop) and
+            # nothing here has to guess. A certificate the site supplied is
+            # never replaced by offering to create one: that case is reported
+            # as itself.
+            described = certificate_state()
+            supplied = bool(proposed["cert_path"])
+            if supplied:
+                reason = "supplied_certificate_unusable"
+            elif not described.get("present"):
+                reason = "no_certificate"
+            else:
+                reason = "certificate_unusable"
             return jsonify({"ok": False, "error": tls_error,
-                            "certificate": certificate_state()}), 400
+                            "reason": reason,
+                            "needs_certificate": not supplied,
+                            "certificate": described}), 400
 
         # A certificate for one address, about to be served on another.
         #
@@ -440,6 +493,7 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
                         f"for {address}. Create one for this network, then "
                         "turn remote access on."),
                     "needs_certificate": True,
+                    "reason": "certificate_mismatch",
                     "certificate": {**described, "for_address": address,
                                     "matches_address": False,
                                     "generated": True}}), 400
@@ -470,19 +524,34 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
         if action == "generate":
             address = str(data.get("address") or "").strip()
             cert_path, key_path = cert_paths
+            # A supplied certificate belongs to the site and is never replaced
+            # from here -- not by the page's Create button and not by the
+            # decision offered when remote access is turned on. Removing it is a
+            # separate, deliberate action. (Same rule, same words, as
+            # LumaSuite.)
+            if remote_config().get("cert_path"):
+                return jsonify({"ok": False, "error": (
+                    "A certificate you supplied is in use. OmniSuite will not "
+                    "replace it. Remove it first if you want OmniSuite to "
+                    "create one.")}), 409
+            # Regenerating is explicit (this request) and never automatic; the
+            # outgoing fingerprint is reported so the change is visible.
+            previous = tls.describe(str(cert_path)).get("fingerprint") or ""
             try:
                 described = tls.generate_self_signed(address, cert_path, key_path)
             except tls.TlsError as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 400
             store.audit("certificate.generated", actor=_principal(),
                         detail={"address": address,
-                                "fingerprint": described.get("fingerprint")})
+                                "fingerprint": described.get("fingerprint"),
+                                "previous_fingerprint": previous})
             # Stored as the configured pair so a restart uses it.
             saved = remote_config()
             set_remote_state(saved.get("enabled"), saved.get("address"),
                              saved.get("port"), "https", "", "",
                              saved.get("adapter_id"), saved.get("adapter_name"))
-            return jsonify({"ok": True, "certificate": certificate_state()})
+            return jsonify({"ok": True, "certificate": certificate_state(),
+                            "previous_fingerprint": previous})
 
         if action == "use":
             cert_path = str(data.get("cert_path") or "").strip()
@@ -551,6 +620,10 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
         problem = _identity_problem(data.get("permissions"))
         if problem:
             return jsonify({"ok": False, "error": problem}), 400
+        problem = _multiview_assignment_problem(
+            _permissions_from(data.get("permissions")), None)
+        if problem:
+            return jsonify({"ok": False, "error": problem}), 400
         # The store records this, with the actor passed down. It is the
         # layer that knows what was actually created -- the request body is
         # what was asked for, which is not the same thing when it was refused
@@ -598,6 +671,10 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
             wanted = _permissions_from(data.get("permissions"))
             raw = data.get("permissions")
             held = store.get(user_id)
+            problem = _multiview_assignment_problem(
+                wanted, held.permissions if held is not None else None)
+            if problem:
+                return jsonify({"ok": False, "error": problem}), 400
             if held is not None and not (isinstance(raw, dict)
                                          and isinstance(raw.get("interfaces"),
                                                         (list, tuple))):
@@ -606,7 +683,8 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
                 wanted = Permissions(
                     features=wanted.features, sources=wanted.sources,
                     destinations=wanted.destinations, groups=wanted.groups,
-                    interfaces=held.permissions.interfaces)
+                    interfaces=held.permissions.interfaces,
+                    multiviews=wanted.multiviews)
             result = store.set_permissions(user_id, wanted, actor=actor)
         elif action == "delete":
             result = store.delete(user_id, actor=actor)
@@ -659,6 +737,80 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
             body["note"] = note
         return body
 
+    def _current_origin():
+        """scheme://host:port while remote access is serving, else empty."""
+        state = listener.describe()
+        if not state.get("enabled") or not state.get("host"):
+            return ""
+        return (f"{state.get('scheme') or 'https'}://{state['host']}:"
+                f"{state['port']}")
+
+    def _address_moved(state, saved, adapters=None):
+        """Where Remote Access is bound versus where its chosen adapter is NOW, or None.
+
+        Derived from the live interface list on every call (no polling, nothing written, no
+        interface changed). Only a positive finding is reported: the listener is up, the chosen
+        adapter is here, and it no longer carries the address the listener is bound to. An
+        adapter that is missing, or one with several addresses that still includes the bound one,
+        is not "moved". Nothing is rebound and nothing is reissued by saying so.
+        """
+        host = state.get("host") or ""
+        chosen = saved.get("adapter_id") or ""
+        if not (state.get("enabled") and host and chosen):
+            return None
+        try:
+            live = adapters if adapters is not None else omni_adapters.enumerate_adapters()
+        except Exception:
+            return None
+        current, _why = omni_adapters.resolve_address(chosen, host, live)
+        if not current or current == host:
+            return None
+        return {"from": host, "to": current,
+                "message": (f"This computer's address changed from {host} to {current}. "
+                            f"Remote Access is still listening on {host}. Turn Remote Access "
+                            "off and on to move it.")}
+
+    def _stale_direct_links():
+        """Usernames whose direct link was last handed out for another address.
+
+        Derived from the current listener and what each link was issued for, on
+        every call, so a late change is seen without anybody rescanning. An
+        origin that was never recorded is unknown and is not counted: unknown is
+        not the same as changed.
+        """
+        origin = _current_origin()
+        if not origin:
+            return []
+        return sorted(name for name, issued in store.direct_issued_origins().values()
+                      if issued and issued != origin)
+
+    def _admin_direct_payload(account, token):
+        """The admin's view of a link: the payload plus where it points now.
+
+        The token is unchanged by a change of address and still names the same
+        account, so the NEW link is simply this one built on the new origin. What
+        is added is the fact that the address moved: `address_changed`, the
+        origin the link was last handed out for, and the origin it is for now. The
+        old URL is never rebuilt or returned -- it carries the token, and there is
+        no reason to produce a second copy of a credential.
+        """
+        body = _direct_payload(account, token)
+        origin = _current_origin()
+        issued = account.direct_access.issued_origin
+        body["link_origin"] = origin
+        moved = _address_moved(listener.describe(), remote_config())
+        # While the listener is still on the old address the link below IS the address that works;
+        # it must not be read as current at the new one, so the move is stated beside it.
+        body["address_moved"] = moved
+        body["issued_origin"] = issued
+        body["address_changed"] = bool(token and origin and issued
+                                       and issued != origin)
+        if token and origin and not issued:
+            # A link from before the address was recorded: learn it now, on the
+            # request that is the administrator looking at it. Never overwrites.
+            store.note_direct_origin(account.id, origin)
+        return body
+
     @app.route("/api/admin/users/<user_id>/direct_access",
                methods=["GET", "POST"])
     def api_admin_direct_access(user_id):
@@ -671,15 +823,35 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
                 return jsonify({"ok": True, "username": account.username,
                                 "direct_access": account.direct_access.public(),
                                 "link": "", "recoverable": False, "note": ""})
-            return jsonify(_direct_payload(
+            return jsonify(_admin_direct_payload(
                 account, store.direct_access_token(user_id)))
 
         data = _json_body()
         action = str(data.get("action") or "").strip()
         if action == "enable":
-            result = store.enable_direct_access(user_id, actor=actor)
+            result = store.enable_direct_access(user_id, actor=actor,
+                                                origin=_current_origin())
         elif action == "regenerate":
-            result = store.regenerate_direct_access(user_id, actor=actor)
+            result = store.regenerate_direct_access(user_id, actor=actor,
+                                                    origin=_current_origin())
+        elif action == "acknowledge_address":
+            # The administrator saying the new link has been passed on. Records
+            # the address only; the token, its sessions and everything else are
+            # left exactly as they are.
+            origin = _current_origin()
+            if not origin:
+                return jsonify({"ok": False, "error": (
+                    "Remote access is off, so there is no address to "
+                    "acknowledge yet.")}), 400
+            if not store.note_direct_origin(user_id, origin, actor=actor,
+                                            acknowledge=True):
+                account = store.get(user_id)
+                if account is None or not account.direct_access.active:
+                    return jsonify({"ok": False,
+                                    "error": "direct access is not enabled"}), 400
+            account = store.get(user_id)
+            return jsonify(_admin_direct_payload(
+                account, store.direct_access_token(user_id)))
         elif action == "disable":
             result = store.disable_direct_access(user_id, actor=actor)
         else:
@@ -694,7 +866,7 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
                             "link": "", "recoverable": False, "note": ""})
         # The freshly minted token comes back from the store rather than being
         # read again, so the one moment it exists in memory is this one.
-        return jsonify(_direct_payload(account, result["token"]))
+        return jsonify(_admin_direct_payload(account, result["token"]))
 
     @app.route("/api/user/direct_access", methods=["GET"])
     def api_user_direct_access():
@@ -929,6 +1101,61 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
             "unknown": sum(1 for r in rows if r["credential"] == "unknown"),
         })
 
+    @app.route("/api/admin/multiviews", methods=["GET"])
+    def api_admin_multiviews():
+        """The decoders that can be given Multiview layouts, and each one's layouts.
+
+        Read on demand for an administrator choosing what to assign, never on a
+        scan. A decoder whose Multiview is not available now is still listed and
+        flagged, so an assignment already made to it can be seen and removed; it
+        simply cannot be newly assigned. Names and opaque ids only: nothing here
+        is an address.
+        """
+        decoders = []
+        for row in multiview_catalog():
+            decoders.append({
+                "id": row["id"],
+                "name": _label(row["id"], row.get("hostname") or ""),
+                "eligible": bool(row["eligible"]),
+                "status": row["status"],
+                "layouts": [{
+                    "key": omni_users.multiview_key(row["id"], entry["id"]),
+                    "name": entry["friendly_name"],
+                    "layout": entry["layout"],
+                    "layout_label": entry["layout_label"],
+                } for entry in row["layouts"]],
+            })
+        return jsonify({"ok": True, "decoders": decoders})
+
+    def _multiview_assignment_problem(wanted, held):
+        """Why these assignments cannot be saved, or "".
+
+        Only what is NEWLY assigned is judged. An assignment that already exists
+        is kept as it is even when its decoder is not answering or has lost
+        Multiview: it is preserved and inactive, and it is the administrator's to
+        remove, not something a save of an unrelated field may quietly discard.
+        A layout can only be newly assigned while its decoder is eligible and the
+        layout is one of its saved layouts -- both established here, from the
+        server's own read, and never from anything the browser said about them.
+        """
+        added = set(wanted.multiviews) - set(held.multiviews if held else ())
+        if not added:
+            return ""
+        wanted_decoders = set()
+        for key in added:
+            decoder, _layout = omni_users.split_multiview_key(key)
+            wanted_decoders.add(decoder)
+        rows = {row["id"]: row for row in multiview_catalog(wanted_decoders)}
+        for key in sorted(added):
+            decoder, layout_id = omni_users.split_multiview_key(key)
+            row = rows.get(decoder)
+            if row is None or not row["eligible"]:
+                return ("Multiview is not available on that display right now, "
+                        "so its layouts cannot be assigned.")
+            if layout_id not in {entry["id"] for entry in row["layouts"]}:
+                return "That Multiview layout no longer exists on that display."
+        return ""
+
     @app.route("/api/admin/audit", methods=["GET"])
     def api_admin_audit():
         """The security log, newest first, filtered server-side.
@@ -1026,10 +1253,13 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
         if mode not in _ROUTE_MODES:
             return None, None, (jsonify({"ok": False,
                                          "error": "mode must be av, video or audio"}), 400)
-        if mode != "av" and interface != omni_users.INTERFACE_MATRIX:
+        # The Standard page offers "Audio follows video": off sends a video-only route. That is
+        # the same write the Matrix makes for one display, narrower than A/V, and needs the same
+        # grants. Audio on its own stays a Matrix operation.
+        if mode == "audio" and interface != omni_users.INTERFACE_MATRIX:
             return None, None, (jsonify({
                 "ok": False,
-                "error": "video-only and audio-only routing is a Matrix operation"}), 400)
+                "error": "audio-only routing is a Matrix operation"}), 400)
         return interface, mode, None
 
     @app.route("/api/user/route", methods=["POST"])
@@ -1293,6 +1523,204 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
                          "result": r.get("result") or "failed"}
                         for r in summary["results"]]})
 
+    #: The most displays and groups one request may name. Groups are small and this
+    #: is a bound on the work a single request can start, not a product limit.
+    ROUTE_MANY_MAX_TARGETS = 64
+    #: How many displays are routed at once. Each takes its own per-display lock and
+    #: talks to a different device; four keeps a room responsive without opening a
+    #: socket storm against a switch.
+    ROUTE_MANY_WORKERS = 4
+
+    @app.route("/api/user/route_many", methods=["POST"])
+    def api_user_route_many():
+        """Route one permitted source to several displays and groups in one action.
+
+        The request names displays (`destinations`) and groups (`groups`) by stable
+        identity. Everything is resolved NOW: group membership is read at route time,
+        a display named twice -- once alone, once through a group -- is routed once,
+        and each resolved display is authorised again on its own account just before
+        its write, on the far side of its lock.
+
+        What authority reaches a display: its own grant if it was named individually,
+        or the grant of a requested group that contains it. Membership of a group the
+        account holds does not grant the display on its own, and a display named
+        individually without a grant is refused even if some group contains it that
+        was not requested.
+
+        The displays are independent. One that fails does not stop the others and
+        nothing already routed is undone, so the answer is a truthful count,
+        "N of M displays routed", with each display's own outcome by name -- never by
+        address or identity.
+        """
+        data = _json_body()
+        source_id = omni_users._normalise_identity(data.get("source"))
+        raw_destinations = data.get("destinations") or []
+        raw_groups = data.get("groups") or []
+        interface, mode, malformed = _route_interface(data)
+        if malformed is not None:
+            return malformed
+        if not isinstance(raw_destinations, list) or not isinstance(raw_groups, list):
+            return jsonify({"ok": False,
+                            "error": "destinations and groups must be lists"}), 400
+        if not source_id or not (raw_destinations or raw_groups):
+            return jsonify({"ok": False,
+                            "error": "source and at least one destination or "
+                                     "group required"}), 400
+        if len(raw_destinations) + len(raw_groups) > ROUTE_MANY_MAX_TARGETS:
+            return jsonify({"ok": False,
+                            "error": "too many destinations in one request"}), 400
+        requested_displays = []
+        for value in raw_destinations:
+            identity = omni_users._normalise_identity(value)
+            if not identity:
+                return jsonify({"ok": False, "error": "a destination was not valid"}), 400
+            if identity not in requested_displays:
+                requested_displays.append(identity)
+        requested_groups = []
+        for value in raw_groups:
+            gid = str(value or "").strip().lower()
+            if not gid:
+                return jsonify({"ok": False, "error": "a group was not valid"}), 400
+            if gid not in requested_groups:
+                requested_groups.append(gid)
+
+        def _base(account):
+            if not account.permissions.has_feature(omni_access.FEATURE_AV):
+                return "missing_feature:av"
+            if not account.permissions.has_interface(interface):
+                return "interface_not_permitted"
+            if not account.permissions.may_use_source(source_id):
+                return "source_not_permitted"
+            return None
+
+        def _request_check(account):
+            reason = _base(account)
+            if reason is not None:
+                return reason
+            for identity in requested_displays:
+                if not account.permissions.may_control_destination(identity):
+                    return "destination_not_permitted"
+            for gid in requested_groups:
+                if not account.permissions.may_control_group(gid):
+                    return "group_not_permitted"
+            return None
+
+        # Before anything is resolved or queued: a request naming something this
+        # account may not use is refused whole, so a partial route is never the
+        # surprise.
+        refusal = _revalidate(_request_check, "/api/user/route_many")
+        if refusal is not None:
+            return refusal
+
+        found_groups = []
+        for gid in requested_groups:
+            group = groups.get(gid)
+            if group is None:
+                return jsonify({"ok": False,
+                                "error": "That group is not available."}), 404
+            found_groups.append(group)
+
+        # One entry per display, in a stable order: the ones named individually
+        # first, then group members in group order. `via` records how each was
+        # reached, because that decides which grant authorises it.
+        plan = {}
+        for identity in requested_displays:
+            plan.setdefault(identity, {"individual": True, "groups": []})
+            plan[identity]["individual"] = True
+        for group in found_groups:
+            for identity in group["members"]:
+                entry = plan.setdefault(identity, {"individual": False, "groups": []})
+                if group["id"] not in entry["groups"]:
+                    entry["groups"].append(group["id"])
+        order = list(plan)
+
+        # Captured here because the workers run outside this request.
+        token = request.cookies.get(SESSION_COOKIE)
+        is_local = bool(getattr(g, "is_local", False))
+
+        def _refused_now(identity):
+            """Why this display may no longer be routed by this account, or None."""
+            if is_local:
+                return None
+            account, _session = store.resolve_session(token)
+            if account is None:
+                return "session_invalid"
+            if account.is_admin:
+                return None
+            reason = _base(account)
+            if reason is None:
+                via = plan[identity]
+                allowed = (via["individual"]
+                           and account.permissions.may_control_destination(identity)) \
+                    or any(account.permissions.may_control_group(gid)
+                           for gid in via["groups"])
+                reason = None if allowed else "destination_not_permitted"
+            if reason is not None:
+                store.audit("access.denied", actor=account, detail={
+                    "rule": "/api/user/route_many", "reason": reason})
+            return reason
+
+        def route_member(index, identity):
+            name = _member_label(identity)
+            refused = {"ok": False, "result": "refused", "name": name}
+            if _refused_now(identity) is not None:
+                return refused
+            try:
+                with locks.hold(locks.decoder(identity)):
+                    # Again, now that the wait is over and the next statement
+                    # writes to hardware.
+                    if _refused_now(identity) is not None:
+                        return refused
+                    resolved = _resolve_addresses(source_id, identity)
+                    encoder_ip, encoder_why = resolved[source_id]
+                    decoder_ip, decoder_why = resolved[identity]
+                    if "ambiguous" in (encoder_why, decoder_why):
+                        return {"ok": False, "result": "ambiguous", "name": name}
+                    if not encoder_ip or not decoder_ip:
+                        return {"ok": False, "result": "not_found", "name": name}
+                    with app.test_request_context(
+                            "/api/route", method="POST",
+                            json={"encoder": encoder_ip, "decoder": decoder_ip,
+                                  "mode": mode}):
+                        result = route_view()
+                    status = (result[1] if isinstance(result, tuple)
+                              and len(result) > 1 else 200)
+                    body = _payload_of(result)
+                    ok = bool(body.get("ok")) and status < 400
+                    return {"ok": ok,
+                            "result": str(body.get("status") or
+                                          ("verified" if ok else "failed")).lower(),
+                            "name": name}
+            except omni_locks.ResourceBusy:
+                return {"ok": False, "result": "busy", "name": name}
+
+        began = time.monotonic()
+        # Before anything is written: the exact stable identities this request
+        # intends to change. Named fields only, never the request body.
+        log.info("[ROUTE-MANY] source=%s mode=%s interface=%s displays=%d groups=%d "
+                 "intended=%s", source_id, mode, interface, len(requested_displays),
+                 len(found_groups), ",".join(order))
+        summary = omni_groups.run_concurrent(order, route_member,
+                                             workers=ROUTE_MANY_WORKERS)
+        elapsed = time.monotonic() - began
+        log.info("[ROUTE-MANY] routed %d of %d in %.2fs", summary["routed"],
+                 summary["total"], elapsed)
+        store.audit(
+            "matrix.route_many" if interface == omni_users.INTERFACE_MATRIX
+            else "route_many", actor=_current_account(), detail={
+                "source": source_id, "source_label": _label(source_id),
+                "mode": mode, "interface": interface,
+                "groups": [grp["id"] for grp in found_groups],
+                "routed": summary["routed"], "total": summary["total"],
+                "intended": order})
+        return jsonify({
+            "ok": summary["ok"], "routed": summary["routed"],
+            "total": summary["total"],
+            "results": [{"index": r["index"], "name": r.get("name") or "Display",
+                         "ok": bool(r.get("ok")),
+                         "result": r.get("result") or "failed"}
+                        for r in summary["results"]]})
+
     @app.route("/api/user/unroute", methods=["POST"])
     def api_user_unroute():
         """Stop a permitted display from showing anything.
@@ -1362,6 +1790,177 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
                 "reason": "resource_busy",
                 "error": "That display is busy with another change. "
                          "Try again in a moment."}), 409
+
+    @app.route("/api/user/unroute_many", methods=["POST"])
+    def api_user_unroute_many():
+        """Stop several permitted displays, and the members of several groups, in one action.
+
+        The same one-or-many selection Route uses, and the same rules: the request names
+        displays (`destinations`) and groups (`groups`) by stable identity; everything is
+        resolved NOW (group membership is read at action time and a display reached twice is
+        unrouted once); each resolved display is authorised again on its own account just
+        before its write, on the far side of its lock; and the displays are independent, so
+        one that fails does not stop the others and nothing already stopped is undone. The
+        answer is a truthful "N of M displays", each display's own outcome by name.
+
+        It adds no teardown logic. Every display goes through the same verified engine
+        `/api/user/unroute` uses, which leaves a Multiview through the established path first
+        and reads the device back afterwards. No source is involved: stopping a display needs
+        only the display.
+        """
+        data = _json_body()
+        raw_destinations = data.get("destinations") or []
+        raw_groups = data.get("groups") or []
+        if not isinstance(raw_destinations, list) or not isinstance(raw_groups, list):
+            return jsonify({"ok": False,
+                            "error": "destinations and groups must be lists"}), 400
+        if not (raw_destinations or raw_groups):
+            return jsonify({"ok": False,
+                            "error": "at least one destination or group required"}), 400
+        if len(raw_destinations) + len(raw_groups) > ROUTE_MANY_MAX_TARGETS:
+            return jsonify({"ok": False,
+                            "error": "too many destinations in one request"}), 400
+        requested_displays = []
+        for value in raw_destinations:
+            identity = omni_users._normalise_identity(value)
+            if not identity:
+                return jsonify({"ok": False, "error": "a destination was not valid"}), 400
+            if identity not in requested_displays:
+                requested_displays.append(identity)
+        requested_groups = []
+        for value in raw_groups:
+            gid = str(value or "").strip().lower()
+            if not gid:
+                return jsonify({"ok": False, "error": "a group was not valid"}), 400
+            if gid not in requested_groups:
+                requested_groups.append(gid)
+
+        def _base(account):
+            if not account.permissions.has_feature(omni_access.FEATURE_AV):
+                return "missing_feature:av"
+            if not account.permissions.interfaces:
+                return "interface_not_permitted"
+            return None
+
+        def _request_check(account):
+            reason = _base(account)
+            if reason is not None:
+                return reason
+            for identity in requested_displays:
+                if not account.permissions.may_control_destination(identity):
+                    return "destination_not_permitted"
+            for gid in requested_groups:
+                if not account.permissions.may_control_group(gid):
+                    return "group_not_permitted"
+            return None
+
+        # Before anything is resolved or queued: a request naming something this account may
+        # not control is refused whole, so a partial unroute is never the surprise.
+        refusal = _revalidate(_request_check, "/api/user/unroute_many")
+        if refusal is not None:
+            return refusal
+
+        found_groups = []
+        for gid in requested_groups:
+            group = groups.get(gid)
+            if group is None:
+                return jsonify({"ok": False,
+                                "error": "That group is not available."}), 404
+            found_groups.append(group)
+
+        # One entry per display, in a stable order: the ones named individually first, then
+        # group members in group order. `via` records how each was reached, because that
+        # decides which grant authorises it.
+        plan = {}
+        for identity in requested_displays:
+            plan.setdefault(identity, {"individual": True, "groups": []})
+            plan[identity]["individual"] = True
+        for group in found_groups:
+            for identity in group["members"]:
+                entry = plan.setdefault(identity, {"individual": False, "groups": []})
+                if group["id"] not in entry["groups"]:
+                    entry["groups"].append(group["id"])
+        order = list(plan)
+
+        # Captured here because the workers run outside this request.
+        token = request.cookies.get(SESSION_COOKIE)
+        is_local = bool(getattr(g, "is_local", False))
+        actor = _current_account()
+
+        def _refused_now(identity):
+            """Why this display may no longer be unrouted by this account, or None."""
+            if is_local:
+                return None
+            account, _session = store.resolve_session(token)
+            if account is None:
+                return "session_invalid"
+            if account.is_admin:
+                return None
+            reason = _base(account)
+            if reason is None:
+                via = plan[identity]
+                allowed = (via["individual"]
+                           and account.permissions.may_control_destination(identity)) \
+                    or any(account.permissions.may_control_group(gid)
+                           for gid in via["groups"])
+                reason = None if allowed else "destination_not_permitted"
+            if reason is not None:
+                store.audit("access.denied", actor=account, detail={
+                    "rule": "/api/user/unroute_many", "reason": reason})
+            return reason
+
+        def unroute_member(index, identity):
+            name = _member_label(identity)
+            refused = {"ok": False, "result": "refused", "name": name}
+            if _refused_now(identity) is not None:
+                return refused
+            try:
+                with locks.hold(locks.decoder(identity)):
+                    # Again, now that the wait is over and the next statement writes to
+                    # hardware.
+                    if _refused_now(identity) is not None:
+                        return refused
+                    decoder_ip, why = _resolve_addresses(identity)[identity]
+                    if why == "ambiguous":
+                        return {"ok": False, "result": "ambiguous", "name": name}
+                    if not decoder_ip:
+                        return {"ok": False, "result": "not_found", "name": name}
+                    with app.test_request_context(
+                            "/api/unroute", method="POST",
+                            json={"decoder": decoder_ip}):
+                        result = unroute_view()
+                    forget_observation("multiview:" + str(decoder_ip))
+                    status = (result[1] if isinstance(result, tuple)
+                              and len(result) > 1 else 200)
+                    body = _payload_of(result)
+                    ok = bool(body.get("ok")) and status < 400
+                    return {"ok": ok,
+                            "result": str(body.get("status") or
+                                          ("verified" if ok else "failed")).lower(),
+                            "name": name}
+            except omni_locks.ResourceBusy:
+                return {"ok": False, "result": "busy", "name": name}
+
+        began = time.monotonic()
+        # Before anything is written: the exact stable identities this request intends to
+        # change. Named fields only, never the request body.
+        log.info("[UNROUTE-MANY] displays=%d groups=%d intended=%s",
+                 len(requested_displays), len(found_groups), ",".join(order))
+        summary = omni_groups.run_concurrent(order, unroute_member,
+                                             workers=ROUTE_MANY_WORKERS)
+        log.info("[UNROUTE-MANY] stopped %d of %d in %.2fs", summary["routed"],
+                 summary["total"], time.monotonic() - began)
+        store.audit("unroute_many", actor=actor, detail={
+            "groups": [grp["id"] for grp in found_groups],
+            "routed": summary["routed"], "total": summary["total"],
+            "intended": order})
+        return jsonify({
+            "ok": summary["ok"], "routed": summary["routed"],
+            "total": summary["total"],
+            "results": [{"index": r["index"], "name": r.get("name") or "Display",
+                         "ok": bool(r.get("ok")),
+                         "result": r.get("result") or "failed"}
+                        for r in summary["results"]]})
 
     @app.route("/api/user/source_preview", methods=["GET"])
     def api_user_source_preview():
@@ -1633,6 +2232,533 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
                     identity, unit.get("hostname") or unit.get("name") or identity)
         return aliases.display_name(identity, identity)
 
+    # ------------------------------------------------------ Multiview ----
+    @app.route("/api/user/multiview_state", methods=["GET"])
+    def api_user_multiview_state():
+        """The saved Multiview layouts assigned to this account, on the displays
+        that can show them right now.
+
+        Nothing the browser sends decides what appears: the list is the account's
+        own assignments, each re-checked against a fresh read of its decoder.
+        An assignment whose decoder no longer supports Multiview, or whose layout
+        no longer exists, is simply absent -- preserved in the account, inactive
+        for the person, and live again if the same decoder and the same layout
+        return. A display that is only not answering is shown, unavailable,
+        because that is a condition that passes.
+        """
+        account = _principal() or _LocalAdmin()
+        if not (account.is_admin
+                or account.permissions.has_feature(omni_access.FEATURE_MULTIVIEW)):
+            return _denied(account, "missing_feature:multiview",
+                           "/api/user/multiview_state")
+        assigned = _assigned_layouts(account)
+        return jsonify({"ok": True, "displays": _project_multiview(assigned)})
+
+    def _assigned_layouts(account):
+        """{decoder identity: {layout id, ...}} this account may show."""
+        if account.is_admin:
+            # An administrator has no per-layout grants -- the role is the grant
+            # -- so the whole catalogue stands in for them.
+            return {row["id"]: {entry["id"] for entry in row["layouts"]}
+                    for row in multiview_catalog()}
+        mapping = {}
+        for key in account.permissions.multiviews:
+            decoder, layout_id = omni_users.split_multiview_key(key)
+            if decoder:
+                mapping.setdefault(decoder, set()).add(layout_id)
+        return mapping
+
+    def _project_multiview(assigned):
+        if not assigned:
+            return []
+        rows = multiview_catalog(set(assigned))
+        displays = []
+        for row in rows:
+            wanted = assigned.get(row["id"])
+            if not wanted or row["status"] == "unsupported":
+                continue
+            layouts = []
+            for entry in row["layouts"]:
+                if entry["id"] not in wanted:
+                    continue
+                geometry = multiview_geometry(entry["layout"]) or {}
+                layouts.append({
+                    "id": omni_users.multiview_key(row["id"], entry["id"]),
+                    "name": entry["friendly_name"],
+                    "layout_label": entry["layout_label"] or "Custom",
+                    "windows": geometry.get("windows") or [],
+                    "canvas": {"width": geometry.get("width"),
+                               "height": geometry.get("height")},
+                    "showing": bool(entry["showing"]),
+                    "available": bool(entry["showable"]),
+                    "reason": entry["reason"] or "",
+                })
+            if row["status"] == "unreachable":
+                # Nothing was read, so nothing is known about the layouts beyond
+                # the fact that the display is not answering.
+                continue
+            if layouts:
+                displays.append({"id": row["id"],
+                                 "name": _label(row["id"], row.get("hostname") or ""),
+                                 "layouts": layouts})
+        # A display that did not answer is reported once, by name, so the person
+        # is told why a layout they were given is not offered.
+        for row in rows:
+            if row["status"] == "unreachable" and assigned.get(row["id"]):
+                displays.append({"id": row["id"],
+                                 "name": _label(row["id"], row.get("hostname") or ""),
+                                 "layouts": [],
+                                 "unavailable": "This display is not answering."})
+        displays.sort(key=lambda d: (d["name"].lower(), d["id"]))
+        return displays
+
+    @app.route("/api/user/multiview_show", methods=["POST"])
+    def api_user_multiview_show():
+        """Show one assigned layout on its decoder.
+
+        The body names the assignment and nothing else. The decoder, the layout,
+        its windows and their sources are all resolved here from the server's own
+        records; a browser that sent a different source, an address, a name or a
+        flag would be ignored, and one that named a layout it was not given is
+        refused. The show itself is the Multiview page's own transaction.
+        """
+        data = _json_body()
+        # Not stripped: a key with anything around it is not the key that was
+        # assigned, and is refused as a malformed one rather than repaired.
+        key = str(data.get("layout") or "")
+        decoder, layout_id = omni_users.split_multiview_key(key)
+        if not decoder or not layout_id:
+            return jsonify({"ok": False, "reason": "bad_request",
+                            "error": "That request could not be understood."}), 400
+
+        def _check(account):
+            if not account.permissions.has_feature(omni_access.FEATURE_MULTIVIEW):
+                return "missing_feature:multiview"
+            if not account.permissions.may_operate_multiview(decoder, layout_id):
+                return "multiview_not_assigned"
+            return None
+
+        refusal = _revalidate(_check, "/api/user/multiview_show")
+        if refusal is not None:
+            return refusal
+        resolved = _resolve_addresses(decoder)[decoder]
+        address, why = resolved
+        if not address:
+            return jsonify({"ok": False, "reason": "display_not_found",
+                            "error": "That display is not currently known."}), 404
+
+        def _located():
+            """(object name, None) for the layout, or (None, refusal)."""
+            rows = {row["id"]: row for row in multiview_catalog({decoder})}
+            row = rows.get(decoder)
+            if row is None or row["status"] == "unsupported":
+                return None, (jsonify({"ok": False, "reason": "multiview_unavailable",
+                                       "error": "Multiview is not available on that "
+                                                "display."}), 409)
+            if row["status"] == "unreachable":
+                return None, (jsonify({"ok": False, "reason": "display_unreachable",
+                                       "error": "That display is not answering."}), 502)
+            entry = next((e for e in row["layouts"] if e["id"] == layout_id), None)
+            if entry is None:
+                return None, (jsonify({"ok": False, "reason": "layout_missing",
+                                       "error": "That layout is no longer on that "
+                                                "display."}), 404)
+            if not entry["showable"]:
+                return None, (jsonify({"ok": False, "reason": "not_showable",
+                                       "error": _scrub(entry["reason"])
+                                       or "That layout cannot be shown right now."}), 409)
+            return entry["object"], None
+
+        try:
+            with locks.hold(locks.decoder(decoder)):
+                # The wait is over and the next statement reaches hardware: the
+                # grant is asked again, and the layout is looked up again from a
+                # read that is not older than this request.
+                refusal = _revalidate(_check, "/api/user/multiview_show")
+                if refusal is not None:
+                    return refusal
+                forget_observation("multiview:" + str(address))
+                object_name, refusal = _located()
+                if refusal is not None:
+                    return refusal
+                store.audit("multiview.show", actor=_current_account(),
+                            detail={"display": decoder,
+                                    "display_label": _label(decoder),
+                                    "layout": layout_id})
+                try:
+                    body, status = multiview_show(address, object_name)
+                finally:
+                    forget_observation("multiview:" + str(address))
+                return _user_multiview_result(body, status)
+        except omni_locks.ResourceBusy as busy:
+            log.warning("[USER-MV] busy: %s", busy.resource)
+            return jsonify({"ok": False, "reason": "resource_busy",
+                            "error": "That display is busy with another change. "
+                                     "Try again in a moment."}), 409
+
+    _ADDRESS = re.compile(
+        r"\b(?:\d{1,3}\.){3}\d{1,3}\b|\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b", re.I)
+
+    def _scrub(text):
+        """A sentence for a restricted account: no address, no MAC, bounded."""
+        return _ADDRESS.sub("a unit", str(text or "")).strip()[:240]
+
+    def _user_multiview_result(body, status):
+        """What a person is told about a show, built from named fields only.
+
+        The engine answers with plans, addresses, hostnames, protocol steps and
+        every decoder input it touched. None of that reaches a restricted
+        account: the reply is rebuilt from an allowlist and its sentence is
+        scrubbed. "VERIFIED" is the engine's word and is passed on only when the
+        engine said ok; anything else keeps its own status, so a configuration
+        that matched without a picture is never reported as success.
+        """
+        body = body if isinstance(body, dict) else {}
+        label = body.get("status") if isinstance(body.get("status"), str) else ""
+        label = label if _STATUS_WORDS.match(label or "") else ""
+        if body.get("ok"):
+            dark = body.get("unlocked_windows") or body.get("dark_windows") or []
+            payload = {"ok": True, "status": label or "VERIFIED"}
+            if dark:
+                payload["unlocked"] = len(dark)
+                payload["message"] = ("Shown, but %d window%s did not show a "
+                                      "picture." % (len(dark), "" if len(dark) == 1
+                                                    else "s"))
+            return jsonify(payload)
+        sentence = _scrub(body.get("error") or "")
+        if body.get("reason") == "stale":
+            # The composition the person was looking at is not the one on the
+            # display any more. Not a failure of the display: nothing was written.
+            return jsonify({"ok": False, "reason": "stale", "status": "CHANGED",
+                            "error": sentence or "This layout changed. Review "
+                                                 "your choices and try again."}), 409
+        if status in (502, 503, 504):
+            return jsonify({"ok": False, "reason": "display_unreachable",
+                            "status": label or "UNREACHABLE",
+                            "error": sentence or "A unit did not answer."}), 502
+        code = 409 if status in (409, 400, 404) else 502
+        return jsonify({"ok": False, "status": label or "FAILED",
+                        "reason": "refused" if code == 409 else "failed",
+                        "error": sentence or "That layout could not be shown."}), code
+
+    # ------------------------------------------- the windows of one layout ----
+    #
+    # A person given a saved layout may choose what feeds each of its windows
+    # and then show the result. What they can never do is design: the number,
+    # position and size of the windows is the layout, and the layout is the
+    # administrator's. Every decision below is made here, on the server, from the
+    # account as it is at that moment; the page only displays it.
+
+    _CELL_NAME = re.compile(r"^[a-z0-9_]{1,40}\Z")
+    _SOURCE_MAC = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\Z")
+    _MAX_CHANGES = 16
+
+    #: The only fields the apply endpoint reads. Anything else is refused rather
+    #: than ignored: a request that tries to say something this endpoint cannot
+    #: do should be told so.
+    _APPLY_FIELDS = frozenset({"layout", "base", "changes", "op_id"})
+
+    #: Fields that would redesign, rename or remove a layout. Refused as a
+    #: matter of permission, not of syntax, so the refusal says what happened.
+    _DESIGN_FIELDS = frozenset({
+        "windows", "window", "geometry", "canvas", "name", "friendly_name",
+        "rename", "delete", "remove", "create", "new", "layout_definition",
+        "layout_name", "definition", "subframes", "width", "height", "x", "y",
+        "size", "template", "install", "copy", "group", "resolution"})
+
+    def _may_use_source(account, identity):
+        return account.is_admin or account.permissions.may_use_source(identity)
+
+    def _locate_layout(decoder, layout_id, *, needs_showable):
+        """(catalogue entry, None) for the assigned layout, or (None, refusal).
+
+        Read from the decoder now. `needs_showable` is the difference between
+        looking at a layout and acting on it: one that cannot be shown can still
+        be looked at, with the reason.
+        """
+        rows = {row["id"]: row for row in multiview_catalog({decoder})}
+        row = rows.get(decoder)
+        if row is None or row["status"] == "unsupported":
+            return None, (jsonify({"ok": False, "reason": "multiview_unavailable",
+                                   "error": "Multiview is not available on that "
+                                            "display."}), 409)
+        if row["status"] == "unreachable":
+            return None, (jsonify({"ok": False, "reason": "display_unreachable",
+                                   "error": "That display is not answering."}), 502)
+        entry = next((e for e in row["layouts"] if e["id"] == layout_id), None)
+        if entry is None:
+            return None, (jsonify({"ok": False, "reason": "layout_missing",
+                                   "error": "That layout is no longer on that "
+                                            "display."}), 404)
+        if needs_showable and not entry["showable"]:
+            return None, (jsonify({"ok": False, "reason": "not_showable",
+                                   "error": _scrub(entry["reason"])
+                                   or "That layout cannot be shown right now."}), 409)
+        return dict(entry, _display_name=_label(decoder, row.get("hostname") or "")), None
+
+    def _source_rows(account):
+        """{identity: row} of the sources this account was given, judged for Multiview."""
+        rows = {}
+        for row in multiview_sources() or []:
+            identity = omni_users._normalise_identity(row.get("mac"))
+            if identity and _may_use_source(account, identity):
+                rows[identity] = row
+        return rows
+
+    @app.route("/api/user/multiview_layout", methods=["GET"])
+    def api_user_multiview_layout():
+        """One assigned layout opened for use: its windows, what is in each, and
+        the sources this account may put there.
+
+        Built only from this account's own assignment and grants. A source it
+        was not given is never named; a window that holds one is said to hold
+        "another source". No address appears anywhere in the reply.
+        """
+        account = _principal() or _LocalAdmin()
+        key = str(request.args.get("layout") or "")
+        decoder, layout_id = omni_users.split_multiview_key(key)
+        if not decoder or not layout_id:
+            return jsonify({"ok": False, "reason": "bad_request",
+                            "error": "That request could not be understood."}), 400
+        if not account.is_admin:
+            if not account.permissions.has_feature(omni_access.FEATURE_MULTIVIEW):
+                return _denied(account, "missing_feature:multiview",
+                               "/api/user/multiview_layout")
+            if not account.permissions.may_operate_multiview(decoder, layout_id):
+                return _denied(account, "multiview_not_assigned",
+                               "/api/user/multiview_layout")
+        address, _why = _resolve_addresses(decoder)[decoder]
+        if not address:
+            return jsonify({"ok": False, "reason": "display_not_found",
+                            "error": "That display is not currently known."}), 404
+        entry, refusal = _locate_layout(decoder, layout_id, needs_showable=False)
+        if refusal is not None:
+            return refusal
+        geometry = multiview_geometry(entry["layout"]) or {}
+        design = geometry.get("windows") or []
+        read = multiview_windows(address, entry["object"])
+        if not read.get("ok"):
+            if read.get("missing"):
+                return jsonify({"ok": False, "reason": "layout_missing",
+                                "error": "That layout is no longer on that "
+                                         "display."}), 404
+            return jsonify({"ok": False, "reason": "display_unreachable",
+                            "error": "That display is not answering."}), 502
+        held = {w["cell"]: w for w in read.get("windows") or []}
+        sources = _source_rows(account)
+        windows = []
+        for number, spec in enumerate(design, start=1):
+            current = held.get(spec["cell"]) or {}
+            mac = current.get("source_mac") or ""
+            if mac and mac in sources:
+                source = {"id": mac,
+                          "name": _label(mac, sources[mac].get("hostname") or "")}
+            elif current.get("origin") == "unknown" or mac or current.get("source_ip"):
+                # Something is plainly playing that this account cannot name.
+                source = {"id": None, "name": "Another source", "restricted": True}
+            else:
+                source = None
+            windows.append({
+                "cell": spec["cell"], "number": number,
+                "label": "Window %d" % number,
+                "x": spec.get("x"), "y": spec.get("y"),
+                "anchor": spec.get("anchor") or "",
+                "width": spec.get("width"), "height": spec.get("height"),
+                "source": source,
+                "origin": current.get("origin") or "empty",
+                "health": current.get("health") or ""})
+        offered = []
+        hidden = 0
+        for mac, row in sources.items():
+            if row.get("status") == "ineligible":
+                hidden += 1
+                continue
+            ready = row.get("status") == "ready"
+            offered.append({
+                "id": mac, "name": _label(mac, row.get("hostname") or ""),
+                "selectable": ready,
+                "reason": "" if ready else _scrub(
+                    row.get("reason") or "This source is not ready for Multiview.")})
+        offered.sort(key=lambda s: (s["name"].lower(), s["id"]))
+        editable = bool(design)
+        return jsonify({
+            "ok": True,
+            "display": {"id": decoder, "name": entry["_display_name"]},
+            "layout": {
+                "id": key, "name": entry["friendly_name"],
+                "layout_label": entry["layout_label"] or "Custom",
+                "canvas": {"width": geometry.get("width"),
+                           "height": geometry.get("height")},
+                "showing": bool(read.get("showing")),
+                "available": bool(entry["showable"]),
+                "reason": _scrub(entry["reason"]) if not entry["showable"] else "",
+                "editable": editable,
+                "editable_reason": "" if editable else
+                    "This layout has a custom design, so its windows cannot be "
+                    "chosen here."},
+            "windows": windows,
+            "sources": offered,
+            "hidden_sources": hidden,
+            "revision": read.get("revision") or ""})
+
+    @app.route("/api/user/multiview_compose", methods=["POST"])
+    def api_user_multiview_compose():
+        """Show an assigned layout with this person's choice of source per window.
+
+        The body is `layout` (the assignment key), `base` (the revision the page
+        was showing), `changes` ({window: source id, or "" to empty it}) and an
+        optional `op_id`. The windows not named are left as they are. Everything
+        else -- the display, its address, each source's address, the geometry,
+        the bandwidth, the scalers, the order of writes, the read-back and the
+        rollback -- is decided here and by the Show engine the administrator's
+        page uses. There is one engine.
+
+        What this cannot do: create, rename, resize, reshape or delete a layout,
+        show one that was not assigned, use a source the account was not given,
+        or act after any of those grants was withdrawn -- checked before the
+        wait for the display's lock and again after it.
+        """
+        data = _json_body()
+        key = str(data.get("layout") or "")
+        decoder, layout_id = omni_users.split_multiview_key(key)
+        if not decoder or not layout_id:
+            return jsonify({"ok": False, "reason": "bad_request",
+                            "error": "That request could not be understood."}), 400
+        design = sorted(k for k in data if k in _DESIGN_FIELDS)
+        if design:
+            return _denied(_principal() or _LocalAdmin(), "layout_edit_not_permitted",
+                           "/api/user/multiview_compose")
+        stray = sorted(k for k in data if k not in _APPLY_FIELDS)
+        if stray:
+            return jsonify({"ok": False, "reason": "unsupported_field",
+                            "error": "That request contains something this page "
+                                     "cannot send."}), 400
+        base = data.get("base")
+        changes = data.get("changes", {})
+        op_id = str(data.get("op_id") or "")[:64]
+        if not isinstance(base, str) or not base or len(base) > 64 \
+                or not isinstance(changes, dict) or len(changes) > _MAX_CHANGES:
+            return jsonify({"ok": False, "reason": "bad_request",
+                            "error": "That request could not be understood."}), 400
+        wanted_ids = {}
+        for cell, value in changes.items():
+            if not isinstance(cell, str) or not _CELL_NAME.match(cell) \
+                    or not isinstance(value, str):
+                return jsonify({"ok": False, "reason": "bad_request",
+                                "error": "That request could not be understood."}), 400
+            if value == "":
+                wanted_ids[cell] = ""
+                continue
+            identity = omni_users._normalise_identity(value)
+            if not _SOURCE_MAC.match(identity):
+                return jsonify({"ok": False, "reason": "bad_request",
+                                "error": "That request could not be understood."}), 400
+            wanted_ids[cell] = identity
+
+        def _check(account):
+            if not account.permissions.has_feature(omni_access.FEATURE_MULTIVIEW):
+                return "missing_feature:multiview"
+            if not account.permissions.may_operate_multiview(decoder, layout_id):
+                return "multiview_not_assigned"
+            for identity in wanted_ids.values():
+                if identity and not account.permissions.may_use_source(identity):
+                    return "source_not_permitted"
+            return None
+
+        refusal = _revalidate(_check, "/api/user/multiview_compose")
+        if refusal is not None:
+            return refusal
+        account = _principal() or _LocalAdmin()
+
+        def _prepare():
+            """(object name, {cell: address}, display address, None) or a refusal."""
+            display, _why = _resolve_addresses(decoder)[decoder]
+            if not display:
+                return None, None, None, (jsonify({
+                    "ok": False, "reason": "display_not_found",
+                    "error": "That display is not currently known."}), 404)
+            entry, refusal = _locate_layout(decoder, layout_id, needs_showable=True)
+            if refusal is not None:
+                return None, None, None, refusal
+            geometry = multiview_geometry(entry["layout"]) or {}
+            cells = {w["cell"] for w in geometry.get("windows") or ()}
+            if not cells:
+                return None, None, None, (jsonify({
+                    "ok": False, "reason": "layout_not_editable",
+                    "error": "This layout has a custom design, so its windows "
+                             "cannot be chosen here."}), 409)
+            for cell in wanted_ids:
+                if cell not in cells:
+                    return None, None, None, (jsonify({
+                        "ok": False, "reason": "bad_window",
+                        "error": "That layout has no such window."}), 400)
+            rows = {omni_users._normalise_identity(r.get("mac")): r
+                    for r in multiview_sources() or []}
+            chosen = sorted({i for i in wanted_ids.values() if i})
+            addresses = _resolve_addresses(*chosen) if chosen else {}
+            wanted = {}
+            for cell, identity in wanted_ids.items():
+                if not identity:
+                    wanted[cell] = ""
+                    continue
+                row = rows.get(identity)
+                address, _reason = addresses.get(identity, (None, "not_found"))
+                if row is None or not address:
+                    return None, None, None, (jsonify({
+                        "ok": False, "reason": "source_not_found",
+                        "error": "That source is not currently known."}), 404)
+                if row.get("status") != "ready":
+                    return None, None, None, (jsonify({
+                        "ok": False, "reason": "source_not_ready",
+                        "error": _scrub(row.get("reason"))
+                        or "That source cannot feed a Multiview window."}), 409)
+                wanted[cell] = address
+            return entry["object"], wanted, display, None
+
+        object_name, wanted, display, refusal = _prepare()
+        if refusal is not None:
+            return refusal
+
+        def _finish(response):
+            if op_id:
+                payload = response[0].get_json(silent=True) if isinstance(response, tuple) \
+                    else response.get_json(silent=True)
+                if isinstance(payload, dict):
+                    payload["op_id"] = op_id
+                    status = response[1] if isinstance(response, tuple) else None
+                    return (jsonify(payload), status) if status else jsonify(payload)
+            return response
+
+        try:
+            with locks.hold(locks.decoder(decoder)):
+                # The wait is over and the next statement reaches hardware: the
+                # grants are asked again, including every source this request
+                # names, and the layout and addresses are worked out again from
+                # reads that are not older than this request.
+                refusal = _revalidate(_check, "/api/user/multiview_compose")
+                if refusal is not None:
+                    return _finish(refusal)
+                forget_observation("multiview:" + str(display))
+                object_name, wanted, display, refusal = _prepare()
+                if refusal is not None:
+                    return _finish(refusal)
+                store.audit("multiview.compose", actor=_current_account(),
+                            detail={"display": decoder,
+                                    "display_label": _label(decoder),
+                                    "layout": layout_id,
+                                    "windows_changed": len(wanted)})
+                try:
+                    body, status = multiview_compose(display, object_name, wanted, base)
+                finally:
+                    forget_observation("multiview:" + str(display))
+                    forget_observation("mvwin:" + str(display) + ":" + str(object_name))
+                return _finish(_user_multiview_result(body, status))
+        except omni_locks.ResourceBusy as busy:
+            log.warning("[USER-MV] busy: %s", busy.resource)
+            return _finish((jsonify({"ok": False, "reason": "resource_busy",
+                            "error": "That display is busy with another change. "
+                                     "Try again in a moment."}), 409))
+
     # ------------------------------------------------------------ USB ----
     @app.route("/api/user/usb_state", methods=["GET"])
     def api_user_usb_state():
@@ -1651,20 +2777,33 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
 
     @app.route("/api/user/usb_route", methods=["POST"])
     def api_user_usb_route():
-        """Give a permitted computer a permitted set of peripherals, or take
-        them away.
+        """Give a permitted computer a permitted peripheral, or take it away.
 
-        Adds no USB logic. It authorises both endpoints by stable identity,
-        then hands the same two MACs to the verified pair/unpair path, which
-        keeps its own eligibility, read-back and rollback behaviour.
+        The Remote User USB Matrix is the Admin matrix with this account's subset
+        projected into it, so this endpoint decides exactly as the Admin page does:
+        every cell is derived once (omni_usb_cells) from the administrative payload
+        read during THIS operation, and the control path -- the parent's usb_icron
+        pairing for E4521/D4511 endpoints, the standalone UDP service only for a true
+        standalone unit -- comes from that derivation, never from the browser.
+
+        Adds no USB logic of its own. It authorises both endpoints by stable
+        identity, refuses what the Admin matrix would not offer (including a
+        different USB network, before any device is read or written), and hands the
+        same two endpoints to the verified pair/unpair path, which keeps its own
+        eligibility, read-back and rollback behaviour. Nothing the browser sends
+        other than the two identities and the direction is used.
         """
         data = _json_body()
         computer = omni_users._normalise_identity(data.get("computer"))
         peripherals = omni_users._normalise_identity(data.get("peripherals"))
         detach = bool(data.get("detach"))
         if not computer or not peripherals:
-            return jsonify({"ok": False,
+            return jsonify({"ok": False, "reason": "bad_request",
                             "error": "computer and peripherals required"}), 400
+        if not (_MAC_IDENTITY.match(computer) and _MAC_IDENTITY.match(peripherals)):
+            return jsonify({"ok": False, "reason": "bad_request",
+                            "error": "computer and peripherals must be USB endpoint "
+                                     "identities"}), 400
 
         def _check(account):
             if not account.permissions.has_feature(omni_access.FEATURE_USB):
@@ -1682,15 +2821,55 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
         if refusal is not None:
             return refusal
 
-        view = usb_unpair_view if detach else usb_pair_view
         try:
             # Both endpoints, sorted by hold(), so an attach and a detach
             # racing over the same pair cannot each hold one of them.
             with locks.hold(*locks.usb_pair(computer, peripherals)):
+                # State is read for THIS operation, after the wait: a cached
+                # observation describes a world another request may have changed.
+                forget_observation("usb")
+                state = usb_state()
                 # The wait is over and the next statement reaches hardware.
                 refusal = _revalidate(_check, "/api/user/usb_route")
                 if refusal is not None:
                     return refusal
+                cell = omni_usb_cells.derive(state).get((peripherals, computer))
+                if cell is None:
+                    return jsonify({"ok": False, "status": "unknown_endpoint",
+                                    "reason": "unknown_endpoint",
+                                    "error": "That USB endpoint is not known to "
+                                             "OmniSuite."}), 404
+                public = cell["public"]
+                if detach and not cell["routed"]:
+                    return jsonify({"ok": True, "status": "not_routed",
+                                    "changed": False})
+                if not detach and cell["routed"]:
+                    return jsonify({"ok": True, "status": "already_routed",
+                                    "changed": False})
+                if not cell["can_act"]:
+                    # Exactly the Admin matrix's refusal: the cell is not offered.
+                    sentence = public["label"]
+                    if public["detail"]:
+                        sentence += ". " + public["detail"]
+                    return jsonify({"ok": False, "status": "refused",
+                                    "reason": public["reason"] or "not_routable",
+                                    "error": sentence}), 409
+                path = cell["path"]
+                view = None
+                if path == "usb_icron":
+                    view = usb_icron_unpair_view if detach else usb_icron_pair_view
+                    url = "/api/usb_unpair" if detach else "/api/usb_pair"
+                    body = {"rex": cell["rex_key"], "lex": cell["lex_key"]}
+                    if not detach:
+                        body.update({"makeActive": False, "replaceExisting": True})
+                elif path == "standalone_udp":
+                    view = usb_unpair_view if detach else usb_pair_view
+                    url = "/api/usb_route/unpair" if detach else "/api/usb_route/pair"
+                    body = {"lex_mac": cell["lex_mac"], "rex_mac": cell["rex_mac"]}
+                if view is None:
+                    return jsonify({"ok": False, "status": "refused",
+                                    "reason": "no_control_path",
+                                    "error": "This route cannot be changed from here."}), 409
                 store.audit("usb.detach" if detach else "usb.attach",
                             actor=_current_account(),
                             detail={"computer": computer,
@@ -1698,19 +2877,65 @@ def register(app, *, store, listener, aliases, groups, load_cache, matrix_state,
                                     "computer_label": _label(computer),
                                     "peripherals_label": _label(peripherals)})
                 try:
-                    with app.test_request_context(
-                            "/api/usb_route", method="POST",
-                            json={"lex_mac": computer, "rex_mac": peripherals}):
-                        return view()
+                    with app.test_request_context(url, method="POST", json=body):
+                        result = view()
                 finally:
                     # This just changed what a USB read would report.
                     forget_observation("usb")
+                return _user_usb_result(result, detach)
         except omni_locks.ResourceBusy as busy:
             log.warning("[USER-USB] busy: %s", busy.resource)
             return jsonify({"ok": False,
                             "reason": "resource_busy",
                             "error": "That equipment is busy with another "
                                      "change. Try again in a moment."}), 409
+
+    def _user_usb_result(result, detach):
+        """What a user may be told about a pair or unpair, from an allowlist.
+
+        The verified paths answer with addresses, MACs of other hosts, protocol
+        replies and commands. None of that reaches a restricted account: the body
+        is rebuilt from named fields, and the sentence is scrubbed of anything
+        that looks like an address. A command that was accepted but not confirmed
+        by a fresh read is its own outcome, never a success.
+        """
+        response, code = ((result[0], result[1]) if isinstance(result, tuple)
+                          else (result, 200))
+        try:
+            raw = response.get_json(silent=True) or {}
+        except Exception:
+            raw = {}
+        reason = raw.get("reason") or raw.get("status")
+        reason = reason.lower() if isinstance(reason, str) and _SLUG.match(reason.lower()) else None
+        if raw.get("ok"):
+            return jsonify({"ok": True, "status": "verified", "changed": True})
+        if code == 200:
+            # Accepted, and a fresh read did not agree.
+            code, status = 502, "unverified"
+            sentence = ("The device accepted the command but a fresh read did not "
+                        "confirm it, so the route is not reported as changed.")
+        elif code == 409:
+            status = "refused"
+            sentence = (omni_usb_cells.clean_text(raw.get("error"))
+                        or "That route is not available right now.")
+        elif code == 404:
+            status = "unknown_endpoint"
+            sentence = "That USB endpoint is not known to OmniSuite."
+        elif code == 400:
+            status = "bad_request"
+            sentence = "That request could not be understood."
+        elif code in (502, 503, 504):
+            # The pair path could not read or reach a unit: an upstream condition, said as one.
+            code, status = 502, "unreachable"
+            sentence = "A unit did not answer, so the route was not changed."
+        else:
+            # Anything else is a device-side failure. Its text is for the log, not for a browser.
+            code, status = 502, "failed"
+            sentence = "The route could not be changed."
+        body = {"ok": False, "status": status, "error": sentence, "changed": False}
+        if reason:
+            body["reason"] = reason
+        return jsonify(body), code
 
     def _usb_permitted_endpoints(account):
         """The USB endpoint identities this account may act on.
@@ -1810,7 +3035,8 @@ def _permissions_from(raw) -> Permissions:
                        destinations=_list("destinations"),
                        groups=_list("groups"),
                        interfaces=_list("interfaces")
-                       if isinstance(interfaces, (list, tuple)) else None)
+                       if isinstance(interfaces, (list, tuple)) else None,
+                       multiviews=_list("multiviews"))
 
 
 def _adapters(app):

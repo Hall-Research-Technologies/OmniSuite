@@ -133,6 +133,38 @@ class MalformedBodySweepTests(ServerTestBase):
                     self.assertIn("JSON", body["error"])
                     self.assertEqual(body.get("reason"), "bad_request_body")
 
+    def test_every_remote_access_endpoint_refuses_a_non_object_body_as_a_bad_body(self):
+        """`[]` and unparseable text are a 400 with the shared reason, on every endpoint
+        the remote-access module registers.
+
+        The module reads its body through one wrapper. If that wrapper turned a refused
+        body into `{}`, each handler would answer for an EMPTY request instead: a
+        different 400 for most, and for the Remote Access command a state change (`[]`
+        used to mean "off"). The sweep above only proves nothing answers 5xx; this one
+        proves the refusal is the body's, not the handler's.
+        """
+        found = []
+        for rule in srv.app.url_map.iter_rules():
+            view = srv.app.view_functions.get(rule.endpoint)
+            code = getattr(view, "__code__", None)
+            methods = sorted(rule.methods & WRITES)
+            if methods and code is not None and \
+                    Path(code.co_filename).name == "omni_remote_api.py":
+                found.append((re.sub(r"<[^>]+>", "x", rule.rule), methods[0]))
+        found = sorted(set(found))
+        self.assertGreaterEqual(len(found), 15, "precondition: the module's routes were found")
+        wrong = []
+        for path, method in found:
+            if path == "/api/auth/logout":          # reads no body at all
+                continue
+            for raw in ("[]", "{not json"):
+                reply = self.send(method, path, raw)
+                body = reply.get_json(silent=True) or {}
+                if reply.status_code != 400 or body.get("reason") != "bad_request_body":
+                    wrong.append("%s %s body=%s -> %s %s" % (
+                        method, path, raw, reply.status_code, body.get("reason")))
+        self.assertEqual(wrong, [], "\n".join(wrong))
+
     def test_a_wrong_typed_value_in_a_valid_object_is_a_400(self):
         for body in ({"targets": 5}, {"targets": ["192.0.2.1"]}, {"targets": {"a": 1}}):
             with self.subTest(body=body):

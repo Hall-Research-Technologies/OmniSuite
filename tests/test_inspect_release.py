@@ -111,12 +111,12 @@ class InspectReleaseTests(unittest.TestCase):
         for data, label in ((private, "private product"),
                             (b"-----BEGIN RSA " + b"PRIVATE KEY-----\n", "private key"),
                             (b"host 192.168." + b"100.152", "lab address"),
-                            (b"C:" + bytes([92]) + b"softwareDEV" + bytes([92]) + b"x", "build path")):
+                            (b"C:" + bytes([92]) + inspect._DEV_ROOT.encode() + bytes([92]) + b"x", "build path")):
             with self.subTest(label):
                 self.assertTrue(self.check(dict(GOOD, **{"README.md": data})), label)
 
     def test_the_executable_is_scanned_for_the_private_name_and_build_paths(self):
-        for blob in (b"Omni" + b"Suite-Pl" + b"us", b"C:" + bytes([92]) + b"softwareDEV" + bytes([92]) + b"omniSuite"):
+        for blob in (b"Omni" + b"Suite-Pl" + b"us", b"C:" + bytes([92]) + inspect._DEV_ROOT.encode() + bytes([92]) + b"app"):
             with self.subTest(blob):
                 files = dict(GOOD, **{"OmniSuite.exe": b"MZ" + b"\0" * 200_000 + blob})
                 self.assertTrue(self.check(files))
@@ -198,19 +198,26 @@ class DiagnosticModeTests(unittest.TestCase):
         self.assertEqual(self.check(GOOD, self.name(), self.DIAG), [])
         self.assertTrue(self.check(GOOD, self.name(), self.DIAG, diagnostic=False))
 
-    def test_every_platform_tail_is_accepted_for_a_rehearsal(self):
-        for tail in ("Windows-x86_64.zip", "macOS-arm64.zip", "macOS-x86_64.zip", "Ubuntu-x86_64.tar.gz"):
+    def test_every_distributed_platform_tail_is_accepted_for_a_rehearsal(self):
+        for tail in ("Windows-x86_64.zip", "macOS-arm64.zip"):
             with self.subTest(tail):
+                self.assertEqual(self.check(GOOD, self.name(tail=tail), self.DIAG), [])
+
+    def test_a_retired_platform_is_not_accepted_even_for_a_rehearsal(self):
+        """macOS Intel and Linux are not distributed from V1.2.1, so a package named for one is
+        not this product's artifact, however well formed its contents are."""
+        for tail in ("macOS-x86_64.zip", "Ubuntu-x86_64.tar.gz"):
+            with self.subTest(tail):
+                path = Path(self.tmp.name) / self.name(tail=tail)
                 if tail.endswith(".tar.gz"):
-                    path = Path(self.tmp.name) / self.name(tail=tail)
                     with tarfile.open(path, "w:gz") as archive:
                         for member, data in GOOD.items():
                             info = tarfile.TarInfo(member)
                             info.size = len(data)
                             archive.addfile(info, io.BytesIO(data))
-                    self.assertEqual(inspect.problems_for(path, self.DIAG, diagnostic=True), [])
+                    self.assertTrue(inspect.problems_for(path, self.DIAG, diagnostic=True))
                 else:
-                    self.assertEqual(self.check(GOOD, self.name(tail=tail), self.DIAG), [])
+                    self.assertTrue(self.check(GOOD, self.name(tail=tail), self.DIAG))
 
     def test_the_rehearsal_is_still_inspected_for_content(self):
         for drop in ("LICENSE", "THIRD_PARTY_NOTICES.md", "REBUILD.md", "third_party/PYSTRAY_PROVENANCE.md"):

@@ -281,6 +281,52 @@ class RestoreDeviceMergeIsOneCriticalSectionTests(RestoreBase):
         self.assertEqual(response.status_code, 200, body)
         self.assertFalse(body["devices"]["saved"])
 
+    def test_nothing_writes_the_cache_between_the_snapshot_and_a_rollback(self):
+        """The restore holds the cache lock from its snapshot to the end of a rollback.
+
+        A failure after the device-list step rolls the cache back from OUTSIDE the
+        device-merge's own critical section, so only the restore's outer hold keeps a
+        poll or scan from saving into the window and being overwritten by the rollback.
+        """
+        import omni_users
+        real_atomic = omni_users._atomic_write_json
+        real_rollback = omni_backup.rollback_cache
+        seen = {}
+
+        def fail_late(path, payload):
+            if Path(path).name == "usb_associations.json":
+                return False
+            return real_atomic(path, payload)
+
+        def racing_writer():
+            with self.srv._cache_io_lock:
+                units = self.srv._load_cache() or []
+                units.append({"ip": "198.51.100.78", "mac": "b8:98:b0:00:00:78",
+                              "hostname": "late"})
+                self.srv._save_cache(units)
+            seen["writer_done"] = True
+
+        def rollback(*args, **kwargs):
+            seen["called"] = True
+            thread = threading.Thread(target=racing_writer, daemon=True)
+            seen["thread"] = thread
+            thread.start()
+            thread.join(0.6)
+            # Recorded while the rollback is still in progress.
+            seen["done_during_rollback"] = bool(seen.get("writer_done"))
+            return real_rollback(*args, **kwargs)
+
+        with mock.patch.object(omni_users, "_atomic_write_json", fail_late), \
+                mock.patch.object(omni_backup, "rollback_cache", rollback):
+            response = self.restore()
+        if seen.get("thread") is not None:
+            seen["thread"].join(10)
+        self.assertEqual(response.get_json()["status"], "FAILED \u2014 ROLLED BACK")
+        self.assertTrue(seen.get("called"), "precondition: the cache was rolled back")
+        self.assertFalse(
+            seen["done_during_rollback"],
+            "a poll or scan saved the cache between the restore's snapshot and its rollback")
+
     def test_the_restore_still_puts_back_every_file_on_failure(self):
         """The cache work must not disturb the existing rollback guarantee."""
         import omni_users

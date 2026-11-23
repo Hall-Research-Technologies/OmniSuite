@@ -27,8 +27,7 @@ component is missing from this file or from `third_party_licenses/`.
 
 Established from the contents of a packaged Windows build (the Python modules in
 its archive plus the extension modules and libraries beside them), and from
-`requirements-lock.txt`. Versions are those of the locked build environment;
-`cryptography` is 48.0.1 on Intel macOS only (see below).
+`requirements-lock.txt`. Versions are those of the locked build environment.
 
 | Component | Version | Declared licence | Licence text |
 |---|---|---|---|
@@ -73,16 +72,15 @@ Notes on this table:
 * **pyinstaller** and **pyinstaller-hooks-contrib** are build tools. What reaches
   the package is PyInstaller's bootloader and runtime modules, and one runtime
   hook from the hooks collection.
-* **cryptography** on Intel macOS is 48.0.1, because later releases publish no
-  prebuilt wheel for that platform. Its three licence files are identical to those
-  of 50.0.2, which are the ones bundled.
 * **pillow**'s wheel contains compiled image libraries; its `LICENSE` file is the
   statement that covers them.
 
 ### Components that depend on the build platform
 
 The lock was resolved on Windows. `pystray` requires further packages on two
-platforms, and pip resolves them at build time, so they are **not pinned**:
+platforms. The three macOS ones are pinned in the lock to 13.0 (the versions the
+macOS arm64 CI build resolved); the Linux one is not pinned, because no Linux
+package is distributed:
 
 | Component | Required by pystray on | Declared licence | Licence text |
 |---|---|---|---|
@@ -91,8 +89,8 @@ platforms, and pip resolves them at build time, so they are **not pinned**:
 | pyobjc-framework-Quartz | macOS | MIT | `third_party_licenses/pyobjc-framework-quartz/` |
 | pyobjc-core | macOS | MIT (as declared) | its package carries no licence file; the PyObjC text is the one in `pyobjc-framework-cocoa` |
 
-OmniSuite has not inspected a Linux or macOS package's contents for these, so
-they are listed as possibly present, not as confirmed.
+OmniSuite has not inspected the contents of a Linux or macOS package beyond the build's own
+checks, so these are listed as possibly present, not as confirmed.
 
 ## The Python runtime and what it carries
 

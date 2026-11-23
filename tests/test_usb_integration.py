@@ -3197,6 +3197,13 @@ class HardwareIsolationTests(ServerTestBase):
     noticed when one of them reached a live unit from a unit test.
     """
 
+    def test_identify_cannot_escape_the_fenced_transport(self):
+        with self.assertRaises(AssertionError):
+            self.real_identify("192.0.2.1")
+        self.assertEqual(len(_WS_WRITES), 1, "the attempt is recorded, not only raised")
+        self.assertEqual(_WS_WRITES[0][1], {"identify": {}})
+        del _WS_WRITES[:]
+
     def test_the_fence_refuses_a_method_call_not_only_a_config_set(self):
         """`method` is the API's third verb, and it writes.
 
@@ -3298,6 +3305,18 @@ class HardwareIsolationTests(ServerTestBase):
         self._patch_cache(FULL_CACHE_UNITS)
         self.seed(*OBSERVED_UDP)
         self.rules = {str(r.rule) for r in srv.app.url_map.iter_rules()}
+        # Blink travels through the credentialed transport, so it now meets this
+        # suite's fence, which fails any test that sends a `method`. The endpoint
+        # tests below exist to prove nothing escapes and to see how each endpoint
+        # answers when its unit cannot be reached, so at that one seam the unit is
+        # simply not there -- exactly what the socket fence used to make of it.
+        # test_identify_cannot_escape_the_fenced_transport drives the real
+        # operation and requires the fence to refuse it.
+        self.real_identify = srv._omnistream_identify
+
+        def unreachable(ip):
+            raise OSError("the network is unavailable in tests")
+        self.patch_srv("_omnistream_identify", unreachable)
 
     # ---- the fence itself ----
     def test_a_configuration_write_is_refused_by_the_transport(self):
@@ -3950,17 +3969,19 @@ class ApplicationVersionTests(ServerTestBase):
 
 
 class WorkspaceDescriptionTests(ServerTestBase):
-    """The layout hint must describe the layout that exists."""
+    """No surface describes a layout or feature that no longer exists."""
 
     def source(self, *parts):
         return Path(srv.__file__).resolve().parent.joinpath(*parts).read_text(encoding="utf-8")
 
-    def test_the_hint_no_longer_advertises_the_removed_features(self):
+    def test_only_the_shared_layouts_are_offered(self):
         script = self.source("ui", "appearance.js")
-        block = script[script.index("id: 'workspace'"):]
-        block = block[:block.index("}") + 1]
-        for gone in ("rail", "inspector"):
-            self.assertNotIn(gone, block.lower(), f"the hint still advertises the {gone}")
+        block = script[script.index("const UI_TEMPLATES = ["):]
+        block = block[:block.index("];")]
+        self.assertIn("id: 'classic'", block)
+        self.assertIn("id: 'compact'", block)
+        for retired in ("modern", "workspace"):
+            self.assertNotIn(f"id: '{retired}'", block, f"{retired} is offered again")
 
     def test_no_active_surface_presents_the_rail_or_inspector_as_current(self):
         for name in ("index.html", "settings.js", "appearance.js",
@@ -4289,6 +4310,8 @@ class UpdateCheckTests(ServerTestBase):
          "browser_download_url":
              "https://github.com/Hall-Research-Technologies/omniSuite/releases/"
              f"download/V1.0.8/{ARTIFACT_PREFIX}V1.0.8-{tail}"}
+        # The two distributed builds, then two files an older release carried and this one
+        # does not: they must never be offered to anybody.
         for tail in ("Windows-x86_64.zip", "macOS-arm64.zip",
                      "macOS-x86_64.zip", "Ubuntu-x86_64.tar.gz")
     ]
@@ -4300,13 +4323,20 @@ class UpdateCheckTests(ServerTestBase):
         return srv._select_platform_asset(self.ASSETS)
 
     def test_each_platform_selects_its_own_asset(self):
-        cases = [("Windows", "AMD64", "windows-x86_64"), ("Linux", "x86_64", "ubuntu-x86_64"),
-                 ("Darwin", "arm64", "macos-arm64"), ("Darwin", "x86_64", "macos-x86_64")]
+        cases = [("Windows", "AMD64", "windows-x86_64"), ("Darwin", "arm64", "macos-arm64")]
         for system, machine, expected in cases:
             with self.subTest(system=system, machine=machine):
                 asset = self.asset_for(system, machine)
                 self.assertIsNotNone(asset, f"{system}/{machine}")
                 self.assertEqual(asset["platform"], expected)
+
+    def test_macos_intel_and_linux_are_offered_nothing_even_when_a_feed_lists_their_old_files(self):
+        """Not distributed from V1.2.1. The legacy names stay recognised as this product's but
+        no platform selects them."""
+        for system, machine in (("Darwin", "x86_64"), ("Darwin", "amd64"), ("Linux", "x86_64"),
+                                ("Linux", "aarch64")):
+            with self.subTest(system=system, machine=machine):
+                self.assertIsNone(self.asset_for(system, machine))
 
     def test_an_unknown_platform_offers_no_asset(self):
         """Guessing is worse than sending the operator to the releases page."""
@@ -5130,7 +5160,7 @@ class FirstLaunchContractTests(CleanInstallBase):
                           if not line.lstrip().startswith("#"))
         self.assertNotIn('CWD / "firmware"', code)
         self.assertNotIn('CWD / "ui" / "firmware"', code)
-        self.assertNotIn("softwareDEV", code, "no developer path may ship")
+        self.assertNotIn("soft" + "wareDEV", code, "no developer path may ship")
 
     def test_no_developer_or_home_path_is_hard_coded_in_any_published_file(self):
         import subprocess
@@ -5144,7 +5174,7 @@ class FirstLaunchContractTests(CleanInstallBase):
         if listed.returncode != 0:
             self.skipTest("not a git working tree")
         pattern = re.compile(
-            r"[A-Za-z]:[\\/]+(?:Users|softwareDEV|Documents|Desktop)[\\/]+"
+            r"[A-Za-z]:[\\/]+(?:Users|soft" + "wareDEV|Documents|Desktop)[\\/]+"
             r"|/(?:Users|home)/[a-z][\w.-]*/", re.I)
         offenders = []
         for name in listed.stdout.split():
@@ -5721,9 +5751,9 @@ class ArtifactNamingTests(ServerTestBase):
     EXPECTED = {
         "windows": "{prefix}{version}-Windows-x86_64.zip",
         "arm64": "{prefix}{version}-macOS-arm64.zip",
-        "x86_64": "{prefix}{version}-macOS-x86_64.zip",
-        "linux": "{prefix}{version}-Ubuntu-x86_64.tar.gz",
     }
+    # Files an older feed may still list. Present as decoys in every feed below.
+    LEGACY = ["{prefix}{version}-macOS-x86_64.zip", "{prefix}{version}-Ubuntu-x86_64.tar.gz"]
 
     def build_script(self):
         return Path(srv.__file__).resolve().parent.joinpath("tools", "build_release.py").read_text(encoding="utf-8")
@@ -5731,7 +5761,7 @@ class ArtifactNamingTests(ServerTestBase):
     def assets(self, version="V1.0.7"):
         base = "https://github.com/Hall-Research-Technologies/OmniSuite/releases/download/"
         named = [name.format(prefix=ARTIFACT_PREFIX, version=version)
-                 for name in self.EXPECTED.values()]
+                 for name in list(self.EXPECTED.values()) + self.LEGACY]
         return [{"name": filename, "size": 1,
                  "browser_download_url": base + version + "/" + filename}
                 for filename in named]
@@ -5753,9 +5783,7 @@ class ArtifactNamingTests(ServerTestBase):
         for system, machine, expected in (
                 ("Windows", "AMD64", "Windows-x86_64.zip"),
                 ("Windows", "ARM64", "Windows-x86_64.zip"),
-                ("Darwin", "arm64", "macOS-arm64.zip"),
-                ("Darwin", "x86_64", "macOS-x86_64.zip"),
-                ("Linux", "x86_64", "Ubuntu-x86_64.tar.gz")):
+                ("Darwin", "arm64", "macOS-arm64.zip")):
             with self.subTest(system=system, machine=machine):
                 with mock.patch.object(srv.platform, "system", return_value=system), \
                      mock.patch.object(srv.platform, "machine", return_value=machine):
@@ -5767,8 +5795,8 @@ class ArtifactNamingTests(ServerTestBase):
     def test_a_platform_with_no_artifact_is_offered_nothing(self):
         """Handing someone the wrong build is worse than handing them the page."""
         assets = self.assets()
-        for system, machine in (("Linux", "aarch64"), ("FreeBSD", "x86_64"),
-                                ("Darwin", "ppc"), ("", "")):
+        for system, machine in (("Linux", "aarch64"), ("Linux", "x86_64"), ("FreeBSD", "x86_64"),
+                                ("Darwin", "x86_64"), ("Darwin", "ppc"), ("", "")):
             with self.subTest(system=system, machine=machine):
                 with mock.patch.object(srv.platform, "system", return_value=system), \
                      mock.patch.object(srv.platform, "machine", return_value=machine):
@@ -8384,8 +8412,11 @@ class LayoutIndependenceTests(ServerTestBase):
     def test_light_is_a_mode_not_a_fifth_layout(self):
         css = self.source("ui", "templates.css")
         self.assertIn("body.light", css)
-        for template in ("classic", "compact", "modern", "workspace"):
+        for template in ("classic", "compact"):
             self.assertIn(f'[data-template="{template}"]', css, template)
+        for retired in ("modern", "workspace"):
+            self.assertNotIn(f'[data-template="{retired}"]', css,
+                             f"{retired} still has rules nothing can select")
 
     def test_colours_are_named_by_meaning(self):
         css = self.source("ui", "templates.css")
@@ -8397,11 +8428,30 @@ class LayoutIndependenceTests(ServerTestBase):
             self.assertIn(token, css, token)
 
     def test_a_layout_selection_persists_and_is_validated(self):
-        self.client.post("/api/ui_preferences", json={"template": "workspace"})
-        self.assertEqual(self.client.get("/api/ui_preferences").get_json()["template"], "workspace")
+        self.client.post("/api/ui_preferences", json={"template": "compact"})
+        self.assertEqual(self.client.get("/api/ui_preferences").get_json()["template"], "compact")
         self.assertEqual(self.client.post("/api/ui_preferences",
                                           json={"template": "neon"}).status_code, 400)
-        self.assertEqual(self.client.get("/api/ui_preferences").get_json()["template"], "workspace")
+        self.assertEqual(self.client.get("/api/ui_preferences").get_json()["template"], "compact")
+
+    def test_a_layout_from_an_earlier_build_is_read_as_the_one_that_replaced_it(self):
+        # What an earlier build wrote to disk must stay readable, and never reach
+        # the page as a layout the page no longer has.
+        for retired in ("modern", "workspace"):
+            srv._write_ui_preferences({"template": retired, "preset": "plum"})
+            body = self.client.get("/api/ui_preferences").get_json()
+            self.assertEqual(body["template"], "classic", retired)
+            self.assertEqual(body["preset"], "plum", "the rest of the preference was lost")
+
+    def test_a_page_that_still_sends_a_retired_layout_is_answered_and_the_file_is_rewritten(self):
+        srv._write_ui_preferences({"template": "workspace", "preset": "rose"})
+        response = self.client.post("/api/ui_preferences", json={"preset": "slate"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(srv._read_ui_preferences()["template"], "classic",
+                         "the retired value survived a save")
+        stale = self.client.post("/api/ui_preferences", json={"template": "modern"})
+        self.assertEqual(stale.status_code, 200)
+        self.assertEqual(stale.get_json()["template"], "classic")
 
 
 class RouteSubnetEligibilityTests(unittest.TestCase):
@@ -8692,9 +8742,9 @@ class AppearanceTests(ServerTestBase):
     def prefs(self):
         return self.client.get("/api/ui_preferences").get_json()
 
-    def test_four_layouts_and_ten_presets_are_offered(self):
+    def test_two_layouts_and_ten_presets_are_offered(self):
         body = self.prefs()
-        self.assertEqual(body["templates"], ["classic", "compact", "modern", "workspace"])
+        self.assertEqual(body["templates"], ["classic", "compact"])
         self.assertEqual(len(body["presets"]), 10)
         self.assertEqual(body["presets"][0], "default")
 
@@ -8761,13 +8811,13 @@ class AppearanceTests(ServerTestBase):
     def test_an_obsolete_granular_override_is_dropped_not_applied(self):
         """An installation upgraded from the previous build must not keep being
         tinted by a control that no longer exists."""
-        srv._write_ui_preferences({"template": "modern", "preset": "cool",
+        srv._write_ui_preferences({"template": "compact", "preset": "cool",
                                    "colors": {"accent": "#ff00ff", "error": "#00ff00"}})
         self.assertNotIn("colors", self.prefs())
         self.client.post("/api/ui_preferences", json={"preset": "warm"})
         stored = srv._read_ui_preferences()
         self.assertNotIn("colors", stored, "the obsolete field is removed on the next save")
-        self.assertEqual(stored["template"], "modern", "everything else is preserved")
+        self.assertEqual(stored["template"], "compact", "everything else is preserved")
 
     def test_a_malformed_preferences_file_degrades_to_defaults(self):
         srv.UI_PREFS.write_text("{not json", encoding="utf-8")
@@ -8954,14 +9004,20 @@ class ConfigureTableTests(ServerTestBase):
 
 
 class WorkspaceLayoutTests(ServerTestBase):
-    """Workspace is a constrained OmniSuite, not a shell built around it."""
+    """The layouts are styling of what the server rendered, never a shell around it.
+
+    These began as the Workspace layout's tests. Workspace was retired so the
+    application offers the same two layouts as LumaSuite, and what they guarded --
+    no rail, no inspector, no relocation, no hard-coded shell colour -- still
+    holds for the layouts that remain.
+    """
 
     def source(self, *parts):
         return Path(srv.__file__).resolve().parent.joinpath(*parts).read_text(encoding="utf-8")
 
     def workspace_css(self):
         css = self.source("ui", "templates.css")
-        start = css.index('/* ------------------------------------------------------------- workspace */')
+        start = css.index('[data-template="compact"]')
         return css[start:css.index("/* Preset and colour controls in Settings. */")]
 
     def test_there_is_no_navigation_rail(self):
@@ -8996,15 +9052,11 @@ class WorkspaceLayoutTests(ServerTestBase):
                        "createElement('aside')", "createElement('main')"):
             self.assertNotIn(banned, script, banned)
 
-    def test_the_work_area_is_constrained_and_centred(self):
-        block = self.workspace_css()
-        self.assertIn("--workspace-max", block)
-        self.assertIn("margin-left: auto", block)
-        self.assertIn("margin-right: auto", block)
-
-    def test_the_usb_matrix_keeps_the_width_it_needs(self):
-        block = self.workspace_css()
-        self.assertIn('[data-template="workspace"][data-page="usb"]', block)
+    def test_no_retired_layout_leaves_rules_behind(self):
+        css = self.source("ui", "templates.css")
+        for retired in ("workspace", "modern"):
+            self.assertNotIn(f'data-template="{retired}"', css, retired)
+        self.assertNotIn("--workspace-max", css)
 
     def test_the_page_key_is_an_attribute_not_a_rearrangement(self):
         script = self.source("ui", "appearance.js")
@@ -9016,7 +9068,7 @@ class WorkspaceLayoutTests(ServerTestBase):
         dark are the palette's business."""
         block = self.workspace_css()
         literals = re.findall(r":\s*(#[0-9a-fA-F]{3,6}|rgba?\([^)]*\))\s*;", block)
-        self.assertEqual(literals, [], f"workspace CSS names colours directly: {literals}")
+        self.assertEqual(literals, [], f"layout CSS names colours directly: {literals}")
 
     def test_the_light_palette_restates_every_semantic_token(self):
         """The defect: `--surface: var(--bg)` declared once on :root resolved

@@ -199,6 +199,9 @@
       </select>
     </div>
 
+    <!-- A password field belongs to a form. display:contents keeps the rows laid
+         out exactly as they were; onsubmit is inert because Save is a button. -->
+    <form style="display:contents" onsubmit="return false" novalidate autocomplete="off">
     <div class="modal-row">
       <label for="f_username">Name</label>
       <input id="f_username" type="text" autocapitalize="none" spellcheck="false">
@@ -209,6 +212,7 @@
       <input id="f_password" type="password" autocomplete="new-password"
              placeholder="At least 8 characters">
     </div>
+    </form>
 
     <div id="user_only">
       <!-- Acts immediately rather than on Save, because enabling it mints a
@@ -240,6 +244,19 @@
           </div>
         </div>
         <div id="direct_status" class="hint" style="margin-top:8px;"></div>
+        <!-- The address remote access serves has changed since this link was
+             last handed out. Advisory, not an error: the link is still valid
+             and the NEW link above is already built for the new address. -->
+        <div id="direct_address" class="cfg-warning" role="status" style="margin-top:8px;" hidden>
+          <div>
+            <strong>The address changed.</strong>
+            <span id="direct_address_text"></span>
+            <div style="margin-top:6px;">
+              <button class="btn small secondary" type="button" id="direct_address_ack">
+                I have shared the new link</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="settings-section">
@@ -249,6 +266,7 @@
           <div class="feature-choice" style="flex:1 1 auto;">
             <label><input type="checkbox" value="av" class="f-feature"> A/V</label>
             <label><input type="checkbox" value="usb" class="f-feature"> USB</label>
+            <label><input type="checkbox" value="multiview" class="f-feature"> Multiview</label>
           </div>
         </div>
         <div class="modal-row" style="align-items:flex-start;" id="interface_row">
@@ -306,6 +324,25 @@
         </div>
         <div class="assign-list" id="grp_list"></div>
       </div>
+
+      <!-- Per-layout, never "all": a layout is a thing a person may put on a
+           display, and each one is given on its own. Read from the displays when
+           the section is opened, because it asks each of them. -->
+      <div class="settings-section" id="mv_section" hidden>
+        <h4>Multiview layouts they may show</h4>
+        <p class="hint" style="margin:0 0 8px;">
+          Multiview layouts are given separately from displays and sources. A
+          layout can be shown without the account being able to route to the
+          displays or sources inside it. The person can choose which of the
+          sources given to them (under <em>Sources they may route</em>) feeds
+          each window when they show a layout; they cannot change its design.
+        </p>
+        <div class="assign-toolbar">
+          <span class="assign-count" id="mv_count">0 selected</span>
+          <button class="btn-quiet" type="button" id="mv_retry" hidden>Try again</button>
+        </div>
+        <div class="assign-list" id="mv_list" aria-live="polite"></div>
+      </div>
     </div>
 
     <div id="editor_error" class="modal-error"></div>
@@ -344,11 +381,11 @@
 
 <script src="/ui/csrf.js"></script>
 <script src="/ui/modal-stack.js"></script>
-<script src="/ui/adminnav.js"></script>
+<script src="/ui/adminnav.js?v=20261117-remotenav2"></script>
 <script src="/ui/appearance.js?v=20260910-appearance"></script>
 <script src="/ui/toast.js"></script>
 <script src="/ui/confirm.js"></script>
-<script src="/ui/settings.js?v=20260911-settings"></script>
+<script src="/ui/settings.js?v=20261120-settings3"></script>
 <script src="/ui/admin/users.js"></script>
 </body>
 </html>

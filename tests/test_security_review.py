@@ -80,7 +80,19 @@ class FinalInventoryTests(unittest.TestCase):
         # /api/user/matrix_state added: the routable grid built for the
         # caller's own permitted sources, displays and groups. The handler
         # additionally requires the Matrix routing interface.
-        self.assertEqual(counts[Access.USER], 7,
+        # /api/user/unroute_many added: the Unroute half of the one-or-many selection, same
+        # per-display authorisation on both sides of the lock, names and counts only.
+        # /api/user/route_many added: one permitted source to several displays
+        # and groups. Each resolved display is authorised on its own account
+        # on both sides of its per-display lock, group membership grants no
+        # display individually, and the answer carries counts and names only.
+        # /api/user/multiview_state and /api/user/multiview_show added: the
+        # administrator assigns specific saved layouts by decoder identity and
+        # layout id; the person may list and Show exactly those, nothing else.
+        # /api/user/multiview_layout and /api/user/multiview_compose added: open one assigned
+        # layout and choose a source per window of it. Both answer from the account's own grants,
+        # re-checked on both sides of the display's lock; neither can design a layout.
+        self.assertEqual(counts[Access.USER], 13,
                          "what a restricted account may call changed")
         # Three moved to ADMIN in the release-candidate audit: the update
         # alert, its acknowledgement and the appearance reset all write or
@@ -122,10 +134,11 @@ class FinalInventoryTests(unittest.TestCase):
         # confirmation and the Device names page. Administrative, like the
         # accounts and groups it describes; names only, never an address or a
         # credential.
-        self.assertEqual(counts[Access.ADMIN], 115,
+        self.assertEqual(counts[Access.ADMIN], 117,  # +1: /api/admin/multiviews (the layout-assignment picker); earlier +1: /api/remote_access/status
+                         
                          "the administrative surface changed")
         self.assertEqual(sum(counts.values()), len(registered_rules()))
-        self.assertEqual(sum(counts.values()), 157)
+        self.assertEqual(sum(counts.values()), 165)
 
     def test_the_public_surface_is_still_only_what_signing_in_needs(self):
         public = {rule for rule, (access, _f) in omni_access.ROUTES.items()

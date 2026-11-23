@@ -10,8 +10,8 @@ package, and in the repository); `third_party/PYSTRAY_PROVENANCE.md` records whe
 
 What you need: Windows 10 or 11 (64-bit), Python 3.12 (64-bit; the project is built with
 3.12), Git or the source archive for the release you are rebuilding, and Internet access
-for the package installs. The same steps work on macOS and Linux with that platform's
-`--suffix` (`arm64`, `x86_64`, `linux`) in the last command.
+for the package installs. The same steps work on an Apple Silicon Mac with `--suffix arm64` in the last command.
+Only Windows x86-64 and macOS arm64 are built; there is no Intel macOS or Linux package.
 
 1. Get the OmniSuite source for the release you have (this repository, at the release tag).
    Open a command prompt in its top folder. If you have a release package instead, copy
@@ -34,7 +34,7 @@ for the package installs. The same steps work on macOS and Linux with that platf
 
 6. Rebuild:
 
-       python tools/build_release.py --suffix windows --version V1.2.0
+       python tools/build_release.py --suffix windows --version V1.2.1
 
    The application is written to `dist\windows\OmniSuite.exe` and packaged in `release\`.
    It now runs against your pystray. To confirm that your copy is the one in the executable,

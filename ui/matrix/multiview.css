@@ -342,6 +342,10 @@ button.mv-control{cursor:pointer; font-weight:500; white-space:nowrap;}
 }
 .mv-window-live{color:var(--state-ok, var(--accent));}
 .mv-window.switching{border-color:var(--accent); border-style:solid;}
+/* An edited window is a claim about the preset, never about the display. */
+.mv-window-unsaved{color:var(--state-warning, var(--text));}
+.mv-window-saved{color:var(--muted);}
+.mv-window-clear:disabled{opacity:.45; cursor:default;}
 .mv-window.switching .mv-window-state{color:var(--accent);}
 
 /* ---- operator notice ----

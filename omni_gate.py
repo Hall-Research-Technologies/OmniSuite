@@ -308,13 +308,30 @@ DENIAL_SENTENCES = {
         "Your account does not have that routing interface.",
     "multiview_not_approved":
         "That Multiview preset has not been approved for your account.",
+    "multiview_not_assigned":
+        "That Multiview layout has not been given to your account.",
     "multiview_content_not_permitted":
         "That preset now uses a source you do not have access to.",
+    "layout_edit_not_permitted":
+        "Only an administrator can change how a layout is designed.",
 }
+
+
+#: Body keys that map a name to a source identity. Multiview's per-window
+#: choice is one: {"main": "<source id>", ...}. The values are source
+#: identities, and the gate checks them like any other named source -- the
+#: handler checks them again, independently.
+SOURCE_MAP_KEYS = ("changes",)
 
 
 def _check_devices(payload, account) -> Decision:
     sources = _identities_in(payload, SOURCE_KEYS)
+    if isinstance(payload, dict):
+        for key in SOURCE_MAP_KEYS:
+            mapping = payload.get(key)
+            if isinstance(mapping, dict):
+                sources.extend(str(v) for v in mapping.values()
+                               if isinstance(v, str) and v)
     destinations = _identities_in(payload, DESTINATION_KEYS)
 
     for identity in sources:
