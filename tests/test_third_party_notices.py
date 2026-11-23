@@ -166,12 +166,6 @@ class BuildBundlesTheTextsTests(unittest.TestCase):
         self.assertLessEqual({"OmniSuite.exe", "LICENSE", "THIRD_PARTY_NOTICES.md",
                               "third_party_licenses/python/LICENSE.txt"}, names)
 
-    def test_a_linux_folder_receives_the_same_files(self):
-        with tempfile.TemporaryDirectory() as folder:
-            build.copy_notices_into(Path(folder))
-            self.assertTrue((Path(folder) / "LICENSE").is_file())
-            self.assertTrue((Path(folder) / "third_party_licenses" / "python" / "LICENSE.txt").is_file())
-
     def test_adding_the_folder_did_not_open_the_package_gate(self):
         self.assertNotIn("firmware", build.ALLOWED_DATA)
         self.assertIn("docs", build.FORBIDDEN_IN_PACKAGE)

@@ -196,7 +196,7 @@ class BundleEditTests(unittest.TestCase):
 
 
 class PackagingHookTests(unittest.TestCase):
-    """Only the macOS bundles are edited; Windows and Linux are untouched."""
+    """Only the macOS bundle is edited; Windows is untouched."""
 
     def package(self, suffix):
         folder = tempfile.TemporaryDirectory()
@@ -205,8 +205,6 @@ class PackagingHookTests(unittest.TestCase):
         dist.mkdir()
         if suffix == "windows":
             (dist / "OmniSuite.exe").write_bytes(b"x")
-        elif suffix == "linux":
-            (dist / "OmniSuite").mkdir()
         else:
             _make_bundle(dist)
         events = []
@@ -215,20 +213,19 @@ class PackagingHookTests(unittest.TestCase):
                                   side_effect=lambda app, usage, name=None, ident=None, version=None: events.append(("declare", usage))), \
                 mock.patch.object(build, "zip_macos_app",
                                   side_effect=lambda *a: events.append(("zip-mac",))), \
-                mock.patch.object(build, "zip_path", side_effect=lambda *a: events.append(("zip",))), \
-                mock.patch.object(build, "tar_path", side_effect=lambda *a: events.append(("tar",))):
+                mock.patch.object(build, "zip_path", side_effect=lambda *a: events.append(("zip",))):
             build.package_release(dist, suffix, "V1.0.0-test")
         return events
 
-    def test_both_mac_architectures_declare_before_they_are_zipped(self):
-        for suffix in ("arm64", "x86_64"):
+    def test_the_mac_build_declares_before_it_is_zipped(self):
+        for suffix in ("arm64",):
             with self.subTest(suffix=suffix):
                 events = self.package(suffix)
                 self.assertEqual([e[0] for e in events], ["declare", "zip-mac"])
                 self.assertEqual(events[0][1], omni_release.active_product().local_network_usage)
 
-    def test_windows_and_linux_never_touch_a_macos_plist(self):
-        for suffix, expected in (("windows", "zip"), ("linux", "tar")):
+    def test_windows_never_touches_a_macos_plist(self):
+        for suffix, expected in (("windows", "zip"),):
             with self.subTest(suffix=suffix):
                 self.assertEqual([e[0] for e in self.package(suffix)], [expected])
 
@@ -449,8 +446,8 @@ class UserGuideTests(unittest.TestCase):
         self.assertIn("does not reset it", self.section)
         self.assertIn("not signed", self.section)
 
-    def test_it_says_windows_and_linux_are_different(self):
-        self.assertIn("Windows and Linux do not have this permission", self.section)
+    def test_it_says_windows_is_different(self):
+        self.assertIn("Windows does not have this permission", self.section)
 
     def test_it_uses_no_internal_names(self):
         for internal in ("EHOSTUNREACH", "EPERM", "NSLocalNetworkUsageDescription", "TCC", "api/"):

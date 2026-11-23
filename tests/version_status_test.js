@@ -80,6 +80,24 @@ check('an update being available is red', () => {
   assert(/UPDATE AVAILABLE/.test(line.textContent) && /V1\.3\.0/.test(line.textContent), line.textContent);
 });
 
+check('an update with no download for this computer says so, still red, and never offers a link', () => {
+  const message = 'There is no supported update package for this computer. OmniSuite releases are built for Windows (x86-64) and macOS on Apple Silicon only.';
+  const line = render({status: 'UPDATE_AVAILABLE', installed_version: 'V1.2.0', latest_version: 'V1.2.1',
+                       release_url: 'https://github.com/example/r', asset: null, package_message: message});
+  eq(line.className, 'update-status bad');
+  assert(/UPDATE AVAILABLE/.test(line.textContent) && /no supported update package/.test(line.textContent), line.textContent);
+  eq(elements.cfg_asset_link.hidden, true, 'no download link without a package');
+  eq(elements.cfg_release_link.href, 'https://github.com/example/r');
+});
+
+check('an update with a package offers the link and no apology', () => {
+  const line = render({status: 'UPDATE_AVAILABLE', installed_version: 'V1.2.0', latest_version: 'V1.2.1',
+                       release_url: 'https://github.com/example/r', package_message: null,
+                       asset: {url: 'https://github.com/example/a.zip', platform: 'windows-x86_64'}});
+  assert(!/no supported/.test(line.textContent), line.textContent);
+  eq(elements.cfg_asset_link.hidden, false);
+});
+
 check('a failed check is neither green nor red', () => {
   for (const data of [{status: 'UNABLE_TO_CHECK'}, null, undefined, {}, {status: 'SOMETHING_NEW'}]) {
     const line = render(data);

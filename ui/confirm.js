@@ -87,10 +87,16 @@
       '.confirm-actions button:focus-visible{outline:2px solid ',
       'var(--accent,#3b82f6);outline-offset:2px}',
       // Quiet, but a real surface with a real border -- not a ghost outline.
-      '.confirm-cancel{background:var(--panel-2,#1b222a)!important;',
+      '.confirm-cancel,.confirm-alt{background:var(--panel-2,#1b222a)!important;',
       'color:var(--text,var(--fg,#e6e8ee))!important}',
       // A destructive action is distinguished by hue AND by form, because a
       // preset can bring accent and critical close together.
+      // A question whose safe answer is "leave it as it is": Cancel carries the
+      // accent and the focus, and the change is the quiet button.
+      '.confirm-actions button.confirm-default{background:var(--accent,#3b82f6)!important;',
+      'color:var(--accent-ink,#fff)!important}',
+      '.confirm-actions button.confirm-quiet{background:var(--panel-2,#1b222a)!important;',
+      'color:var(--text,var(--fg,#e6e8ee))!important}',
       '.confirm-danger{background:var(--state-error,#e5534b)!important;',
       'color:#fff!important;border-color:var(--state-error,#e5534b)!important;',
       'font-weight:600}',
@@ -118,6 +124,7 @@
       '<label class="confirm-checkbox" style="display:none;">' +
       '<input class="confirm-checkbox-input" type="checkbox">' +
       '<span class="confirm-checkbox-label"></span></label>' +
+      '<form style="display:contents" onsubmit="return false" novalidate autocomplete="off">' +
       '<label class="confirm-field" style="display:none;">' +
       '<span class="confirm-field-label"></span>' +
       '<input class="confirm-field-input" type="password" ' +
@@ -125,11 +132,16 @@
       '<span class="confirm-field-hint" style="display:none;"></span>' +
       '<span class="confirm-field-error" role="alert" style="display:none;"></span>' +
       '</label>' +
+      '</form>' +
       '<label class="confirm-suppress" style="display:none;">' +
       '<input type="checkbox" class="confirm-suppress-box">' +
       '<span class="confirm-suppress-label"></span></label>' +
       '<div class="confirm-actions">' +
       '<button type="button" class="confirm-cancel">Cancel</button>' +
+      // A third answer that is neither yes nor no, for a question whose
+      // choices are genuinely different actions. Hidden unless asked for, and
+      // never a repurposed Cancel: Cancel always means "change nothing".
+      '<button type="button" class="confirm-alt" style="display:none;"></button>' +
       '<button type="button" class="confirm-ok">Continue</button>' +
       '</div></div>';
     document.body.appendChild(backdrop);
@@ -202,6 +214,7 @@
     const summaryEl = backdrop.querySelector('.confirm-summary');
     const okBtn = backdrop.querySelector('.confirm-ok');
     const cancelBtn = backdrop.querySelector('.confirm-cancel');
+    const altBtn = backdrop.querySelector('.confirm-alt');
 
     titleEl.textContent = options.title || 'Confirm';
     messageEl.textContent = options.message || '';
@@ -224,11 +237,22 @@
 
     okBtn.textContent = options.confirmText || 'Continue';
     okBtn.classList.toggle('confirm-danger', !!options.danger);
+    // `cancelDefault`: the keyboard default and the visual default are both
+    // Cancel, for a change that should only happen if somebody means it.
+    okBtn.classList.toggle('confirm-quiet', !!options.cancelDefault);
+    cancelBtn.classList.toggle('confirm-default', !!options.cancelDefault);
 
     // An acknowledgement offers one button. Showing Cancel beside OK asks a
     // question that has no second answer -- and whatever a dialog hides for
     // one caller it must restore for the next.
     cancelBtn.style.display = options.acknowledge ? 'none' : '';
+    // `alternateText` offers a third button. Choosing it resolves the string
+    // 'alternate', which is truthy, so a caller must compare for it explicitly;
+    // a caller that never passes it still only ever sees true or false.
+    if (altBtn) {
+      altBtn.textContent = options.alternateText || '';
+      altBtn.style.display = options.alternateText ? '' : 'none';
+    }
 
     // The optional field. Its value goes back through the caller's own
     // callback rather than being returned, so nothing this dialog keeps can
@@ -317,6 +341,10 @@
         backdrop.classList.add('hidden');
         if (window.omniModalStack) window.omniModalStack.release(backdrop);
         cancelBtn.style.display = '';
+        if (altBtn) {
+          altBtn.style.display = 'none';
+          altBtn.removeEventListener('click', onAlt);
+        }
         okBtn.removeEventListener('click', onOk);
         cancelBtn.removeEventListener('click', onCancel);
         backdrop.removeEventListener('click', onBackdrop);
@@ -349,6 +377,7 @@
       }
       function onOk() { commit(); }
       function onCancel() { cleanup(answer(false)); }
+      function onAlt() { cleanup('alternate'); }
       function onBackdrop(event) {
         if (event.target === backdrop) cleanup(answer(false));
       }
@@ -364,6 +393,7 @@
       }
       okBtn.addEventListener('click', onOk);
       cancelBtn.addEventListener('click', onCancel);
+      if (altBtn && options.alternateText) altBtn.addEventListener('click', onAlt);
       backdrop.addEventListener('click', onBackdrop);
       document.addEventListener('keydown', onKeydown);
       // The costly answer sits behind the focus: Cancel takes it, so the
@@ -373,7 +403,7 @@
       // Cancel takes the focus so the keyboard default and the visual default
       // agree.
       if (field) { fieldInput.focus(); if (field.value != null) fieldInput.select(); }
-      else (options.danger ? cancelBtn : okBtn).focus();
+      else ((options.danger || options.cancelDefault) ? cancelBtn : okBtn).focus();
     });
   };
 

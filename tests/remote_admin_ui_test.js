@@ -141,12 +141,12 @@ suite.push(() => check('the page loads and renders accounts and groups', async (
   assert(w.byId.get('admin_tabs').hidden === false, 'tabs still hidden');
 }));
 
-suite.push(() => check('an account row summarises groups and never mentions Multiview', async () => {
+suite.push(() => check('an account row summarises groups, and names Multiview only when the account holds it', async () => {
   const w = buildWorld(server());
   await settle();
   const teacher = bodyTexts(w, 'users_body')[1];
   assert(/1 group/.test(teacher), teacher);
-  assert(!/multiview/i.test(teacher), 'a stored grant must not be shown: ' + teacher);
+  assert(!/multiview/i.test(teacher), 'a stored layout without the capability is not summarised: ' + teacher);
 }));
 
 suite.push(() => check('the Display groups tab shows its panel and hides the others', async () => {
@@ -231,7 +231,7 @@ suite.push(() => check('confirming a delete posts the delete action', async () =
   assert(post && post.url === '/api/admin/groups/grp_aaaa' && post.body.action === 'delete');
 }));
 
-suite.push(() => check('saving an account sends groups and never sends multiviews', async () => {
+suite.push(() => check('saving an account sends groups and keeps the layouts it already holds', async () => {
   const w = buildWorld(server());
   await settle();
   const edit = rowsOf(w, 'users_body')[1].children[4].children[0].children[0];
@@ -243,7 +243,8 @@ suite.push(() => check('saving an account sends groups and never sends multiview
   assert(perms.length === 1, 'one permissions write');
   const sent = perms[0].body.permissions;
   assert(JSON.stringify(sent.groups) === JSON.stringify(['grp_aaaa']), JSON.stringify(sent));
-  assert(!('multiviews' in sent), 'a retired setting must not be written back: ' + JSON.stringify(sent));
+  assert(JSON.stringify(sent.multiviews) === JSON.stringify(['b8:98:b0:00:00:11/Quad']),
+    'the server replaces permissions wholesale, so the layouts must travel: ' + JSON.stringify(sent));
   assert(!sent.features.includes('multiview'));
   assert(JSON.stringify(sent.sources) === JSON.stringify(['b8:98:b0:00:00:01']));
 }));

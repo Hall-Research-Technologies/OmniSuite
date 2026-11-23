@@ -113,7 +113,7 @@ class AdministrativeStateIsClosedTests(unittest.TestCase):
         self.assertIs(omni_access.classify("/api/route")[0], Access.ADMIN)
 
     def test_the_user_surface_is_only_endpoints_written_for_a_user(self):
-        """Six now, all under /api/user/, all projected.
+        """Eleven now, all under /api/user/, all projected.
 
         Phases G, H and I added USB and Multiview operation the same way the
         A/V route was added: a narrow endpoint that authorises by identity and
@@ -128,7 +128,16 @@ class AdministrativeStateIsClosedTests(unittest.TestCase):
             # the same feature and the same destination check as routing to
             # it, delegating to the same engine and projected the same way.
             "/api/user/unroute",
+            # One permitted source to several displays and groups. Written for
+            # a restricted account, authorised per resolved display, and it
+            # answers with counts and names only.
+            "/api/user/route_many",
+            "/api/user/unroute_many",
             "/api/user/usb_state", "/api/user/usb_route",
+            # Show one assigned saved Multiview layout, and list the assigned
+            # layouts. Written for a restricted account: identity-keyed,
+            # re-authorised after the lock wait, allowlisted reply.
+            "/api/user/multiview_state", "/api/user/multiview_show", "/api/user/multiview_layout", "/api/user/multiview_compose",
             # A still picture of one permitted source. It answers with an
             # image or a reason and never with device state -- no address, no
             # MAC, no serial, no configuration -- and the account's own source
@@ -153,11 +162,17 @@ class AdministrativeStateIsClosedTests(unittest.TestCase):
         other, and this fails if it is neither.
         """
         projected = {"/api/user/state", "/api/user/route",
+                     # Counts and display names only; per-display authority.
+                     "/api/user/route_many",
+                     "/api/user/unroute_many",
                      # The grid is built from the account's own permitted
                      # lists by omni_projection.user_matrix -- named fields
                      # only, no address, no unpermitted device.
                      "/api/user/matrix_state",
                      "/api/user/usb_state", "/api/user/usb_route",
+                     # Allowlisted replies: layout names, drawn geometry and a
+                     # verdict. Addresses and MACs are scrubbed server-side.
+                     "/api/user/multiview_state", "/api/user/multiview_show", "/api/user/multiview_layout", "/api/user/multiview_compose",
                      # Answers with an image or a reason. There is no object to
                      # project, and nothing about the device in either answer.
                      "/api/user/source_preview",

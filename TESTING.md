@@ -6,8 +6,9 @@ isolation report:
     python run_tests.py
 
 It exits non-zero if any suite fails **or** any test opened a real socket. The
-same command runs on Windows, Ubuntu, macOS arm64 and macOS x86-64 in CI, and a
-build that cannot pass its own platform's suite does not produce a download.
+same command runs on Windows x86-64 and macOS arm64 in CI (the two distributed platforms; those runners are
+both the test runner and the platform that is distributed from it), and a build that cannot pass its own
+platform's suite does not produce a download.
 Narrower runs: `python run_tests.py --python-only`, `--js-only`, or a single module
 with `python -m unittest tests.test_release_isolation`.
 
@@ -71,8 +72,7 @@ the per-run timeout (seconds, default 900) for a loaded machine. The harness res
 `finally` block, and repairs a file left mutated by an interrupted run at its next start.
 
 The supported test environment is the pinned Python 3.12 stack in `requirements-lock.txt`, with
-Node 20 for the page tests. CI runs the whole suite on Windows x86-64, Ubuntu x86-64, macOS arm64 and
-macOS x86-64, with a floating Python 3.12 patch release. The lock is installed without PyInstaller;
+Node 20 for the page tests. CI runs the whole suite on Windows x86-64 and macOS arm64, with a floating Python 3.12 patch release. The lock is installed without PyInstaller;
 tests therefore never import it (the Windows version file is written as text for that reason).
 
 ## Release identity and compatibility tests
@@ -129,7 +129,7 @@ display name, the product name in the blocked-scan answer, and the page wiring.
 
 1. `python run_tests.py` on the release branch.
 2. Dispatch the workflow on that branch with a suffixed `release_version` such as
-   `V1.2.0-diag1`. It runs the identity job, all four test jobs and all four builds with
+   `V1.2.1-diag1`. It runs the identity job, both test jobs and both builds (Windows x86-64 and macOS arm64) with
    smoke tests, and publishes nothing.
 3. Check the artifact names carry `OmniSuite-`.
 4. Only then create the tag, with approval.

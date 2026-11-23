@@ -120,9 +120,9 @@ class InstalledV110CompatibilityTests(unittest.TestCase):
         self.assertEqual(legacy_repo.lower(), OMNI.release_repo.lower(),
                          "the release channel must not move: installed apps read this repository")
 
-    def test_a_new_release_is_offered_to_an_installed_v110_on_every_platform(self):
-        cases = [(("Windows", "AMD64"), "windows-x86_64"), (("Linux", "x86_64"), "ubuntu-x86_64"),
-                 (("Darwin", "arm64"), "macos-arm64"), (("Darwin", "x86_64"), "macos-x86_64")]
+    def test_a_new_release_is_offered_to_an_installed_v110_on_every_distributed_platform(self):
+        # Windows x86-64 and macOS Apple Silicon are the only distributed platforms.
+        cases = [(("Windows", "AMD64"), "windows-x86_64"), (("Darwin", "arm64"), "macos-arm64")]
         for (system, machine), key in cases:
             with self.subTest(platform=system + "/" + machine):
                 client = LegacyClient("V1.1.0", release_json("V1.1.1", built_names("V1.1.1")),
@@ -133,6 +133,24 @@ class InstalledV110CompatibilityTests(unittest.TestCase):
                 self.assertEqual(result["asset"]["platform"], key)
                 self.assertTrue(result["asset"]["name"].startswith("OmniSuite-V1.1.1-"))
                 self.assertTrue(result["release_url"].endswith("/releases/tag/V1.1.1"))
+
+    def test_an_installed_v110_on_an_unsupported_platform_is_told_truthfully_and_offered_no_wrong_build(self):
+        """V1.1.0 cannot be changed. On macOS Intel and Linux (no longer built) it still reads
+        the release, still reports an update, and is offered NO download: it can never be handed
+        a build that will not run, because no such file is published."""
+        for system, machine in (("Linux", "x86_64"), ("Darwin", "x86_64"), ("Linux", "aarch64")):
+            with self.subTest(platform=system + "/" + machine):
+                client = LegacyClient("V1.1.0", release_json("V1.2.1", built_names("V1.2.1")),
+                                      system, machine)
+                result = client.check()
+                self.assertEqual(result["status"], "UPDATE_AVAILABLE")
+                self.assertIsNone(result["asset"], "nothing is published for this platform")
+                self.assertTrue(result["release_url"].endswith("/releases/tag/V1.2.1"))
+
+    def test_the_distributed_set_is_exactly_windows_x86_64_and_macos_arm64(self):
+        self.assertEqual(sorted(built_names("V1.2.1")),
+                         ["OmniSuite-V1.2.1-Windows-x86_64.zip", "OmniSuite-V1.2.1-macOS-arm64.zip"])
+        self.assertEqual(set(omni_release.PLATFORM_TAILS), {"Windows-x86_64.zip", "macOS-arm64.zip"})
 
     def test_the_names_this_build_produces_are_matched_by_the_old_matcher(self):
         for name in built_names("V1.1.1"):

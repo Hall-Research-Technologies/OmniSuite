@@ -2,7 +2,7 @@
 # ...existing code...
 
 # All imports below here
-import os, sys, threading, urllib.request, webbrowser, logging, time, json, re, subprocess, socket, ssl, csv, tempfile, traceback, platform, io, zipfile, uuid
+import os, sys, threading, urllib.request, webbrowser, logging, time, json, re, subprocess, socket, ssl, csv, tempfile, traceback, platform, io, zipfile, uuid, secrets
 import copy
 import errno
 import hashlib
@@ -864,6 +864,17 @@ def _quarantine_cache_file(reason):
 
 
 def _load_cache():
+    """Inventory records, feeding each record's recorded working credential to
+    the transport so no call site has to remember to look it up."""
+    units = _load_cache_records()
+    try:
+        _ingest_working_credentials(units)
+    except Exception:
+        log.debug("[CRED] could not ingest recorded credentials", exc_info=True)
+    return units
+
+
+def _load_cache_records():
     """Load devices from scan_results.json (new format) or units_cache.json (legacy)"""
     try:
         # Both files this merge reads, in the fixed order (cache, then scan
@@ -964,6 +975,10 @@ def _save_cache(units) -> bool:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, CACHE)
+            try:
+                _ingest_working_credentials(units if isinstance(units, list) else (units or {}).get("units"), override=True)
+            except Exception:
+                log.debug("[CRED] could not ingest saved credentials", exc_info=True)
         return True
     except Exception as e:
         log.warning("save cache failed: %s", e)
@@ -1138,7 +1153,10 @@ def _device_credentials(ip: str, cache_devices_map: dict = None):
     cache_map = cache_devices_map or {d.get("ip"): d for d in (_load_cache() or []) if d.get("ip")}
     device = cache_map.get(ip, {})
     user = device.get("username") or app.config.get('USERNAME', 'admin')
-    preferred_pwd = device.get("password") or app.config.get('PASSWORD', 'password')
+    # What this device was last seen to accept outranks the inventory's recorded
+    # value, which may predate a password change.
+    preferred_pwd = (_working_credential(ip) or device.get("password")
+                     or app.config.get('PASSWORD', 'password'))
     return user, preferred_pwd, device
 
 def _supports_decoder_fs_colorspace(model: str) -> bool:
@@ -2539,13 +2557,18 @@ def _verify_cache_in_background():
                 ip = cached_unit.get("ip")
                 if not ip:
                     return None
+                # A unit seen not to answer is looked at on the back-off schedule, and once per look:
+                # three attempts with pauses at a unit that was silent a moment ago add nothing.
+                if not _liveness.due(ip):
+                    return None
+                attempts = 1 if _liveness.known(ip) is False else 3
                 answered = False
                 try:
                     # Get device-specific password from cache, fall back to default if not stored
                     pwd = cached_unit.get("password") or default_pwd
                     
                     # Try multiple times to reach device - startup may have connectivity delays
-                    for attempt in range(3):
+                    for attempt in range(attempts):
                         try:
                             # Quick systeminfo query to get current version/model/hostname
                             url = _ws_url(ip, ws_port, ws_path)
@@ -2553,7 +2576,7 @@ def _verify_cache_in_background():
                             resp = _ws_send_recv(url, payload, timeout=timeout)
                             
                             if not resp or resp.get("error"):
-                                if attempt < 2:
+                                if attempt < attempts - 1:
                                     time.sleep(0.5)
                                     continue
                                 # A reply that carries an error is still a unit that answered.
@@ -2621,7 +2644,7 @@ def _verify_cache_in_background():
                             
                             return {"ip": ip, "updates": updates}
                         except Exception as retry_err:
-                            if attempt < 2:
+                            if attempt < attempts - 1:
                                 time.sleep(0.5)
                                 continue
                             raise
@@ -2801,6 +2824,25 @@ def _security_headers(response):
     return response
 
 
+_ASSET_PREFIXES = ("/ui/", "/api/")
+
+
+@app.before_request
+def _pages_are_never_revalidated():
+    """A page is served with Remote Access's current state in it, so it is never "not modified".
+
+    The page routes answered with the FILE's ETag and `Cache-Control: no-cache`. The state this
+    server stamps into the body (see below) is not part of that ETag, so a browser that had the
+    page from before Remote Access was switched sent `If-None-Match`, was told 304, and reused
+    its cached body -- with the old answer in it. The tab then stayed as it was until a hard
+    refresh, on every page except Device Info (which alone was `no-store`). Conditional headers
+    are dropped for pages so the answer is always a fresh 200.
+    """
+    if request.method in ("GET", "HEAD") and not request.path.startswith(_ASSET_PREFIXES):
+        request.environ.pop("HTTP_IF_NONE_MATCH", None)
+        request.environ.pop("HTTP_IF_MODIFIED_SINCE", None)
+
+
 @app.after_request
 def _state_the_remote_navigation(response):
     """Say, in the page itself, whether Remote Access is on.
@@ -2819,6 +2861,10 @@ def _state_the_remote_navigation(response):
         body = response.get_data(as_text=True)
         if "/ui/adminnav.js" not in body or "<head>" not in body:
             return response
+        # What is stamped in below is current state, so the page may not be stored or revalidated.
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers.pop("ETag", None)
+        response.headers.pop("Last-Modified", None)
         flag = "1" if remote_access_enabled() else "0"
         who = getattr(getattr(g, "principal", None), "username", "") or ""
         response.set_data(body.replace(
@@ -3627,7 +3673,19 @@ def _write_scan_preferences(prefs):
 # the application looks can never reach discovered units, routes, scan settings,
 # USB state or a topology acknowledgement.
 UI_PREFS = DATA_DIR / "ui_preferences.json"
-UI_TEMPLATES = ("classic", "compact", "modern", "workspace")
+UI_TEMPLATES = ("classic", "compact")
+# Layouts an earlier build offered. A stored choice stays readable and maps to the
+# nearest layout that still exists; it is rewritten on the next save, and a page
+# that still sends one is answered rather than refused.
+UI_TEMPLATES_LEGACY = {"modern": "classic", "workspace": "classic"}
+
+
+def _canonical_template(value):
+    """The supported layout for a stored or submitted one, or None if unknown."""
+    value = str(value or "").strip().lower()
+    if value in UI_TEMPLATES:
+        return value
+    return UI_TEMPLATES_LEGACY.get(value)
 UI_PRESETS = ("default", "slate", "cool", "ocean", "forest", "warm", "plum", "rose",
               "soft", "contrast")
 UI_LIGHT_BACKGROUND_DEFAULT = "#f7f8fb"
@@ -3682,7 +3740,7 @@ def api_ui_preferences():
         prefs = _read_ui_preferences()
         light = prefs.get("light_background")
         return jsonify({"ok": True,
-                        "template": prefs.get("template") if prefs.get("template") in UI_TEMPLATES else "classic",
+                        "template": _canonical_template(prefs.get("template")) or "classic",
                         "preset": prefs.get("preset") if prefs.get("preset") in UI_PRESETS else "default",
                         "light_background": light if _valid_ui_color(light) else UI_LIGHT_BACKGROUND_DEFAULT,
                         "templates": list(UI_TEMPLATES), "presets": list(UI_PRESETS)})
@@ -3690,8 +3748,8 @@ def api_ui_preferences():
     omni_requests.require_any(data, ("template", "preset", "light_background"))
     prefs = _read_ui_preferences()
     if "template" in data:
-        template = str(data.get("template") or "").strip().lower()
-        if template not in UI_TEMPLATES:
+        template = _canonical_template(data.get("template"))
+        if template is None:
             return jsonify({"ok": False, "error": f"template must be one of {', '.join(UI_TEMPLATES)}"}), 400
         prefs["template"] = template
     if "preset" in data:
@@ -3709,6 +3767,9 @@ def api_ui_preferences():
     # so the field is dropped rather than left to keep tinting the UI from a
     # control nobody can see. Everything else in the file is preserved.
     prefs.pop("colors", None)
+    # A layout stored by an earlier build is carried to the one that replaced it.
+    if "template" in prefs:
+        prefs["template"] = _canonical_template(prefs["template"]) or "classic"
     _write_ui_preferences(prefs)
     return jsonify({"ok": True, "template": prefs.get("template", "classic"),
                     "preset": prefs.get("preset", "default"),
@@ -4052,6 +4113,13 @@ def _is_official_release_url(url):
     return True
 
 
+UPDATE_NO_PACKAGE_UNSUPPORTED = (
+    "There is no supported update package for this computer. OmniSuite releases are built "
+    "for Windows (x86-64) and macOS on Apple Silicon only.")
+UPDATE_NO_PACKAGE_IN_RELEASE = (
+    "This release has no download for this computer yet. Open the release page.")
+
+
 def _platform_asset_key():
     """How this machine's release asset is named, or None when unsure.
 
@@ -4066,21 +4134,17 @@ def _platform_asset_key():
     # architecture because "windows" alone does not say x86-64, and an asset
     # list containing both a Windows x86-64 zip and a macOS x86-64 zip would
     # otherwise be ambiguous.
+    # From V1.2.1 only two platforms are distributed: Windows x86-64 and macOS
+    # Apple Silicon. Everything else (macOS Intel, Linux, anything unidentified) is
+    # answered with None, and the update check then says plainly that there is no
+    # supported package for this computer rather than offering a build that will not run.
     if system == "windows":
         # Only an x86-64 build is published. Windows on ARM runs it under
         # emulation, so it is still the right download for that machine.
         return "windows-x86_64"
-    if system == "linux":
-        # Ubuntu x86-64 is the only Linux artifact built and tested; nothing is
-        # offered to an architecture we do not publish.
-        if machine in ("x86_64", "amd64"):
-            return "ubuntu-x86_64"
-        return None
     if system == "darwin":
         if machine in ("arm64", "aarch64"):
             return "macos-arm64"
-        if machine in ("x86_64", "amd64"):
-            return "macos-x86_64"
         return None
     return None
 
@@ -4169,6 +4233,7 @@ def _update_check(force=False):
         "release_url": GITHUB_RELEASES_URL,
         "asset": None,
         "asset_url": None,
+        "package_message": None,
         "checked_at": None,
         "source": "github",
         "product": omni_product.PRODUCT_ID,
@@ -4195,6 +4260,12 @@ def _update_check(force=False):
         if result["update_available"]:
             result["asset"] = _select_platform_asset(release.get("assets"), core)
             result["asset_url"] = (result["asset"] or {}).get("url")
+            if result["asset"] is None:
+                # Say which of the two reasons applies. The page shows the sentence.
+                if not _platform_asset_key():
+                    result["package_message"] = UPDATE_NO_PACKAGE_UNSUPPORTED
+                else:
+                    result["package_message"] = UPDATE_NO_PACKAGE_IN_RELEASE
         result["status"] = UPDATE_AVAILABLE if result["update_available"] else UPDATE_CURRENT
     except Exception as exc:
         # Offline is the normal case for a lot of installations; it is not an
@@ -5330,7 +5401,231 @@ def _ws_url(ip: str, ws_port: int, ws_path: str) -> str:
     scheme = 'wss' if ws_port in (443, 8443) else 'ws'
     return f"{scheme}://{ip}:{ws_port}{ws_path}"
 
-def _ws_send_recv(url: str, payload: dict, timeout: float):
+# ---------------------------------------------------------------------------
+# Working credential per device
+#
+# The credential that authenticated a device is that device's working
+# credential. Discovery proves it; every later operation against the same unit
+# must present it, rather than the configured primary that most call sites were
+# written with. Keyed by hardware identity (MAC) where one is known, so an
+# address change does not lose it, and by address otherwise. In memory only: the
+# persisted copy is the device record's own `password`, which discovery writes
+# and which `_load_cache()` feeds back in here. Values are never logged.
+# ---------------------------------------------------------------------------
+_working_cred_lock = threading.RLock()
+_working_cred_by_identity: dict = {}   # identity (mac, or "ip:<addr>") -> password
+_working_cred_identity_by_ip: dict = {}  # address -> identity
+_working_cred_suspect: set = set()     # identities whose last substituted attempt was answered with an error
+_cred_resolution = threading.local()   # per-thread: "do not substitute" (deliberate re-resolution)
+
+
+def _cred_identity_for(address: str) -> str:
+    with _working_cred_lock:
+        return _working_cred_identity_by_ip.get(address) or ("ip:%s" % address)
+
+
+def _learn_working_credential(address: str, pwd: str, mac: str = ""):
+    """Record that `pwd` authenticated the device at `address`."""
+    if not address or not pwd:
+        return
+    mac = re.sub(r"[^0-9a-f]", "", str(mac or "").lower())
+    with _working_cred_lock:
+        ident = ("%s" % mac) if len(mac) == 12 else (_working_cred_identity_by_ip.get(address) or "ip:%s" % address)
+        if len(mac) == 12:
+            old = _working_cred_identity_by_ip.get(address)
+            if old and old != ident:
+                _working_cred_by_identity.pop(old, None)
+                _working_cred_suspect.discard(old)
+        _working_cred_identity_by_ip[address] = ident
+        _working_cred_by_identity[ident] = pwd
+        _working_cred_suspect.discard(ident)
+
+
+_working_cred_warmed = False
+
+
+def _warm_working_credentials():
+    """Read the inventory's recorded credentials in once, the first time any
+    device is addressed, so a restart does not lose them."""
+    global _working_cred_warmed
+    if _working_cred_warmed:
+        return
+    _working_cred_warmed = True
+    try:
+        _load_cache()
+    except Exception:
+        log.debug("[CRED] could not warm recorded credentials", exc_info=True)
+
+
+def _working_credential(address: str):
+    """The credential known to work for this device, or None. Never logged."""
+    _warm_working_credentials()
+    with _working_cred_lock:
+        ident = _working_cred_identity_by_ip.get(address) or "ip:%s" % address
+        if ident in _working_cred_suspect:
+            return None
+        return _working_cred_by_identity.get(ident)
+
+
+def _ingest_working_credentials(units, override=False):
+    """Feed discovery's recorded credentials in. Loading does not override fresher
+    proof; a deliberate save of the inventory (which is what discovery and a
+    credential change both end in) does."""
+    for unit in units or ():
+        if not isinstance(unit, dict):
+            continue
+        address, pwd = unit.get("ip"), unit.get("password")
+        if not address or not pwd:
+            continue
+        mac = re.sub(r"[^0-9a-f]", "", str(unit.get("mac") or "").lower())
+        with _working_cred_lock:
+            ident = mac if len(mac) == 12 else "ip:%s" % address
+            _working_cred_identity_by_ip[address] = ident
+            if override:
+                _working_cred_by_identity[ident] = pwd
+                _working_cred_suspect.discard(ident)
+            else:
+                _working_cred_by_identity.setdefault(ident, pwd)
+
+
+class _no_credential_substitution:
+    """Context in which the transport presents exactly the password it is given.
+
+    Discovery and the other deliberate credential-resolving paths use it: they
+    are the thing that works out which credential a device accepts, so they
+    cannot be handed the answer they are there to find.
+    """
+    def __enter__(self):
+        self._prev = getattr(_cred_resolution, "off", False)
+        _cred_resolution.off = True
+        return self
+
+    def __exit__(self, *exc):
+        _cred_resolution.off = self._prev
+        return False
+
+
+def _global_credentials():
+    return {app.config.get('PASSWORD', ''), app.config.get('FALLBACK_PASSWORD', ''), "", None}
+
+
+def _refusal_text(reply) -> str:
+    """The words a device used to refuse a request, from whichever field carries them.
+
+    A device reports a refusal as ``{"error": true, "error_message": "Invalid
+    username/password"}``: the flag is a boolean and the sentence is elsewhere.
+    Reading only ``error`` made every refusal look like the text "true", so a
+    credential that had stopped working was never recognised as refused and the
+    transport kept presenting it. Test devices that put the sentence in ``error``
+    hid it for as long as they were the only kind there was.
+    """
+    if isinstance(reply, dict):
+        parts = [reply.get("error_message"), reply.get("message"), reply.get("error")]
+    else:
+        parts = [reply]
+    return " ".join(p for p in parts if isinstance(p, str)).lower()
+
+
+def _looks_like_auth_refusal(error) -> bool:
+    text = _refusal_text(error)
+    return "password" in text or "username" in text or "auth" in text or "denied" in text
+
+
+def _is_refused(reply) -> bool:
+    return isinstance(reply, dict) and bool(reply.get("error")) and "raw" not in reply
+
+
+def _ws_send_recv_credentialed(url: str, payload: dict, timeout: float):
+    address = None
+    try:
+        address = urllib.parse.urlsplit(url).hostname
+    except Exception:
+        address = None
+    offered = payload.get("password") if isinstance(payload, dict) else None
+    substituted = False
+    if (address and isinstance(payload, dict) and "password" in payload
+            and not getattr(_cred_resolution, "off", False)):
+        learned = _working_credential(address)
+        if learned and learned != offered and offered in _global_credentials():
+            payload = dict(payload)
+            payload["password"] = learned
+            substituted = True
+    resp = _ws_send_recv_raw(url, payload, timeout)
+    if address and isinstance(payload, dict) and payload.get("password") and isinstance(resp, dict):
+        used = payload.get("password")
+        if not resp.get("error") and "raw" not in resp:
+            _learn_working_credential(address, used)
+        elif _is_refused(resp) and _looks_like_auth_refusal(resp):
+            # The device answered, and refused what we presented. If that is what
+            # we believed it accepts, the belief is wrong: stop substituting it
+            # until a call proves a credential again, so a device whose password
+            # changed (or whose recorded one was stale) is not locked out of
+            # re-resolution.
+            with _working_cred_lock:
+                ident = _cred_identity_for(address)
+                if substituted or _working_cred_by_identity.get(ident) == used:
+                    _working_cred_suspect.add(ident)
+            # Only for a caller that was using one of this application's own credentials:
+            # a password somebody supplied explicitly is never swapped for another.
+            if (not getattr(_cred_resolution, "off", False)
+                    and payload.get("password") in _global_credentials()):
+                resp = _heal_refused_credential(url, payload, timeout, address, used, resp)
+    return resp
+
+
+def _heal_refused_credential(url, payload, timeout, address, used, refused):
+    """A refusal is answered by trying the credentials this application knows, once each.
+
+    The device said no to `used`; it did not run the request. So the remaining
+    candidates -- the offered password, then the configured and fallback ones --
+    are tried, each exactly as given, and the first the device accepts is learned
+    and its answer returned. A device whose recorded credential is stale, or that
+    was moved to the fallback password after it was discovered, therefore works on
+    the very next operation instead of failing until somebody scans again. If every
+    candidate is refused the original refusal is returned unchanged. Bounded: three
+    candidates at most, and only after a refusal, so a healthy device pays nothing.
+    """
+    tried = {used}
+    offered = payload.get("password")
+    for candidate in (offered, app.config.get('PASSWORD', ''), app.config.get('FALLBACK_PASSWORD', '')):
+        if not candidate or candidate in tried:
+            continue
+        tried.add(candidate)
+        retry = dict(payload)
+        retry["password"] = candidate
+        try:
+            reply = _ws_send_recv_raw(url, retry, timeout)
+        except Exception:
+            continue
+        if isinstance(reply, dict) and not reply.get("error") and "raw" not in reply:
+            _learn_working_credential(address, candidate)
+            log.info("[CRED] %s: a credential other than the one first presented was accepted", address)
+            return reply
+    return refused
+
+
+# The name every call site uses. (The test package replaces this name with a
+# fenced transport; the implementation stays reachable under its own name.)
+_ws_send_recv = _ws_send_recv_credentialed
+
+
+def _ws_client_transport(url, body, timeout):
+    """The transport the matrix module's WebSocket client is given.
+
+    Resolved by name at call time, so a fence that replaces the public name is
+    honoured, and every call the client makes -- route, unroute, the readback --
+    resolves the unit's own credential like any other operation.
+    """
+    return _ws_send_recv(url, body, timeout)
+
+
+try:
+    omni_matrix_logic.user.WSClient.transport = staticmethod(_ws_client_transport)
+except Exception:        # the matrix module is optional; routing reports it as unavailable
+    pass
+
+
+def _ws_send_recv_raw(url: str, payload: dict, timeout: float):
     ws = None
     try:
         sslopt = None
@@ -5412,6 +5707,14 @@ def _ws_send_recv_with_fallback(ip: str, payload: dict, timeout: float, ws_port:
     user, device_pref, device = _device_credentials(ip)
     device_pwd = (device or {}).get("password")
     candidates = _password_candidates(primary_pwd or device_pref)
+    # What this unit was last seen to accept goes first, so a unit already known to
+    # need the fallback is not offered the primary on every read and every write.
+    known = _working_credential(ip)
+    if known and known in candidates:
+        candidates.remove(known)
+        candidates.insert(0, known)
+    elif known:
+        candidates.insert(0, known)
 
     url = _ws_url(ip, ws_port, ws_path)
     payload_with_pwd = payload.copy()
@@ -5419,7 +5722,12 @@ def _ws_send_recv_with_fallback(ip: str, payload: dict, timeout: float, ws_port:
     for index, pwd in enumerate(candidates):
         payload_with_pwd['password'] = pwd
         try:
-            resp = _ws_send_recv(url, payload_with_pwd, timeout)
+            # This loop is the deliberate resolver: every candidate is presented as
+            # given. Substituting the learned credential into the second candidate
+            # meant the fallback was never actually offered to a device whose
+            # recorded credential was stale.
+            with _no_credential_substitution():
+                resp = _ws_send_recv(url, payload_with_pwd, timeout)
         except Exception as e:
             log.debug("[CRED] %s did not answer on candidate %d/%d: %s",
                       ip, index + 1, len(candidates), e)
@@ -8315,6 +8623,19 @@ def _expand_targets(spec: str):
         raise ValueError(f"{len(ret)} addresses requested; the maximum is {MAX_SCAN_HOSTS}")
     return ret
 
+def _resolves_credentials(function):
+    """Discovery works out which credential a device accepts, so it must present
+    each candidate as given rather than the one already believed."""
+    import functools
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        with _no_credential_substitution():
+            return function(*args, **kwargs)
+    return wrapper
+
+
+@_resolves_credentials
 def _probe_one(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeout: float):
     url = _ws_url(ip, ws_port, ws_path)
     sysinfo_req = {"id":"systeminfo-get","username":user,"password":pwd,"config_get":"systeminfo"}
@@ -9210,6 +9531,11 @@ def _unit_offline_refusal(**roles):
                     "offline": [{"role": role, "ip": ip} for role, ip in down]}), 409
 
 
+# Serialises the post-route read-modify-write of the unit cache, so routes to
+# different displays that finish together cannot discard each other's update.
+_route_cache_update_lock = threading.Lock()
+
+
 @app.route("/api/route", methods=["POST"])
 def api_route_matrix():
     if not HAS_MATRIX:
@@ -9437,14 +9763,19 @@ def api_route_matrix():
             dec_payload.update(fields)
             if HAS_MATRIX and decoder in omni_matrix_logic._decoders:
                 omni_matrix_logic._decoders[decoder].update(fields)
-            units = _load_cache() or []
-            for unit in units:
-                if unit.get("ip") == decoder:
-                    unit.update(fields)
-                    unit["role"] = "decoder"
-                    unit["type"] = "Decoder"
-                    break
-            _save_cache(units)
+            # Read, update one unit, write: two routes to two displays finishing
+            # together would each save a list the other had not yet changed and the
+            # last save would discard the first one's update. One lock around the
+            # whole sequence, re-reading inside it.
+            with _route_cache_update_lock:
+                units = _load_cache() or []
+                for unit in units:
+                    if unit.get("ip") == decoder:
+                        unit.update(fields)
+                        unit["role"] = "decoder"
+                        unit["type"] = "Decoder"
+                        break
+                _save_cache(units)
     except Exception as e:
         log.info("[ROUTE] post-route decoder refresh failed for %s: %s", decoder, e)
     # Reaching here means the route succeeded; a failure returned above.
@@ -9522,10 +9853,11 @@ def api_poll_encoders():
     timeout = app.config['TIMEOUT']
 
     cache_devices = {d.get("ip"): d for d in _load_cache()}
-    results = {}
+    encoder_ips, not_polled = _poll_plan(encoder_ips, data.get("force") is True)
+    results = {ip: {"error": reason} for ip, reason in not_polled.items()}
     updated_count = 0
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with _BudgetedPool() as executor:
         def poll_encoder(ip):
             try:
                 device = cache_devices.get(ip, {})
@@ -9574,6 +9906,7 @@ def api_poll_encoders():
 
         for ip, fields, success in executor.map(poll_encoder, encoder_ips):
             results[ip] = fields
+            _liveness.record(ip, bool(success), "poll")
             if success:
                 if ip in omni_matrix_logic._encoders:
                     omni_matrix_logic._encoders[ip].update(fields)
@@ -10194,18 +10527,32 @@ def api_cache_dup():
         
         log.info("[STARTUP] Starting synchronous verification of all units for hostname/version changes")
         updated = False
-        for unit in units:
+        def _quick_read(unit):
+            # Get device-specific password from cache, fall back to default
             ip = unit.get("ip")
-            if not ip:
-                continue
+            user = unit.get("username") or default_user
+            pwd = unit.get("password") or default_pwd
+            url = _ws_url(ip, ws_port, ws_path)
+            payload = {"id":"systeminfo-get","username":user,"password":pwd,"config_get":"systeminfo"}
             try:
-                # Get device-specific password from cache, fall back to default
-                user = unit.get("username") or default_user
-                pwd = unit.get("password") or default_pwd
+                return unit, _ws_send_recv(url, payload, timeout=timeout), None
+            except Exception as exc:
+                return unit, None, exc
+
+        # Concurrent and bounded in both width and time; the reads are made on worker threads and applied
+        # here, on this one, so a straggler that finishes after the budget changes nothing.
+        quick_pool = ThreadPoolExecutor(max_workers=STARTUP_VERIFY_WORKERS)
+        quick_futures = [quick_pool.submit(_quick_read, u) for u in units
+                         if u.get("ip") and _liveness.due(u.get("ip"))]
+        for quick_future in _as_completed_tolerant(quick_futures, timeout=STARTUP_VERIFY_BUDGET_SECONDS):
+            unit, resp, quick_error = quick_future.result()
+            ip = unit.get("ip")
+            _liveness.record(ip, resp is not None, "startup")
+            try:
+                if quick_error is not None:
+                    raise quick_error
                 
-                url = _ws_url(ip, ws_port, ws_path)
-                payload = {"id":"systeminfo-get","username":user,"password":pwd,"config_get":"systeminfo"}
-                resp = _ws_send_recv(url, payload, timeout=timeout)
+                pass
                 
                 if resp and not resp.get("error"):
                     cfg = (resp or {}).get("config") or {}
@@ -10238,6 +10585,7 @@ def api_cache_dup():
             except Exception as e:
                 log.info(f"[STARTUP] {ip}: verification failed: {e}")
         
+        quick_pool.shutdown(wait=False, cancel_futures=True)
         if updated:
             log.info("[API/CACHE] Saving updated cache after quick verification")
             _apply_snapshot_to_cache(units, baseline_units, request_generation, "API/CACHE")
@@ -10259,7 +10607,9 @@ def api_cache_dup():
         unit_copy["codec"] = unit_copy.get("codec") or _codec_label(system_mode)
         unit_copy["supported_system_modes"] = unit_copy.get("supported_system_modes") or si_cfg.get("supported_system_modes") or []
         unit_copy["codec_configurable"] = unit_copy.get("codec_configurable") if unit_copy.get("codec_configurable") is not None else _is_codec_configurable_model(unit_copy.get("model"))
-        used_pwd = unit_copy.get("password") or primary_pwd
+        # What this device was last seen to ACCEPT outranks what discovery recorded: a password changed
+        # on the unit afterwards would otherwise keep reading as the old class until the next scan.
+        used_pwd = _working_credential(unit_copy.get("ip")) or unit_copy.get("password") or primary_pwd
         unit_copy["password_source"] = "Primary" if used_pwd == primary_pwd else "Fallback"
         unit_copy["uptime_seconds"] = _uptime_seconds(unit_copy)
         units_with_password_source.append(unit_copy)
@@ -11911,6 +12261,108 @@ def _ws_upgrade(ip: str, user: str, pwd: str, ws_port: int, ws_path: str, timeou
             pass
 
 # --- /api/poll endpoint ---
+
+# --------------------------------------------------------------------------
+# Batch polling of many units: bounded, single-flight per unit, with a time budget.
+#
+# Measured with 250 silent units (see the offline-polling study): a request that polled every
+# decoder with two workers and a 4 s read took minutes, a unit that did not answer was asked again
+# on every cycle for ever, and an overlapping request asked the same silent units again while the
+# first was still waiting on them. Now: units that have been seen not to answer are looked at on an
+# exponential back-off (`omni_liveness.backoff_seconds`), a unit being polled is not polled by a second
+# caller, answering units go first, and the request returns what it has when its budget is spent --
+# the stragglers finish in the background and their results are discarded rather than applied late.
+POLL_BATCH_WORKERS = 6
+POLL_BATCH_BUDGET_SECONDS = 8.0
+#: How long the first /api/cache of a session waits for its quick read of every unit. It used to read them one
+#: at a time with no overall limit -- with 250 silent units the page that asked for the inventory waited minutes
+#: (1.5 s a read, and a refused connect costs about 2 s whatever the timeout). The background verification that
+#: follows picks up whatever this did not reach.
+STARTUP_VERIFY_BUDGET_SECONDS = 8.0
+STARTUP_VERIFY_WORKERS = 16
+_poll_inflight = set()
+_poll_inflight_lock = threading.Lock()
+
+
+def _poll_plan(ips, force=False):
+    """Split `ips` into (units to poll now, {unit: reason it was not}). Claims the units it returns."""
+    order, seen = [], set()
+    for ip in ips or []:
+        ip = str(ip or "").strip()
+        if ip and ip not in seen:
+            seen.add(ip)
+            order.append(ip)
+    run, skipped = [], {}
+    with _poll_inflight_lock:
+        for ip in order:
+            if ip in _poll_inflight:
+                skipped[ip] = "poll in progress"
+            elif not _liveness.due(ip, force):
+                skipped[ip] = "not answering; looked at again on a back-off schedule"
+            else:
+                run.append(ip)
+
+        def rank(ip):
+            known = _liveness.known(ip)
+            return 0 if known is True else (1 if known is None else 2)
+        run.sort(key=rank)
+        _poll_inflight.update(run)
+    return run, skipped
+
+
+def _poll_release(ips):
+    with _poll_inflight_lock:
+        for ip in ips:
+            _poll_inflight.discard(ip)
+
+
+class _BudgetedPool:
+    """`ThreadPoolExecutor(...).map`-shaped, but results arrive as they complete and stop at a budget."""
+
+    def __init__(self, workers=None, budget=None):
+        workers = POLL_BATCH_WORKERS if workers is None else workers
+        self._ex = ThreadPoolExecutor(max_workers=max(1, int(workers)))
+        self._budget = POLL_BATCH_BUDGET_SECONDS if budget is None else budget
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._ex.shutdown(wait=False, cancel_futures=True)
+        return False
+
+    def map(self, fn, items):
+        def run(item):
+            try:
+                return fn(item)
+            finally:
+                _poll_release([item])
+        futures = {self._ex.submit(run, item): item for item in items}
+        try:
+            for future in as_completed(futures, timeout=self._budget):
+                try:
+                    yield future.result()
+                except Exception:
+                    pass        # the workers return their own failure tuples
+        except TimeoutError:
+            log.debug("[POLL] batch budget spent; %d unit(s) still being looked at",
+                      sum(1 for f in futures if not f.done()))
+        finally:
+            for future, item in futures.items():
+                if future.cancel():
+                    _poll_release([item])
+
+def _record_poll_outcome(ip, answered, said):
+    """Record what a poll found, and log it only when it is a change: what changed is worth the log, a unit that
+    is still silent (or still answering) is not news, and a poll is steady-state traffic."""
+    before = _liveness.known(ip)
+    _liveness.record(ip, answered, "poll")
+    if (before is False) == (not answered):
+        return
+    if answered or before is not False:
+        log.info("[LIVENESS] %s is %s", ip, said)
+
+
 @app.route("/api/poll", methods=["POST"])
 def api_poll():
     data = _json_dict()
@@ -11919,6 +12371,10 @@ def api_poll():
         return jsonify({"ok": False, "error": "ip required"}), 400
     if not HAS_MATRIX or not omni_matrix_logic:
         return jsonify({"ok": False, "error": "matrix logic not available"}), 500
+    # A unit seen not to answer is looked at on a back-off schedule, not on every cycle of every page;
+    # `force` (the operator turning polling on or asking for a refresh) looks at it now.
+    if data.get("force") is not True and not _liveness.due(ip):
+        return jsonify({"ok": False, "unit": {"status": "disconnected", "ip": ip}, "skipped": "backoff"})
     try:
         log.debug(f"[POLL] Polling {ip}...")
         status = omni_matrix_logic.poll_unit_status(ip)
@@ -11948,6 +12404,7 @@ def api_poll():
         has_fresh_ntp = False
         has_fresh_timezone = False
         fresh_uptime = None
+        ws_answered = False      # did any management read get a reply at all
         try:
             # Get systeminfo directly from device (fresh, not cached) - use very short timeout
             sysinfo_resp = _ws_send_recv(url, 
@@ -11955,6 +12412,7 @@ def api_poll():
                 timeout=0.5)  # Short timeout - device may be busy
             
             if sysinfo_resp:
+                ws_answered = True
                 if not sysinfo_resp.get("error"):
                     device_contact_ok = True
                 # Try multiple locations where version might be
@@ -11986,10 +12444,19 @@ def api_poll():
         except Exception as e:
             # Silently skip fresh query on timeout or error - cached version is good enough
             pass
+        # A unit that failed the connectivity check and gave no reply to the first read will give none to
+        # the next two; asking would triple what a silent unit costs this poll. The same holds for a unit
+        # that answers a ping but whose management API has already been seen not to answer.
+        silent = ((status.get("status") == "disconnected" and not device_contact_ok)
+                  or (not ws_answered and _liveness.known(ip) is False))
         try:
+            if silent:
+                raise ConnectionError("no reply to the first read")
             timezone_resp = _ws_send_recv(url,
                 {"id":"timezone-get","username":user,"password":pwd,"config_get":"timezone"},
                 timeout=min(timeout, 1.0))
+            if timezone_resp:
+                ws_answered = True
             if timezone_resp and not timezone_resp.get("error"):
                 device_contact_ok = True
                 timezone_cfg = (timezone_resp or {}).get("config") or {}
@@ -12044,9 +12511,13 @@ def api_poll():
 
         # Fetch link speed via net-get
         try:
+            if silent:
+                raise ConnectionError("no reply to the first read")
             net_resp = _ws_send_recv(url,
                 {"id": "net-get", "username": user, "password": pwd, "config_get": "net"},
                 timeout=min(timeout, 2.0))
+            if net_resp:
+                ws_answered = True
             if net_resp and not net_resp.get("error"):
                 device_contact_ok = True
                 net_cfg = net_resp.get("config") or []
@@ -12084,15 +12555,22 @@ def api_poll():
 
         # If status is disconnected, return ok:False
         if status.get("status") == "disconnected":
-            log.warning(f"[POLL] {ip} returned disconnected status")
+            _record_poll_outcome(ip, False, "not answering")
             return jsonify({"ok": False, "unit": status})
+        # Answers a ping and a connect but no management read: the unit is up and not usable, and is looked
+        # at on the same schedule as one that is down. The reply to this poll is unchanged.
+        if ws_answered:
+            _record_poll_outcome(ip, True, "answering again")
+        else:
+            _record_poll_outcome(ip, False, "not answering the management API")
         
         # Try to fetch USB info if device is USB-capable
         usb_data = {}
         try:
             model = (status.get("model") or "").lower()
             usb_models = ["hw-omni-e4521", "hw-omni-d4521", "hw-omni-e4511", "hw-omni-d4511", "4521", "4511"]
-            if any(m in model for m in usb_models):
+            # A unit whose management API gave no reply to any read this poll will not answer a fourth.
+            if ws_answered and any(m in model for m in usb_models):
                 usb_resp = _ws_send_recv(url, {"id":"usb_icron-get","username":user,"password":pwd,"config_get":"usb_icron"}, timeout=min(timeout, 2.0))
                 usb_cfg = (usb_resp or {}).get("config") or {}
                 
@@ -12160,10 +12638,15 @@ def api_poll_decoders():
     results = {}
     updated_count = 0
     
-    log.debug(f"[POLL_DECODERS] Polling {len(decoder_ips)} decoders in parallel...")
+    # Claimed as late as possible: everything between claiming and the pool that releases the claim is
+    # a place for an exception to strand it.
+    decoder_ips, not_polled = _poll_plan(decoder_ips, data.get("force") is True)
+    results.update({ip: {"error": reason} for ip, reason in not_polled.items()})
+    log.debug(f"[POLL_DECODERS] Polling {len(decoder_ips)} decoders ({len(not_polled)} skipped)...")
     
     # Poll all decoders in parallel with limited concurrency (2 workers to avoid overwhelming server)
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    # Bounded concurrency and a time budget (see _BudgetedPool): one silent unit cannot hold the rest.
+    with _BudgetedPool() as executor:
         def poll_decoder(ip):
             try:
                 # Get device-specific password from cache, fall back to default
@@ -12218,7 +12701,8 @@ def api_poll_decoders():
                     updated_count += 1
                 log.debug(f"[POLL_DECODERS] {ip}: {fields}")
             else:
-                log.warning(f"[POLL_DECODERS] {ip}: {fields}")
+                _liveness.record(ip, False, "poll")
+                log.debug(f"[POLL_DECODERS] {ip}: {fields}")
     
     # Save updated decoder input fields into server cache (avoid overwriting hostnames)
     if updated_count > 0:
@@ -12591,30 +13075,25 @@ def _omnistream_identify(ip):
     E4521/D4511 parent, so both paths use one implementation.  Returns the same
     (ok, payload) content /api/blink has always produced.
     """
-    user = app.config['USERNAME']
-    pwd = app.config['PASSWORD']
     ws_port = app.config['WS_PORT']
     ws_path = app.config['WS_PATH']
     timeout = app.config['TIMEOUT']
+    # This unit's own credential, through the one transport. It used to present the
+    # configured primary and nothing else, so Blink failed on any unit that had been
+    # discovered on the fallback password.
+    user, pwd, _device = _device_credentials(ip)
 
     ws_url = f"{'wss' if ws_port == 443 else 'ws'}://{ip}:{ws_port}{ws_path}"
-    ws = websocket.create_connection(ws_url, timeout=timeout, sslopt={"cert_reqs":ssl.CERT_NONE} if ws_port==443 else {}, redirect_limit=0)
-
     payload = {
         "id": "identify-method",
         "username": user,
         "password": pwd,
         "method": {"identify": {}}
     }
-    ws.send(json.dumps(payload))
-    resp = ws.recv()
-    ws.close()
-
-    try:
-        r = json.loads(resp)
-        return (not r.get("error")), r
-    except Exception:
-        return True, resp
+    r = _ws_send_recv(ws_url, payload, timeout)
+    if not isinstance(r, dict):
+        return False, {"error": "the device sent no usable answer"}
+    return (not r.get("error")), r
 
 
 @app.route("/api/blink", methods=["POST"])
@@ -14167,8 +14646,7 @@ def api_set_thumbnail():
         return jsonify({"ok": False, "error": "IP address required"}), 400
 
     try:
-        user = app.config['USERNAME']
-        pwd = app.config['PASSWORD']
+        user, preferred_pwd, _device = _device_credentials(device_ip)
         ws_port = app.config['WS_PORT']
         ws_path = app.config['WS_PATH']
         timeout = app.config['TIMEOUT']
@@ -14176,12 +14654,19 @@ def api_set_thumbnail():
         device_url = _ws_url(device_ip, ws_port, ws_path)
         
         # Get current vc2 config to preserve existing settings
-        current_vc2 = _ws_send_recv(device_url, {
+        # The read goes through the one resolver, which finds (and records) the
+        # credential this device accepts. The write below then presents that
+        # credential exactly once: a write is never retried across passwords.
+        current_vc2 = _ws_send_recv_with_fallback(device_ip, {
             "id": "vc2-get",
             "username": user,
-            "password": pwd,
+            "password": preferred_pwd,
             "config_get": "vc2"
-        }, timeout=timeout)
+        }, timeout, ws_port, ws_path, preferred_pwd)
+        if not current_vc2 or current_vc2.get("error"):
+            return jsonify({"ok": False, "error": (current_vc2 or {}).get("error")
+                            or "The encoder did not answer."}), 502
+        pwd = _working_credential(device_ip) or preferred_pwd
 
         vc2_cfg = (current_vc2 or {}).get("config") or []
         if not vc2_cfg or len(vc2_cfg) == 0:
@@ -14210,15 +14695,15 @@ def api_set_thumbnail():
         }
 
         log.info("Thumbnail %s for %s", "enable" if enable else "disable", device_ip)
-        log.info("Sending vc2-set: %s", json.dumps(omni_users.redact(payload), indent=2))
 
         response = _ws_send_recv(device_url, payload, timeout=timeout)
-        log.info("Thumbnail response from %s: %s", device_ip, json.dumps(response, indent=2))
+        log.info("Thumbnail response from %s: %s", device_ip,
+                 "error" if (response or {}).get("error") else "ok")
 
         if response and not response.get("error"):
-            return jsonify({"ok": True, "message": f"Thumbnail {'enabled' if enable else 'disabled'}", "response": response})
+            return jsonify({"ok": True, "message": f"Thumbnail {'enabled' if enable else 'disabled'}", })
         else:
-            return jsonify({"ok": False, "error": response.get("error", "Unknown error"), "response": response}), 500
+            return jsonify({"ok": False, "error": (response or {}).get("error", "Unknown error")}), 500
     except Exception as e:
         log.exception("set_thumbnail error")
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -14231,6 +14716,11 @@ def api_get_thumbnail_status():
 
     if not device_ip:
         return jsonify({"ok": False, "error": "IP address required"}), 400
+    # The page asks once per encoder whenever it draws the table. A unit seen not to answer is not asked
+    # again until its back-off elapses: each read costs several seconds, and 60 of them held every
+    # connection the browser had open to this server. Same shape as any other failed read.
+    if not _liveness.due(device_ip):
+        return jsonify({"ok": False, "enable": False, "error": "not answering"}), 200
 
     try:
         ws_port = app.config['WS_PORT']
@@ -14250,7 +14740,7 @@ def api_get_thumbnail_status():
                     "username": user,
                     "password": pwd_try,
                     "config_get": "vc2"
-                }, timeout=timeout)
+                }, timeout=min(timeout, 2.5))
 
                 if not current_vc2 or current_vc2.get("error"):
                     last_error = (current_vc2 or {}).get("error") or "vc2-get failed"
@@ -14267,6 +14757,13 @@ def api_get_thumbnail_status():
                 # business: it goes into the page, into any log of the response
                 # and into anything that captures traffic. Nothing consumes it.
                 return jsonify({"ok": True, "enable": enable})
+            except (OSError, websocket.WebSocketTimeoutException) as e:
+                # No connection, or no reply: that does not depend on which password was offered, so a
+                # second candidate would only double the wait. Seen once, the unit is looked at on the
+                # back-off schedule from here on.
+                last_error = str(e)
+                _liveness.record(device_ip, False, "thumbnail")
+                break
             except Exception as e:
                 last_error = str(e)
                 continue
@@ -14402,6 +14899,7 @@ MULTIVIEW_INPUT_SETTLE = 6.0
 # of its input being pointed in the ordinary case; this is the bound past which
 # one is reported as not showing.
 MULTIVIEW_WINDOW_SETTLE = 10.0
+MULTIVIEW_FIRST_LOOK = 5.0
 
 MULTIVIEW_META = DATA_DIR / "multiview_meta.json"
 
@@ -14607,8 +15105,51 @@ def _record_multiview_meta(device, object_name, record):
         for inherited in ("standard_layout", "standard"):
             if inherited in previous and inherited not in record:
                 record[inherited] = previous[inherited]
+        # What OmniSuite configured on the decoder for this Multiview outlives a
+        # save: the subframes that proved it may have just been pruned.
+        carried = dict(previous.get("allocated_inputs") or {})
+        carried.update(record.get("allocated_inputs") or {})
+        if carried:
+            record["allocated_inputs"] = carried
+        # The layout's identity outlives every save, rename and edit: an
+        # assignment to a user names this id, so a record that came back from a
+        # save with a different one would silently end every assignment to it.
+        # Only a record that never had one is given one.
+        if not omni_users.valid_multiview_id(record.get("id")):
+            record["id"] = (previous.get("id")
+                            if omni_users.valid_multiview_id(previous.get("id"))
+                            else _new_multiview_id())
         entry["multiviews"][object_name] = record
     _save_multiview_meta()
+
+
+def _new_multiview_id():
+    """An opaque, unguessable-enough identity for one saved Multiview layout."""
+    return "mv_" + secrets.token_hex(8)
+
+
+def _ensure_multiview_ids(device):
+    """{object name: layout id} for the decoder, giving a record that has no id one.
+
+    Records saved before layouts were assignable carry none. They are given one
+    the first time anything asks, and it is written back so the same layout has
+    the same id on every later call and after a restart.
+    """
+    key = _multiview_meta_key(device)
+    if not key:
+        return {}
+    minted = False
+    with _multiview_meta_lock:
+        records = (_MULTIVIEW_META.get(key) or {}).get("multiviews") or {}
+        for record in records.values():
+            if isinstance(record, dict) and not omni_users.valid_multiview_id(record.get("id")):
+                record["id"] = _new_multiview_id()
+                minted = True
+        ids = {name: record["id"] for name, record in records.items()
+               if isinstance(record, dict) and omni_users.valid_multiview_id(record.get("id"))}
+    if minted:
+        _save_multiview_meta()
+    return ids
 
 
 def _forget_multiview_meta(device, object_name):
@@ -14640,7 +15181,47 @@ def _known_multiviews(exclude_decoder_ip=None):
                     "windows": record.get("windows") or [],
                     "current": entry.get("decoder_ip") == exclude_decoder_ip,
                 })
+    # A saved Multiview is a description, not a reservation: it only depends on
+    # an encoder's scaler while some decoder is actually showing it. Judging a
+    # conflict from every saved record refused any Show whose source also appeared
+    # (at another size) in a Multiview that was merely stored on another decoder.
+    shown = _live_shown_multiviews({r["decoder_ip"] for r in records
+                                    if not r["current"] and r.get("decoder_ip")})
+    for record in records:
+        if not record["current"]:
+            record["active"] = record["object_name"] in shown.get(record["decoder_ip"], ())
     return records
+
+
+def _live_shown_multiviews(decoder_ips):
+    """{decoder ip: {Multiview name on its display}} read now, concurrently.
+
+    One bounded TCP probe, then one `hdmi_output` read per decoder, in parallel so
+    a slow unit cannot delay the rest. A decoder that does not answer is not
+    showing anything we can prove, so it contributes nothing; the plan's own
+    unknown-external wording already says OmniSuite cannot see every consumer.
+    """
+    decoder_ips = sorted(ip for ip in decoder_ips if ip)
+    if not decoder_ips:
+        return {}
+
+    def shown_on(ip):
+        try:
+            if not _tcp_probe(ip, [app.config['WS_PORT']],
+                              timeout=MULTIVIEW_PREFLIGHT_TIMEOUT):
+                return ip, set()
+            names = set()
+            for item in _mv_config(ip, "hdmi_output"):
+                chosen = str(((item.get("video") or {}).get("input")) or "")
+                if chosen:
+                    names.add(chosen)
+            return ip, names
+        except Exception:
+            log.debug("[MULTIVIEW] could not read what %s is showing", ip, exc_info=True)
+            return ip, set()
+
+    with ThreadPoolExecutor(max_workers=min(6, len(decoder_ips))) as pool:
+        return dict(pool.map(shown_on, decoder_ips))
 
 
 def _managed_multiviews(device, present_names):
@@ -14793,7 +15374,85 @@ def _write_landed(ip, node, config):
     return not _diff_expected(config, actual)
 
 
+# After a subframe lets go of an input the decoder needs a moment before another
+# subframe can take it. Measured on hardware: released in a separate write and
+# given ~1.5 s, the window locks; released in the same write, or after the bind,
+# the new window never locks (and stays dead until another Multiview is shown).
+MULTIVIEW_RELEASE_SETTLE = 1.5
+
+
+def _inputs_to_release_first(current, subframes, priorities=None):
+    """Labels that must let go of their input before anything may take it.
+
+    `current` maps subframe label -> input as the device holds it, `subframes` is
+    the write about to be made. A subframe is released first when it holds an
+    input that is about to change AND another subframe is being given that same
+    input: one write that does both moves the input between two subframes in a
+    single step, and the decoder does not attach the new owner. Measured on
+    hardware, released in an earlier write and given a moment, it does.
+    """
+    wanted = {str(s.get("name") or ""): str(s.get("input") or "")
+              for s in subframes if "input" in s}
+    release = [label for label, new in wanted.items()
+               if (current.get(label) or "") and current[label] != new and any(
+                   other != label and wanted[other] == current[label]
+                   and current.get(other) != current[label] for other in wanted)]
+    return _last_window_first(release, priorities)
+
+
+def _last_window_first(labels, priorities=None):
+    """The order a decoder tolerates: the last window (highest priority number)
+    first. Measured on hardware, a write that clears the first window of a shared
+    input before the window that shares it moves away leaves that window black;
+    last window first does not.
+
+    This orders RELEASES. When windows are bound from a neutral state the order
+    was measured not to matter at all (24 of 24 orders and write batchings
+    locked), so no binding order is claimed to be a cure for a dark window; the
+    recovery in `_recover_unlocked_windows` is what handles one."""
+    order = {label: index for index, label in enumerate(sorted(labels))}
+    return sorted(labels, key=lambda label: (-(priorities or {}).get(label, order[label]), label))
+
+
 def _mv_set(ip, node, config):
+    """One `config_set`, with the ordering a Multiview's subframes need.
+
+    A decoder input handed from one subframe to another in a single write leaves
+    the new window black, so the old owner is released in an earlier write and
+    the device is given a moment before the bind. Within a write the last window
+    goes first. Everything else is unchanged.
+    """
+    if node == "multiview" and isinstance(config.get("subframes"), list):
+        existing_subframes = []
+        try:
+            existing = next((o for o in _mv_config(ip, "multiview")
+                             if str(o.get("name") or "") == str(config.get("name") or "")), None)
+            existing_subframes = list((existing or {}).get("subframes") or [])
+        except Exception:
+            log.debug("[MULTIVIEW] could not read subframes before a bind", exc_info=True)
+        current = {str(s.get("name") or ""): str(s.get("input") or "") for s in existing_subframes}
+        priorities = {}
+        for s in list(existing_subframes) + list(config["subframes"]):
+            if str(s.get("priority") if s.get("priority") is not None else "").lstrip("-").isdigit():
+                priorities[str(s.get("name") or "")] = int(s["priority"])
+        release = _inputs_to_release_first(current, config["subframes"], priorities)
+        if release:
+            log.info("[MULTIVIEW] releasing %d subframe input(s) on %s before binding %s",
+                     len(release), ip, config.get("name"))
+            ok, message = _mv_set_once(ip, node, {
+                "name": config.get("name"),
+                "subframes": [{"name": label, "input": ""} for label in release]})
+            if not ok:
+                return ok, message
+            time.sleep(MULTIVIEW_RELEASE_SETTLE)
+        by_name = {str(s.get("name") or ""): s for s in config["subframes"]}
+        ordered = _last_window_first(list(by_name), priorities)
+        config = dict(config)
+        config["subframes"] = [by_name[n] for n in ordered]
+    return _mv_set_once(ip, node, config)
+
+
+def _mv_set_once(ip, node, config):
     """One `config_set`. Returns (ok, message). Never treated as verification.
 
     On a transport failure the device is read before anything is repeated: a
@@ -15459,11 +16118,16 @@ def api_multiview_state():
             "stored_layout": reconciled.get("stored_layout"),
             "canvas": reconciled.get("canvas"),
             "selected_on_output": name == selected,
+            # An edit saved over the displayed Multiview waits for Show. The
+            # device still holds the old windows, so the page needs both.
+            "pending_show": bool((stored.get(name) or {}).get("pending")),
+            "pending": _pending_view(stored.get(name)),
             # The same verdict the show endpoint reaches, reported here so the
             # page can say why instead of offering an action that 409s. One
             # copy of the rule, and the page holds none of it.
             **_showable(obj),
-            "subframes": [_subframe_view(s, state, stored.get(name), devices)
+            "subframes": [_subframe_view(s, state, stored.get(name), devices,
+                                         displayed=(name == selected))
                           for s in subframes],
         })
     views.sort(key=lambda v: v["name"].lower())
@@ -15510,6 +16174,19 @@ def api_multiview_state():
         # extra request, no timer.
         "display_output": _display_output_view(state, devices),
     })
+
+
+def _pending_view(record):
+    pending = (record or {}).get("pending")
+    if not isinstance(pending, dict):
+        return None
+    layout = pending.get("layout")
+    return {"layout": layout,
+            "layout_label": (omni_multiview.LAYOUTS[layout]["label"]
+                             if layout in omni_multiview.LAYOUTS else "Custom / Unknown"),
+            "friendly_name": pending.get("friendly_name"),
+            "windows": [[w.get("cell"), w.get("source_ip")]
+                        for w in (pending.get("windows") or []) if w.get("cell")]}
 
 
 def _resolve_subscription(address, port, devices=None):
@@ -15604,15 +16281,27 @@ def _display_output_view(state, devices=None):
             "live": video["carrying"]}
 
 
-def _subframe_view(subframe, state, stored, devices=None):
-    """One window as the page shows it, from what the decoder is subscribed to.
+def _subframe_view(subframe, state, stored, devices=None, displayed=True):
+    """One window as the page shows it.
 
     The distinction this exists to keep: a saved Multiview describes what was
-    wanted, and the decoder's inputs say what is actually arriving. After a
-    recall the canvas must show the second, because that is what is on the
-    screen -- and when a live subscription cannot be resolved to a known
-    encoder it is shown as an unknown source rather than erased, since
-    something is plainly playing in that window.
+    wanted, and the decoder's inputs say what is actually arriving.
+
+    For the Multiview that is on the display, the canvas shows the second,
+    because that is what is on the screen -- and when a live subscription cannot
+    be resolved to a known encoder it is shown as an unknown source rather than
+    erased, since something is plainly playing in that window.
+
+    For one that is NOT on the display, the canvas is a form and shows the first.
+    The pool inputs its subframes name belong to whichever Multiview was shown
+    last, and may since have been repointed at other streams; resolving the
+    windows from them painted a different Multiview's sources onto this one (a
+    preset saved as main=A, top_left=B showed main=B, top_left=A while another
+    was on the display, and Show then applied what was saved). The saved record
+    decides; the device is consulted only when OmniSuite has no record of the
+    object at all, such as one made in the decoder's own web page. The data says
+    which: `source_basis` is "saved", "device" or "none", and the live resolution
+    stays in `device_source_ip` for diagnostics.
     """
     name = str(subframe.get("name") or "")
     cell, width, height = omni_multiview.parse_subframe_label(name)
@@ -15629,21 +16318,35 @@ def _subframe_view(subframe, state, stored, devices=None):
     video = subframe.get("video") or {}
     active = bool((video.get("input") or {}).get("active"))
 
+    def saved_source():
+        return {"ip": stored_window.get("source_ip"),
+                "hostname": stored_window.get("source_hostname")
+                            or stored_window.get("source_ip"),
+                "model": stored_window.get("source_model") or "",
+                "session": stored_window.get("session") or "",
+                "encoder_index": stored_window.get("encoder_index"),
+                "resolved_from": "saved"}
+
     source, origin = None, "none"
+    device_source = None
     if address:
-        source = _resolve_subscription(address, port, devices)
-        origin = "subscription" if source else "unknown"
-    if source is None and not address and stored_window and stored_window.get("source_ip"):
-        # Nothing is arriving, so the only thing to show is what was saved --
-        # marked as such, because it is not what the decoder is doing.
-        source = {"ip": stored_window.get("source_ip"),
-                  "hostname": stored_window.get("source_hostname")
-                              or stored_window.get("source_ip"),
-                  "model": stored_window.get("source_model") or "",
-                  "session": stored_window.get("session") or "",
-                  "encoder_index": stored_window.get("encoder_index"),
-                  "resolved_from": "saved"}
-        origin = "saved"
+        device_source = _resolve_subscription(address, port, devices)
+    has_record = (not displayed) and isinstance(stored, dict)         and stored.get("windows") is not None
+    if has_record:
+        # A form: the window is what was saved for this window name, or empty.
+        if stored_window and stored_window.get("source_ip"):
+            source, origin = saved_source(), "saved"
+        basis = "saved"
+    else:
+        if address:
+            source = device_source
+            origin = "subscription" if source else "unknown"
+        if source is None and not address and stored_window and stored_window.get("source_ip"):
+            # Nothing is arriving, so the only thing to show is what was saved --
+            # marked as such, because it is not what the decoder is doing.
+            source, origin = saved_source(), "saved"
+        basis = "device" if origin in ("subscription", "unknown") else (
+            "saved" if origin == "saved" else "none")
 
     return {
         "name": name, "cell": cell,
@@ -15659,6 +16362,8 @@ def _subframe_view(subframe, state, stored, devices=None):
         "subscribed": subscribed,
         "source": source,
         "source_origin": origin,
+        "source_basis": basis,
+        "device_source_ip": (device_source or {}).get("ip"),
         "encoder_index": (source or {}).get("encoder_index")
                          or (stored_window or {}).get("encoder_index"),
         "saved_source_ip": (stored_window or {}).get("source_ip"),
@@ -16101,11 +16806,31 @@ def _restore_snapshot(snapshot, applied):
         ok, message = _mv_set(mutation["device"], mutation["node"], config)
         verified = False
         detail = message
+        if mutation["node"] == "multiview" and not mutation.get("method"):
+            # `config_set` merges by name, so the write being undone may have
+            # ADDED windows the object never had. Restoring the captured
+            # windows does not remove those; only a delete does.
+            _remove_added_subframes(mutation, original)
         if ok:
             verified, detail = _verify_mutation({**mutation, "config": config})
         results.append({"step": mutation["description"], "action": "restored",
                         "verified": verified, "error": "" if verified else detail})
     return results
+
+
+def _remove_added_subframes(mutation, original):
+    """Delete windows a rolled-back write created, so the object is as it was."""
+    wanted = {str(s.get("name") or "") for s in ((original or {}).get("subframes") or [])}
+    if not wanted:
+        return
+    for obj in _mv_config(mutation["device"], "multiview"):
+        if obj.get("name") != mutation["target"]:
+            continue
+        for sub in obj.get("subframes") or []:
+            name = str(sub.get("name") or "")
+            if name and name not in wanted:
+                _mv_method(mutation["device"], "del_multiview_subframe",
+                           {"multiview": mutation["target"], "name": name})
 
 
 # The only subframe fields a device accepts. Everything else a subframe reports
@@ -16150,7 +16875,8 @@ def _owned_pool_inputs(device, state, exclude=None):
     treating every saved reference as a reservation would let the first saved
     layout lock the pool against all the others.
     """
-    managed = set(_multiview_meta_for(device) or {})
+    meta = _multiview_meta_for(device) or {}
+    managed = set(meta)
     owned = set()
     for obj in state.get("multiview") or ():
         name = str(obj.get("name") or "")
@@ -16160,7 +16886,52 @@ def _owned_pool_inputs(device, state, exclude=None):
             target = str(subframe.get("input") or "")
             if target in omni_multiview.WINDOW_IP_INPUTS:
                 owned.add(target)
+    # A pool input OmniSuite recorded as configured for a Multiview that still
+    # exists is ownership too, even when no subframe references it any more --
+    # an edit that shrinks a layout prunes the very subframes that proved it.
+    # The record only counts while the input still carries the stream it was
+    # given: if anything repointed it since, it is no longer ours.
+    present = {str(o.get("name") or "") for o in state.get("multiview") or ()}
+    carrying = {str(i.get("name") or ""): str((i.get("multicast") or {}).get("address") or "")
+                for i in (state.get("ip_input") or ())}
+    for name, record in meta.items():
+        if name not in present or (exclude and name == exclude):
+            continue
+        for target, address in ((record or {}).get("allocated_inputs") or {}).items():
+            if (target in omni_multiview.WINDOW_IP_INPUTS and address
+                    and carrying.get(target) == address):
+                owned.add(target)
     return owned
+
+
+def _pool_ownership_snapshot(device, state):
+    """{pool input: stream address} for every input OmniSuite owns right now.
+
+    Taken before a Save, while the subframes that prove ownership still exist.
+    """
+    carrying = {str(i.get("name") or ""): str((i.get("multicast") or {}).get("address") or "")
+                for i in (state.get("ip_input") or ())}
+    return {n: carrying[n] for n in _owned_pool_inputs(device, state)
+            if carrying.get(n)}
+
+
+def _note_allocated_inputs(device, object_name, allocated, released=()):
+    """Record which pool inputs were configured for this Multiview (and which
+    were handed back), so a later edit cannot lose the proof."""
+    key = _multiview_meta_key(device)
+    if not key or not object_name:
+        return
+    with _multiview_meta_lock:
+        record = (((_MULTIVIEW_META.get(key) or {}).get("multiviews") or {})
+                  .get(object_name))
+        if record is None:
+            return
+        held = dict(record.get("allocated_inputs") or {})
+        held.update({n: a for n, a in (allocated or {}).items() if a})
+        for n in released or ():
+            held.pop(n, None)
+        record["allocated_inputs"] = held
+    _save_multiview_meta()
 
 
 def _saved_assignments(device, object_name):
@@ -16168,6 +16939,27 @@ def _saved_assignments(device, object_name):
     record = (_multiview_meta_for(device) or {}).get(object_name) or {}
     return ({w["cell"]: w["source_ip"] for w in (record.get("windows") or [])
              if w.get("cell") and w.get("source_ip")}, record)
+
+
+def _live_window_sources(multiview_object, state, record, device):
+    """cell -> encoder ip for each window whose live subscription names a source.
+
+    Read from the decoder state the caller already holds, so it costs no device
+    request. A window that is empty, or subscribed to a stream no discovered
+    encoder carries, is simply absent: the caller keeps whatever it had.
+    """
+    found = {}
+    devices = list(_load_cache())
+    for subframe in (multiview_object.get("subframe") or
+                     multiview_object.get("subframes") or ()):
+        if not isinstance(subframe, dict):
+            continue
+        view = _subframe_view(subframe, state, record, devices)
+        source = view.get("source") or {}
+        if (view.get("cell") and view.get("source_origin") == "subscription"
+                and source.get("ip")):
+            found[view["cell"]] = source["ip"]
+    return found
 
 
 def _log_failed_transaction(operation, decoder, name, plan, failures,
@@ -16200,7 +16992,48 @@ def _log_failed_transaction(operation, decoder, name, plan, failures,
         str(last.get("error") or "")[:200])
 
 
-def _apply_saved_plan(plan, decoder_ip):
+def _multiview_record_from_plan(plan, ownership=None):
+    """The description OmniSuite stores for a Multiview: what was asked for."""
+    return {
+        "layout": plan["layout"],
+        "friendly_name": plan["friendly_name"],
+        "canvas": f"{plan['canvas']['width']}x{plan['canvas']['height']}",
+        "requested_canvas": "%sx%s" % (plan["requested_canvas"]["width"],
+                                       plan["requested_canvas"]["height"]),
+        "updated": time.time(),
+        # Ownership proven before the prune, kept after it.
+        "allocated_inputs": dict(ownership or {}),
+        "windows": [{
+            "cell": w["cell"], "label": w["label"],
+            "x": w["x"], "y": w["y"], "anchor": w["anchor"],
+            "width": w["width"], "height": w["height"],
+            "scaler_format": w["scaler_format"],
+            "encoder_index": w["encoder_index"],
+            "session": w["session"],
+            "ip_input": (w.get("ip_input") or {}).get("ip_input"),
+            "source_ip": (w.get("source") or {}).get("ip"),
+            "source_hostname": (w.get("source") or {}).get("hostname"),
+            "source_model": (w.get("source") or {}).get("model"),
+            "multicast": (w.get("multicast") or {}).get("address"),
+            "multicast_port": (w.get("multicast") or {}).get("port"),
+            "is_main": w.get("is_main", False),
+        } for w in plan["windows"] if w.get("source")],
+    }
+
+
+def _effective_record(record):
+    """What Show should realise: an edit saved over the displayed Multiview
+    waits in `pending` until Show, otherwise the stored record itself."""
+    pending = (record or {}).get("pending")
+    if isinstance(pending, dict) and pending.get("layout"):
+        merged = dict(record)
+        merged.update({k: v for k, v in pending.items()})
+        merged.pop("pending", None)
+        return merged
+    return record
+
+
+def _apply_saved_plan(plan, decoder_ip, ownership=None):
     """Write a planned Multiview to a decoder, verified, with rollback.
 
     Returns (body, http_status). Shared by Apply, by Copy and by a copy to a
@@ -16253,29 +17086,8 @@ def _apply_saved_plan(plan, decoder_ip):
                 "verified": verified, "failures": failures, "rollback": rollback,
             }, 200
 
-        _record_multiview_meta(device, plan["object_name"], {
-            "layout": plan["layout"],
-            "friendly_name": plan["friendly_name"],
-            "canvas": f"{plan['canvas']['width']}x{plan['canvas']['height']}",
-            "requested_canvas": "%sx%s" % (plan["requested_canvas"]["width"],
-                                           plan["requested_canvas"]["height"]),
-            "updated": time.time(),
-            "windows": [{
-                "cell": w["cell"], "label": w["label"],
-                "x": w["x"], "y": w["y"], "anchor": w["anchor"],
-                "width": w["width"], "height": w["height"],
-                "scaler_format": w["scaler_format"],
-                "encoder_index": w["encoder_index"],
-                "session": w["session"],
-                "ip_input": (w.get("ip_input") or {}).get("ip_input"),
-                "source_ip": (w.get("source") or {}).get("ip"),
-                "source_hostname": (w.get("source") or {}).get("hostname"),
-                "source_model": (w.get("source") or {}).get("model"),
-                "multicast": (w.get("multicast") or {}).get("address"),
-                "multicast_port": (w.get("multicast") or {}).get("port"),
-                "is_main": w.get("is_main", False),
-            } for w in plan["windows"] if w.get("source")],
-        })
+        record = _multiview_record_from_plan(plan, ownership)
+        _record_multiview_meta(device, plan["object_name"], record)
         log.info("[MULTIVIEW] %s saved on %s (%d verified change(s))",
                  plan["object_name"], decoder_ip, len(verified))
         return {"ok": True, "status": "VERIFIED", "plan": plan,
@@ -16318,13 +17130,48 @@ def api_multiview_apply():
     if not plan.get("preset_ok"):
         body, status = _plan_refusal(plan, "save")
         return jsonify(body), status
-    body, status = _apply_saved_plan(plan, plan["decoder"]["ip"])
+    device = {d.get("ip"): d for d in _load_cache()}.get(plan["decoder"]["ip"], {})
+    # Save is save only. The Multiview that is on the display IS the live
+    # picture: writing its object would move live windows. An edit saved over it
+    # is therefore kept as a description beside the stored record and written
+    # to the device when Show is pressed, with everything else Show prepares.
+    shown = str(((state.get("hdmi_output") or {}).get("video") or {}).get("input") or "")
+    if plan.get("updating") and shown == plan["object_name"]:
+        return jsonify(_defer_save_over_displayed(
+            plan, device, _pool_ownership_snapshot(device, state))), 200
+    body, status = _apply_saved_plan(plan, plan["decoder"]["ip"],
+                                     ownership=_pool_ownership_snapshot(device, state))
     return jsonify(body), status
 
 
+def _defer_save_over_displayed(plan, device, ownership=None):
+    """Store an edit of the displayed Multiview without touching any device."""
+    name = plan["object_name"]
+    previous = copy.deepcopy((_multiview_meta_for(device) or {}).get(name) or {})
+    previous.pop("pending", None)
+    pending = _multiview_record_from_plan(plan)
+    pending.pop("allocated_inputs", None)
+    record = dict(previous)
+    # Ownership is proven now, while the windows that prove it still exist.
+    held = dict(record.get("allocated_inputs") or {})
+    held.update({k: v for k, v in (ownership or {}).items() if v})
+    if held:
+        record["allocated_inputs"] = held
+    record["pending"] = pending
+    record["updated"] = time.time()
+    _record_multiview_meta(device, name, record)
+    log.info("[MULTIVIEW] %s is on the display of %s: edit stored, nothing "
+             "written until Show", name, plan["decoder"].get("ip"))
+    return {"ok": True, "status": "VERIFIED", "plan": plan, "applied": [],
+            "verified": [], "device_written": False, "pending_show": True,
+            "message": "Saved. This Multiview is on the display, so nothing "
+                       "on the display or the sources has changed. Use Show on "
+                       "Display to apply the saved configuration."}
 
 
-def _recall_plan(ip, name, state):
+
+
+def _recall_plan(ip, name, state, assignments_override=None):
     """Re-plan a saved Multiview against the state the devices are in NOW.
 
     Nothing about the encoders is assumed to have survived since the Multiview
@@ -16338,6 +17185,10 @@ def _recall_plan(ip, name, state):
     """
     device = {d.get("ip"): d for d in _load_cache()}.get(ip, {})
     assignments, record = _saved_assignments(device, name)
+    record = _effective_record(record)
+    if record and record.get("windows") is not None:
+        assignments = {w["cell"]: w["source_ip"] for w in (record.get("windows") or [])
+                       if w.get("cell") and w.get("source_ip")}
     # "No assignments" and "no record" are different things. A layout with
     # nothing assigned is a perfectly good Multiview -- the decoder composites
     # it and keeps its output active -- so only the second is a refusal.
@@ -16346,6 +17197,11 @@ def _recall_plan(ip, name, state):
             f"OmniSuite has no record of what feeds {name}, so it cannot be "
             f"prepared. Open it and save it again.", 409)
     assignments = assignments or {}
+    if assignments_override is not None:
+        # A caller that has already worked out the whole composition it wants
+        # (the restricted User's Show). It replaces the saved windows for this
+        # one recall only and writes nothing to the saved record.
+        assignments = dict(assignments_override)
 
     encoder_states = _gather_encoder_states(assignments.values())
     plan = omni_multiview.plan_multiview(
@@ -16360,6 +17216,103 @@ def _recall_plan(ip, name, state):
     plan["decoder"] = {"ip": ip, "hostname": state.get("hostname") or ip,
                        "model": state.get("model") or ""}
     return plan, state, encoder_states, record, None
+
+
+def _shared_input_groups(target_object, plan):
+    """For every decoder input that a window is being emptied from while another
+    window is, or was, drawing from the same input: {input: (cleared, keep)}.
+
+    `cleared` are the windows this change empties, in label order; `keep` are the
+    windows that stay on that input.
+
+    Measured on the bench decoder, with the application's own transport and no
+    planning involved (`omni-live` / `omni-mv2` probes):
+
+      * unbinding the second window while the first stays bound leaves the first
+        inactive (30 s watched), and no re-write of its input, input toggle, or
+        subframe delete and re-add brings it back;
+      * the broken state survives later rebinds and a rollback, so the NEXT fill
+        of that window fails even though every write verifies and the stream is
+        arriving (a Replace that emptied both windows of a pair in one write, then
+        refilling the first one alone: "never showed its stream", every time);
+      * emptying BOTH windows in one write, or in two plain writes in the wrong
+        order, produces the same state;
+      * releasing the sibling first, emptying the window, binding the sibling
+        again -- and emptying a pair one window at a time, each with its remaining
+        partner released first -- lands every window live and leaves every later
+        refill healthy (repeated, both directions).
+    """
+    planned = {w["label"]: ((w.get("ip_input") or {}).get("ip_input") or "")
+               for w in (plan.get("windows") or [])}
+    current = {str(s.get("name") or ""): str(s.get("input") or "")
+               for s in ((target_object or {}).get("subframes") or [])}
+    groups = {}
+    for label, bound in sorted(current.items()):
+        if bound and label in planned and not planned[label]:
+            groups.setdefault(bound, ([], []))[0].append(label)
+    out = {}
+    for bound, (cleared, _keep) in groups.items():
+        keep = [label for label, other in sorted(current.items())
+                if other == bound and label not in cleared and planned.get(label) == bound]
+        if keep or len(cleared) > 1:
+            out[bound] = (cleared, keep)
+    return out
+
+
+def _ordered_shared_clears(mutations, ip, name, groups):
+    """Empty windows that share an input in the order the hardware tolerates.
+
+    One window at a time, as separate verified writes. Each step releases the
+    windows still bound to the input, empties its window, and binds them again;
+    the last window of a group that has no survivor is simply emptied.
+
+    Applied after the minimal-write diff on purpose: a survivor ends where it
+    started, so judged by end state alone the guard looks redundant and the diff
+    would drop it together with the clear it protects. The emptied windows are
+    taken out of the ordinary rebind (they are already empty by then), which also
+    keeps it to one write per field that differs.
+    """
+    if not groups:
+        return mutations
+    index = next((i for i, m in enumerate(mutations)
+                  if m.get("stage") == omni_multiview.STAGE_MULTIVIEW
+                  and m.get("node") == "multiview" and m.get("target") == name
+                  and not m.get("method")), None)
+    if index is None:
+        return mutations
+
+    def step(description, inputs):
+        return {"stage": omni_multiview.STAGE_MULTIVIEW, "device": ip,
+                "node": "multiview", "target": name, "description": description,
+                "config": {"name": name, "subframes": [
+                    {"name": label, "input": value}
+                    for label, value in inputs]}}
+
+    def short(label):
+        return label.split(" (")[0]
+
+    steps, handled = [], set()
+    for bound, (cleared, keep) in sorted(groups.items()):
+        for position, label in enumerate(cleared):
+            others = list(keep) + [c for c in cleared[position + 1:]]
+            if others:
+                steps.append(step("Release %s first, so it survives %s being emptied"
+                                  % (", ".join(short(o) for o in others), short(label)),
+                                  [(o, "") for o in others]))
+                steps.append(step("Empty %s" % short(label), [(label, "")]))
+                steps.append(step("Bind %s again" % ", ".join(short(o) for o in others),
+                                  [(o, bound) for o in others]))
+            else:
+                steps.append(step("Empty %s" % short(label), [(label, "")]))
+            handled.add(label)
+
+    rebind = copy.deepcopy(mutations[index])
+    remaining = [s for s in (rebind["config"].get("subframes") or [])
+                 if str(s.get("name") or "") not in handled]
+    if remaining:
+        rebind["config"]["subframes"] = remaining
+        return mutations[:index] + steps + [rebind] + mutations[index + 1:]
+    return mutations[:index] + steps + mutations[index + 1:]
 
 
 def _rebind_subframes(ip, name, plan, state):
@@ -16407,7 +17360,32 @@ def _releasable_pool_inputs(ip, device, state, required, owned=None):
     # removed -- a delete forgets the metadata, and reading it afterwards would
     # make every input the deleted Multiview configured look like somebody
     # else's and leak it permanently.
-    owned = _owned_pool_inputs(device, state) if owned is None else set(owned)
+    if owned is None:
+        owned = _owned_pool_inputs(device, state)
+        # An input a window still names is ours to REUSE, but is only ours to
+        # RELEASE while it carries the stream OmniSuite recorded for it: an
+        # edit saved over the displayed Multiview keeps those windows until
+        # Show, so the record is what shows that something repointed it since.
+        carrying = {str(i.get("name") or ""): str((i.get("multicast") or {}).get("address") or "")
+                    for i in (state.get("ip_input") or ())}
+        # Only the record of the Multiview on the display can say that something
+        # repointed an input under it. A saved Multiview that is not displayed
+        # keeps whatever allocation it last had -- entries nobody ever removes
+        # once the stream has moved -- and letting such a stale entry veto
+        # ownership that the displayed Multiview's own record proves left an
+        # input OmniSuite had configured carrying a stream nothing referenced,
+        # refused for good as "not configured by OmniSuite" (measured on the
+        # bench: the third pool input stayed on after a recall, and every later
+        # change that needed it was refused until it was cleared by hand).
+        shown = str(((hdmi.get("video") or {}).get("input")) or "")
+        for record_name, record in (_multiview_meta_for(device) or {}).items():
+            if record_name != shown:
+                continue
+            for target, address in ((record or {}).get("allocated_inputs") or {}).items():
+                if address and target in owned and carrying.get(target) != address:
+                    owned.discard(target)
+    else:
+        owned = set(owned)
     release, kept = [], []
     for name in omni_multiview.WINDOW_IP_INPUTS:
         entry = inputs.get(name)
@@ -16428,7 +17406,7 @@ def _releasable_pool_inputs(ip, device, state, required, owned=None):
     return release, kept
 
 
-def _show_multiview_on(ip, name):
+def _show_multiview_on(ip, name, assignments_override=None):
     """Recall a saved Multiview: prepare everything it needs, then display it.
 
     This is where a Multiview becomes real. Saving stored a description; recall
@@ -16480,7 +17458,8 @@ def _show_multiview_on(ip, name):
                                  f"shows {MULTIVIEW_OUTPUT_RESOLUTION} Multiviews "
                                  f"only."}, 409
 
-    plan, state, encoder_states, record, failure = _recall_plan(ip, name, state)
+    plan, state, encoder_states, record, failure = _recall_plan(
+        ip, name, state, assignments_override=assignments_override)
     if failure:
         message, status = failure
         return {"ok": False, "error": message}, status
@@ -16505,7 +17484,14 @@ def _show_multiview_on(ip, name):
         applied, steps = [], []
 
         mutations = list(plan.get("activation") or [])
-        rebind = _rebind_subframes(ip, name, plan, state)
+        # An edit saved over this Multiview while it was on the display has not
+        # been written yet. Show is the moment it is: the object's geometry and
+        # windows come with everything else this operation prepares.
+        has_pending = bool(((_multiview_meta_for(device) or {}).get(name) or {})
+                           .get("pending"))
+        if has_pending:
+            mutations.extend(plan.get("mutations") or [])
+        rebind = None if has_pending else _rebind_subframes(ip, name, plan, state)
         if rebind:
             mutations.append(rebind)
         for name_to_release in release:
@@ -16614,7 +17600,21 @@ def _show_multiview_on(ip, name):
 
     # The composite is live. Each window is a separate question, because one can
     # sit black while the others carry the picture.
-    windows, unlocked = _await_window_lock(ip, name)
+    # The first look is short: every window that locks at all did so within about
+    # three seconds in every measured Show (the whole call took 3.1-3.2 s), and a
+    # window that was dark at six seconds never came back by waiting. The look
+    # after a recovery gets the full settle.
+    windows, unlocked = _await_window_lock(ip, name, timeout=MULTIVIEW_FIRST_LOOK)
+    recovery = None
+    initial_total, initial_dark = len(windows), [w["subframe"] for w in unlocked]
+    if unlocked:
+        windows, unlocked, recovery = _recover_unlocked_windows(ip, name, windows, unlocked)
+    healing = None
+    if unlocked:
+        healing = _heal_dark_windows(ip, name, unlocked)
+        if healing["attempted"]:
+            windows, unlocked = _await_window_lock(ip, name, timeout=min(2.0, MULTIVIEW_HEAL_SETTLE))
+    verification = _lock_verification(initial_total, initial_dark, recovery, unlocked)
     # Remembered so the next attempt re-establishes this window instead of
     # concluding, correctly but uselessly, that there is nothing to write.
     _remember_unlocked(ip, name, unlocked)
@@ -16633,11 +17633,32 @@ def _show_multiview_on(ip, name):
     # The A/V Matrix renders from the cache, so it has to be told that this
     # decoder's picture is now a composition rather than a routed source.
     _remember_decoder_display(ip, name, (after.get("audio") or {}).get("input"))
+    if has_pending:
+        # The edit is on the device now, so it stops being an edit.
+        try:
+            pending_record = copy.deepcopy((_multiview_meta_for(device) or {}).get(name) or {})
+            promoted = _effective_record(pending_record)
+            promoted["updated"] = time.time()
+            _record_multiview_meta(device, name, promoted)
+        except Exception:
+            log.warning("[MULTIVIEW] could not promote the saved edit of %s", name,
+                        exc_info=True)
+    try:
+        _note_allocated_inputs(
+            device, name,
+            {(w.get("ip_input") or {}).get("ip_input"): (w.get("multicast") or {}).get("address")
+             for w in plan["windows"] if w.get("ip_input") and w.get("multicast")},
+            released=release)
+    except Exception:
+        log.debug("[MULTIVIEW] could not record allocations for %s", name, exc_info=True)
     return {"ok": True,
                     "status": "VERIFIED" if not unlocked
-                              else "VERIFIED — WINDOW NOT LOCKED",
+                              else "PARTIAL — WINDOW NOT LOCKED",
                     "windows": windows,
                     "unlocked_windows": unlocked,
+                    "recovery": recovery,
+                    "healing": healing,
+                    "lock_verification": verification,
                     "diagnostics": _show_diagnostics(ip, name, audio) if unlocked else None,
                     "steps": steps,
                     "already_shown": already_shown,
@@ -16828,6 +17849,185 @@ def _await_window_lock(ip, name, timeout=MULTIVIEW_WINDOW_SETTLE, interval=1.0):
         time.sleep(interval)
 
 
+# How long to watch a window after each step of the heal. Measured: a window that
+# was going to light did so within about three seconds of being paired.
+MULTIVIEW_HEAL_SETTLE = 8.0
+
+
+def _heal_dark_windows(ip, name, unlocked):
+    """Light a window that is bound, receiving and still dark -- once, verified.
+
+    A subframe that has been left in the broken state `_shared_input_groups`
+    describes (it was bound alone on an input after its partner was released
+    first) reads inactive however often it is re-written, with its stream arriving
+    and every write verified. Measured on the bench decoder: binding an EMPTY
+    window of the same size to the same input lights both, and then releasing the
+    dark window first, emptying the helper and binding the window again leaves it
+    live on its own. (Re-writing the window, toggling the input, deleting and
+    re-adding the subframe, and the display resting on another input do not.)
+
+    The helper shows the stream for the few seconds this takes, so it is used only
+    for a window that is dark anyway, only when an empty window of the same size
+    exists, and it is put back empty whatever happens. Reported as `healed` or
+    `attempted`, never as an ordinary success.
+    """
+    report = {"healed": [], "attempted": []}
+    if not unlocked:
+        return report
+    target = next((o for o in _mv_config(ip, "multiview")
+                   if str(o.get("name") or "") == name), {})
+    subframes = [s for s in (target.get("subframes") or [])]
+
+    def size_of(label):
+        return label.rsplit("(", 1)[-1].rstrip(")")
+
+    def put(label, value):
+        return _mv_set(ip, "multiview", {"name": name, "subframes": [
+            {"name": label, "input": value}]})[0]
+
+    for dark in unlocked:
+        label, bound = dark["subframe"], dark["ip_input"]
+        entry = {"window": label, "input": bound, "result": ""}
+        report["attempted"].append(entry)
+        partners = [s for s in subframes if str(s.get("input") or "") == bound
+                    and str(s.get("name") or "") != label]
+        helper = next((str(s.get("name") or "") for s in subframes
+                       if not str(s.get("input") or "")
+                       and size_of(str(s.get("name") or "")) == size_of(label)), None)
+        if partners:
+            entry["result"] = "not attempted: the window shares its input"
+            continue
+        if not helper:
+            entry["result"] = "not attempted: no empty window of the same size"
+            continue
+        try:
+            put(helper, bound)
+            _windows, still = _await_window_lock(ip, name, timeout=MULTIVIEW_HEAL_SETTLE)
+            if any(w["subframe"] == label for w in still):
+                entry["result"] = "the window stayed dark when paired"
+                put(helper, "")
+                continue
+            put(label, "")
+            put(helper, "")
+            put(label, bound)
+            _windows, still = _await_window_lock(ip, name, timeout=MULTIVIEW_HEAL_SETTLE)
+            if any(w["subframe"] == label for w in still):
+                entry["result"] = "dark again once the helper was released"
+                continue
+            entry["result"] = "healed"
+            report["healed"].append(label)
+        finally:
+            # Whatever happened, the helper is an empty window again.
+            try:
+                current = next((o for o in _mv_config(ip, "multiview")
+                                if str(o.get("name") or "") == name), {})
+                held = next((str(s.get("input") or "") for s in (current.get("subframes") or [])
+                             if str(s.get("name") or "") == helper), "")
+                if helper and held:
+                    put(helper, "")
+            except Exception:
+                log.warning("[MULTIVIEW] could not empty helper window %s of %s on %s",
+                            helper, name, ip, exc_info=True)
+    return report
+
+
+# How long the display rests on a neutral input before the Multiview is selected
+# again. Measured on hardware: with no pause at all the window stays dead (0 of 3
+# recovered); with about a second it came back every time (7 of 7).
+MULTIVIEW_RECOVERY_PAUSE = 1.2
+
+# The inputs the display may rest on, in order of preference. Measured with the
+# one-second rest: ip_input1 cleared the dark window 4 of 4 times; the decoder's
+# own generator slate cleared it 1 of 5 times inside the application (the same
+# step by direct write worked once), so it is only the fallback.
+MULTIVIEW_NEUTRAL_INPUTS = ("ip_input1", "generator")
+
+
+def _lock_verification(total, dark_first, recovery, dark_final):
+    """Report the first look and the look after recovery as two separate facts.
+
+    A picture that needed the one controlled recovery is a pass, but it is not
+    the same pass as one that locked the first time, and a run of results that
+    folds the two together cannot say how often the decoder needed help.
+    """
+    attempted = bool(recovery and recovery.get("attempted"))
+    if not dark_first:
+        outcome = "INITIAL PASS"
+    elif attempted and not dark_final:
+        outcome = "PASS AFTER RECOVERY"
+    else:
+        outcome = "NOT LOCKED AFTER RECOVERY" if attempted else "NOT LOCKED — NO RECOVERY POSSIBLE"
+    return {"windows": total,
+            "initial_pass": not dark_first,
+            "initial_locked": total - len(dark_first),
+            "initial_dark": list(dark_first),
+            "recovery_attempted": attempted,
+            "pass_after_recovery": (not dark_final) if attempted else None,
+            "final_locked": total - len(dark_final),
+            "final_dark": [w["subframe"] for w in dark_final],
+            "outcome": outcome}
+
+
+def _recover_unlocked_windows(ip, name, windows, unlocked):
+    """One attempt to bring back a window the decoder never allocated a channel for.
+
+    A window can stay black with every field correct and its packets arriving:
+    the decoder's channel allocation at selection missed it, which no write to
+    the window's own input repairs (measured). What the hardware does honour is
+    leaving the composite and selecting it again: the display rests on the
+    decoder's own slate for a moment, then the Multiview is selected, and every
+    channel is allocated afresh. Measured recovery: 7 of 7 with a one second
+    pause, 0 of 3 with none.
+
+    Once, never a loop, and only after the first look says a window is dark. The
+    neutral input is the decoder's own generator; where a decoder does not offer
+    it, the one conventional input it does is used. If neither is offered nothing
+    is attempted. The outcome is reported either way, so the operator is told
+    what happened to their display.
+    """
+    hdmi = (_mv_config(ip, "hdmi_output") or [{}])[0]
+    offered = [str(i) for i in ((hdmi.get("video") or {}).get("available_inputs") or [])]
+    neutral = next((c for c in MULTIVIEW_NEUTRAL_INPUTS if c in offered), "")
+    record = {"attempted": False, "neutral_input": neutral,
+              "dark_before": [w["subframe"] for w in unlocked], "cleared": False}
+    if not neutral:
+        record["reason"] = "the decoder offers no neutral input to rest on"
+        return windows, unlocked, record
+    record["attempted"] = True
+    started = time.time()
+    for target, pause in ((neutral, MULTIVIEW_RECOVERY_PAUSE), (name, 0.0)):
+        # The way back is the one step that must not be lost: a display left on
+        # the neutral input is worse than the dark window this set out to fix.
+        attempts = 2 if target == name else 1
+        held, message = False, ""
+        for attempt in range(attempts):
+            ok, message = _mv_set(ip, "hdmi_output", {"name": "hdmi_output1",
+                                                      "video": {"input": target}})
+            if ok:
+                current = (_mv_config(ip, "hdmi_output") or [{}])[0]
+                held = str((current.get("video") or {}).get("input") or "") == target
+            if ok and held:
+                break
+            if attempt + 1 < attempts:
+                time.sleep(0.5)
+        if not held:
+            record["error"] = "could not select %s: %s" % (target, message or "not held")
+            # Whatever happened, the Multiview is what the operator asked for.
+            if target != name:
+                _mv_set(ip, "hdmi_output", {"name": "hdmi_output1", "video": {"input": name}})
+            break
+        if pause:
+            time.sleep(pause)
+    windows, unlocked = _await_window_lock(ip, name)
+    record["cleared"] = not unlocked
+    record["seconds"] = round(time.time() - started, 1)
+    log.info("[MULTIVIEW] %s on %s: recovery %s after %.1fs", name, ip,
+             "cleared the dark window(s)" if not unlocked
+             else "did not clear %s" % ", ".join(w["subframe"] for w in unlocked),
+             time.time() - started)
+    return windows, unlocked, record
+
+
 def _await_input_status(ip, timeout=MULTIVIEW_INPUT_SETTLE, interval=0.5):
     """The decoder's HDMI Input status once it has had a moment to settle.
 
@@ -16963,12 +18163,42 @@ def api_multiview_switch():
     the saved preset, because a display showing one thing while its own preset
     restores another is a trap; a change that fails is rolled back and the
     preset is left alone.
+
+    The whole operation -- read the display, plan, write, verify -- holds the
+    Multiview lock. Two switches that read the same state before either wrote
+    would each plan from a world the other was about to change, and the later
+    write would silently undo the earlier one; the page queues its own
+    operations, but a second tab or a rapid retry can still reach here together.
+
+    `clear_cells` names further windows to empty in the same transaction. A
+    source cannot feed two windows of different sizes, so putting it in a window
+    of a new size means taking it out of the old one, and doing that as two
+    requests would leave a half-applied display if the second one failed.
+    `op_id` is echoed so a client can tell which of its requests an answer is.
     """
     payload = _json_dict()
+    op_id = str(payload.get("op_id") or "")[:64]
+    with _multiview_apply_lock:
+        response = _multiview_switch_locked(payload)
+    body, status = response if isinstance(response, tuple) else (response, None)
+    if op_id:
+        data = body.get_json(silent=True)
+        if isinstance(data, dict):
+            data["op_id"] = op_id
+            body = jsonify(data)
+    return (body, status) if status else body
+
+
+def _multiview_switch_locked(payload):
     ip = str(payload.get("decoder") or payload.get("ip") or "").strip()
     name = str(payload.get("name") or "").strip()
     cell = str(payload.get("cell") or "").strip()
     source_ip = str(payload.get("source") or "").strip()
+    raw_clear = payload.get("clear_cells") or []
+    if not isinstance(raw_clear, list):
+        return jsonify({"ok": False,
+                        "error": "clear_cells must be a list of window names"}), 400
+    clear_cells = [str(c).strip() for c in raw_clear if str(c).strip() and str(c).strip() != cell]
     if not ip or not name or not cell:
         return jsonify({"ok": False,
                         "error": "decoder, multiview name and window required"}), 400
@@ -17010,11 +18240,20 @@ def api_multiview_switch():
             return jsonify({"ok": False,
                             "error": f"{name} has no window called {cell}."}), 400
 
+    # The display is the authority for what each window is showing. A Multiview
+    # shown from the decoder's own object, or one whose saved record carries no
+    # sources, would otherwise plan every window nobody touched as empty and
+    # rewrite them dark. A window with a live subscription we can name keeps it;
+    # the saved record fills only what the display does not say.
+    assignments = {**assignments, **_live_window_sources(target, state, record, device)}
+
     wanted = dict(assignments)
     if source_ip:
         wanted[cell] = source_ip
     else:
         wanted.pop(cell, None)
+    for extra in clear_cells:
+        wanted.pop(extra, None)
 
     # Plan the whole Multiview as it would be after the change, so every rule --
     # the scaler conflict, the two-window limit, the budgets, the pool -- is
@@ -17114,6 +18353,8 @@ def api_multiview_switch():
         mutations.sort(key=lambda m: order.get(m["stage"], len(omni_multiview.STAGE_ORDER)))
         # The same rule as Show: a field the device already holds is not written.
         mutations, skipped, write_plan = _transaction_diff(mutations)
+        mutations = _ordered_shared_clears(
+            mutations, ip, name, _shared_input_groups(target, after))
 
         applied, steps = [], []
         for mutation in mutations:
@@ -17145,14 +18386,20 @@ def api_multiview_switch():
                     "restored_source": assignments.get(cell) or None}), 200
 
         windows, unlocked = _await_window_lock(ip, name)
+        healing = None
+        if unlocked:
+            healing = _heal_dark_windows(ip, name, unlocked)
+            if healing["attempted"]:
+                windows, unlocked = _await_window_lock(ip, name, timeout=min(2.0, MULTIVIEW_HEAL_SETTLE))
         _remember_unlocked(ip, name, unlocked)
 
     # The window that changed has to have taken; the ones that did not change
     # have to still be showing what they were.
     now = {w["subframe"]: w["active"] for w in windows}
+    emptied = {w["label"] for w in after["windows"] if w["cell"] in clear_cells}
     regressions = [label for label, was in before_windows.items()
                    if was and not now.get(label, False)
-                   and label != changed["label"]]
+                   and label != changed["label"] and label not in emptied]
 
     # A switch that lit the window it was asked about but darkened another has
     # not succeeded. The operator changed one window and lost a different one,
@@ -17180,6 +18427,7 @@ def api_multiview_switch():
                       else "NO ACTIVE VIDEO — ROLLBACK INCOMPLETE",
             "error": explanation,
             "cell": cell, "plan": after, "steps": steps, "windows": windows,
+            "healing": healing,
             "regressed_windows": regressions,
             "diagnostics": diagnostics, "rollback": rollback,
             "restored_source": assignments.get(cell) or None}), 200
@@ -17208,6 +18456,20 @@ def api_multiview_switch():
         } for w in after["windows"] if w.get("source")],
     })
 
+    # A switch can move a stream to another pool input, and an input OmniSuite
+    # configured is only ours while the record says what it carries. Show records
+    # that; a switch that did not left the record naming the old stream, so the
+    # next Show of anything else refused with "carrying a stream OmniSuite did
+    # not configure" -- about an input OmniSuite had configured seconds before.
+    try:
+        _note_allocated_inputs(
+            device, name,
+            {(w.get("ip_input") or {}).get("ip_input"): (w.get("multicast") or {}).get("address")
+             for w in after["windows"] if w.get("ip_input") and w.get("multicast")},
+            released=release)
+    except Exception:
+        log.debug("[MULTIVIEW] could not record allocations for %s", name, exc_info=True)
+
     status, settled = _await_input_status(ip)
     log.info("[MULTIVIEW] %s of %s on %s is now %s (%d write(s) of %d planned; "
              "%d of %d field(s) already correct)",
@@ -17217,10 +18479,11 @@ def api_multiview_switch():
     return jsonify({
         "ok": True,
         "status": "VERIFIED" if (settled and not unlocked and not regressions)
-                  else "VERIFIED — WINDOW NOT LOCKED",
+                  else "PARTIAL — WINDOW NOT LOCKED",
         "cell": cell, "source": source_ip or None,
         "plan": after, "steps": steps,
         "windows": windows, "unlocked_windows": unlocked,
+        "healing": healing,
         "regressed_windows": regressions,
         "released": release, "kept": kept, "audio": audio,
         "writes": dict(write_plan, writes_performed=len(steps)),
@@ -17343,9 +18606,10 @@ def _saved_definition(ip, name):
         subframes)
 
     devices = _load_cache()
+    shown = str((((state.get("hdmi_output") or {}).get("video")) or {}).get("input") or "")
     assignments, windows = {}, []
     for subframe in subframes:
-        view = _subframe_view(subframe, state, stored, devices)
+        view = _subframe_view(subframe, state, stored, devices, displayed=(name == shown))
         cell = view.get("cell")
         if not cell:
             continue
@@ -17601,6 +18865,12 @@ def api_multiview_groups_show():
             assignments[cell] = replacement
         else:
             assignments.pop(cell, None)
+        # Windows emptied in the same operation: a source moved to a window of
+        # another size leaves the old one, as one planned change for the group.
+        extra_clear = payload.get("clear_cells") or []
+        if isinstance(extra_clear, list):
+            for other in extra_clear:
+                assignments.pop(str(other).strip(), None)
         if not assignments:
             return jsonify({"ok": False,
                             "error": "That would leave the Multiview with no "
@@ -18723,6 +19993,272 @@ def _view_payload(result):
         return {}
 
 
+def _multiview_state_snapshot(ip):
+    """One decoder's Multiview state, as /api/multiview/state computes it.
+
+    Called rather than recomputed so a restricted account and the Multiview page
+    can never disagree, and briefly shared so a room of phones is one read of
+    the decoder rather than one each.
+    """
+    def read():
+        with app.test_request_context("/api/multiview/state?ip=" + str(ip)):
+            return _view_payload(api_multiview_state())
+    return _user_observation.get("multiview:" + str(ip), read)
+
+
+def _multiview_layout_geometry(layout_id):
+    """The window structure of a layout on the one canvas this release shows.
+
+    From the same catalogue the Multiview page draws from, so a restricted
+    account's picture cannot disagree with what is written to the decoder.
+    """
+    for entry in omni_multiview.layout_geometry_catalog():
+        if entry.get("id") != layout_id:
+            continue
+        canvas = (entry.get("canvases") or {}).get(omni_multiview.ACTIVE_CANVAS) or {}
+        output = canvas.get("requested") or {}
+        return {"width": output.get("width"), "height": output.get("height"),
+                "windows": [{"cell": w.get("cell"), "x": w.get("x"), "y": w.get("y"),
+                             "anchor": w.get("anchor") or "",
+                             "width": w.get("width"), "height": w.get("height")}
+                            for w in canvas.get("windows") or ()]}
+    return None
+
+
+def _multiview_decoder_layouts(device):
+    """What one decoder offers for assignment, read now: (status, layouts, note).
+
+    The single place that decides whether a decoder takes part in Multiview
+    assignment, and what its layouts are. `status` is one of
+
+        ok            the decoder answered and supports Multiview
+        unsupported   it answered and has no Multiview (so nothing is assignable)
+        unreachable   it did not answer; nothing is claimed either way
+
+    Only layouts OmniSuite itself saved have an id, and so only those can be
+    assigned. An object made in the device's own web application has no record
+    and no identity here, and is left out rather than given one that nothing
+    could verify.
+    """
+    address = str((device or {}).get("ip") or "")
+    if not address:
+        return "unreachable", [], ""
+    body = _multiview_state_snapshot(address)
+    if not body.get("ok"):
+        if body.get("supported") is False:
+            return "unsupported", [], ""
+        return "unreachable", [], ""
+    ids = _ensure_multiview_ids(device)
+    interlocks = body.get("interlocks") or []
+    blocked = " ".join(str(e.get("reason") or "") for e in interlocks).strip()
+    layouts = []
+    for view in body.get("multiviews") or []:
+        object_name = str(view.get("name") or "")
+        layout_id = ids.get(object_name)
+        if not layout_id:
+            continue
+        showable = bool(view.get("showable")) and not blocked
+        layouts.append({
+            "id": layout_id,
+            "object": object_name,
+            "name": view.get("layout_label") if view.get("layout_label") and
+                    view.get("layout") else object_name,
+            "friendly_name": ((_multiview_meta_for(device).get(object_name) or {})
+                              .get("friendly_name") or object_name),
+            "layout": view.get("layout") or "",
+            "layout_label": view.get("layout_label") or "",
+            "showing": bool(view.get("selected_on_output")),
+            "showable": showable,
+            "reason": blocked or str(view.get("not_showable_reason") or ""),
+        })
+    layouts.sort(key=lambda entry: (entry["friendly_name"].lower(), entry["id"]))
+    return "ok", layouts, blocked
+
+
+def _multiview_assignment_catalog(identities=None):
+    """Every decoder that can be given Multiview layouts, with its saved layouts.
+
+    Read on demand for an administrator choosing what to assign, never on a
+    scan and never polled. Decoders are read concurrently so one slow unit
+    cannot hold up the rest. A decoder whose Multiview is not available is still
+    listed, flagged, so an existing assignment to it can be seen and removed.
+    """
+    wanted = None if identities is None else {
+        omni_users._normalise_identity(i) for i in identities}
+    devices = []
+    for device in _load_cache() or []:
+        identity = omni_users._normalise_identity(device.get("mac"))
+        if not identity or str(device.get("role") or device.get("type")
+                               or "").lower() != "decoder":
+            continue
+        if wanted is not None and identity not in wanted:
+            continue
+        # A decoder OmniSuite has never saved a Multiview on has nothing to assign.
+        if not _multiview_meta_for(device):
+            continue
+        devices.append((identity, device))
+
+    def one(item):
+        identity, device = item
+        status, layouts, note = _multiview_decoder_layouts(device)
+        return {"id": identity, "hostname": device.get("hostname") or "",
+                "status": status, "eligible": status == "ok",
+                "layouts": layouts, "note": note}
+
+    if not devices:
+        return []
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(6, len(devices))) as pool:
+        rows = list(pool.map(one, devices))
+    rows.sort(key=lambda row: (row["hostname"].lower(), row["id"]))
+    return rows
+
+
+# ----------------------------------------------- the restricted User's windows
+#
+# A restricted account may choose the source of each window of a layout an
+# administrator assigned to it. The decisions about WHO may do that live in
+# omni_remote_api; what lives here is the part that needs the device: what each
+# window holds right now, and handing a complete composition to the same Show
+# transaction the administrator's page uses. There is no second engine.
+
+# A revision names the composition the person was looking at. It is salted per
+# process so it is a comparison token and not a digest of anything an address
+# could be recovered from.
+_USER_MV_SALT = secrets.token_hex(8)
+
+
+def _user_mv_windows(ip, name, state):
+    """One saved Multiview's windows as they stand, from a decoder read.
+
+    Returns None when the decoder does not hold the object. Otherwise
+    {"showing", "windows": [...], "revision"}; each window is
+    {cell, source_ip, source_mac, origin, health, input_active} where `origin`
+    is live | saved | unknown | empty.
+
+    The display is the authority for the Multiview that is on it: a window the
+    decoder holds empty is empty even if the saved record once named a source,
+    because the record is the administrator's definition and a person's Show
+    does not rewrite it. For a Multiview that is not on the display the saved
+    record decides. Only the pool-input binding is read for the live case, from
+    the state the caller already holds.
+    """
+    devices = list(_load_cache())
+    device = {d.get("ip"): d for d in devices}.get(ip, {})
+    target = next((o for o in (state.get("multiview") or [])
+                   if str(o.get("name") or "") == name), None)
+    if target is None:
+        return None
+    hdmi = state.get("hdmi_output") or {}
+    showing = str((hdmi.get("video") or {}).get("input") or "") == name
+    record = _effective_record((_multiview_meta_for(device) or {}).get(name) or {})
+    saved = {w.get("cell"): w for w in (record.get("windows") or [])
+             if w.get("cell") and w.get("source_ip")}
+    macs = {d.get("ip"): omni_users._normalise_identity(d.get("mac")) for d in devices}
+    windows = []
+    for subframe in (target.get("subframes") or []):
+        if not isinstance(subframe, dict):
+            continue
+        view = _subframe_view(subframe, state, record, devices, displayed=showing)
+        cell = view.get("cell")
+        if not cell:
+            continue
+        source_ip, origin = "", "empty"
+        if showing:
+            if not view.get("ip_input"):
+                origin = "empty"
+            elif view.get("source_origin") == "subscription" and (view.get("source") or {}).get("ip"):
+                source_ip, origin = view["source"]["ip"], "live"
+            elif view.get("source_origin") == "unknown":
+                origin = "unknown"
+            elif cell in saved:
+                source_ip, origin = saved[cell]["source_ip"], "saved"
+        elif cell in saved:
+            source_ip, origin = saved[cell]["source_ip"], "saved"
+        windows.append({"cell": cell, "source_ip": source_ip,
+                        "source_mac": macs.get(source_ip, "") if source_ip else "",
+                        "origin": origin, "health": view.get("health") or "",
+                        "input_active": bool(view.get("input_active"))})
+    windows.sort(key=lambda w: w["cell"])
+    token = json.dumps([_USER_MV_SALT, name, bool(showing),
+                        [[w["cell"], w["source_ip"], w["origin"] == "unknown"]
+                         for w in windows]])
+    return {"showing": bool(showing), "windows": windows,
+            "revision": hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]}
+
+
+def _user_multiview_windows(ip, name):
+    """The windows of one saved Multiview, shared briefly.
+
+    A room of phones opening the same layout is one read of the decoder.
+    """
+    def read():
+        state, error = _decoder_state(ip)
+        if state is None:
+            return {"ok": False, "error": error}
+        found = _user_mv_windows(ip, name, state)
+        if found is None:
+            return {"ok": False, "missing": True,
+                    "error": f"{name} is not on this decoder"}
+        return dict(found, ok=True)
+    return _user_observation.get("mvwin:" + str(ip) + ":" + str(name), read)
+
+
+def _user_multiview_sources():
+    """Encoders a Multiview window could be fed from, judged from the cache.
+
+    No device is asked: the verdict is the cheap one (`probe=0` of the
+    administrative list). Whether an encoder answers is decided when Show reads
+    it, and a source that does not is reported then. Authorisation is not
+    decided here -- the caller filters by what the account was given.
+    """
+    rows = []
+    for device in _load_cache() or []:
+        if str(device.get("role") or device.get("type") or "").lower() != "encoder":
+            continue
+        identity = omni_users._normalise_identity(device.get("mac"))
+        if not identity:
+            continue
+        verdict = omni_multiview.classify_source(device)
+        rows.append({"mac": identity, "hostname": device.get("hostname") or "",
+                     "status": verdict["status"],
+                     "reason": verdict["reason"] or ""})
+    return rows
+
+
+def _user_multiview_compose(ip, name, wanted, base):
+    """Show one saved Multiview with a person's source choices, or refuse.
+
+    `wanted` is {cell: encoder address or ""} for the windows the person changed
+    and nothing else. Under the Multiview lock -- so no administrator switch can
+    interleave -- the decoder is read again, the revision the person was looking
+    at is compared with what is there now, and the composition is the windows as
+    they stand with the person's changes laid over them. That whole composition
+    goes through the ordinary Show, so every rule, write, read-back and rollback
+    is the administrator's. The saved record is not written.
+    """
+    with _multiview_apply_lock:
+        state, error = _decoder_state(ip)
+        if state is None:
+            return {"ok": False, "error": error}, 502
+        current = _user_mv_windows(ip, name, state)
+        if current is None:
+            return {"ok": False, "error": f"{name} is not on this decoder"}, 404
+        if not base or base != current["revision"]:
+            return {"ok": False, "reason": "stale", "status": "CHANGED",
+                    "error": "This layout changed while you were choosing. "
+                             "Your choices are kept; review them and press "
+                             "Show again."}, 409
+        composition = {w["cell"]: w["source_ip"] for w in current["windows"]
+                       if w["source_ip"]}
+        for cell, address in (wanted or {}).items():
+            if address:
+                composition[cell] = address
+            else:
+                composition.pop(cell, None)
+        return _show_multiview_on(ip, name, assignments_override=composition)
+
+
 def _forget_user_observation(key=None):
     """Drop a shared answer after something changed it.
 
@@ -19268,7 +20804,17 @@ omni_remote_api.register(
     usb_state=_usb_state_snapshot,
     usb_pair_view=api_usb_route_pair,
     usb_unpair_view=api_usb_route_unpair,
+    # The parent's own pairing path, for an integrated E4521/D4511 endpoint -- the same two
+    # views the Admin USB Matrix calls for that cell.
+    usb_icron_pair_view=api_usb_pair,
+    usb_icron_unpair_view=api_usb_unpair,
     forget_observation=_forget_user_observation,
+    multiview_catalog=_multiview_assignment_catalog,
+    multiview_geometry=_multiview_layout_geometry,
+    multiview_show=_show_multiview_on,
+    multiview_windows=_user_multiview_windows,
+    multiview_sources=_user_multiview_sources,
+    multiview_compose=_user_multiview_compose,
     credential_report=credential_report,
     unroute_view=api_unroute_matrix,
     user_shell=user_page,

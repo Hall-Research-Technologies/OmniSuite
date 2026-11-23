@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: "Diagnostic build name, with a suffix (example: V1.2.0-diag1). Never publishes."
+        description: "Diagnostic build name, with a suffix (example: V1.2.1-diag1). Never publishes."
         required: false
         type: string
   push:
@@ -66,9 +66,14 @@ jobs:
           DISPATCH_VERSION: ${{ github.event.inputs.release_version }}
         run: python tools/release_identity.py resolve
 
-  # The full suite on every target that ships an artifact, not only on Linux.
-  # A build that cannot pass its own platform's tests must not produce a
-  # download for that platform.
+  # SUPPORTED DISTRIBUTED PLATFORMS: Windows x86_64 and macOS Apple Silicon (arm64), and only
+  # those. No macOS Intel, no Linux, no universal binary: nothing is built, tested, named or
+  # published for them. The two runners below are both the TEST RUNNER and the platform that is
+  # DISTRIBUTED from it. (The identity and publish jobs run on ubuntu-latest purely as an
+  # orchestration runner: they run this repository's own scripts and ship nothing built there.)
+  #
+  # The full suite on every target that ships an artifact. A build that cannot pass its own
+  # platform's tests must not produce a download for that platform.
   #
   # run_tests.py replaces both hardware transports with recording spies before
   # importing anything, fences GitHub for the lifetime of the process, and fails
@@ -84,12 +89,11 @@ jobs:
         include:
           - os: windows-latest
             label: Windows x86_64
-          - os: ubuntu-latest
-            label: Ubuntu x86_64
-          - os: macos-latest
+          # macos-15 is a native Apple Silicon (arm64) runner. It is named rather than
+          # macos-latest so that a label that floats can never move this job to Intel; the
+          # runner's architecture is asserted in the steps below regardless.
+          - os: macos-15
             label: macOS arm64
-          - os: macos-15-intel
-            label: macOS x86_64
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -109,6 +113,16 @@ jobs:
         run: |
           python -c "import platform, sys; print('python', sys.version)"
           python -c "import platform; print('machine', platform.machine())"
+          echo "runner.os=${{ runner.os }} runner.arch=${{ runner.arch }}"
+
+      # A test that ran on the wrong architecture says nothing about what is distributed.
+      - name: Require the architecture this row claims
+        shell: bash
+        run: |
+          case "${{ runner.os }}-${{ runner.arch }}" in
+            Windows-X64|macOS-ARM64) ;;
+            *) echo "::error::unexpected runner ${{ runner.os }} ${{ runner.arch }}"; exit 1 ;;
+          esac
 
       - name: Install dependencies
         run: |
@@ -120,12 +134,6 @@ jobs:
         run: |
           set +e
           # CI environment only; nothing here reaches the packaged application.
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            # The runner has no display. pystray's default Linux backend needs
-            # one at import time; the dummy backend is the library's own
-            # documented switch for a headless host.
-            export PYSTRAY_BACKEND=dummy
-          fi
           if [ "$RUNNER_OS" = "macOS" ]; then
             # GitHub's macOS runners take about 35 s to answer a reverse lookup of
             # 127.0.0.1 (measured: gethostbyaddr, getnameinfo and getfqdn alike,
@@ -188,17 +196,7 @@ jobs:
             artifact_name: Windows-x86_64
             mac_arch: ""
             expect_arch: x86-64
-          - os: ubuntu-latest
-            suffix: linux
-            artifact_name: Ubuntu-x86_64
-            mac_arch: ""
-            expect_arch: x86-64
-          - os: macos-15-intel
-            suffix: x86_64
-            artifact_name: macOS-x86_64
-            mac_arch: x86_64
-            expect_arch: x86_64
-          - os: macos-latest
+          - os: macos-15
             suffix: arm64
             artifact_name: macOS-arm64
             mac_arch: arm64
@@ -221,12 +219,16 @@ jobs:
           echo "runner.os=${{ runner.os }} runner.arch=${{ runner.arch }}"
           python -c "import platform; print('python machine:', platform.machine())"
           python -c "import sysconfig; print('python platform:', sysconfig.get_platform())"
-
-      - name: Install Linux GUI deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-tk libx11-dev libxkbcommon-x11-0 xvfb file
+          case "${{ runner.os }}-${{ runner.arch }}" in
+            Windows-X64|macOS-ARM64) ;;
+            *) echo "::error::this job builds Windows x86_64 or macOS arm64 only; got ${{ runner.os }} ${{ runner.arch }}"; exit 1 ;;
+          esac
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            test "$(uname -m)" = "arm64" || { echo "::error::macOS runner is not arm64: $(uname -m)"; exit 1; }
+            # A universal2 or x86_64 interpreter would build a non-arm64 app under an arm64 name.
+            python -c "import platform, sys; sys.exit(0 if platform.machine() == 'arm64' else 1)" || { echo "::error::the Python interpreter is not arm64"; exit 1; }
+            python -c "import sysconfig, sys; p = sysconfig.get_platform(); print(p); sys.exit(1 if ('universal2' in p or 'x86_64' in p) else 0)" || { echo "::error::the interpreter is universal2 or x86_64"; exit 1; }
+          fi
 
       - name: Install dependencies
         run: |
@@ -265,7 +267,7 @@ jobs:
       # no test, tool, firmware, key, configuration, report, retired-product name, lab address or
       # build-machine path. Fails closed.
       #
-      # A run that cannot publish (a dispatch rehearsal such as V1.2.0-diag1) is inspected as a
+      # A run that cannot publish (a dispatch rehearsal such as V1.2.1-diag1) is inspected as a
       # diagnostic build, so it runs the same content checks and reaches the smoke test. A run
       # that can publish is inspected strictly; the publish job below never passes the flag.
       - name: Inspect the package contents
@@ -275,30 +277,49 @@ jobs:
         run: |
           flag=""
           if [ "$CAN_PUBLISH" != "true" ]; then flag="--diagnostic"; fi
-          python tools/inspect_release.py $(find release -maxdepth 1 \( -name "*.zip" -o -name "*.tar.gz" \)) --version "${{ steps.version.outputs.release_version }}" $flag
+          python tools/inspect_release.py $(find release -maxdepth 1 -name "*.zip") --version "${{ steps.version.outputs.release_version }}" $flag
 
-      # `file` on the binary inside the artifact, checked against what this row
-      # claims to be. A macOS job running on the wrong runner would otherwise
-      # publish an arm64 binary under an Intel name.
-      - name: Verify the built executable's architecture
-        if: runner.os != 'Windows'
+      # The macOS package must be Apple Silicon and nothing else: no universal binary, no
+      # x86_64 slice anywhere in the bundle. `lipo -archs` on the launcher, `file` on it, a
+      # header walk over every Mach-O file in the bundle AND in the zip that is distributed,
+      # and the bundle's structure. NOT YET RUN: this was written on Windows, where macOS
+      # cannot be built; the first macOS CI run is its first execution.
+      - name: Verify the macOS bundle is arm64 only
+        if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          case "${{ matrix.suffix }}" in
-            linux)  bin="dist/linux/OmniSuite/OmniSuite" ;;
-            *)      bin="dist/${{ matrix.suffix }}/OmniSuite.app/Contents/MacOS/OmniSuite" ;;
-          esac
+          app="dist/arm64/OmniSuite.app"
+          bin="$app/Contents/MacOS/OmniSuite"
+          test -d "$app" || { echo "::error::no app bundle at $app"; exit 1; }
+          test -x "$bin" || { echo "::error::launcher is missing or not executable: $bin"; exit 1; }
+          test -f "$app/Contents/Info.plist" || { echo "::error::no Info.plist"; exit 1; }
           echo "inspecting $bin"
           file "$bin"
-          if ! file "$bin" | grep -qi -- "${{ matrix.expect_arch }}"; then
-            echo "::error::architecture mismatch: expected ${{ matrix.expect_arch }}"
+          archs="$(lipo -archs "$bin")"
+          echo "lipo -archs: $archs"
+          test "$archs" = "arm64" || { echo "::error::expected exactly arm64, lipo says: $archs"; exit 1; }
+          if file "$bin" | grep -qiE "universal|x86_64"; then
+            echo "::error::the launcher is universal or carries x86_64"
             exit 1
           fi
-          if [ "${{ matrix.suffix }}" = "linux" ]; then
-            ldd "$bin" || true
-            test -x "$bin" || { echo "::error::executable bit missing"; exit 1; }
-          fi
+          # Every Mach-O in the bundle, not only the launcher: a bundled library with an
+          # x86_64 slice is an Intel binary inside an arm64 package.
+          python tools/verify_macho_arch.py --path "$app" --expect arm64
+          # And the same, read from the archive that is actually distributed.
+          python tools/verify_macho_arch.py --zip release/*-macOS-arm64.zip --expect arm64
+          # Bundle structure: the identifier is the product's, and the executable it names exists.
+          python tools/verify_macho_arch.py --bundle-identity "$app"
+          # Signature state, stated exactly: the bundle is signed AD HOC (the build tool signs it
+          # again after editing Info.plist, because Apple Silicon will not run code whose
+          # signature does not verify). It is NOT Developer ID signed and NOT notarized, and
+          # Gatekeeper is therefore expected to refuse a double-click (see docs/INSTALL_MACOS.md).
+          codesign --verify --deep --strict "$app"
+          sig="$(codesign -dvv "$app" 2>&1)"
+          echo "$sig"
+          echo "$sig" | grep -q "Signature=adhoc" || { echo "::error::expected an ad hoc signature; this build is not meant to be Developer ID signed"; exit 1; }
+          if echo "$sig" | grep -q "Authority="; then echo "::error::a signing authority is present; the documentation says this build is ad hoc only"; exit 1; fi
+          spctl --assess --type execute -v "$app" 2>&1 || echo "spctl refuses the bundle, as documented for an unnotarized app"
 
       - name: Verify the built executable's architecture (Windows)
         if: runner.os == 'Windows'
@@ -313,17 +334,14 @@ jobs:
 
       # "PyInstaller completed successfully" is not evidence that anything runs.
       # Start the packaged executable, wait for its server, and ask it the
-      # questions an operator's first minute would. Linux needs a display for
-      # the launcher window, so it runs under Xvfb.
+      # questions an operator's first minute would, including its version.
       - name: Smoke-test the packaged artifact
         shell: bash
         run: |
           set -euo pipefail
-          # `ls` of two globs where one cannot match exits non-zero -- 2 with GNU
-          # coreutils, 1 on macOS -- and under `set -e` that killed this step on
-          # every platform before the smoke test ever ran. `find` reports an
-          # empty result without failing.
-          artifact="$(find release -maxdepth 1 \( -name 'OmniSuite-*.zip' -o -name 'OmniSuite-*.tar.gz' \) | head -1)"
+          # `find` reports an empty result without failing, where `ls` of a glob that cannot
+          # match exits non-zero and under `set -e` killed this step before the smoke test ran.
+          artifact="$(find release -maxdepth 1 -name 'OmniSuite-*.zip' | head -1)"
           if [ -z "$artifact" ]; then
             echo "::error::no release artifact found in release/"
             ls -la release || true
@@ -331,11 +349,7 @@ jobs:
           fi
           echo "smoke-testing ${artifact}"
           set +e
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            xvfb-run -a python tools/smoke_release.py --artifact "$artifact" --version "${{ steps.version.outputs.release_version }}" 2>&1 | tee smoke-output.txt
-          else
-            python tools/smoke_release.py --artifact "$artifact" --version "${{ steps.version.outputs.release_version }}" 2>&1 | tee smoke-output.txt
-          fi
+          python tools/smoke_release.py --artifact "$artifact" --version "${{ steps.version.outputs.release_version }}" 2>&1 | tee smoke-output.txt
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
             # Same reason as the test step: the log needs credentials to read,
@@ -368,7 +382,6 @@ jobs:
           name: release-${{ needs.identity.outputs.product }}-${{ matrix.artifact_name }}
           path: |
             release/*.zip
-            release/*.tar.gz
             release/*.sha256
           if-no-files-found: error
 
@@ -421,7 +434,7 @@ jobs:
 
       - name: Inspect every package once more before a release exists
         run: |
-          python tools/inspect_release.py $(find release-assets -maxdepth 1 \( -name "*.zip" -o -name "*.tar.gz" \)) --version "${{ needs.identity.outputs.release_version }}"
+          python tools/inspect_release.py $(find release-assets -maxdepth 1 -name "*.zip") --version "${{ needs.identity.outputs.release_version }}"
 
       - name: Require the release token
         env:

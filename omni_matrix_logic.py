@@ -477,7 +477,8 @@ def set_route(decoder_ip: str, encoder_ip: str, mode: str = "av", decoder_user: 
             if "decoder" not in str(merged.get("type") or "").lower():
                 merged["type"] = "Decoder"
             _decoders[decoder_ip] = merged
-            print(f"[DEBUG set_route] Updated decoder {decoder_ip} info: {merged}")
+            # The record carries the device password and its raw configuration; the console gets the identity only.
+            print(f"[DEBUG set_route] Updated decoder {decoder_ip}: model={merged.get('model')}, version={merged.get('version')}")
     except Exception as ex:
         print(f"[DEBUG set_route] classify_device failed: {ex}")
         pass

@@ -22,6 +22,35 @@ def headings():
     return re.findall(r"<h4>([^<]+)</h4>", MODAL)
 
 
+class FamilyParityTests(unittest.TestCase):
+    """Settings reads as the same product family as LumaSuite's."""
+
+    def test_the_dialog_is_called_settings(self):
+        self.assertIn("<h3>Settings</h3>", MODAL)
+        self.assertNotIn("<h3>Configuration</h3>", MODAL)
+
+    def test_the_first_section_carries_no_rule_above_it(self):
+        self.assertIn('class="settings-section first" id="cfg_comm_section"', MODAL)
+        css = (ROOT / "ui" / "templates.css").read_text(encoding="utf-8")
+        self.assertIn(".settings-section.first { border-top: 0;", css)
+
+    def test_the_dialog_has_the_same_content_width_as_luma(self):
+        # 540px of content inside 20px padding: the box model LumaSuite renders,
+        # so the label column and the inputs line up across the two products.
+        css = (ROOT / "ui" / "settings.css").read_text(encoding="utf-8")
+        rule = css[css.index(".modal{"):]
+        rule = rule[:rule.index("}")]
+        self.assertIn("box-sizing:content-box", rule)
+        self.assertIn("width:540px", rule)
+        self.assertIn("padding:20px", rule)
+
+    def test_only_the_layouts_the_two_products_share_are_offered(self):
+        script = (ROOT / "ui" / "appearance.js").read_text(encoding="utf-8")
+        block = script[script.index("const UI_TEMPLATES = ["):]
+        block = block[:block.index("];")]
+        self.assertEqual(re.findall(r"id: '(\w+)'", block), ["classic", "compact"])
+
+
 class OrderTests(unittest.TestCase):
     def test_the_sections_are_in_the_family_order(self):
         self.assertEqual(headings(), [

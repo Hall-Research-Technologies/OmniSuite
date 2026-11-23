@@ -30,18 +30,35 @@
     sources: [],
     destinations: [],
     source: null,
-    destination: null,
-    // Display groups this account holds. A group is chosen in the same place a
-    // display is, and choosing one clears the other: a route goes to one or to
-    // the other, never both.
+    // Display groups this account holds.
     groups: [],
-    group: null,
 
-    // USB
+    // What the next Route or Unroute acts on: any number of displays and groups,
+    // chosen the same way. Choosing one is toggling it into the selection, so a
+    // single display is simply a selection of one -- there is no one/several
+    // mode to switch between.
+    destSel: new Set(),
+    groupSel: new Set(),
+    // Whether a route carries the source's sound with its picture. Off sends a
+    // video-only route.
+    audioFollowsVideo: true,
+    // Whether this page shows pictures. Presentation only: it is not the
+    // per-device Preview setting, which lives in Device Info.
+    preview: true,
+
+    // Routes the page has sent and not yet had verified, by display and by group.
+    // A route in flight marks ITS target and nothing else: the rest of the page
+    // stays usable, because a verified route to one display has no bearing on
+    // the next route to another. `failed` is the targets whose last route
+    // reported a failure, kept on the card because a toast is replaced by the
+    // next one and a failure must not be lost to a later success.
+    inflight: {dest: new Set(), group: new Set()},
+    failed: {dest: new Set(), group: new Set()},
+
+    // USB: the matrix the server projected for this account. A dot is a request, so nothing is
+    // chosen first and nothing is remembered.
     computers: [],
     peripherals: [],
-    computer: null,
-    peripheral: null,
 
     // True when this browser got here through a Direct Access link. The page
     // then presents itself as a dedicated control panel rather than as
@@ -174,7 +191,8 @@
   function card(item, kind, subtitle) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'pick' + (item.online === false ? ' offline' : '');
+    button.className = 'pick' + (item.online === false ? ' offline' : '')
+      + (kind === 'group' ? ' group' : '');
     button.setAttribute('aria-pressed', 'false');
     button.dataset.id = item.id;
     button.dataset.kind = kind;
@@ -182,47 +200,54 @@
     // answering. The drop ends in the same request as the Route button.
     if (kind === 'source' && item.online !== false) button.draggable = true;
 
+    // A source and a display carry a picture area; a group does not (it is several displays,
+    // and a composite thumbnail of them would be invented), and neither do USB devices.
+    //
+    // A source's picture is its own; a display carries the picture of whatever it is currently
+    // showing, and only when that source is one this account is already permitted to see.
+    // `showing.source_id` is null for anything else -- a Multiview, an unrouted display, or a
+    // source outside this account's world -- so a thumbnail the operator is not entitled to
+    // cannot be reached from here by construction rather than by a check that could be
+    // forgotten. Nothing is requested here: the image is fetched when the card is actually on
+    // screen, so a long list costs nothing until it is scrolled to, and an idle page makes no
+    // preview traffic at all.
+    if (kind === 'source' || kind === 'destination') {
+      const showing = item.showing || {};
+      const previewId = kind === 'source' ? item.id
+        : (kind === 'destination' ? showing.source_id || null : null);
+      const previewNote = kind === 'destination' ? {
+        none: 'Unrouted',
+        multiview: 'Multiview',
+        other: 'Another source',
+      }[showing.mode] || '' : '';
+      const shot = document.createElement('div');
+      shot.className = 'pick-shot empty';
+      if (!state.preview) {
+        shot.dataset.note = 'Preview off';
+      } else {
+        shot.dataset.note = previewNote;
+        if (previewId && item.online !== false) watchForPreview(button, previewId, shot);
+      }
+      button.append(shot);
+    }
+
+    const body = document.createElement('div');
+    body.className = 'pick-body';
+    if (kind === 'group') {
+      const badge = document.createElement('span');
+      badge.className = 'group-badge';
+      badge.textContent = 'Group';
+      body.append(badge);
+    }
     const name = document.createElement('span');
     name.className = 'pick-name';
     name.textContent = item.name;
-
     const sub = document.createElement('span');
-    sub.className = 'pick-state';
+    sub.className = 'pick-state pick-sub';
     sub.textContent = subtitle;
+    body.append(name, sub);
+    button.append(body);
 
-    // A source card carries the picture, and the whole card stays the target.
-    // Nothing is requested here: the image is fetched when the card is
-    // actually on screen, so a long list costs nothing until it is scrolled
-    // to, and an idle page makes no preview traffic at all.
-    // A display carries the picture of whatever it is currently showing, and
-    // only when that source is one this account is already permitted to see.
-    // `showing.source_id` is null for anything else -- a Multiview, an
-    // unrouted display, or a source outside this account's world -- so a
-    // thumbnail the operator is not entitled to cannot be reached from here
-    // by construction rather than by a check that could be forgotten.
-    const showing = item.showing || {};
-    const previewId = kind === 'source' ? item.id
-      : (kind === 'destination' ? showing.source_id || null : null);
-    const previewNote = kind === 'destination' ? {
-      none: 'Unrouted',
-      multiview: 'Multiview',
-      other: 'Another source',
-    }[showing.mode] || '' : '';
-
-    if ((previewId || previewNote) && item.online !== false) {
-      const shot = document.createElement('span');
-      shot.className = 'pick-shot empty';
-      shot.dataset.note = previewNote;
-      const text = document.createElement('span');
-      text.className = 'pick-text';
-      text.append(name, sub);
-      button.classList.add('has-preview');
-      button.append(shot, text);
-      if (previewId) watchForPreview(button, previewId, shot);
-      return button;
-    }
-
-    button.append(name, sub);
     // A permitted device that is not answering stays visible and cannot be
     // acted on: hiding it would suggest the assignment had been taken away.
     if (item.online === false) button.disabled = true;
@@ -369,14 +394,46 @@
     el(emptyId).hidden = items.length > 0;
   }
 
+  function isChosen(kind, id) {
+    if (kind === 'destination') return state.destSel.has(id);
+    if (kind === 'group') return state.groupSel.has(id);
+    return kind === 'source' && id === state.source;
+  }
+
   function markSelected() {
     document.querySelectorAll('.pick').forEach((button) => {
-      const chosen = {
-        source: state.source, destination: state.destination,
-        group: state.group, computer: state.computer, peripheral: state.peripheral,
-      }[button.dataset.kind];
-      button.setAttribute('aria-pressed', String(button.dataset.id === chosen));
+      button.setAttribute('aria-pressed',
+        String(isChosen(button.dataset.kind, button.dataset.id)));
     });
+  }
+
+  // What the next Route will send: displays and groups by stable identity.
+  function currentTargets() {
+    return {destinations: Array.from(state.destSel), groups: Array.from(state.groupSel)};
+  }
+
+  // The selection is remembered as a bookmark by stable identity ('|' cannot appear in an
+  // identity or a group id; ':' does, it is a MAC), and honoured only for what the server
+  // lists for this account on the next read.
+  function rememberTargets() {
+    remember(REMEMBERED_DESTINATION, Array.from(state.destSel).map((id) => 'd:' + id)
+      .concat(Array.from(state.groupSel).map((id) => 'g:' + id)).join('|'));
+  }
+
+  function inFlightCount() {
+    return state.inflight.dest.size + state.inflight.group.size;
+  }
+
+  function plural(n, one, many) {
+    return n + ' ' + (n === 1 ? one : many);
+  }
+
+  // "2 displays and 1 group": what the selection holds, in words.
+  function chosenWords() {
+    const parts = [];
+    if (state.destSel.size) parts.push(plural(state.destSel.size, 'display', 'displays'));
+    if (state.groupSel.size) parts.push(plural(state.groupSel.size, 'group', 'groups'));
+    return parts.join(' and ');
   }
 
   // ------------------------------------------------------------- summary
@@ -392,20 +449,28 @@
     // The bar ships hidden so it is not drawn before there is anything to route; it is shown from the
     // first render on and stays put, saying what is still missing rather than going away. The Matrix
     // routes from its own cells and the no-routing state has nothing to route, so neither shows it.
-    const bar = !(state.tab === 'av' && (state.surface === 'matrix' || state.surface === 'none'));
+    // The USB tab routes from its own dots, as the Matrix does, so it never shows the bar either.
+    const bar = state.tab === 'av' && !(state.surface === 'matrix' || state.surface === 'none');
     el('action_bar').hidden = !bar;
     if (!bar) return;
 
-    // Unroute belongs to A/V and needs a chosen display to act on. It is
-    // hidden rather than disabled when there is nothing selected, because
-    // until then it is not an action that exists.
-    const target = state.tab === 'av'
-      ? state.destinations.find((d) => d.id === state.destination) : null;
-    stop.hidden = !target;
-    if (target) {
-      const showing = target.showing || {};
-      // Nothing to stop if it is already showing nothing.
-      stop.disabled = state.busy || showing.mode === 'none';
+    // Clear selection and Unroute are always in the bar on the A/V tab and are never withdrawn:
+    // each is disabled while it has nothing to act on.
+    const av = state.tab === 'av';
+    const picked = state.destSel.size + state.groupSel.size;
+    const clearBtn = el('clear_btn');
+    clearBtn.hidden = !av;
+    stop.hidden = !av;
+    el('selection_count').textContent = picked ? chosenWords() + ' chosen' : '';
+    if (av) {
+      clearBtn.disabled = state.busy || !(state.source || picked);
+      // Nothing to stop when every chosen display is already showing nothing and no group is
+      // chosen (a group's members are only known to the server, so a group is always allowed).
+      const idle = state.groupSel.size === 0 && Array.from(state.destSel).every((id) => {
+        const d = state.destinations.find((x) => x.id === id);
+        return d && (d.showing || {}).mode === 'none';
+      });
+      stop.disabled = state.busy || picked === 0 || idle;
     }
 
     if (state.busy) {
@@ -414,59 +479,60 @@
       return;
     }
 
-    if (state.tab === 'av') {
+    if (av) {
       const a = named(state.sources, state.source);
-      const grp = state.groups.find((g) => g.id === state.group);
-      const b = grp ? grp.name : named(state.destinations, state.destination);
       action.textContent = 'Route';
-      // A chosen unit can go quiet after it was chosen. Route is withheld and says which one, because
-      // the server would refuse it anyway and a button that always fails is worse than none.
-      const chosenSource = state.sources.find((s) => s.id === state.source);
-      const chosenDisplay = state.destinations.find((d) => d.id === state.destination);
-      const quiet = chosenSource && chosenSource.online === false ? a
-        : (chosenDisplay && chosenDisplay.online === false ? b : null);
-      if (a && b && quiet) {
-        summary.textContent = quiet + ' is offline.';
-        action.disabled = true;
-        return;
-      }
-      if (a && b) {
+      if (a && picked) {
+        const chosenSource = state.sources.find((x) => x.id === state.source);
+        // A chosen unit can go quiet after it was chosen. Route is withheld and says which one,
+        // because the server would refuse it anyway and a button that always fails is worse
+        // than none.
+        const quietDisplay = picked === 1 && state.destSel.size === 1
+          ? state.destinations.find((d) => d.id === Array.from(state.destSel)[0]
+                                           && d.online === false) : null;
+        if (chosenSource && chosenSource.online === false) {
+          summary.textContent = a + ' is offline.';
+          action.disabled = true;
+          return;
+        }
+        if (quietDisplay) {
+          summary.textContent = quietDisplay.name + ' is offline.';
+          action.disabled = true;
+          return;
+        }
+        let shown;
+        if (picked === 1 && state.groupSel.size === 1) {
+          const grp = state.groups.find((g) => g.id === Array.from(state.groupSel)[0]);
+          shown = grp ? grp.name + ' (' + plural(grp.displays, 'display', 'displays') + ')'
+                      : chosenWords();
+        } else if (picked === 1) {
+          shown = named(state.destinations, Array.from(state.destSel)[0]) || chosenWords();
+        } else {
+          // Several targets: the count is the honest description, because a group's members
+          // may overlap an individually chosen display and are only counted once the server
+          // resolves them.
+          shown = chosenWords();
+        }
         summary.replaceChildren();
         const s = document.createElement('strong'); s.textContent = a;
-        const d = document.createElement('strong'); d.textContent = b;
+        const d = document.createElement('strong'); d.textContent = shown;
         summary.append('Route ', s, ' to ', d);
-        if (grp) {
-          summary.append(' (' + grp.displays + ' display'
-                         + (grp.displays === 1 ? '' : 's') + ')');
+        // Routes already on their way are said, never a reason to hold this one back.
+        const going = inFlightCount();
+        if (going > 0) {
+          const muted = document.createElement('span');
+          muted.className = 'muted';
+          muted.textContent = ' · ' + going + ' routing';
+          summary.append(muted);
         }
         action.disabled = false;
         return;
       }
-      summary.textContent = !a && !b ? 'Choose a source and a display.'
-        : (!a ? 'Now choose a source.' : 'Now choose a display.');
+      summary.textContent = !a && !picked ? 'Choose a source and at least one display.'
+        : (!a ? 'Choose a source.' : 'Choose at least one display.');
       action.disabled = true;
       return;
     }
-
-    // USB
-    const computer = named(state.computers, state.computer);
-    const peripheral = state.peripherals.find((p) => p.id === state.peripheral);
-    const attached = peripheral && peripheral.attached_to
-      && peripheral.attached_to.computer_id === state.computer;
-    action.textContent = attached ? 'Disconnect' : 'Connect';
-    if (computer && peripheral) {
-      summary.replaceChildren();
-      const c = document.createElement('strong'); c.textContent = computer;
-      const p = document.createElement('strong'); p.textContent = peripheral.name;
-      summary.append(attached ? 'Disconnect ' : 'Connect ', p,
-                     attached ? ' from ' : ' to ', c);
-      action.disabled = false;
-      return;
-    }
-    summary.textContent = !computer && !peripheral
-      ? 'Choose a computer and its USB devices.'
-      : (!computer ? 'Now choose a computer.' : 'Now choose the USB devices.');
-    action.disabled = true;
   }
 
   // ------------------------------------------------------------- A/V
@@ -492,39 +558,83 @@
     // Groups sit beside the displays, in the same selection area. They carry
     // no picture: a group is several displays, and a composite thumbnail of
     // them would be invented.
-    const host = el('destinations');
+    // Groups sit above the displays, in the same selection area. They carry no picture.
+    const groupHost = el('destination_groups');
+    groupHost.replaceChildren();
     state.groups.forEach((group) => {
-      const n = group.displays;
-      host.appendChild(card(group, 'group',
-        'Group \u00b7 ' + n + ' display' + (n === 1 ? '' : 's')));
+      groupHost.appendChild(card(group, 'group',
+        plural(group.displays, 'display', 'displays')));
     });
+    el('destinations_groups_wrap').hidden = state.groups.length === 0;
+    el('destinations_label').hidden = !(state.groups.length && state.destinations.length);
     el('destinations_empty').hidden =
       state.destinations.length > 0 || state.groups.length > 0;
     markSelected();
   }
 
   // ------------------------------------------------------------- USB
-  function describePeripheral(item) {
-    const attached = item.attached_to || {};
-    if (attached.mode === 'computer') return 'Connected to ' + attached.computer_name;
-    if (attached.mode === 'other') return 'Connected to another computer';
-    return 'Not connected';
+  // The grid is built once, on first use. The module owns every cell and every request; this
+  // file supplies how a request is sent and how the state is read again.
+  let usbMatrix = null;
+  function ensureUsbMatrix() {
+    if (usbMatrix || !window.OmniUserUsbMatrix) return usbMatrix;
+    usbMatrix = window.OmniUserUsbMatrix.create({
+      document,
+      wrap: el('usb_wrap'),
+      table: el('usbMatrix'),
+      empty: el('usb_empty'),
+      status: el('usb_status'),
+      legend: el('usb_legend'),
+      request: (computer, peripheral, detach) => api('/api/user/usb_route', {
+        method: 'POST',
+        body: JSON.stringify({computer, peripherals: peripheral, detach: !!detach}),
+      }),
+      reload: () => loadUsb(),
+      failureText,
+      toast: (text, kind) => { if (window.toast) window.toast(text, kind); },
+    });
+    return usbMatrix;
   }
 
   async function loadUsb() {
     const {body} = await api('/api/user/usb_state');
     state.computers = body.computers || [];
     state.peripherals = body.peripherals || [];
-    if (!state.computers.some((c) => c.id === state.computer)) state.computer = null;
-    if (!state.peripherals.some((p) => p.id === state.peripheral)) {
-      state.peripheral = null;
-    }
-    renderList('usb_computers', 'usb_computers_empty', state.computers,
-               'computer', () => 'Ready');
-    renderList('usb_peripherals', 'usb_peripherals_empty', state.peripherals,
-               'peripheral', describePeripheral);
-    markSelected();
-    renderAction();
+    const matrix = ensureUsbMatrix();
+    if (matrix) matrix.render(body);
+  }
+
+  // ------------------------------------------------------- Multiview
+  // The module owns every card and every request's outcome; this file supplies how a request is
+  // sent. It is read when the tab opens and once after a show, never on a timer.
+  let multiview = null;
+  function ensureMultiview() {
+    if (multiview || !window.OmniUserMultiview) return multiview;
+    multiview = window.OmniUserMultiview.create({
+      document,
+      host: el('mv_host'),
+      status: el('mv_status'),
+      load: () => api('/api/user/multiview_state'),
+      show: (layout) => api('/api/user/multiview_show', {
+        method: 'POST',
+        body: JSON.stringify({layout}),
+      }),
+      // One layout opened, and the person's choice of source per window applied to it. The
+      // server resolves every identity; nothing here is an address.
+      detail: (layout) => api('/api/user/multiview_layout' + '?layout=' + encodeURIComponent(layout)),
+      apply: (payload) => api('/api/user/multiview_compose', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+      failureText,
+      toast: (text, kind) => { if (window.toast) window.toast(text, kind); },
+    });
+    return multiview;
+  }
+
+  function loadMultiview() {
+    const module = ensureMultiview();
+    return module ? module.refresh() : Promise.resolve(false);
   }
 
   // A route (or an unroute) has finished: the state is read again, which rebuilds the cards, and the
@@ -543,8 +653,12 @@
   // A display that is mid-route does not accept another selection. Stated on
   // the card rather than relying on the operator not to tap twice.
   function busyWith(node) {
-    return !!state.routingTo && node.dataset.kind === 'destination'
-           && node.dataset.id === state.routingTo;
+    if (node.dataset.kind === 'destination') {
+      return (!!state.routingTo && node.dataset.id === state.routingTo)
+             || state.inflight.dest.has(node.dataset.id);
+    }
+    if (node.dataset.kind === 'group') return state.inflight.group.has(node.dataset.id);
+    return false;
   }
 
   document.addEventListener('click', (event) => {
@@ -558,18 +672,22 @@
     const kind = button.dataset.kind;
     const id = button.dataset.id;
 
+    // Displays and groups are toggled in and out of two sets, and nothing is cleared by
+    // choosing another kind. One display, several, a group, several groups, or any mix: it is
+    // all the same gesture.
+    if (kind === 'destination' || kind === 'group') {
+      const set = kind === 'group' ? state.groupSel : state.destSel;
+      if (set.has(id)) set.delete(id); else set.add(id);
+      rememberTargets();
+      markSelected();
+      renderAction();
+      return;
+    }
+
     // Tapping the chosen one again clears it.
-    const field = {source: 'source', destination: 'destination',
-                   group: 'group',
-                   computer: 'computer', peripheral: 'peripheral'}[kind];
+    const field = {source: 'source', computer: 'computer', peripheral: 'peripheral'}[kind];
     if (!field) return;
     state[field] = state[field] === id ? null : id;
-    // One target at a time: a display or a group.
-    if (field === 'group' && state.group) state.destination = null;
-    if (field === 'destination' && state.destination) state.group = null;
-    if (field === 'destination') {
-      remember(REMEMBERED_DESTINATION, state.destination);
-    }
     markSelected();
     renderAction();
   });
@@ -600,73 +718,134 @@
     }
   }
 
-  // The one Route operation. The button, a drop and (through its own cells) the
-  // Matrix all end in a request to the same two endpoints; this is the
-  // Standard interface's side of that.
-  async function routeSelected() {
-    if (state.busy) return;
-    const av = state.tab === 'av';
-    if (av && (!state.source || !(state.destination || state.group))) return;
-    if (!av && (!state.computer || !state.peripheral)) return;
+  // The single read that redraws the page after routing. Trailing and single
+  // flight: every finished route asks for it, only the last one to finish while
+  // nothing else is in flight actually runs it, and a read already running is not
+  // stacked on. Without this each route re-read and rebuilt the whole page before
+  // the next could start, which is what made consecutive routing feel serial.
+  const RECONCILE_DELAY_MS = 120;
+  let reconcileTimer = null;
+  let reconciling = false;
 
-    state.busy = true;
-    // The display this route targets is marked in flight, so a second tap on
-    // the same display is refused by the page rather than queued behind a
-    // lock on the server.
-    state.routingTo = av ? state.destination : null;
+  function scheduleReconcile() {
+    if (reconcileTimer !== null) window.clearTimeout(reconcileTimer);
+    reconcileTimer = window.setTimeout(runReconcile, RECONCILE_DELAY_MS);
+  }
+
+  async function runReconcile() {
+    reconcileTimer = null;
+    if (inFlightCount() > 0 || state.busy) return;   // the last to finish asks again
+    if (reconciling) { scheduleReconcile(); return; }
+    reconciling = true;
+    const at = Date.now();
+    try {
+      await refreshAfterRoute(at);
+    } catch (err) { /* the next route or the permission check reads again */ }
+    finally {
+      reconciling = false;
+      // The read rebuilt the cards; anything still routing is marked again.
+      renderRoutingState();
+    }
+  }
+
+  // What the operator is told, and what the card keeps, when a route has been
+  // verified or has failed. `ok` is the server's verified answer, never a guess.
+  function settleTargets(targets, result, group) {
+    const reply = result.body || {};
+    const ok = result.status === 200 && reply.ok === true;
+    targets.destinations.forEach((id) => {
+      if (ok) state.failed.dest.delete(id); else state.failed.dest.add(id);
+    });
+    targets.groups.forEach((id) => {
+      if (ok) state.failed.group.delete(id); else state.failed.group.add(id);
+    });
+    if (group && reply.results && result.status === 200 && reply.ok !== true) {
+      // Partial: the page cannot say which cards failed (members are not named
+      // by identity), so the toast carries the names and the group stays marked.
+    }
+  }
+
+  // What a route carries: sound with the picture, or the picture alone.
+  function routeMode() {
+    return state.audioFollowsVideo === false ? 'video' : 'av';
+  }
+
+  async function routeAv() {
+    if (!state.source) return;
+    const chosen = currentTargets();
+    if (!chosen.destinations.length && !chosen.groups.length) return;
+    // A display or group already being routed is left to finish and takes no second request;
+    // everything else chosen goes straight out. The selection stays as it is, so choosing
+    // the next display adds to it and routes only what is not already on its way.
+    const targets = {
+      destinations: chosen.destinations.filter((id) => !state.inflight.dest.has(id)),
+      groups: chosen.groups.filter((id) => !state.inflight.group.has(id)),
+    };
+    const total = targets.destinations.length + targets.groups.length;
+    if (!total) {
+      window.toast && window.toast('Still routing. It will be ready in a moment.', 'error');
+      return;
+    }
+
+    const sent = {destinations: targets.destinations.slice(), groups: targets.groups.slice()};
+    sent.destinations.forEach((id) => { state.inflight.dest.add(id); state.failed.dest.delete(id); });
+    sent.groups.forEach((id) => { state.inflight.group.add(id); state.failed.group.delete(id); });
     renderAction();
     renderRoutingState();
     try {
       let result;
-      if (av && state.group) {
-        result = await api('/api/user/route_group', {
-          method: 'POST',
-          body: JSON.stringify({source: state.source, group: state.group,
-                                interface: 'standard'}),
-        });
-        announceRoute(result, true);
-        await refreshAfterRoute(Date.now());
-        return;
-      }
-      if (av) {
+      let group = false;
+      if (total === 1 && sent.destinations.length === 1) {
         result = await api('/api/user/route', {
           method: 'POST',
           body: JSON.stringify({source: state.source,
-                                destination: state.destination, mode: 'av',
+                                destination: sent.destinations[0], mode: routeMode(),
                                 interface: 'standard'}),
         });
-      } else {
-        const peripheral = state.peripherals.find((p) => p.id === state.peripheral);
-        const attached = peripheral && peripheral.attached_to
-          && peripheral.attached_to.computer_id === state.computer;
-        result = await api('/api/user/usb_route', {
+      } else if (total === 1) {
+        group = true;
+        result = await api('/api/user/route_group', {
           method: 'POST',
-          body: JSON.stringify({computer: state.computer,
-                                peripherals: state.peripheral,
-                                detach: !!attached}),
+          body: JSON.stringify({source: state.source, group: sent.groups[0],
+                                mode: routeMode(), interface: 'standard'}),
+        });
+      } else {
+        group = true;
+        result = await api('/api/user/route_many', {
+          method: 'POST',
+          body: JSON.stringify({source: state.source,
+                                destinations: sent.destinations, groups: sent.groups,
+                                mode: routeMode(), interface: 'standard'}),
         });
       }
-      if (av) {
-        announceRoute(result, false);
-      } else if (result.status === 200 && result.body.ok) {
-        window.toast && window.toast('Routed', 'ok');
-      } else {
-        window.toast && window.toast(
-          failureText(result.body, result.status), 'error');
-      }
-      await refreshAfterRoute(Date.now());
+      announceRoute(result, group);
+      settleTargets(sent, result, group);
     } catch (err) {
+      sent.destinations.forEach((id) => state.failed.dest.add(id));
+      sent.groups.forEach((id) => state.failed.group.add(id));
       if (String(err.message) !== 'signed out') {
         window.toast && window.toast('Could not reach OmniSuite', 'error');
       }
     } finally {
-      // Always, on every path: a failed route must leave the page usable
-      // without a reload.
-      state.busy = false;
-      state.routingTo = null;
+      sent.destinations.forEach((id) => state.inflight.dest.delete(id));
+      sent.groups.forEach((id) => state.inflight.group.delete(id));
       renderAction();
       renderRoutingState();
+      scheduleReconcile();
     }
+  }
+
+  // The one Route operation. The button, a drop and (through its own cells) the
+  // Matrix all end in a request to the same endpoints; this is the Standard
+  // interface's side of that.
+  //
+  // An A/V route does not hold the page. It marks the display or group it sent to
+  // as routing, sends the request and returns: the operator can choose the next
+  // source and the next display while this one is being verified, and the one read
+  // that redraws the page waits until nothing is in flight (see scheduleReconcile).
+  async function routeSelected() {
+    if (state.busy) return;
+    if (state.tab === 'av') return routeAv();
   }
 
   el('route_btn').addEventListener('click', routeSelected);
@@ -683,20 +862,60 @@
       ? state.groups.some((g) => g.id === id)
       : state.destinations.some((d) => d.id === id && d.online !== false)),
     perform: (sourceId, kind, id) => {
+      // A drop routes to exactly what it landed on, whatever else was ticked.
       state.source = sourceId;
-      if (kind === 'group') {
-        state.group = id;
-        state.destination = null;
-      } else {
-        state.destination = id;
-        state.group = null;
-        remember(REMEMBERED_DESTINATION, id);
-      }
+      state.destSel.clear();
+      state.groupSel.clear();
+      (kind === 'group' ? state.groupSel : state.destSel).add(id);
+      rememberTargets();
       markSelected();
       renderAction();
       return routeSelected();
     },
   }) : null;
+
+  // ----------------------------------------- clear selection, and the two switches
+  // Clear selection forgets what has been chosen on this page -- the source and every display
+  // and group. It writes nothing to any device and does not need the page reloaded.
+  el('clear_btn').addEventListener('click', () => {
+    state.source = null;
+    state.destSel.clear();
+    state.groupSel.clear();
+    rememberTargets();
+    markSelected();
+    renderAction();
+  });
+
+  const afvToggle = el('afv_toggle');
+  if (afvToggle) {
+    afvToggle.checked = state.audioFollowsVideo;
+    afvToggle.addEventListener('change', () => { state.audioFollowsVideo = !!afvToggle.checked; });
+  }
+
+  // Preview: this page's pictures, on or off. Remembered in the browser like the rest of the
+  // page's presentation, and unrelated to the per-device Preview setting in Device Info.
+  function setPreview(on, persist) {
+    state.preview = !!on;
+    const box = el('preview_toggle');
+    if (box) box.checked = state.preview;
+    const mirror = el('preview_toggle_m');
+    if (mirror) mirror.checked = state.preview;
+    if (persist) remember('preview', state.preview ? null : 'off');
+    renderAv();
+    renderRoutingState();
+  }
+  const previewToggle = el('preview_toggle');
+  if (previewToggle) {
+    previewToggle.addEventListener('change', () => setPreview(previewToggle.checked, true));
+  }
+  const previewToggleM = el('preview_toggle_m');
+  if (previewToggleM) {
+    previewToggleM.addEventListener('change', () => setPreview(previewToggleM.checked, true));
+  }
+  state.preview = recall('preview') !== 'off';
+  if (previewToggle) previewToggle.checked = state.preview;
+  if (previewToggleM) previewToggleM.checked = state.preview;
+
   if (drag) {
     ['dragstart', 'dragover', 'dragleave', 'drop', 'dragend'].forEach((type) => {
       document.addEventListener(type, drag[type]);
@@ -709,10 +928,9 @@
   // destructive in the only sense that matters to somebody watching, and
   // unlike a route it cannot be undone by choosing something else.
   el('unroute_btn').addEventListener('click', async () => {
-    if (state.busy || !state.destination) return;
-    const name = named(state.destinations, state.destination) || 'that display';
-    const chosen = state.destination;
-
+    const chosen = {destinations: Array.from(state.destSel), groups: Array.from(state.groupSel)};
+    const total = chosen.destinations.length + chosen.groups.length;
+    if (state.busy || !total) return;
     const ask = window.omniConfirm;
     if (typeof ask !== 'function') {
       // The notice is the point of the dialog. Without it, refuse rather
@@ -721,57 +939,109 @@
         'Cannot confirm that action on this page.', 'error');
       return;
     }
+    const what = total === 1 && chosen.destinations.length === 1
+      ? (named(state.destinations, chosen.destinations[0]) || 'That display')
+      : (total === 1
+          ? (named(state.groups, chosen.groups[0]) || 'That group') + ' and its displays'
+          : chosenWords());
     const go = await ask({
-      title: 'Stop this display?',
-      message: name + ' will stop showing anything until a source is chosen '
-               + 'for it again.',
+      title: total === 1 && chosen.destinations.length === 1
+        ? 'Stop this display?' : 'Stop these displays?',
+      message: what + ' will stop showing anything until a source is chosen '
+               + 'for ' + (total === 1 && chosen.destinations.length === 1 ? 'it' : 'them')
+               + ' again.',
       confirmText: 'Unroute',
       danger: true,
     });
     if (!go) return;
 
+    // The display is marked as working on its own card, like a route is, and nothing else holds.
+    chosen.destinations.forEach((id) => state.inflight.dest.add(id));
+    chosen.groups.forEach((id) => state.inflight.group.add(id));
     state.busy = true;
-    state.routingTo = chosen;
     renderAction();
     renderRoutingState();
     try {
-      const result = await api('/api/user/unroute', {
-        method: 'POST',
-        body: JSON.stringify({destination: chosen}),
-      });
-      if (result.status === 200 && result.body.ok) {
-        window.toast && window.toast('Unrouted', 'ok');
+      let result;
+      let group = false;
+      if (total === 1 && chosen.destinations.length === 1) {
+        result = await api('/api/user/unroute', {
+          method: 'POST',
+          body: JSON.stringify({destination: chosen.destinations[0]}),
+        });
       } else {
-        window.toast && window.toast(
-          failureText(result.body, result.status), 'error');
+        group = true;
+        result = await api('/api/user/unroute_many', {
+          method: 'POST',
+          body: JSON.stringify({destinations: chosen.destinations, groups: chosen.groups}),
+        });
       }
+      announceUnroute(result, group);
       await refreshAfterRoute(Date.now());
     } catch (err) {
       if (String(err.message) !== 'signed out') {
         window.toast && window.toast('Could not reach OmniSuite', 'error');
       }
     } finally {
+      chosen.destinations.forEach((id) => state.inflight.dest.delete(id));
+      chosen.groups.forEach((id) => state.inflight.group.delete(id));
       state.busy = false;
-      state.routingTo = null;
       renderAction();
       renderRoutingState();
     }
   });
 
+  // What the operator is told when an unroute finishes: the verified count, and the displays
+  // that did not stop, by name.
+  function announceUnroute(result, group) {
+    const reply = result.body || {};
+    if (group) {
+      if (result.status === 200 && reply.total !== undefined) {
+        const line = reply.routed + ' of ' + reply.total + ' displays unrouted';
+        const failed = (reply.results || []).filter((r) => !r.ok).map((r) => r.name);
+        window.toast && window.toast(
+          failed.length ? line + '. Not unrouted: ' + failed.join(', ') : line,
+          reply.ok ? 'ok' : 'error');
+      } else {
+        window.toast && window.toast(failureText(reply, result.status), 'error');
+      }
+      return;
+    }
+    if (result.status === 200 && reply.ok) {
+      window.toast && window.toast('Unrouted', 'ok');
+    } else {
+      window.toast && window.toast(failureText(reply, result.status), 'error');
+    }
+  }
+
   // Which display is mid-route, said on the display's own card.
   function renderRoutingState() {
-    document.querySelectorAll('.pick[data-kind="destination"]').forEach((node) => {
-      const routing = !!state.routingTo && node.dataset.id === state.routingTo;
-      node.classList.toggle('routing', routing);
-      const line = node.querySelector('.pick-state');
-      if (routing) {
-        node.dataset.was = line ? line.textContent : '';
-        if (line) line.textContent = 'Routing\u2026';
-      } else if (node.dataset.was !== undefined) {
-        if (line && node.dataset.was) line.textContent = node.dataset.was;
-        delete node.dataset.was;
-      }
-    });
+    document.querySelectorAll('.pick[data-kind="destination"], .pick[data-kind="group"]')
+      .forEach((node) => {
+        const kind = node.dataset.kind;
+        const id = node.dataset.id;
+        const set = kind === 'group' ? 'group' : 'dest';
+        const routing = (kind === 'destination' && !!state.routingTo && id === state.routingTo)
+          || state.inflight[set].has(id);
+        const failed = !routing && state.failed[set].has(id);
+        node.classList.toggle('routing', routing);
+        node.classList.toggle('route-failed', failed);
+        node.setAttribute('aria-busy', String(routing));
+        const line = node.querySelector('.pick-state');
+        if ((routing || failed) && node.dataset.was === undefined) {
+          node.dataset.was = line ? line.textContent : '';
+        }
+        if (routing) {
+          if (line) line.textContent = 'Routing\u2026';
+        } else if (failed) {
+          // Verified failure, said on the card and kept there: the next toast
+          // replaces this one and a failure must not be lost to a later success.
+          if (line) line.textContent = 'Not routed \u2014 try again';
+        } else if (node.dataset.was !== undefined) {
+          if (line && node.dataset.was) line.textContent = node.dataset.was;
+          delete node.dataset.was;
+        }
+      });
   }
 
   // ------------------------------------------------------------- Matrix
@@ -797,6 +1067,7 @@
       previewHost: document.body,
       route: routeFromMatrix,
       fetchPreview: (id) => fetchPreviewFor(id),
+      previewEnabled: () => state.preview,
       drawPreview: (card, result) => drawPreview(card, result),
       setTimeout: (fn, ms) => window.setTimeout(fn, ms),
       clearTimeout: (handle) => window.clearTimeout(handle),
@@ -823,12 +1094,37 @@
     if (status === 200 && body && body.ok) matrix.render(body);
   }
 
+  // Matrix routes in flight, by row. A route marks ITS row pending and nothing
+  // else: a click on another row is free at once, and the grid is read again once,
+  // after the last one has settled.
+  const mxPending = new Map();
+  let mxReconcileTimer = null;
+  let mxReconciling = false;
+
+  function scheduleMatrixReconcile() {
+    if (mxReconcileTimer !== null) window.clearTimeout(mxReconcileTimer);
+    mxReconcileTimer = window.setTimeout(runMatrixReconcile, RECONCILE_DELAY_MS);
+  }
+
+  async function runMatrixReconcile() {
+    mxReconcileTimer = null;
+    if (mxPending.size > 0 || state.busy) return;   // the last to settle asks again
+    if (mxReconciling) { scheduleMatrixReconcile(); return; }
+    mxReconciling = true;
+    try { await loadMatrix(); } catch (err) { /* the next return reads again */ }
+    finally { mxReconciling = false; }
+  }
+
   async function routeFromMatrix(request) {
-    if (state.busy || !matrix) return;
-    state.busy = true;
-    matrix.setBusy(true);
-    // Anything read before this finishes describes the world before it.
+    if (!matrix) return;
+    const key = request.kind + ':' + request.id;
+    // One route at a time per row; every other row is untouched.
+    if (mxPending.has(key)) return;
+    mxPending.set(key, request.source);
+    matrix.setPending(request.kind, request.id, request.source, true);
+    // A read that began before this finishes describes the world before it.
     matrixSeq += 1;
+    let settled = 'failed';
     try {
       const group = request.kind === 'group';
       const common = {source: request.source, mode: request.mode, interface: 'matrix'};
@@ -838,14 +1134,22 @@
                                    : Object.assign({destination: request.id}, common)),
       });
       announceRoute(result, group);
-      await loadMatrix();
+      if (result.status === 200 && result.body && result.body.ok === true) {
+        settled = 'verified';
+      }
     } catch (err) {
       if (String(err.message) !== 'signed out') {
         window.toast && window.toast('Could not reach OmniSuite', 'error');
       }
     } finally {
-      state.busy = false;
-      if (matrix) matrix.setBusy(false);
+      mxPending.delete(key);
+      matrixSeq += 1;
+      if (matrix) {
+        // Verified: the cell shows what the server confirmed, before the grid is
+        // read again. Failed: it says so and keeps saying so.
+        matrix.settle(request.kind, request.id, request.source, request.mode, settled);
+      }
+      scheduleMatrixReconcile();
     }
   }
 
@@ -917,7 +1221,7 @@
   function renderTabs() {
     const tabs = el('tabs');
     tabs.replaceChildren();
-    const available = [['av', 'A/V'], ['usb', 'USB']]
+    const available = [['av', 'A/V'], ['usb', 'USB'], ['multiview', 'Multiview']]
       .filter(([id]) => state.features.indexOf(id) !== -1);
 
     // One granted feature needs no navigation at all.
@@ -934,14 +1238,22 @@
     });
   }
 
+  let multiviewOpened = false;
   function selectTab(id) {
+    if (id !== 'multiview') multiviewOpened = false;
     state.tab = id;
-    ['av', 'usb'].forEach((name) => {
+    ['av', 'usb', 'multiview'].forEach((name) => {
       el('panel_' + name).hidden = name !== id;
     });
     renderTabs();
     renderAction();
-    if (id === 'usb' && !state.computers.length) loadUsb().catch(() => {});
+    if (id === 'usb') loadUsb().catch(() => {});
+    // Opening the tab reads it, and nothing else does: selectTab also runs after every
+    // refresh, and a read that asks each display a question must not ride along with those.
+    if (id === 'multiview' && !multiviewOpened) {
+      multiviewOpened = true;
+      loadMultiview().catch(() => {});
+    }
   }
 
   // -------------------------------------------------------------- load
@@ -955,12 +1267,26 @@
     state.interfaces = Array.isArray(body.interfaces) ? body.interfaces : ['standard'];
 
     if (!state.sources.some((s) => s.id === state.source)) state.source = null;
-    if (!state.groups.some((g) => g.id === state.group)) state.group = null;
-    // The display survives a refresh and a completed route, but only if the
-    // server still lists it for this account. Nothing is selected merely
-    // because the list happens to hold one.
-    state.destination = restoreSelection(
-      state.destinations, state.destination, REMEMBERED_DESTINATION);
+    Array.from(state.destSel).forEach((id) => {
+      if (!state.destinations.some((d) => d.id === id)) state.destSel.delete(id);
+    });
+    Array.from(state.groupSel).forEach((id) => {
+      if (!state.groups.some((g) => g.id === id)) state.groupSel.delete(id);
+    });
+    // The selection survives a refresh and a completed route, but only for what the server
+    // still lists for this account. On the first read it is restored from the bookmark; nothing
+    // is selected merely because the list happens to hold one.
+    if (!state.selectionRestored) {
+      state.selectionRestored = true;
+      String(recall(REMEMBERED_DESTINATION) || '').split('|').forEach((entry) => {
+        const id = entry.slice(2);
+        if (entry.indexOf('d:') === 0 && state.destinations.some((d) => d.id === id)) {
+          state.destSel.add(id);
+        } else if (entry.indexOf('g:') === 0 && state.groups.some((g) => g.id === id)) {
+          state.groupSel.add(id);
+        }
+      });
+    }
 
     // A Direct Access session is a dedicated control panel, not somebody's
     // account. It carries no name, no link to copy and no way to sign out --
@@ -1098,7 +1424,7 @@
   // nothing runs in a hidden tab.
   let revisionBusy = false;
   async function checkRevision() {
-    if (revisionBusy || state.busy || document.hidden || !state.revision) return;
+    if (revisionBusy || state.busy || inFlightCount() > 0 || document.hidden || !state.revision) return;
     revisionBusy = true;
     try {
       const {status, body} = await api('/api/user/revision');
@@ -1113,7 +1439,8 @@
   // one request to this server, no device read -- because what is routed may
   // have been changed by somebody else while the page was away.
   async function refreshMatrixIfShowing() {
-    if (document.hidden || state.busy || state.surface !== 'matrix' || state.tab !== 'av') return;
+    if (document.hidden || state.busy || inFlightCount() > 0 || mxPending.size > 0
+        || state.surface !== 'matrix' || state.tab !== 'av') return;
     try { await loadMatrix(); } catch (err) { /* the next return tries again */ }
   }
   document.addEventListener('visibilitychange', checkRevision);

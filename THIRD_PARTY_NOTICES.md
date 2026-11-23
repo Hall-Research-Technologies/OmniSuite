@@ -27,8 +27,7 @@ component is missing from this file or from `third_party_licenses/`.
 
 Established from the contents of a packaged Windows build (the Python modules in
 its archive plus the extension modules and libraries beside them), and from
-`requirements-lock.txt`. Versions are those of the locked build environment;
-`cryptography` is 48.0.1 on Intel macOS only (see below).
+`requirements-lock.txt`. Versions are those of the locked build environment.
 
 | Component | Version | Declared licence | Licence text |
 |---|---|---|---|
@@ -73,9 +72,6 @@ Notes on this table:
 * **pyinstaller** and **pyinstaller-hooks-contrib** are build tools. What reaches
   the package is PyInstaller's bootloader and runtime modules, and one runtime
   hook from the hooks collection.
-* **cryptography** on Intel macOS is 48.0.1, because later releases publish no
-  prebuilt wheel for that platform. Its three licence files are identical to those
-  of 50.0.2, which are the ones bundled.
 * **pillow**'s wheel contains compiled image libraries; its `LICENSE` file is the
   statement that covers them.
 

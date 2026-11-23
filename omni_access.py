@@ -50,8 +50,10 @@ class Access(Enum):
 #: family can be represented later without reshaping the permission store.
 FEATURE_AV = "av"
 FEATURE_USB = "usb"
+FEATURE_MULTIVIEW = "multiview"
 
-FEATURES = (FEATURE_AV, FEATURE_USB)
+FEATURES = (FEATURE_AV, FEATURE_USB, FEATURE_MULTIVIEW)
+
 
 def user_features():
     """The capabilities a restricted account can hold, in display order."""
@@ -134,6 +136,12 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     # One permitted source to every display of a permitted group, one display at
     # a time through the same verified route. The group is its own grant.
     "/api/user/route_group": (Access.USER, FEATURE_AV),
+    # One source to several displays and groups at once. Each resolved display is
+    # authorised on its own: a display chosen individually needs its own grant, a
+    # display reached through a group needs that group's, and group membership
+    # never grants the display individually.
+    "/api/user/route_many": (Access.USER, FEATURE_AV),
+    "/api/user/unroute_many": (Access.USER, FEATURE_AV),
     # The routable grid, built for this account. USER and FEATURE_AV here; the
     # handler additionally requires the Matrix routing interface, because who
     # may use the grid is a separate decision from who may route at all.
@@ -143,6 +151,15 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     # source-and-destination onto that would misdescribe the hardware.
     "/api/user/usb_state": (Access.USER, FEATURE_USB),
     "/api/user/usb_route": (Access.USER, FEATURE_USB),
+    # Multiview. A restricted account may see the saved layouts an administrator
+    # assigned to it, choose which of the sources it was given feeds each window
+    # of one, and show it. Creating, editing, copying, deleting and installing
+    # layouts, groups of decoders, and the administrator's live switch all stay
+    # administrative: the design of a layout is never changed from here.
+    "/api/user/multiview_state": (Access.USER, FEATURE_MULTIVIEW),
+    "/api/user/multiview_layout": (Access.USER, FEATURE_MULTIVIEW),
+    "/api/user/multiview_show": (Access.USER, FEATURE_MULTIVIEW),
+    "/api/user/multiview_compose": (Access.USER, FEATURE_MULTIVIEW),
 
     # ---- administration of accounts -----------------------------------
     "/admin/users": (Access.ADMIN, None),
@@ -173,12 +190,16 @@ ROUTES: dict[str, tuple[Access, str | None]] = {
     # administrator's job, and because the response carries the hostname,
     # model and address a restricted account is deliberately never given.
     "/api/admin/aliases": (Access.ADMIN, None),
+    # The decoders that can be given Multiview layouts and the saved layouts on
+    # each, for assigning them to an account. Names and opaque ids only.
+    "/api/admin/multiviews": (Access.ADMIN, None),
     # Certificate management. Administrative, and the handler never
     # returns key material -- only what the certificate says about
     # itself.
     "/api/admin/certificate": (Access.ADMIN, None),
     "/api/admin/audit": (Access.ADMIN, None),
     "/api/remote_access": (Access.ADMIN, None),
+    "/api/remote_access/status": (Access.ADMIN, None),
 
     # ---- first-run bootstrap, local host only -------------------------
     # Creating the first administrator is reachable from the machine running

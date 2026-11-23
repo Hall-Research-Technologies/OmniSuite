@@ -84,7 +84,7 @@ RETENT = ["tests.test_activity_retention"]
 FW = ["tests.test_device_manager", "tests.test_firmware_status"]
 ADAPT = ["tests.test_adapter_ranking", "tests.test_adapter_default_js"]
 HTTPDEF = ["tests.test_remote_http_default"]
-UMV = ["tests.test_user_multiview_removed", "tests.test_user_projection"]
+UMV = ["tests.test_user_multiview", "tests.test_user_multiview_legacy", "tests.test_user_projection"]
 MVPROMPT = ["tests.test_matrix_route_prompt_js"]
 STATETEXT = ["tests.test_state_text_contrast_js"]
 
@@ -624,14 +624,21 @@ MUTATIONS = [
      "an existing certificate would be replaced, and its fingerprint changed, without asking",
      CERTUI),
     ("certid.replace-cancel-ignored", "ui/settings.js",
-     "      if (!go) return;\n      certGenerate.disabled = true;",
-     "      certGenerate.disabled = true;",
+     "    if (!go) return false;\n    if (certGenerate) certGenerate.disabled = true;",
+     "    if (certGenerate) certGenerate.disabled = true;",
      "Cancel on the replacement dialog would replace the certificate anyway",
      CERTUI),
+    # Re-aimed after the Settings/Remote Access parity merge: the dialog now also carries `defaultAction: 'cancel'`,
+    # so the anchor that ended at `danger: true` no longer matched.
     ("certid.replace-default-is-yes", "ui/settings.js",
-     "      confirmText: 'Replace',\n      danger: true,\n    }));\n  }\n\n  function certificateKind",
+     "      confirmText: 'Replace',\n      danger: true,\n      defaultAction: 'cancel',\n    }));\n  }\n\n  function certificateKind",
      "      confirmText: 'Replace',\n    }));\n  }\n\n  function certificateKind",
      "Enter on the replacement dialog would replace the certificate",
+     CERTUI),
+    ("certid.replace-default-action-dropped", "ui/settings.js",
+     "      confirmText: 'Replace',\n      danger: true,\n      defaultAction: 'cancel',\n    }));\n  }\n\n  function certificateKind",
+     "      confirmText: 'Replace',\n      danger: true,\n    }));\n  }\n\n  function certificateKind",
+     "the replacement dialog would stop stating Cancel as its default",
      CERTUI),
     ("certid.sentence-names-the-machine", "ui/settings.js",
      "    return addresses.join(', ') || (cert && cert.subject) || '';",
@@ -1127,9 +1134,11 @@ MUTATIONS = [
      '        flag = "0"',
      "the Remote Access tab would not be served with the page", LIFECYCLE),
     ("json.body-not-checked", "omni_remote_api.py",
-     "    return body if isinstance(body, dict) else {}",
-     "    return body or {}",
-     "a bare string body would be a 500 instead of a 400", MATRIX),
+     "    return omni_requests.json_object(request)\n",
+     "    try:\n        return omni_requests.json_object(request)\n"
+     "    except omni_requests.BadRequestBody:\n        return {}\n",
+     "a malformed body would act as an empty command instead of a 400",
+     MATRIX + ["tests.test_malformed_bodies"]),
     ("user.password-change-keeps-sessions", "omni_users.py",
      "            account.password_hash = hash_password(password)\n"
      "            account.password_changed_at = _now()\n"
@@ -1212,9 +1221,17 @@ MUTATIONS = [
      "        except ZeroDivisionError as exc:          # a member's failure is only its own",
      "an exception in one member would abort the others", GROUPS),
     ("group.partial-reported-as-ok", "omni_groups.py",
+     '            list(pool.map(one, range(len(items))))\n    routed = sum(1 for r in results if r.get("ok"))\n'
      '    return {"ok": bool(results) and routed == len(results),',
+     '            list(pool.map(one, range(len(items))))\n    routed = sum(1 for r in results if r.get("ok"))\n'
      '    return {"ok": bool(results) and routed > 0,',
-     "a half-routed room would be reported as complete", GROUPS),
+     "a half-routed room would be reported as complete", GROUPS + ["tests.test_route_many"]),
+    ("group.partial-reported-as-ok-sequential", "omni_groups.py",
+     '        results.append(dict(outcome, index=index))\n    routed = sum(1 for r in results if r.get("ok"))\n'
+     '    return {"ok": bool(results) and routed == len(results),',
+     '        results.append(dict(outcome, index=index))\n    routed = sum(1 for r in results if r.get("ok"))\n'
+     '    return {"ok": bool(results) and routed > 0,',
+     "a half-routed ordered room would be reported as complete", GROUPS),
     ("group.reply-leaks-members", "omni_remote_api.py",
      '            "total": summary["total"], "group": group["name"],',
      '            "total": summary["total"], "group": group["name"],\n'
@@ -1267,20 +1284,9 @@ MUTATIONS = [
      '    "/api/firmware_status/check": (Access.USER, None),',
      "a restricted account could trigger outbound firmware checks", GROUPS + GATE + FW),
 
-    # ---- unification pass: Multiview is not offered to restricted accounts
-    ("umv.feature-reintroduced", "omni_access.py",
-     'FEATURES = (FEATURE_AV, FEATURE_USB)',
-     'FEATURES = (FEATURE_AV, FEATURE_USB, "multiview")',
-     "restricted accounts could be offered Multiview again", UMV),
-    ("umv.unknown-feature-accepted", "omni_users.py",
-     '        allowed = omni_access.user_features()',
-     '        allowed = set(features)',
-     "an old stored multiview feature would keep acting after its control was removed", UMV),
-    ("umv.user-route-restored", "omni_access.py",
-     '    "/api/user/usb_route": (Access.USER, FEATURE_USB),',
-     '    "/api/user/usb_route": (Access.USER, FEATURE_USB),\n'
-     '    "/api/user/multiview_show": (Access.USER, None),',
-     "a restricted Multiview endpoint would be classified for a User again", UMV),
+    # ---- Multiview for restricted accounts: the three mutations that guarded "Multiview is not
+    # offered to a User" are retired -- that behaviour was deliberately reversed in V1.2.1. Their
+    # replacement is tools/mutate_user_multiview.py (assignment, identity, eligibility, lock re-check).
 
     # ---- unification pass: Activity retention ---------------------------
     ("retention.days-lower-bound", "omni_users.py",
@@ -1413,7 +1419,8 @@ MUTATIONS = [
     ('offline.matrix-click-not-refused', 'ui/matrix/matrix.js', '      if (unitIsOffline(encoderUnit) || unitIsOffline(decoderUnit)) {', '      if (false) {', 'a click that got past the disabled input would still route to a unit that is not answering', OFFLINEUI),
     ('offline.group-selection-includes-offline', 'ui/matrix/matrix.js', 'return routeCodecCompatible(encoderUnit, targetUnit) && !unitIsOffline(targetUnit);', 'return routeCodecCompatible(encoderUnit, targetUnit);', 'a group route would include decoders that are not answering', OFFLINEUI),
     ('offline.offline-is-not-structure', 'ui/matrix/matrix.js', "(unitIsOffline(e) ? 'off' : '')).join('\\u0002') + '\\u0003'", "'').join('\\u0002') + '\\u0003'", 'an encoder going offline would not redraw its column', OFFLINEUI),
-    ('offline.user-route-stays-enabled', 'ui/user/user.js', '      if (a && b && quiet) {', '      if (false) {', 'Route would stay enabled for a unit that went offline after it was chosen', USERPAGE),
+    ('offline.user-route-stays-enabled', 'ui/user/user.js', '        if (quietDisplay) {', '        if (false) {', 'Route would stay enabled for a display that went offline after it was chosen', USERPAGE),
+    ('offline.user-route-stays-enabled-source', 'ui/user/user.js', '        if (chosenSource && chosenSource.online === false) {', '        if (false) {', 'Route would stay enabled for a source that went offline after it was chosen', USERPAGE),
     ('version.current-not-green', 'ui/settings.js', "    line.className = 'update-status ok';", "    line.className = 'update-status';", 'a current version would not be shown as such', VERSION),
     ('version.update-not-red', 'ui/settings.js', "    line.className = 'update-status bad';", "    line.className = 'update-status warn';", 'an available update would not be red', VERSION),
     ('version.unknown-is-green', 'ui/settings.js', "  line.className = 'update-status warn';", "  line.className = 'update-status ok';", 'a check that could not be made would read as up to date', VERSION),
@@ -1423,7 +1430,7 @@ MUTATIONS = [
     ('matrix.group-route-ignores-interface', 'omni_remote_api.py', '            if not account.permissions.has_interface(interface):\n                return "interface_not_permitted"\n            if not account.permissions.may_use_source(source_id):\n                return "source_not_permitted"\n            if not account.permissions.may_control_group(group_id):', '            if not account.permissions.may_use_source(source_id):\n                return "source_not_permitted"\n            if not account.permissions.may_control_group(group_id):', 'a Standard-only account could route a group through the Matrix', MXSRV),
     ('matrix.state-ignores-interface', 'omni_remote_api.py', '        if not account.is_admin and not account.permissions.has_interface(\n                omni_users.INTERFACE_MATRIX):', '        if False:', 'any routing account was handed the Matrix grid', MXSRV),
     ('matrix.state-route-public', 'omni_access.py', '    "/api/user/matrix_state": (Access.USER, FEATURE_AV),', '    "/api/user/matrix_state": (Access.PUBLIC, None),', 'the grid would be served without a session', MXSRV),
-    ('matrix.breakaway-allowed-from-standard', 'omni_remote_api.py', '        if mode != "av" and interface != omni_users.INTERFACE_MATRIX:', '        if False:', 'video-only and audio-only routing would be open to the Standard interface', MXSRV),
+    ('matrix.breakaway-allowed-from-standard', 'omni_remote_api.py', '        if mode == "audio" and interface != omni_users.INTERFACE_MATRIX:', '        if False:', 'audio-only routing would be open to the Standard interface', MXSRV),
     ('matrix.mode-not-validated', 'omni_remote_api.py', '        if mode not in _ROUTE_MODES:', '        if False:', 'a mode nobody defined would be handed to the routing engine', MXSRV),
     ('matrix.interface-not-validated', 'omni_remote_api.py', '        if interface not in omni_users.INTERFACES:', '        if False:', 'an unknown interface name would be accepted and compared as text', MXSRV),
     ('matrix.unroute-needs-no-interface', 'omni_remote_api.py', '            if not account.permissions.interfaces:\n                return "interface_not_permitted"\n            if not account.permissions.may_control_destination(destination_id):', '            if not account.permissions.may_control_destination(destination_id):', 'an account holding no routing interface could still unroute a display', MXSRV),
@@ -1432,7 +1439,7 @@ MUTATIONS = [
     ('matrix.group-route-audited-as-standard', 'omni_remote_api.py', '            "matrix.route_group" if interface == omni_users.INTERFACE_MATRIX\n            else "route_group", actor=_current_account(), detail={', '            "route_group", actor=_current_account(), detail={', 'a Matrix group route would be indistinguishable from a Standard one in the activity log', MXSRV),
     ('matrix.migration-grants-matrix', 'omni_users.py', '            interfaces = (INTERFACE_STANDARD,)', '            interfaces = INTERFACES', 'every account that existed before the choice would gain the Matrix on upgrade', MXSRV),
     ('matrix.migration-removes-standard', 'omni_users.py', '            interfaces = (INTERFACE_STANDARD,)', '            interfaces = ()', 'every account that existed before the choice would lose Standard routing on upgrade', MXSRV),
-    ('matrix.empty-choice-repaired', 'omni_users.py', '                   raw["interfaces"] if isinstance(raw.get("interfaces"),\n                                                   (list, tuple)) else None)', '                   raw.get("interfaces") or None)', 'an account deliberately given neither interface would be quietly given Standard', MXSRV),
+    ('matrix.empty-choice-repaired', 'omni_users.py', '                   raw["interfaces"] if isinstance(raw.get("interfaces"),\n                                                   (list, tuple)) else None,', '                   raw.get("interfaces") or None,', 'an account deliberately given neither interface would be quietly given Standard', MXSRV),
     ('matrix.no-interface-allowed', 'omni_users.py', '    if role == ROLE_USER and permissions.has_feature("av") \\\n            and not permissions.interfaces:\n        return "choose at least one routing interface"', '    if False:\n        return "choose at least one routing interface"', 'an account could be saved able to route with no way to do it', MXSRV),
     ('matrix.api-resets-interfaces-when-absent', 'omni_remote_api.py', '            if held is not None and not (isinstance(raw, dict)', '            if False and not (isinstance(raw, dict)', 'a client that does not know about interfaces would reset them on every save', MXSRV),
     ('matrix.revision-ignores-interfaces', 'omni_projection.py', '             "i:" + ",".join(sorted(p.interfaces)),\n', '', 'an open page would never notice its Matrix was added or taken away', MXSRV),
@@ -1454,9 +1461,9 @@ MUTATIONS = [
     ('matrix.ui-route-claims-standard', 'ui/user/user.js', "      const common = {source: request.source, mode: request.mode, interface: 'matrix'};", "      const common = {source: request.source, mode: request.mode, interface: 'standard'};", 'a Matrix route would claim the Standard interface and be refused for a Matrix-only account', MXUI),
     ('matrix.ui-remembered-tab-is-a-grant', 'ui/user/user.js', "      chosen = allowed.indexOf(saved) !== -1 ? saved : (allowed[0] || 'none');", "      chosen = saved || (allowed[0] || 'none');", 'a remembered Matrix would be shown to an account that no longer holds it', MXUI),
     ('matrix.ui-stale-read-drawn', 'ui/user/user.js', '    if (mine !== matrixSeq) return;\n    if (status === 403) {', '    if (status === 403) {', 'a read that began before a route finished would be drawn over the newer one', MXUI),
-    ('matrix.ui-route-does-not-order-reads', 'ui/user/user.js', '    // Anything read before this finishes describes the world before it.\n    matrixSeq += 1;', '', 'a read in flight when a route begins would not be discarded', MXUI),
+    ('matrix.ui-route-does-not-order-reads', 'ui/user/user.js', '    // A read that began before this finishes describes the world before it.\n    matrixSeq += 1;', '', 'a read in flight when a route begins would not be discarded', MXUI),
     ('matrix.ui-tab-for-one-interface', 'ui/user/user.js', '    tabs.hidden = allowed.length < 2;\n    allowed.forEach((id) => {', '    tabs.hidden = false;\n    allowed.forEach((id) => {', 'an account with one interface would be shown a useless second tab', MXUI),
-    ('matrix.ui-route-bar-over-matrix', 'ui/user/user.js', "    const bar = !(state.tab === 'av' && (state.surface === 'matrix' || state.surface === 'none'));", '    const bar = true;', 'the Standard Route bar would sit under the Matrix and under the no-routing explanation', MXUI),
+    ('matrix.ui-route-bar-over-matrix', 'ui/user/user.js', "    const bar = state.tab === 'av' && !(state.surface === 'matrix' || state.surface === 'none');", "    const bar = state.tab === 'av';", 'the Standard Route bar would sit under the Matrix and under the no-routing explanation', MXUI),
     ('matrix.ui-no-routing-shows-standard', 'ui/user/user.js', "      chosen = allowed.indexOf(saved) !== -1 ? saved : (allowed[0] || 'none');", "      chosen = allowed.indexOf(saved) !== -1 ? saved : (allowed[0] || 'standard');", 'an account given neither interface would be shown Standard routing', MXUI),
     ('matrix.ui-fallback-overwrites-preference', 'ui/user/user.js', "      chosen = allowed.indexOf(saved) !== -1 ? saved : (allowed[0] || 'none');", "      chosen = allowed.indexOf(saved) !== -1 ? saved : (allowed[0] || 'none');\n      remember(REMEMBERED_INTERFACE, chosen);", "an automatic fallback would overwrite the operator's own choice", MXUI),
     ('drag.offline-display-accepts', 'ui/user/user.js', '      : state.destinations.some((d) => d.id === id && d.online !== false)),', '      : state.destinations.some((d) => d.id === id)),', 'a source could be dropped on a display that is not answering', MXUI),

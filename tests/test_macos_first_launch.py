@@ -153,8 +153,6 @@ class PackagingOrderTests(unittest.TestCase):
         dist.mkdir()
         if suffix == "windows":
             (dist / "OmniSuite.exe").write_bytes(b"x")
-        elif suffix == "linux":
-            (dist / "OmniSuite").mkdir()
         else:
             app = dist / "OmniSuite.app"
             (app / "Contents").mkdir(parents=True)
@@ -164,21 +162,20 @@ class PackagingOrderTests(unittest.TestCase):
                                   side_effect=lambda app, usage, name=None, ident=None, version=None: events.append(("declare", usage, name, ident))), \
                 mock.patch.object(build, "zip_macos_app", side_effect=lambda *a: events.append(("zip-mac",))), \
                 mock.patch.object(build, "add_macos_readme", side_effect=lambda *a: events.append(("readme",))), \
-                mock.patch.object(build, "zip_path", side_effect=lambda *a: events.append(("zip",))), \
-                mock.patch.object(build, "tar_path", side_effect=lambda *a: events.append(("tar",))):
+                mock.patch.object(build, "zip_path", side_effect=lambda *a: events.append(("zip",))):
             build.package_release(dist, suffix, "V1.0.0-test")
         return events
 
-    def test_both_mac_architectures_declare_zip_then_add_the_instructions(self):
-        for suffix in ("arm64", "x86_64"):
+    def test_the_mac_build_declares_zips_then_adds_the_instructions(self):
+        for suffix in ("arm64",):
             with self.subTest(suffix=suffix):
                 events = self.package(suffix)
                 self.assertEqual([e[0] for e in events], ["declare", "zip-mac", "readme"])
                 product = omni_release.active_product()
                 self.assertEqual(events[0][1:], (product.local_network_usage, product.name, product.bundle_identifier))
 
-    def test_windows_and_linux_get_no_macos_instructions_and_no_plist_edit(self):
-        for suffix, expected in (("windows", "zip"), ("linux", "tar")):
+    def test_windows_gets_no_macos_instructions_and_no_plist_edit(self):
+        for suffix, expected in (("windows", "zip"),):
             with self.subTest(suffix=suffix):
                 self.assertEqual([e[0] for e in self.package(suffix)], [expected])
 
@@ -324,7 +321,7 @@ class DocumentationTests(unittest.TestCase):
     def test_the_readme_no_longer_offers_right_click_open_as_the_way(self):
         text = _text("README.md")
         macos = text[text.index("- **macOS** —"):]
-        macos = macos[:macos.index("- **Ubuntu**")]
+        macos = macos[:macos.index("- **Not distributed**")]
         self.assertIn("Open Anyway", macos)
         self.assertIn("INSTALL_MACOS.md", macos)
 

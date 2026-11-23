@@ -13,14 +13,15 @@
 
 const SETTINGS_MODAL_HTML = `
 <div id="cfg_backdrop" class="modal-backdrop">
-  <div class="modal">
-    <h3>Configuration</h3>
-    <div class="settings-section" id="cfg_comm_section">
+  <div class="modal cfg-modal">
+    <h3>Settings</h3>
+    <div class="settings-section first" id="cfg_comm_section">
       <h4>Device Communication</h4>
     <div class="modal-row">
       <label>Username</label>
       <input id="cfg_username" type="text" value="admin"/>
     </div>
+    <form style="display:contents" onsubmit="return false" novalidate autocomplete="off">
     <div class="modal-row">
       <label>Password</label>
       <div style="display:flex;gap:6px;flex:1;">
@@ -28,6 +29,8 @@ const SETTINGS_MODAL_HTML = `
         <button id="cfg_pw_toggle" class="btn small secondary" type="button">👁️</button>
       </div>
     </div>
+    </form>
+    <form style="display:contents" onsubmit="return false" novalidate autocomplete="off">
     <div class="modal-row">
       <label>Fallback Password</label>
       <div style="display:flex;gap:6px;flex:1;">
@@ -35,6 +38,7 @@ const SETTINGS_MODAL_HTML = `
         <button id="cfg_fallback_pw_toggle" class="btn small secondary" type="button">👁️</button>
       </div>
     </div>
+    </form>
     <div class="modal-row">
       <label>WS Port</label>
       <select id="cfg_ws_port" style="width:140px;">
@@ -160,6 +164,11 @@ const SETTINGS_MODAL_HTML = `
           <div id="cfg_remote_status" class="update-status">Checking&hellip;</div>
           <div id="cfg_remote_url" class="small"
                style="margin-top:4px;color:var(--muted);"></div>
+          <!-- Direct links last handed out for another address. Advisory,
+               shown only while remote access is serving; names how many, never
+               a link. -->
+          <div id="cfg_remote_direct_notice" class="small"
+               style="margin-top:4px;color:var(--text);" hidden></div>
           <div id="cfg_remote_protect" class="small"
                style="margin-top:4px;color:var(--muted);" hidden>
             Assigned devices are protected from Clear Units while Remote Access
@@ -169,26 +178,32 @@ const SETTINGS_MODAL_HTML = `
       </div>
 
       <!-- Creating the first administrator. Only offered on the computer
-           running OmniSuite, because that is the only place it is reachable. -->
+           running OmniSuite, because that is the only place it is reachable.
+           Same wording and the same labelled rows as LumaSuite's. -->
       <div id="cfg_remote_bootstrap" hidden>
-        <div class="modal-row" style="align-items:flex-start;">
-          <label>First admin</label>
-          <div style="flex:1 1 auto;min-width:0;">
-            <div class="small" style="color:var(--muted);margin-bottom:6px;">
-              Remote access needs an administrator account. Create one here, on
-              this computer.
-            </div>
-            <input id="cfg_boot_user" type="text" placeholder="Username"
-                   autocapitalize="none" spellcheck="false"
-                   style="width:100%;margin-bottom:6px;">
-            <input id="cfg_boot_pw" type="password" placeholder="Password"
-                   autocomplete="new-password" style="width:100%;margin-bottom:6px;">
-            <input id="cfg_boot_pw2" type="password" placeholder="Confirm password"
-                   autocomplete="new-password" style="width:100%;margin-bottom:6px;">
-            <button id="cfg_boot_create" class="btn small secondary" type="button">
+        <div class="small" style="margin:0 0 6px;color:var(--muted);">
+          Create the administrator account first. It signs in with this username
+          and password, and is created only on this computer.
+        </div>
+        <form onsubmit="return false" novalidate autocomplete="off">
+          <div class="modal-row">
+            <label for="cfg_boot_user">Username</label>
+            <input id="cfg_boot_user" type="text" autocapitalize="none" spellcheck="false">
+          </div>
+          <div class="modal-row">
+            <label for="cfg_boot_pw">Password</label>
+            <input id="cfg_boot_pw" type="password" autocomplete="new-password">
+          </div>
+          <div class="modal-row">
+            <label for="cfg_boot_pw2">Confirm</label>
+            <input id="cfg_boot_pw2" type="password" autocomplete="new-password">
+          </div>
+          <div class="modal-row">
+            <label>&nbsp;</label>
+            <button id="cfg_boot_create" class="btn small" type="button">
               Create administrator</button>
           </div>
-        </div>
+        </form>
       </div>
 
       <div id="cfg_remote_controls" hidden>
@@ -729,6 +744,7 @@ function initConfig() {
     // carry a notice saying it is not.
     renderTransportNotice(remoteState);
     describeHttpsOption(remoteState);
+    renderDirectLinkNotice(remoteState);
 
     // Configured but unavailable is its own state. An installed system whose
     // network moved must not read as simply "off", or somebody re-enables it
@@ -751,7 +767,18 @@ function initConfig() {
     const mismatch = !!(remoteState.transport !== 'http' && cert.readable
                         && cert.matches_address === false);
 
-    if (remoteState.enabled) {
+    const movedWords = addressMovedStatus(remoteState);
+    if (remoteState.enabled && movedWords) {
+      // Listening on the old address while the adapter has a new one is neither "on" nor
+      // "off", and "ON" with nothing else would be a claim the operator's browser contradicts.
+      line.textContent = movedWords;
+      line.className = 'update-status remote-unavailable';
+      if (url) {
+        url.textContent = 'They use: ' + (remoteState.url || '') +
+          (remoteState.sessions ? '  \u00b7  ' + remoteState.sessions + ' signed in' : '');
+      }
+      if (toggle) toggle.textContent = 'Turn off remote access';
+    } else if (remoteState.enabled) {
       // Status has to describe what is actually happening. "ON — securely"
       // while the certificate names a different address is a claim the
       // operator's browser will contradict the moment they try it.
@@ -849,8 +876,8 @@ function initConfig() {
 
   // Creating a certificate when one already exists REPLACES it. The
   // fingerprint changes, so every browser that accepted the old one warns
-  // again, and a certificate the site supplied stops being the one in use (its
-  // files are not touched). Cancel takes the focus (danger), so Enter does not
+  // again. A certificate the site supplied is never replaced from here at all.
+  // Cancel takes the focus (danger), so Enter does not
   // replace anything. With nothing to replace nothing is asked, and if the
   // shared dialog is missing the replacement is refused rather than made
   // without the sentence that explains it.
@@ -859,10 +886,7 @@ function initConfig() {
     if (typeof window.omniConfirm !== 'function') return false;
     return !!(await window.omniConfirm({
       title: 'Replace this certificate?',
-      message: (existing.path_configured
-          ? 'OmniSuite will stop using the certificate you supplied (its '
-            + 'files are left where they are) and use a new one it creates. '
-          : 'The current certificate and its private key will be replaced. ')
+      message: 'The current certificate and its private key will be replaced. '
         + 'The new certificate names this computer and ' + address
         + ' and is valid for three years. Its fingerprint will be '
         + 'different, so browsers that accepted the old one will warn '
@@ -871,6 +895,7 @@ function initConfig() {
       summary: [{label: 'New certificate for', value: address}],
       confirmText: 'Replace',
       danger: true,
+      defaultAction: 'cancel',
     }));
   }
 
@@ -884,6 +909,37 @@ function initConfig() {
       return 'required';
     }
     return supplied ? 'custom' : 'self_signed';
+  }
+
+  // WHY a certificate is not usable, as the one decision the page can offer for
+  // it. Decided from the same description certificateKind reads, never from
+  // which Security option is selected.
+  //
+  //   missing    nothing exists                       -> Create Certificate
+  //   mismatch   OmniSuite's own, for another address -> Regenerate Certificate
+  //   unusable   OmniSuite's own, unreadable/expired  -> Regenerate Certificate
+  //   supplied   the site's own, whatever is wrong    -> never replaced; HTTP or Cancel
+  //
+  // null when the certificate is usable. A supplied certificate is never
+  // offered a replacement, because it belongs to the site.
+  function certificateProblem(cert, state) {
+    if (certificateKind(cert, state) !== 'required') return null;
+    if (cert && cert.generated === false) {
+      return {kind: 'supplied', reason: certificateReason(cert) || 'It cannot be used.'};
+    }
+    if (!cert || !cert.present) return {kind: 'missing', reason: ''};
+    const addressOnly = cert.readable && cert.usable !== false && !cert.expired
+      && cert.for_address && cert.matches_address === false;
+    if (addressOnly) return {kind: 'mismatch', reason: ''};
+    return {kind: 'unusable', reason: certificateReason(cert)};
+  }
+
+  function certificateReason(cert) {
+    if (!cert || !cert.present) return 'The certificate file is missing.';
+    if (!cert.readable) return cert.error || 'The certificate file could not be read.';
+    if (cert.expired) return 'The certificate has expired.';
+    if (cert.usable === false) return cert.unusable_reason || 'The certificate cannot be used.';
+    return '';
   }
 
   function httpsLabel(kind) {
@@ -948,6 +1004,33 @@ function initConfig() {
         + 'certificate covers.';
     }
     return '';
+  }
+
+  // Direct links that were handed out for an address remote access no longer
+  // serves. Derived by the server from the current listener on every state read;
+  // this only words it. Names a count and where to go, never a link.
+  function directLinkNoticeText(state) {
+    const stale = (state && state.direct_links_stale) || [];
+    if (!stale.length) return '';
+    return (stale.length === 1 ? 'One direct link was' : stale.length + ' direct links were')
+      + ' handed out for an earlier address. The links themselves still work at '
+      + 'the new address, but anyone holding the old one needs the new one. '
+      + 'Open Manage users, edit the account and use Copy link.';
+  }
+
+  function renderDirectLinkNotice(state) {
+    const node = document.getElementById('cfg_remote_direct_notice');
+    if (!node) return;
+    const text = state && state.enabled ? directLinkNoticeText(state) : '';
+    node.textContent = text;
+    node.hidden = !text;
+  }
+
+  // The computer's address moved while Remote Access was on. The server derives it from the live
+  // interface list on every read; this only words it. Nothing is rebound or reissued by it.
+  function addressMovedStatus(state) {
+    const moved = state && state.enabled && state.address_moved;
+    return moved && moved.message ? 'ON \u2014 ' + moved.message : '';
   }
 
   // The Security selector's HTTPS entry describes the certificate that exists.
@@ -1065,7 +1148,22 @@ function initConfig() {
     adapter.selectedIndex = best ? best.index : 0;
   }
 
-  async function loadRemoteAccess() {
+  // Tell the navigation what the server says Remote Access is now. The bar was
+  // drawn from the page's own copy of that answer and nothing updated it when
+  // the answer changed, so the tab appeared or vanished only after a refresh.
+  // `switched` marks a change this window just made (and verified by reading
+  // the state back); a plain re-read only corrects a stale bar and never moves
+  // the operator off the page they are on.
+  function announceRemoteState(switched) {
+    if (!remoteState || typeof remoteState.enabled !== 'boolean') return;
+    try {
+      window.dispatchEvent(new CustomEvent('omni:remote-access-changed', {
+        detail: {enabled: remoteState.enabled, leave: !!switched,
+                 switched: !!switched}}));
+    } catch (err) { /* an old browser keeps the bar it had */ }
+  }
+
+  async function loadRemoteAccess(switched) {
     try {
       const res = await fetch('/api/remote_access', {credentials: 'same-origin'});
       remoteState = res.ok ? await res.json() : null;
@@ -1073,6 +1171,7 @@ function initConfig() {
       remoteState = null;
     }
     renderRemoteAccess();
+    announceRemoteState(switched === true);
   }
 
   const bootCreate = document.getElementById('cfg_boot_create');
@@ -1159,6 +1258,7 @@ function initConfig() {
                    value: cert.subject || 'the configured certificate'}],
         confirmText: 'Remove',
         danger: true,
+        defaultAction: 'cancel',
       });
       if (!ok) return;
       certRemove.disabled = true;
@@ -1183,50 +1283,152 @@ function initConfig() {
     });
   }
 
+  // The existing certificate-creation flow, used by the Create button AND by
+  // the decision offered when Remote Access is turned on over HTTPS with no
+  // usable certificate -- one implementation, so the two cannot drift. Returns
+  // true only when a certificate was actually created.
+  async function createCertificateFlow(opts) {
+    // `confirmed` is passed by the decision offered when Remote Access is turned
+    // on: the operator has just chosen Create or Regenerate in a dialog that
+    // said what it does, so asking the same question again would be a second
+    // confirmation of one action. The button next to the certificate keeps its
+    // own replacement question.
+    const confirmed = !!(opts && opts.confirmed);
+    const adapter = document.getElementById('cfg_remote_adapter');
+    const chosen = adapter ? adapter.selectedOptions[0] : null;
+    // A certificate is made for an address, so this one wants the address
+    // the chosen adapter currently has.
+    const address = chosen ? (chosen.dataset.address || '') : '';
+    if (!address) {
+      window.toast && window.toast('Choose a network first', 'error');
+      return false;
+    }
+    // A certificate the site supplied is never replaced from here; the server
+    // refuses too, and saying so first spares a question that cannot lead
+    // anywhere. Removing it is its own, separate action.
+    if (remoteState && remoteState.certificate
+        && remoteState.certificate.generated === false
+        && (remoteState.certificate.present || remoteState.certificate.path_configured)) {
+      window.toast && window.toast('A certificate you supplied is in use. Remove '
+        + 'it first if you want OmniSuite to create one.', 'error');
+      return false;
+    }
+    // Creating a certificate when one already exists REPLACES it, which is a
+    // decision and is asked. The single-flight guard is taken before the
+    // dialog opens, so two clicks cannot stack two dialogs.
+    if (certGenerate && certGenerate.dataset.busy === '1') return false;
+    if (certGenerate) certGenerate.dataset.busy = '1';
+    let go = false;
+    try {
+      go = confirmed || await confirmCertificateReplacement(
+        (remoteState && remoteState.certificate) || {}, address);
+    } finally {
+      if (certGenerate) certGenerate.dataset.busy = '';
+    }
+    if (!go) return false;
+    if (certGenerate) certGenerate.disabled = true;
+    let created = false;
+    try {
+      const res = await fetch('/api/admin/certificate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        credentials: 'same-origin',
+        body: JSON.stringify({action: 'generate', address}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        created = true;
+        window.toast && window.toast('Certificate created', 'ok');
+      } else {
+        window.toast && window.toast(data.error || 'Could not create it', 'error');
+      }
+    } catch (err) {
+      window.toast && window.toast('Could not reach OmniSuite', 'error');
+    }
+    if (certGenerate) certGenerate.disabled = false;
+    await loadRemoteAccess();
+    return created;
+  }
+
   if (certGenerate) {
-    certGenerate.addEventListener('click', async () => {
-      const adapter = document.getElementById('cfg_remote_adapter');
-      const chosen = adapter ? adapter.selectedOptions[0] : null;
-      // A certificate is made for an address, so this one wants the address
-      // the chosen adapter currently has.
-      const address = chosen ? (chosen.dataset.address || '') : '';
-      if (!address) {
-        window.toast && window.toast('Choose a network first', 'error');
-        return;
+    certGenerate.addEventListener('click', () => { createCertificateFlow(); });
+  }
+
+  // Remote Access is being turned on over HTTPS and there is no certificate it
+  // can serve. This is a decision for the operator, never made for them: no
+  // certificate is created, and plaintext is never chosen, unless they say so
+  // here. Cancel changes nothing. Without the shared dialog the answer is
+  // refusal -- a browser string box cannot carry three choices.
+  // Resolves 'created', 'http' or 'cancel'.
+  async function askAboutMissingCertificate() {
+    if (typeof window.omniConfirm !== 'function') return 'cancel';
+    const problem = certificateProblem(
+      (remoteState || {}).certificate, remoteState) || {kind: 'missing', reason: ''};
+    const cert = (remoteState && remoteState.certificate) || {};
+    const address = cert.for_address || '';
+    const NOTHING = ' Nothing has been turned on.';
+    const HTTP = 'switch to HTTP, which does not encrypt sign-in details';
+    const FINGERPRINT = ' Regenerating changes its fingerprint, so browsers that '
+      + 'accepted the old one will warn again.';
+    let dialog;
+    if (problem.kind === 'supplied') {
+      // The site's own certificate is never replaced from here. The only
+      // choices are to leave things as they are or to give up on HTTPS, and
+      // the sentence says where the certificate itself is dealt with.
+      dialog = {
+        title: 'The certificate you supplied cannot be used',
+        message: problem.reason + ' OmniSuite never replaces a certificate you '
+          + 'supplied. Fix or remove it under Certificate in Settings, or ' + HTTP
+          + '.' + NOTHING,
+        confirmText: 'Change to HTTP',
+      };
+    } else if (problem.kind === 'mismatch') {
+      dialog = {
+        title: 'The certificate is for another network',
+        message: 'The certificate OmniSuite created is for '
+          + (certificateFor(cert) || 'another address') + ', not for '
+          + (address || 'this network') + '. Regenerate it for this network, or '
+          + HTTP + '.' + FINGERPRINT + NOTHING,
+        confirmText: 'Regenerate Certificate',
+        alternateText: 'Change to HTTP',
+      };
+    } else if (problem.kind === 'unusable') {
+      dialog = {
+        title: 'The certificate cannot be used',
+        message: problem.reason + ' Regenerate the certificate OmniSuite created, or '
+          + HTTP + '.' + FINGERPRINT + NOTHING,
+        confirmText: 'Regenerate Certificate',
+        alternateText: 'Change to HTTP',
+      };
+    } else {
+      dialog = {
+        title: 'HTTPS needs a certificate',
+        message: 'Remote access is set to HTTPS, but there is no usable '
+          + 'certificate for this network. Create one now, or ' + HTTP + '.' + NOTHING,
+        confirmText: 'Create Certificate',
+        alternateText: 'Change to HTTP',
+      };
+    }
+    // Cancel takes the focus: neither costly answer is made by pressing Enter.
+    // `defaultAction: 'cancel'` is what puts the focus on Cancel on Device Info, whose own dialog
+    // reads only that (on every other page `danger` does it). Both are passed, as the Restore
+    // confirmation does: measured in a real browser, `danger` alone left the costly button focused.
+    const answer = await window.omniConfirm({...dialog, danger: true, defaultAction: 'cancel'});
+    const toHttp = () => {
+      if (transportSelect) {
+        transportSelect.value = 'http';
+        transportSelect.dispatchEvent(new Event('change'));
       }
-      // Creating a certificate when one already exists REPLACES it, which is a
-      // decision and is asked. The single-flight guard is taken before the
-      // dialog opens, so two clicks cannot stack two dialogs.
-      if (certGenerate.dataset.busy === '1') return;
-      certGenerate.dataset.busy = '1';
-      let go = false;
-      try {
-        go = await confirmCertificateReplacement(
-          (remoteState && remoteState.certificate) || {}, address);
-      } finally {
-        certGenerate.dataset.busy = '';
-      }
-      if (!go) return;
-      certGenerate.disabled = true;
-      try {
-        const res = await fetch('/api/admin/certificate', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          credentials: 'same-origin',
-          body: JSON.stringify({action: 'generate', address}),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && data.ok) {
-          window.toast && window.toast('Certificate created', 'ok');
-        } else {
-          window.toast && window.toast(data.error || 'Could not create it', 'error');
-        }
-      } catch (err) {
-        window.toast && window.toast('Could not reach OmniSuite', 'error');
-      }
-      certGenerate.disabled = false;
-      await loadRemoteAccess();
-    });
+      return 'http';
+    };
+    if (answer === 'alternate') return toHttp();
+    if (answer === true) {
+      if (problem.kind === 'supplied') return toHttp();
+      // Create / Regenerate performs the certificate operation, and the enable
+      // workflow CONTINUES from the caller. This is not a dead end.
+      return (await createCertificateFlow({confirmed: true})) ? 'created' : 'cancel';
+    }
+    return 'cancel';
   }
 
   if (certSave) {
@@ -1261,6 +1463,14 @@ function initConfig() {
     });
   }
 
+  // The network, named the way the adapter list names it, with its address when
+  // the name does not already carry it.
+  function networkLabel(chosen, address) {
+    const text = chosen ? String(chosen.textContent || '').trim() : '';
+    if (!text) return address;
+    return !address || text.indexOf(address) >= 0 ? text : text + ' — ' + address;
+  }
+
   const remoteToggle = document.getElementById('cfg_remote_toggle');
   if (remoteToggle) {
     remoteToggle.addEventListener('click', async () => {
@@ -1275,27 +1485,49 @@ function initConfig() {
         window.toast && window.toast('Choose a network first', 'error');
         return;
       }
-      const transport = transportSelect ? transportSelect.value : 'http';
+      let transport = transportSelect ? transportSelect.value : 'http';
+      if (turningOn && transport === 'https'
+          && certificateKind((remoteState || {}).certificate, remoteState) === 'required') {
+        const decision = await askAboutMissingCertificate();
+        if (decision === 'cancel') return;
+        transport = transportSelect ? transportSelect.value : 'http';
+      }
       if (turningOn && window.omniConfirm) {
         const ok = await window.omniConfirm({
           title: 'Turn on remote access?',
+          // The same wording, row for row, as LumaSuite's: the question that is
+          // asked last has to read the same wherever it is asked.
           message: transport === 'http'
-            ? 'Other devices on this network will be able to reach OmniSuite '
-              + 'and sign in. Connections will NOT be encrypted, so sign-in '
-              + 'details can be read by anyone watching this network.'
+            ? 'Other devices on this network will be able to reach OmniSuite, '
+              + 'and sign-in details will cross the network in clear.'
             : 'Other devices on this network will be able to reach OmniSuite '
-              + 'and sign in over an encrypted connection.',
+              + 'and sign in.',
           summary: [{label: 'Network',
-                     value: (chosen ? chosen.textContent : address)},
+                     value: networkLabel(chosen, address)},
                     {label: 'Security',
-                     value: transport === 'http' ? 'Not encrypted' : 'HTTPS'}],
+                     value: transport === 'http' ? 'HTTP (not encrypted)'
+                                                  : 'HTTPS (encrypted)'}],
           confirmText: 'Turn on',
           // Plaintext is the costly answer, so Cancel takes the focus.
           danger: transport === 'http',
+          defaultAction: transport === 'http' ? 'cancel' : undefined,
         });
         if (!ok) return;
       }
       remoteToggle.disabled = true;
+      // Turning on reads the network adapters afresh (the decision is never made
+      // from a remembered list), which can take several seconds on Windows. Say
+      // so at once: a button that merely goes grey reads as "nothing happened",
+      // and a tab that arrives ten seconds later reads as "needs a refresh".
+      remoteToggle.setAttribute('aria-busy', 'true');
+      remoteToggle.textContent = turningOn ? 'Turning on…' : 'Turning off…';
+      const pendingLine = document.getElementById('cfg_remote_status');
+      if (pendingLine) {
+        pendingLine.textContent = turningOn
+          ? 'Turning on — checking the network. This can take several seconds.'
+          : 'Turning off…';
+      }
+      let switched = false;
       try {
         const res = await fetch('/api/remote_access', {
           method: 'POST',
@@ -1315,14 +1547,20 @@ function initConfig() {
         if (res.ok && data.ok) {
           window.toast && window.toast(
             turningOn ? 'Remote access is on' : 'Remote access is off', 'ok');
+          switched = true;
         } else {
+          // A refusal that says a certificate is needed (the page's copy of
+          // the certificate was stale and the server reads it afresh) leaves
+          // Remote Access exactly as it was; the reload below shows the
+          // current certificate state so the next press offers the decision.
           window.toast && window.toast(data.error || 'That did not work', 'error');
         }
       } catch (err) {
         window.toast && window.toast('Could not reach OmniSuite', 'error');
       }
       remoteToggle.disabled = false;
-      await loadRemoteAccess();
+      remoteToggle.removeAttribute('aria-busy');
+      await loadRemoteAccess(switched);
     });
   }
 
@@ -1759,6 +1997,10 @@ function renderUpdateStatus(data) {
       asset.hidden = false;
       asset.href = data.asset.url;
       asset.textContent = `Download ${data.asset.platform} release`;
+    } else if (data.package_message) {
+      // The release is real but there is nothing to download for this computer. Say so, and
+      // leave the release page link, rather than offering a build that would not run.
+      line.textContent = `${line.textContent}. ${data.package_message}`;
     }
     return;
   }

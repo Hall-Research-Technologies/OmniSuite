@@ -430,6 +430,14 @@ let switchResponse = {ok: true, status: 'VERIFIED', cell: 'top_left',
                       windows: [], unlocked_windows: [], regressed_windows: [],
                       released: [], kept: []};
 
+// Test controls for the assignment races: a held state read, and a gate every
+// switch request must pass through, so two operations can be genuinely in
+// flight at once rather than merely issued one after the other.
+let stateHold = null;
+let switchGate = null;
+let switchInFlight = 0;
+let switchMaxInFlight = 0;
+
 // Where the request log stood when a live drop was dispatched, so the checks
 // that follow it can look at exactly the requests it caused.
 let switchMark = 0;
@@ -489,6 +497,13 @@ function stubFetch(url, options) {
       return Promise.resolve({ok: false,
         json: () => Promise.resolve({ok: false, error: stateError})});
     }
+    // A read that is still in flight describes the world as it was when it was
+    // asked for, whatever the server has done since.
+    if (stateHold) {
+      const gate = stateHold; stateHold = null;
+      const snapshot = stateResponse;
+      return gate.then(() => json(snapshot));
+    }
     return json(stateResponse);
   }
   if (url.startsWith('/api/multiview/plan')) return json(makePlan(payload || {}));
@@ -504,7 +519,20 @@ function stubFetch(url, options) {
     return json(body);
   }
   if (url.startsWith('/api/route')) return json(routeResponse);
-  if (url.startsWith('/api/multiview/switch')) return json(switchResponse);
+  if (url.startsWith('/api/multiview/switch')) {
+    switchInFlight += 1; switchMaxInFlight = Math.max(switchMaxInFlight, switchInFlight);
+    const answer = typeof switchResponse === 'function'
+      ? switchResponse(payload) : switchResponse;
+    const reply = () => {
+      switchInFlight -= 1;
+      return answer.ok === false && answer.http
+        ? Promise.resolve({ok: false, status: answer.http,
+                           json: () => Promise.resolve(answer)})
+        : json(answer);
+    };
+    if (switchGate) { const gate = switchGate; return gate().then(reply); }
+    return reply();
+  }
   if (url.startsWith('/api/multiview/show')) return json(showResponse);
   if (url.startsWith('/api/multiview/delete')) return json(deleteResponse);
   return json({ok: false, error: 'unexpected url ' + url});
@@ -1440,6 +1468,40 @@ async function selectDecoder(ip) {
       assertEqual(confirmCalls, 0, 'a dialog appeared');
       assertEqual(switches[switches.length - 1].payload.cell, 'top_left',
                   'the wrong window was switched');
+    });
+
+  await check('a live drop never withdraws the workspace or navigates the page',
+    async () => {
+      // Human testing: after dragging a source onto a window the page went
+      // blank for as long as the post-switch re-read took, and read as a
+      // reload. The re-read used to announce "Loading" and hide the workspace.
+      // Watch every visibility change of the workspace and of the page as the
+      // drop runs end to end, and require the canvas to stay on screen.
+      await openLive();
+      const workspace = REGISTRY.get('mv_workspace');
+      const seen = [];
+      let current = workspace.hidden;
+      Object.defineProperty(workspace, 'hidden', {
+        configurable: true, get() { return current; },
+        set(value) { current = value; seen.push(value); }});
+      const stateReads = () => requests.filter(r =>
+        r.url.startsWith('/api/multiview/state')).length;
+      const readsBefore = stateReads();
+      let prevented = 0;
+      windowBoxes()[0].dispatch('drop', {
+        preventDefault() { prevented += 1; },
+        dataTransfer: {getData: () => '192.0.2.24'}});
+      await flush();
+      delete workspace.hidden;
+      workspace.hidden = current;
+      assert(prevented >= 1,
+        'the drop did not cancel the browser default (navigation to the dragged item)');
+      assert(stateReads() > readsBefore,
+        'the drop did not re-read the decoder, so this test proves nothing');
+      assert(!seen.includes(true),
+        'the workspace was withdrawn during the drop: ' + JSON.stringify(seen));
+      assertEqual(hidden('mv_workspace'), false, 'the workspace is hidden after the drop');
+      assert(windowBoxes().length > 0, 'the canvas has no windows after the drop');
     });
 
   await check('a rolled-back switch puts the window back to what is on screen',
@@ -2525,6 +2587,49 @@ async function selectDecoder(ip) {
            + REGISTRY.get('mv_name').value);
     assert(!REGISTRY.get('mv_save').disabled,
            'a failed save left Save disabled, as though there were nothing to save');
+  });
+
+  // A decoder that is compositing one Multiview while the operator edits another
+  // saved one: every in-place re-read the operator caused must stay on the layout
+  // they were editing. Opening a decoder is the only time the live one outranks.
+  async function editInactiveWhileAnotherIsLive() {
+    confirmAnswer = {ok: true, suppress: false};
+    stateResponse = stateBody([
+      Object.assign({}, EXISTING_VIEW, {name: 'multiviewLive', selected_on_output: true}),
+      Object.assign({}, EXISTING_VIEW, {selected_on_output: false}),
+    ]);
+    await selectDecoder('192.0.2.10');
+    assert(REGISTRY.get('mv_target').value === 'multiviewLive',
+           'precondition: opening the decoder shows the live Multiview: '
+           + REGISTRY.get('mv_target').value);
+    REGISTRY.get('mv_target').value = 'multiview2x2';
+    REGISTRY.get('mv_target').dispatch('change');
+    await flush();
+    assert(REGISTRY.get('mv_target').value === 'multiview2x2',
+           'precondition: the operator chose the inactive layout');
+  }
+
+  await check('saving an inactive layout does not jump to the live one', async () => {
+    await editInactiveWhileAnotherIsLive();
+    REGISTRY.get('mv_name').value = 'Edited' + Math.random().toString(16).slice(2, 6);
+    REGISTRY.get('mv_name').dispatch('input');
+    await flush();
+    REGISTRY.get('mv_save').dispatch('click');
+    await flush();
+    await flush();
+    assert(REGISTRY.get('mv_target').value === 'multiview2x2',
+           'Save moved the page to ' + REGISTRY.get('mv_target').value
+           + ' and discarded the layout being edited');
+    assert(!hidden('mv_workspace'), 'the workspace was withdrawn by Save');
+  });
+
+  await check('Reload decoder does not jump to the live layout either', async () => {
+    await editInactiveWhileAnotherIsLive();
+    REGISTRY.get('mv_reload').dispatch('click');
+    await flush();
+    await flush();
+    assert(REGISTRY.get('mv_target').value === 'multiview2x2',
+           'Reload moved the page to ' + REGISTRY.get('mv_target').value);
   });
 
   // ---- §2/§3 creating is not editing ------------------------------------
@@ -4006,8 +4111,9 @@ async function selectDecoder(ip) {
 
   await check('the notice explains when any of it happens at all', () => {
     const text = noticeBody();
-    assert(/not on the display|inactive/i.test(text)
-           && /changes nothing|nothing on any encoder/i.test(text),
+    assert(/changes nothing on any encoder/i.test(text)
+           && /saving an edit of the Multiview that is on the display/i.test(text)
+           && /until you press Show on Display/i.test(text),
       'the notice does not say that designing a preset changes nothing: '
       + text.slice(0, 600));
     assert(/Show on Display/i.test(text),
@@ -4162,6 +4268,593 @@ async function selectDecoder(ip) {
     const unique = [...new Set(keys.map(k => k.toLowerCase()))];
     assert(unique.length <= 4,
       'a new notice preference appeared: ' + unique.join(', '));
+  });
+
+  // =======================================================================
+  // Window assignment: size rule, X, rapid operations, stale reads
+  // =======================================================================
+  //
+  // Human testing (release blockers F and G): a source that was already in a
+  // middle-sized window was dragged into the large one. The preview showed it
+  // in both, and after a refresh the assignment had not taken. The page had
+  // accepted a pair of assignments the server cannot hold -- one Encoder 2 has
+  // one scaler -- and drew its own idea of the preset instead of the stored one.
+  // The X had the matching defect: it removed the box but left the picture, and
+  // under rapid use lost state because every click raced the one before it.
+  //
+  // These tests drive the real module with a scripted dialog and a gated fetch,
+  // so "Cancel makes no request" and "two operations are never in flight
+  // together" are measurements rather than readings of the source.
+
+  const assignStats = {sizeConfirms: 0, sizeCancels: 0, sameSize: 0, xTests: 0,
+                       rapid: 0, stale: 0, divergence: 0};
+  const HOSTS = {'192.0.2.20': 'enc-test-01', '192.0.2.24': 'new-wp-01'};
+  function sub(cell, w, h, ip, n) {
+    return {name: cell + ' (' + w + 'x' + h + ')', cell, width: w, height: h,
+            x: 0, y: 0, anchor: 'top left', ip_input: ip ? 'ip_input' + (2 * n) : '',
+            multicast: ip ? '233.252.0.' + (20 + n) : '', multicast_port: ip ? 5004 : null,
+            stream: ip ? '233.252.0.' + (20 + n) + ':5004' : '', encoder_index: 2,
+            source: ip ? {ip, hostname: HOSTS[ip], resolved_from: 'subscription'} : null,
+            source_origin: ip ? 'subscription' : 'none', subscribed: !!ip,
+            ip_input_enabled: !!ip, packets: ip ? 1000 : 0, diverged: false,
+            saved_source_ip: ip || null, health: ip ? 'live' : '',
+            input_active: !!ip, output_active: true};
+  }
+  function pipView(on, map, extra) {
+    return Object.assign({
+      name: 'pipview', width: 1920, height: 1080, layout: 'pip-bottom-right',
+      layout_label: 'PiP — Bottom Right', layout_source: 'stored',
+      layout_diverged: false, canvas: '1920x1080', selected_on_output: !!on,
+      subframes: [sub('main', 1920, 1080, map.main, 1),
+                  sub('bottom_right', 640, 360, map.bottom_right, 2)]}, extra || {});
+  }
+  function quadView(on, map) {
+    const cells = ['top_left', 'top_right', 'bottom_left', 'bottom_right'];
+    return Object.assign({}, EXISTING_VIEW, {
+      selected_on_output: !!on,
+      subframes: cells.map((c, i) => sub(c, 960, 544, map[c], i + 1))});
+  }
+  async function openView(view) {
+    stateResponse = stateBody([view]);
+    await selectDecoder('192.0.2.10');
+    REGISTRY.get('mv_target').value = view.name;
+    REGISTRY.get('mv_target').dispatch('change');
+    await flush();
+  }
+  const dropIp = (box, ip) => box.dispatch('drop', {dataTransfer: {getData: () => ip}});
+  const xButton = (box) => box.children.filter(c => c._classes.has('mv-window-clear'))[0];
+  const switchesSince = (mark) => requests.slice(mark)
+    .filter(r => r.url.startsWith('/api/multiview/switch'));
+  const writesSince = (mark) => requests.slice(mark).filter(r => r.method !== 'GET'
+    && !r.url.startsWith('/api/multiview/plan'));
+  const hasPicture = (box) => box._classes.has('has-shot')
+    || box.findAll(c => c.tagName === 'IMG').length > 0;
+  const isEmptyBox = (box) => box._classes.has('is-empty');
+  function gated() {
+    const gates = [];
+    switchGate = () => new Promise(resolve => gates.push(resolve));
+    return gates;
+  }
+  async function settleGate(gates, index) {
+    while (!gates[index]) await new Promise(r => setImmediate(r));
+    gates[index]();
+    await flush();
+  }
+  function resetAssignRig() {
+    switchGate = null; stateHold = null; confirmAnswer = true; confirmCalls = 0;
+    switchInFlight = 0; switchMaxInFlight = 0;
+    switchResponse = {ok: true, status: 'VERIFIED', cell: 'top_left',
+                      source: '192.0.2.24', saved: true, steps: [], windows: [],
+                      unlocked_windows: [], regressed_windows: [], released: [], kept: []};
+  }
+
+  await check('size rule: a different-size drop asks, with Cancel as the default',
+    async () => {
+      resetAssignRig();
+      await openView(pipView(false, {main: '192.0.2.20'}));
+      const mark = requests.length;
+      confirmAnswer = false;
+      dropIp(windowBoxes()[1], '192.0.2.20');
+      await flush();
+      assertEqual(confirmCalls, 1, 'a different-size drop did not ask');
+      assertEqual(lastConfirmOptions.message,
+        'This source is currently assigned to another window with a different '
+        + 'size. Replace that assignment?', 'the question is not the specified one');
+      assertEqual(lastConfirmOptions.cancelDefault, true,
+        'Cancel is not the default answer');
+      assert(!lastConfirmOptions.danger, 'the shared dialog was misused as a danger prompt');
+      assertEqual(writesSince(mark).length, 0, 'asking made a write');
+      assignStats.sizeConfirms += 1;
+    });
+
+  await check('size rule: Cancel leaves BOTH assignments exactly as they were',
+    () => {
+      const [main, inset] = windowBoxes();
+      assert(main.deepText.includes('enc-test-01'), 'the original assignment was lost');
+      assert(!hasPicture(inset) && isEmptyBox(inset),
+        'Cancel still put the source into the new window');
+      assertEqual(xButton(inset), undefined, 'the new window gained an X');
+      assignStats.sizeCancels += 1;
+    });
+
+  await check('size rule: Replace moves it -- the old window is emptied, the new one filled',
+    async () => {
+      confirmAnswer = true;
+      dropIp(windowBoxes()[1], '192.0.2.20');
+      await flush();
+      const [main, inset] = windowBoxes();
+      assert(inset.deepText.includes('enc-test-01'), 'the new window did not take it');
+      assert(isEmptyBox(main), 'the source is still drawn in the old window');
+      assert(!hasPicture(main), 'the old window still carries the source’s picture');
+      assert(/unsaved/i.test(main.deepText) && /unsaved/i.test(inset.deepText),
+        'neither window says it is an unsaved edit');
+      assertEqual(REGISTRY.get('mv_save').disabled, false,
+        'a real change did not enable Save');
+      assignStats.sizeConfirms += 1;
+    });
+
+  await check('size rule: equal-size windows share a source without asking',
+    async () => {
+      resetAssignRig();
+      await openView(quadView(false, {top_left: '192.0.2.20'}));
+      dropIp(windowBoxes()[1], '192.0.2.20');
+      dropIp(windowBoxes()[2], '192.0.2.20');
+      await flush();
+      assertEqual(confirmCalls, 0, 'a same-size duplicate asked a question');
+      const text = windowBoxes().map(b => b.deepText.includes('enc-test-01'));
+      assertEqual(text.slice(0, 3).join(), 'true,true,true', 'the shared source is missing');
+      assignStats.sameSize += 1;
+    });
+
+  await check('size rule: the comparison is the window size, not the layout label',
+    () => {
+      const source = fs.readFileSync(SOURCE, 'utf8').replace(/\/\/.*$/gm, '');
+      const fn = source.slice(source.indexOf('function sizeOf('),
+                              source.indexOf('function windowNumber('));
+      assert(/width \+ 'x' \+ w\.height/.test(fn) || /w\.width/.test(fn),
+        'the size is not read from the window geometry');
+      assert(!/layout\.id|label/.test(fn), 'the size rule looks at a layout name');
+    });
+
+  await check('X on an inactive preset removes the picture as well as the box',
+    async () => {
+      resetAssignRig();
+      await openView(quadView(false, {top_left: '192.0.2.20', top_right: '192.0.2.24'}));
+      const before = windowBoxes()[0];
+      assert(hasPicture(before),
+        'precondition: the assigned window shows no picture, so this proves nothing');
+      xButton(before).dispatch('click');
+      await flush();
+      const after = windowBoxes()[0];
+      assert(isEmptyBox(after), 'the window is not drawn empty after X');
+      assert(!hasPicture(after), 'X removed the box but the picture remained');
+      assert(!after.deepText.includes('enc-test-01'),
+        'X removed the label but the stored source was drawn back in: ' + after.deepText);
+      assertEqual(xButton(after), undefined, 'an empty window still has an X');
+      assertEqual(windowBoxes()[1].deepText.includes('new-wp-01'), true,
+        'X on one window disturbed another');
+      assertEqual(REGISTRY.get('mv_save').disabled, false, 'X did not make the preset dirty');
+      assignStats.xTests += 1;
+    });
+
+  await check('unassign then assign the same source to a different-size window needs no question',
+    async () => {
+      resetAssignRig();
+      await openView(pipView(false, {main: '192.0.2.20'}));
+      xButton(windowBoxes()[0]).dispatch('click');
+      await flush();
+      dropIp(windowBoxes()[1], '192.0.2.20');
+      await flush();
+      assertEqual(confirmCalls, 0, 'the source was still treated as being in the old window');
+      assert(windowBoxes()[1].deepText.includes('enc-test-01'), 'the new assignment did not take');
+      assignStats.xTests += 1;
+    });
+
+  await check('repeated assign/unassign loops end where they should',
+    async () => {
+      resetAssignRig();
+      await openView(quadView(false, {}));
+      for (let n = 0; n < 12; n += 1) {
+        dropIp(windowBoxes()[n % 4], n % 2 ? '192.0.2.24' : '192.0.2.20');
+        if (n % 3 === 2) xButton(windowBoxes()[(n + 1) % 4]) &&
+          xButton(windowBoxes()[(n + 1) % 4]).dispatch('click');
+      }
+      for (let w = 0; w < 4; w += 1) {
+        const b = windowBoxes()[w];
+        if (xButton(b)) xButton(b).dispatch('click');
+      }
+      await flush();
+      assert(windowBoxes().every(isEmptyBox), 'a loop left a window assigned');
+      assert(windowBoxes().every(b => !hasPicture(b)), 'a loop left a picture behind');
+      assignStats.xTests += 1;
+    });
+
+  // ---- the Multiview on the display -------------------------------------
+
+  await check('live size rule: Replace is ONE request that empties the old window',
+    async () => {
+      resetAssignRig();
+      await openView(pipView(true, {main: '192.0.2.20'}));
+      stateResponse = stateBody([pipView(true, {bottom_right: '192.0.2.20'})]);
+      confirmAnswer = true;
+      const mark = requests.length;
+      dropIp(windowBoxes()[1], '192.0.2.20');
+      await flush();
+      const sent = switchesSince(mark);
+      assertEqual(sent.length, 1, 'the replacement was not one operation');
+      assertEqual(sent[0].payload.cell, 'bottom_right', 'wrong window');
+      assertEqual(sent[0].payload.source, '192.0.2.20', 'wrong source');
+      assertEqual(JSON.stringify(sent[0].payload.clear_cells), '["main"]',
+        'the old window was not named for emptying');
+      assert(sent[0].payload.op_id, 'the operation carries no id');
+      const [main, inset] = windowBoxes();
+      assert(inset.deepText.includes('enc-test-01'), 'the inset did not take the source');
+      assert(isEmptyBox(main) && !hasPicture(main), 'the old window still shows it');
+      assignStats.sizeConfirms += 1;
+    });
+
+  await check('live size rule: Cancel sends nothing and changes nothing',
+    async () => {
+      resetAssignRig();
+      await openView(pipView(true, {main: '192.0.2.20'}));
+      confirmAnswer = false;
+      const mark = requests.length;
+      dropIp(windowBoxes()[1], '192.0.2.20');
+      await flush();
+      assertEqual(confirmCalls, 1, 'no question was asked');
+      assertEqual(switchesSince(mark).length, 0, 'Cancel still reached the decoder');
+      assert(windowBoxes()[0].deepText.includes('enc-test-01'), 'Cancel changed the old window');
+      assert(isEmptyBox(windowBoxes()[1]), 'Cancel changed the new window');
+      assignStats.sizeCancels += 1;
+    });
+
+  await check('a refused switch is not presented as accepted -- page, picture and decoder agree',
+    async () => {
+      resetAssignRig();
+      await openView(pipView(true, {main: '192.0.2.20'}));
+      switchResponse = {ok: false, http: 409, status: 'REFUSED',
+        error: '192.0.2.24 is assigned to windows that need different sizes'};
+      dropIp(windowBoxes()[0], '192.0.2.24');
+      await flush();
+      const main = windowBoxes()[0];
+      assert(main.deepText.includes('enc-test-01'), 'the refused source is on screen');
+      assert(!main.deepText.includes('new-wp-01'), 'a refused source was drawn as accepted');
+      assert(xButton(main) && !xButton(main).disabled, 'the window did not return to usable');
+      assert(/FAILED|different sizes/i.test(REGISTRY.get('mv_status').textContent),
+        'the refusal was not reported: ' + REGISTRY.get('mv_status').textContent);
+      assertEqual(windowBoxes()[0]._classes.has('switching'), false, 'still pending after refusal');
+      assignStats.divergence += 1;
+    });
+
+  await check('live X is not visual-only: it asks the decoder, and the picture goes only when it agrees',
+    async () => {
+      resetAssignRig();
+      await openView(quadView(true, {top_left: '192.0.2.20', top_right: '192.0.2.24'}));
+      const gates = gated();
+      const mark = requests.length;
+      xButton(windowBoxes()[0]).dispatch('click');
+      await flush();
+      const box = windowBoxes()[0];
+      assertEqual(switchesSince(mark).length, 1, 'X sent no request');
+      assertEqual(switchesSince(mark)[0].payload.source, '', 'X did not ask to empty the window');
+      assert(box.deepText.includes('enc-test-01'),
+        'the window was emptied before the decoder agreed');
+      assert(/Clearing/.test(box.deepText), 'no per-window pending marker');
+      assertEqual(xButton(box).disabled, true, 'a pending window can be clicked again');
+      stateResponse = stateBody([quadView(true, {top_right: '192.0.2.24'})]);
+      await settleGate(gates, 0);
+      switchGate = null;
+      const done = windowBoxes()[0];
+      assert(isEmptyBox(done) && !hasPicture(done), 'the window did not empty once confirmed');
+      assertEqual(xButton(done), undefined, 'an empty window kept its X');
+      assertEqual(REGISTRY.get('mv_workspace').hidden, false, 'the page was withdrawn');
+      assignStats.xTests += 1;
+    });
+
+  await check('a failed X leaves the window assigned, with its X',
+    async () => {
+      resetAssignRig();
+      await openView(quadView(true, {top_left: '192.0.2.20'}));
+      switchResponse = {ok: false, status: 'FAILED - ROLLED BACK', error: 'never locked',
+                        restored_source: '192.0.2.20', steps: [], rollback: []};
+      xButton(windowBoxes()[0]).dispatch('click');
+      await flush();
+      const box = windowBoxes()[0];
+      assert(box.deepText.includes('enc-test-01'), 'a failed clear emptied the window');
+      assert(xButton(box) && !xButton(box).disabled, 'the X did not come back');
+      assignStats.divergence += 1;
+    });
+
+  await check('rapid X on every window: one at a time, each pending on its own, none lost',
+    async () => {
+      resetAssignRig();
+      const map = {top_left: '192.0.2.20', top_right: '192.0.2.24',
+                   bottom_left: '192.0.2.20', bottom_right: '192.0.2.24'};
+      await openView(quadView(true, map));
+      const gates = gated();
+      const mark = requests.length;
+      for (let w = 0; w < 4; w += 1) xButton(windowBoxes()[w]).dispatch('click');
+      // A second click on a window that is already pending does nothing.
+      xButton(windowBoxes()[0]).dispatch('click');
+      await flush();
+      assertEqual(switchInFlight, 1, 'more than one operation is in flight');
+      assertEqual(switchesSince(mark).length, 1, 'the queue did not hold the rest back');
+      const marks = windowBoxes().map(b => /Clearing|Queued/.test(b.deepText) ? 1 : 0).join('');
+      assertEqual(marks, '1111', 'a window has no pending marker: ' + marks);
+      assert(/Clearing/.test(windowBoxes()[0].deepText), 'the running one is not marked');
+      assert(/Queued/.test(windowBoxes()[3].deepText), 'a waiting one is not marked');
+      assertEqual(REGISTRY.get('mv_stage').hidden, false, 'the page was disabled');
+      // Windows that are not pending stay usable: here every window is, so
+      // check the page-level actions waited instead.
+      assertEqual(REGISTRY.get('mv_delete').disabled, true, 'Delete is available mid-operation');
+      stateResponse = stateBody([quadView(true, {})]);
+      await settleGate(gates, 0);
+      // The first clear is confirmed; the decoder has not been re-read yet and
+      // its own subscription for that window is still on record. It must not
+      // be drawn back in while the rest of the queue runs.
+      assert(isEmptyBox(windowBoxes()[0]) && !hasPicture(windowBoxes()[0]),
+        'a confirmed clear was drawn back in from the stale subscription');
+      for (let g = 1; g < 4; g += 1) await settleGate(gates, g);
+      switchGate = null;
+      assertEqual(switchMaxInFlight, 1, 'two operations overlapped');
+      const sent = switchesSince(mark).map(r => r.payload.cell).join();
+      assertEqual(sent, 'top_left,top_right,bottom_left,bottom_right',
+        'a click was lost or reordered: ' + sent);
+      assert(windowBoxes().every(isEmptyBox), 'a window kept its source after X');
+      assert(windowBoxes().every(b => !hasPicture(b)), 'a picture outlived its window');
+      assertEqual(REGISTRY.get('mv_delete').disabled, false, 'the page never came back');
+      assignStats.rapid += 1;
+    });
+
+  await check('X then an immediate drag of the same source to a different-size window',
+    async () => {
+      resetAssignRig();
+      await openView(pipView(true, {main: '192.0.2.20'}));
+      const gates = gated();
+      const mark = requests.length;
+      xButton(windowBoxes()[0]).dispatch('click');
+      dropIp(windowBoxes()[1], '192.0.2.20');
+      await flush();
+      assertEqual(confirmCalls, 0, 'the queued clear was not taken into account');
+      stateResponse = stateBody([pipView(true, {bottom_right: '192.0.2.20'})]);
+      await settleGate(gates, 0);
+      await settleGate(gates, 1);
+      switchGate = null;
+      const sent = switchesSince(mark).map(r => r.payload.cell + '=' + r.payload.source);
+      assertEqual(sent.join(), 'main=,bottom_right=192.0.2.20', 'order was lost: ' + sent);
+      assert(windowBoxes()[1].deepText.includes('enc-test-01'), 'the new assignment is missing');
+      assert(isEmptyBox(windowBoxes()[0]), 'the cleared window refilled');
+      assertEqual(switchMaxInFlight, 1, 'operations overlapped');
+      assignStats.rapid += 1;
+    });
+
+  await check('a drag then an immediate X on the same window ends empty',
+    async () => {
+      resetAssignRig();
+      await openView(quadView(true, {top_left: '192.0.2.20'}));
+      const gates = gated();
+      const mark = requests.length;
+      dropIp(windowBoxes()[1], '192.0.2.24');
+      await flush();
+      // The drop is pending; its X is a queued second operation on that window.
+      assertEqual(xButton(windowBoxes()[1]), undefined, 'precondition: no X before the source lands');
+      stateResponse = stateBody([quadView(true, {top_left: '192.0.2.20', top_right: '192.0.2.24'})]);
+      await settleGate(gates, 0);
+      xButton(windowBoxes()[1]).dispatch('click');
+      await flush();
+      stateResponse = stateBody([quadView(true, {top_left: '192.0.2.20'})]);
+      await settleGate(gates, 1);
+      switchGate = null;
+      const sent = switchesSince(mark).map(r => r.payload.cell + '=' + r.payload.source);
+      assertEqual(sent.join(), 'top_right=192.0.2.24,top_right=', 'wrong sequence: ' + sent);
+      assert(isEmptyBox(windowBoxes()[1]), 'the window kept the source after X');
+      assert(windowBoxes()[0].deepText.includes('enc-test-01'), 'X disturbed another window');
+      assignStats.rapid += 1;
+    });
+
+  await check('a stale read that lands after a newer operation is discarded',
+    async () => {
+      resetAssignRig();
+      await openView(quadView(true, {top_left: '192.0.2.20', top_right: '192.0.2.24'}));
+      // 1. A change completes; the re-read that follows is held, and it will
+      //    describe the world as it was before that change.
+      stateResponse = stateBody([quadView(true, {top_left: '192.0.2.20', top_right: '192.0.2.24'})]);
+      let release; stateHold = new Promise(resolve => { release = resolve; });
+      dropIp(windowBoxes()[0], '192.0.2.24');
+      await flush();
+      assert(windowBoxes()[0].deepText.includes('new-wp-01'), 'precondition: the switch did not apply');
+      // 2. The operator makes another change while that read is outstanding.
+      stateResponse = stateBody([quadView(true, {top_left: '192.0.2.20', top_right: '192.0.2.24'})]);
+      const gates = gated();
+      dropIp(windowBoxes()[2], '192.0.2.24');
+      await flush();
+      // 3. The stale read arrives. It says top_left holds the OLD source.
+      release();
+      await new Promise(r => setImmediate(r));
+      await new Promise(r => setImmediate(r));
+      const early = windowBoxes()[0].deepText;
+      assert(early.includes('new-wp-01') && !early.includes('enc-test-01'),
+        'a stale read reverted an accepted switch: ' + early);
+      stateResponse = stateBody([quadView(true, {top_left: '192.0.2.24', top_right: '192.0.2.24', bottom_left: '192.0.2.24'})]);
+      await settleGate(gates, 0);
+      switchGate = null;
+      assert(windowBoxes()[0].deepText.includes('new-wp-01'), 'the final state is not the server’s');
+      assertEqual(switchMaxInFlight, 1, 'operations overlapped');
+      assignStats.stale += 1;
+    });
+
+  await check('a re-read started while a change is still queued is discarded, and a confirmed X stays emptied',
+    async () => {
+      // The queue guard on landing is the only defence against a read that began AFTER the change
+      // was queued (the Reload button, Save, install): its sequence number is current, so only the
+      // pending queue says it describes a world that no longer exists.
+      resetAssignRig();
+      await openView(quadView(true, {top_left: '192.0.2.20', top_right: '192.0.2.24'}));
+      const gates = gated();
+      xButton(windowBoxes()[0]).dispatch('click');          // op1: empty top_left
+      dropIp(windowBoxes()[2], '192.0.2.24');               // op2: queued behind it
+      await flush();
+      stateResponse = stateBody([quadView(true, {top_right: '192.0.2.24'})]);
+      await settleGate(gates, 0);                           // op1 confirmed; op2 now in flight
+      assert(isEmptyBox(windowBoxes()[0]), 'precondition: the confirmed X did not empty the window');
+      // A read begun now, while op2 is pending, that still reports the OLD subscription.
+      let release; stateHold = new Promise(resolve => { release = resolve; });
+      stateResponse = stateBody([quadView(true, {top_left: '192.0.2.20', top_right: '192.0.2.24'})]);
+      const reload = REGISTRY.get('mv_reload');
+      reload.dispatch('click');
+      await flush();
+      release();
+      await new Promise(r => setImmediate(r));
+      await new Promise(r => setImmediate(r));
+      assert(isEmptyBox(windowBoxes()[0]),
+        'a read begun during a queued change was applied: the confirmed X was drawn back in: '
+        + windowBoxes()[0].deepText);
+      stateResponse = stateBody([quadView(true, {top_right: '192.0.2.24', bottom_left: '192.0.2.24'})]);
+      await settleGate(gates, 1);
+      switchGate = null;
+      assert(isEmptyBox(windowBoxes()[0]), 'the final state is not the server’s');
+      assignStats.stale += 1;
+    });
+
+  await check('editing, saved and live are three different statements',
+    async () => {
+      resetAssignRig();
+      await openView(quadView(false, {top_left: '192.0.2.20'}));
+      const text = () => windowBoxes()[0].deepText;
+      assert(/Saved · not shown/.test(text()), 'a clean saved window does not say it is not shown: ' + text());
+      assert(!/Live/.test(text()), 'an inactive window claims to be live');
+      assert(!/ip_input/.test(text()), 'an inactive window shows a live decoder input: ' + text());
+      dropIp(windowBoxes()[0], '192.0.2.24');
+      await flush();
+      assert(/Unsaved change/.test(text()), 'an edited window does not say so: ' + text());
+      await openView(quadView(true, {top_left: '192.0.2.20'}));
+      assert(/Live/.test(windowBoxes()[0].deepText), 'a displayed window is not marked live');
+      assert(!/Saved|Unsaved/.test(windowBoxes()[0].deepText),
+        'a displayed window is described as an editor: ' + windowBoxes()[0].deepText);
+      const pending = quadView(true, {top_left: '192.0.2.20'});
+      pending.pending_show = true;
+      pending.pending = {friendly_name: 'multiview2x2', layout: '2x2',
+                         windows: [['top_left', '192.0.2.24']]};
+      await openView(pending);
+      assert(/Saved · not yet shown/.test(windowBoxes()[0].deepText),
+        'SAVED, NOT YET SHOWN is not stated on the window: ' + windowBoxes()[0].deepText);
+      assert(/SAVED, NOT YET SHOWN/.test(REGISTRY.get('mv_canvas_mode').textContent),
+        'the canvas does not say it');
+      assertEqual(REGISTRY.get('mv_stage')._classes.has('live'), false,
+        'a saved-not-shown edit is drawn as live');
+    });
+
+  await check('a render that lands mid-drag does not replace the tile being dragged',
+    async () => {
+      resetAssignRig();
+      await openView(quadView(true, {top_left: '192.0.2.20'}));
+      const tileOf = () => REGISTRY.get('mv_sources').findAll(c => c.dataset && c.dataset.ip === '192.0.2.24')[0];
+      const tile = tileOf();
+      assert(tile, 'precondition: no tile for the source');
+      tile.dispatch('dragstart', {dataTransfer: {setData() {}, effectAllowed: ''}});
+      // A refresh or a plan result arrives while the operator is holding the tile.
+      stateResponse = stateBody([quadView(true, {top_left: '192.0.2.20'})]);
+      REGISTRY.get('mv_reload').dispatch('click');
+      await flush();
+      assert(tileOf() === tile,
+        'the tile under the pointer was replaced, which cancels the drag and loses the drop');
+      // The drag ends: the list catches up.
+      tile.dispatch('dragend');
+      await flush();
+      assert(tileOf() && tileOf() !== tile, 'the deferred render never happened');
+      assignStats.stale += 1;
+    });
+
+  await check('a different layout chosen for the displayed Multiview is an edit, not a live switch',
+    async () => {
+      resetAssignRig();
+      await openView(quadView(true, {top_left: '192.0.2.20'}));
+      assertEqual(hidden('mv_show'), true, 'precondition: Show is offered for a live canvas');
+      REGISTRY.get('mv_layout').value = 'pip-bottom-right';
+      REGISTRY.get('mv_layout').dispatch('change');
+      await flush();
+      const mark = requests.length;
+      dropIp(windowBoxes()[0], '192.0.2.24');
+      await flush();
+      assertEqual(switchesSince(mark).length, 0,
+        'a drop on geometry the decoder does not have switched a window of the old layout');
+      assert(windowBoxes()[0].deepText.includes('new-wp-01'), 'the edit did not show');
+      assert(/Unsaved change/.test(windowBoxes()[0].deepText), 'the edit is not marked unsaved');
+      assert(/^EDITING/.test(REGISTRY.get('mv_canvas_mode').textContent),
+        'the canvas does not say it is an edit: ' + REGISTRY.get('mv_canvas_mode').textContent);
+      assert(!/LIVE/.test(REGISTRY.get('mv_canvas_state').textContent), 'still labelled LIVE');
+      assertEqual(hidden('mv_show'), false, 'there is no way to show the edit');
+      assertEqual(REGISTRY.get('mv_stage')._classes.has('live'), false, 'the stage is drawn as live');
+      // Choosing the displayed layout again hands the canvas back.
+      REGISTRY.get('mv_layout').value = '2x2';
+      REGISTRY.get('mv_layout').dispatch('change');
+      await flush();
+      assertEqual(REGISTRY.get('mv_stage')._classes.has('live'), true, 'the canvas never became live again');
+    });
+
+  await check('Show is offered for the displayed Multiview once an edit is saved over it',
+    async () => {
+      resetAssignRig();
+      const pending = quadView(true, {top_left: '192.0.2.20'});
+      pending.pending_show = true;
+      pending.pending = {friendly_name: 'multiview2x2', layout: '2x2',
+                         windows: [['top_left', '192.0.2.24']]};
+      await openView(pending);
+      assertEqual(hidden('mv_show'), false,
+        'the banner says to press Show on Display and the button is not there');
+    });
+
+  await check('a window that had to be repaired is listed as repaired, not passed over',
+    async () => {
+      resetAssignRig();
+      await openView(quadView(true, {top_left: '192.0.2.20'}));
+      switchResponse = {ok: true, status: 'VERIFIED', cell: 'top_right', source: '192.0.2.24',
+                        saved: true, steps: [], windows: [], unlocked_windows: [],
+                        regressed_windows: [], released: [], kept: [],
+                        healing: {healed: ['top_right (960x544)'],
+                                  attempted: [{window: 'top_right (960x544)', result: 'healed'}]}};
+      dropIp(windowBoxes()[1], '192.0.2.24');
+      await flush();
+      const detail = REGISTRY.get('mv_result').deepText;
+      assert(/\[repaired\] top_right/.test(detail), 'the repair is not mentioned: ' + detail);
+      assert(/\[repaired\] top_right was dark/.test(detail),
+        'the window is named by its label alone, without the size suffix: ' + detail);
+    });
+
+  await check('an inactive preset opens with its saved sources, whatever the decoder inputs resolve to',
+    async () => {
+      resetAssignRig();
+      // The server reports the saved assignment as the window's source and keeps
+      // what the pool input currently resolves to in device_source_ip, for
+      // diagnostics. The canvas, its pictures and Save's baseline follow the first.
+      const view = quadView(false, {top_left: '192.0.2.20', top_right: '192.0.2.24'});
+      view.subframes.forEach((s) => {
+        if (s.source) {
+          s.source_basis = 'saved'; s.source_origin = 'saved';
+          s.device_source_ip = s.source.ip === '192.0.2.20' ? '192.0.2.24' : '192.0.2.20';
+        }
+      });
+      await openView(view);
+      const [first, second] = windowBoxes();
+      assert(first.deepText.includes('enc-test-01') && !first.deepText.includes('new-wp-01'),
+        'the first window shows what the decoder resolves, not what was saved: ' + first.deepText);
+      assert(second.deepText.includes('new-wp-01') && !second.deepText.includes('enc-test-01'),
+        'the second window shows what the decoder resolves, not what was saved: ' + second.deepText);
+      const pic = (box) => box.findAll(c => c.tagName === 'IMG').map(i => i.dataset.ip)[0];
+      assertEqual(pic(first), '192.0.2.20', 'the picture does not follow the saved source');
+      // .24 has previews turned off, so its window carries no picture -- and in
+      // particular not the other source's.
+      assertEqual(pic(second), undefined, 'the second window draws another source’s picture');
+      assertEqual(REGISTRY.get('mv_save').disabled, true,
+        'opening a saved preset made it look edited');
+    });
+
+  await check('assignment-test accounting', () => {
+    console.log('       size confirmations ' + assignStats.sizeConfirms
+      + ', cancels ' + assignStats.sizeCancels + ', same-size ' + assignStats.sameSize
+      + ', X ' + assignStats.xTests + ', rapid ' + assignStats.rapid
+      + ', stale ' + assignStats.stale + ', refused/failed ' + assignStats.divergence);
+    resetAssignRig();
   });
 
   // =======================================================================

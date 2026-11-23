@@ -553,15 +553,19 @@ class MatrixEndpointTests(harness.UserRoutingTestBase):
                                   self.routes[0]["decoder"]),
                                  (mode, "192.0.2.11", "192.0.2.21"))
 
-    def test_video_only_and_audio_only_are_not_a_standard_operation(self):
+    def test_audio_only_is_not_a_standard_operation_and_video_only_is_audio_follows_video_off(self):
         std = self.make("std", ["standard"])
-        for mode in ("video", "audio"):
-            with self.subTest(mode=mode):
-                reply = self.post("/api/user/route", {
-                    "source": SRC_A, "destination": SOLO, "mode": mode,
-                    "interface": "standard"}, self.session_for(std))
-                self.assertEqual(reply.status_code, 400)
+        reply = self.post("/api/user/route", {
+            "source": SRC_A, "destination": SOLO, "mode": "audio",
+            "interface": "standard"}, self.session_for(std))
+        self.assertEqual(reply.status_code, 400)
         self.assertEqual(self.routes, [])
+        # "Audio follows video" off on the Standard page: a video-only route, with the same grants.
+        reply = self.post("/api/user/route", {
+            "source": SRC_A, "destination": SOLO, "mode": "video",
+            "interface": "standard"}, self.session_for(std))
+        self.assertEqual(reply.status_code, 200, reply.get_data(as_text=True))
+        self.assertEqual([r["mode"] for r in self.routes], ["video"])
 
     def test_a_mode_nobody_defined_never_reaches_the_engine(self):
         both = self.make("both", ["standard", "matrix"])

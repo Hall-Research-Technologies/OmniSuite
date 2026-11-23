@@ -27,15 +27,14 @@ credentials) is never source: it is ignored, and a test and the release checks k
 ## Dependencies
 
 `requirements-lock.txt` is the exact, resolved dependency set. Builds and CI install from it, with a
-pinned PyInstaller, and the supported runtime is the pinned Python 3.12 stack. `cryptography` is held
-to an older release on Intel macOS only, because later releases have no prebuilt Intel wheel. The lock
-is not hash-pinned. The interpreter is not pinned in CI, which uses the current Python 3.12 the runner
+pinned PyInstaller, and the supported runtime is the pinned Python 3.12 stack. `cryptography` is
+pinned to one version, 50.0.2, on every supported platform (Windows x86-64 and macOS Apple Silicon both
+have a prebuilt wheel); there is no platform-specific pin. The lock is not hash-pinned. The interpreter is not pinned in CI, which uses the current Python 3.12 the runner
 provides, so an artifact built in CI embeds whatever 3.12 patch release that is.
 
-The Intel macOS pin, `cryptography` 48.0.1, has two High advisories (PKCS#7 decryption and the x509
-path-building verifier). OmniSuite uses neither: it imports only AES-GCM for backups and the certificate
-builder, hashes, serialization and RSA key generation for its own certificate. Revisit the pin as soon as
-a later release has an Intel macOS wheel. The lock was resolved on Windows, so the Linux (`python-xlib`) and
+macOS Intel is no longer a distributed platform, so the former Intel-only `cryptography` 48.0.1 pin (which
+carried known High advisories) is gone and no locked version has a known advisory. A test keeps
+`cryptography` a single unconditional requirement. The lock was resolved on Windows, so the Linux (`python-xlib`) and
 macOS (`pyobjc`) requirements of `pystray`, and PyInstaller's own dependencies, are resolved by pip at build
 time and are not pinned.
 
@@ -63,7 +62,7 @@ To publish a release (with approval):
 1. Finish on the release branch. `VERSION` holds the version being released, and it is the one
    place a version is typed: the application, the launcher, Settings, the User Guide, the
    artifact names and the Windows file properties all read it. Do not type a version into a page.
-2. Add `RELEASE_NOTES_<version>.md` (for example `RELEASE_NOTES_V1.2.0.md`). The workflow
+2. Add `RELEASE_NOTES_<version>.md` (for example `RELEASE_NOTES_V1.2.1.md`). The workflow
    refuses a tag whose notes file does not exist.
 3. Update the User Guide and `CHANGELOG.md`, and run `python run_tests.py`. If the release
    includes macOS builds, the release notes link to [docs/INSTALL_MACOS.md](docs/INSTALL_MACOS.md)
@@ -71,7 +70,7 @@ To publish a release (with approval):
 4. Rehearse with a **dispatch** of the workflow on the release branch (see below).
 5. Create the tag on the release-branch commit. The identity job refuses it unless the tag is
    this product's, agrees with `VERSION`, and the commit is on the release branch; then the
-   four platforms test, build, inspect (`tools/inspect_release.py`) and smoke-test, and the publish job
+   two distributed platforms (Windows x86-64 and macOS arm64) test, build, inspect (`tools/inspect_release.py`) and smoke-test, and the publish job
    verifies every artifact against the product and version before creating the release.
    **The release is created as a draft.** Nothing is public, and the updater cannot see a draft.
    Download each archive from the draft, compare it with `SHA256SUMS.txt`, run the manual spot-check
@@ -96,13 +95,13 @@ with the same tag form and artifact names, so they keep being offered updates.
 - The publish job collects only this product's artifacts and verifies every file against the product
   and version first. It runs only for an identity-verified tag.
 - A release candidate is built the same way as a release: a dispatch with a suffixed name such as
-  `V1.2.0-rc1` produces the four artifacts and publishes nothing.
+  `V1.2.1-rc1` produces the two artifacts (Windows x86-64 and macOS arm64) and publishes nothing.
 
 ### Diagnostic builds
 
 Run the workflow manually (Run workflow) on a branch and give `release_version` a suffix, for
-example `V1.2.0-diag1`. A dispatch never publishes, whatever the version says. A bare release
-version (`V1.2.0`) is refused, because the artifact would be named exactly like a release. The
+example `V1.2.1-diag1`. A dispatch never publishes, whatever the version says. A bare release
+version (`V1.2.1`) is refused, because the artifact would be named exactly like a release. The
 version may contain letters, digits, `.`, `_` and `-` only.
 
 ## Third-party licences

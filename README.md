@@ -8,7 +8,7 @@ OmniSuite runs on the management PC, talks to each device directly, and presents
 one inventory: discovery, configuration, A/V routing, USB routing, firmware,
 diagnostics and reporting.
 
-**Version: V1.2.0**
+**Version: V1.2.1**
 
 ---
 
@@ -48,13 +48,14 @@ diagnostics and reporting.
 - **Encrypted device logs** collected on request for manufacturer Engineering.
 - **Remote Access** (off until an administrator turns it on) — reach OmniSuite from a phone, tablet
   or laptop, with administrator and user accounts. A User routes only the equipment assigned to them,
-  through **Standard routing** or a **User Matrix** (AV, Video and Audio), and can route to a **Display
-  Group** of displays in one action. Optional passwordless **direct access links** per account.
+  through **Standard routing**, a **User Matrix** (AV, Video and Audio), **USB** and **Multiview** (an
+  administrator saves the layouts; the person chooses which of their own sources feeds each window), and can
+  route to a **Display Group** of displays in one action. Optional passwordless **direct access links** per account.
 - **Backup and restore** — one passphrase-encrypted file holds the configuration that makes an
   installation yours, and a restore is all-or-nothing.
 - **Firmware availability** — reports whether Hall Research has published newer firmware for each model.
   It never downloads or installs anything.
-- **Appearance** — light and dark, ten colour presets, four layouts.
+- **Appearance** — light and dark, ten colour presets, two layouts (Classic and Compact).
 - **Update notification** — OmniSuite may contact GitHub at startup to check whether a
   newer OmniSuite version is available, and tells you when one exists. It never downloads or
   installs anything for you. A separate, optional firmware check reads Hall Research's public
@@ -64,10 +65,29 @@ diagnostics and reporting.
 
 ## Screenshots
 
-Screenshots are not included in this release. The earlier set predated the Device Manager rename and the
-Remote Access screens, and showed a laboratory's own device addresses, so they would have described a
-product that no longer matches this one. The bundled [User Guide](ui/user-guide.html) describes every page
-as it is.
+All screenshots below were taken from this version, against simulated units on a test network, so the
+addresses, names and accounts in them are invented. The bundled [User Guide](ui/user-guide.html) shows
+every page with numbered callouts.
+
+**Device Manager** - discovery and inventory.
+
+![OmniSuite Device Manager listing eight discovered units](docs/images/readme-device-manager.png)
+
+**A/V Matrix** - encoders across the top, decoders down the side. A decoder that is showing a Multiview is marked.
+
+![A/V Matrix with four encoders and four decoders](docs/images/readme-av-matrix.png)
+
+**Multiview** (dark appearance) - several encoders composited on one decoder, with the live canvas.
+
+![Multiview page in the dark appearance showing a 1+3 layout on a decoder](docs/images/readme-multiview.png)
+
+**Remote Access accounts** - administrators and Users, each limited to the equipment assigned to them.
+
+![Remote Access accounts page](docs/images/readme-remote-accounts.png)
+
+**Remote User screens** - routing and Multiview on a phone or tablet.
+
+<img src="docs/images/readme-user-routing.png" alt="Remote User Standard routing screen after routing a source to three displays" width="300"> <img src="docs/images/readme-user-multiview.png" alt="Remote User Multiview layouts with Show and Choose sources" width="300">
 
 ---
 
@@ -78,18 +98,21 @@ Get the archive for your machine from the
 
 | Platform | Artifact |
 |---|---|
-| Windows x86-64 | `OmniSuite-V1.2.0-Windows-x86_64.zip` |
-| macOS Apple Silicon | `OmniSuite-V1.2.0-macOS-arm64.zip` |
-| macOS Intel | `OmniSuite-V1.2.0-macOS-x86_64.zip` |
-| Ubuntu Linux x86-64 | `OmniSuite-V1.2.0-Ubuntu-x86_64.tar.gz` |
+| Windows x86-64 | `OmniSuite-V1.2.1-Windows-x86_64.zip` |
+| macOS Apple Silicon | `OmniSuite-V1.2.1-macOS-arm64.zip` |
+
+OmniSuite is built for **Windows x86-64 and macOS on Apple Silicon only**. There is no
+macOS Intel build, no Linux build and no universal macOS build. On an unsupported computer
+the in-app update check says there is no supported update package rather than offering a
+download that would not run.
 
 Each release also carries `SHA256SUMS.txt`. To check a download:
 
 ```bash
-sha256sum -c SHA256SUMS.txt          # Linux / macOS
+shasum -a 256 -c SHA256SUMS.txt      # macOS
 ```
 ```powershell
-Get-FileHash .\OmniSuite-V1.2.0-Windows-x86_64.zip -Algorithm SHA256
+Get-FileHash .\OmniSuite-V1.2.1-Windows-x86_64.zip -Algorithm SHA256
 ```
 
 See **[Supported platforms](#supported-platforms)** below for what has actually
@@ -107,7 +130,6 @@ been tested on each one — the levels are not the same.
      Security → Open Anyway**. Step by step, and what to check before you
      approve it: [docs/INSTALL_MACOS.md](docs/INSTALL_MACOS.md). The same text is
      in the zip as `READ-ME-FIRST-macOS.txt`.
-   - Ubuntu: run `./OmniSuite/OmniSuite` from a desktop session.
 3. A small launcher window appears and **your browser opens** on the OmniSuite
    interface. OmniSuite serves on `127.0.0.1:8080`, or the next free port if
    8080 is taken — the launcher shows and logs the address it chose. If you
@@ -193,7 +215,7 @@ computer; there is no default password.
   never switches transport on its own, never falls back from HTTPS to HTTP if the certificate cannot be
   used (Remote Access simply does not start and says why), and does not listen on plain HTTP while HTTPS is
   on. Use HTTP only on a network you trust.
-- **Certificates.** Choose **Create certificate** (OmniSuite makes one) or **Use my own files**. A
+- **Certificates.** Choose **Create one for this network** (OmniSuite makes one) or **Use my own files**. A
   generated certificate uses the computer's Windows name as its name, is issued by *Hall Research* for
   *OmniSuite*, is valid for the computer name and the chosen adapter's address, and lasts **three
   calendar years**. Browsers warn about it once, because nobody outside your building vouches for it;
@@ -274,10 +296,16 @@ troubleshooting. Open it from Settings › User Guide, from the navigation, or a
 
 ## Supported platforms
 
-The four platforms are exactly those the release workflow tests and builds, each on its own runner:
-Windows x86-64 (`windows-latest`), Ubuntu x86-64 (`ubuntu-latest`), macOS Apple Silicon
-(`macos-latest`) and macOS Intel (`macos-15-intel`), with Python 3.12 and Node 20. The runtime is the
-pinned Python 3.12 stack in `requirements-lock.txt`.
+Two platforms are distributed, and they are exactly those the release workflow tests and builds, each
+on its own native runner: **Windows x86-64** (`windows-latest`) and **macOS Apple Silicon**
+(`macos-15`, an arm64 runner), with Python 3.12 and Node 20. The runtime is the pinned Python 3.12
+stack in `requirements-lock.txt`.
+
+*Test runner* and *distributed platform* are different things. The full suite runs on both
+distributed platforms, and a package is built only on the runner it is named for. The workflow checks the
+runner's architecture, and for macOS it reads the Mach-O headers of the built bundle and refuses a
+universal or x86-64 binary. macOS Intel and Linux were built before V1.2.1 and are not built now; they are
+not tested, not packaged and not offered by the update check.
 
 These levels are deliberately distinct. A release artifact that builds and starts
 is not the same as one exercised against real hardware.
@@ -286,8 +314,6 @@ is not the same as one exercised against real hardware.
 |---|---|---|---|
 | **Windows x86-64** | Built and smoke-tested | Full suite | **Yes** — developed and validated against a physical bench |
 | **macOS Apple Silicon (arm64)** | Built and smoke-tested in CI | Full suite | **No** |
-| **macOS Intel (x86-64)** | Built and smoke-tested in CI | Full suite | **No** |
-| **Ubuntu Linux x86-64** | Built and smoke-tested in CI | Full suite | **No** |
 
 **What "automated tests" covers**: protocol serialisation and parsing, route
 logic, UDP and WebSocket handling, HTTP behaviour, persistence and UI behaviour.
@@ -297,9 +323,9 @@ about the code, and it is **not** a substitute for running against devices.
 
 **Physical hardware validation has been performed on Windows only**, against a
 bench of OmniStream encoders and decoders, standalone HW-OMNI-311/324 extenders
-and integrated Icron endpoints. macOS and Ubuntu artifacts are built, started
-and exercised through their UI in CI; they have not been used to manage real
-devices. Treat those platforms as ready to try, not as field-proven.
+and integrated Icron endpoints. The macOS artifact is built, started and exercised
+through its UI in CI; it has not been used to manage real devices. Treat it as
+ready to try, not as field-proven.
 
 ### Platform notes
 
@@ -311,27 +337,23 @@ devices. Treat those platforms as ready to try, not as field-proven.
 - **macOS** — an `OmniSuite.app` in a zip. Unpack it with Finder (double-click
   the zip) or `ditto -x -k`, both of which keep the symlinks inside the bundle;
   a tool that flattens them leaves the app unable to load its own Python
-  framework. It is **not code signed, not Developer ID signed, and not
+  framework. It carries only an **ad hoc signature** (the build signs it so that
+  Apple Silicon will run it at all), and it is **not Developer ID signed and not
   notarised**, so Gatekeeper will refuse a normal double-click on first launch.
   Approve it under **System Settings → Privacy & Security → Open Anyway**, only
   for a download from the official releases page; see
   [docs/INSTALL_MACOS.md](docs/INSTALL_MACOS.md). macOS also asks for **Local
   Network** access the first time you scan; choose Allow. Developer ID signing and
   notarization are a planned improvement.
-- **Ubuntu** — a `tar.gz` containing an `OmniSuite` directory; run the
-  `OmniSuite` executable inside it. It needs a **desktop session**: the launcher
-  is a graphical window and there is **no headless mode**. CI smoke-tests the
-  Linux artifact under `xvfb-run`, which supplies a virtual X display — that
-  proves the packaged build starts and serves, and is *not* the same thing as
-  supported headless operation. Built and tested on the GitHub `ubuntu-latest`
-  image; "Ubuntu x86-64" means that environment, not Linux in general, and other
-  distributions are untested.
+- **Not distributed** — macOS Intel and Linux. earlier candidates were built for
+  them; V1.2.1 is not. An installed copy on one of those computers can still check for
+  updates and is told that no supported update package exists for it.
 
 ---
 
 ## Version
 
-**V1.2.0.** `VERSION` in this repository is the single source of truth; Settings
+**V1.2.1.** `VERSION` in this repository is the single source of truth; Settings
 reports what the running build was made from, the User Guide states the version
 it describes, and the release artifacts take their names from it.
 

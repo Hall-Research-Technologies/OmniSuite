@@ -3,11 +3,11 @@
  *
  * Three independent dimensions, deliberately not folded into one another:
  *
- *   layout    classic | compact | modern | workspace   (information architecture)
+ *   layout    classic | compact                        (information architecture)
  *   mode      light | dark                              (appearance)
  *   colours   a preset, optionally overridden per semantic role
  *
- * Four layouts times two modes is eight combinations, not eight templates, and a
+ * Two layouts times two modes is four combinations, not four templates, and a
  * colour choice applies to all of them. Nothing here touches routing, discovery
  * or device state.
  *
@@ -20,14 +20,13 @@
 const UI_TEMPLATES = [
   {id: 'classic', name: 'Classic', hint: 'The familiar OmniSuite layout'},
   {id: 'compact', name: 'Compact', hint: 'Denser tables, quieter controls'},
-  {id: 'modern', name: 'Modern', hint: 'Grouped cards, clearer hierarchy'},
-  // The rail and the inspector were removed; the hint went on describing them
-  // long afterwards, so the dialog advertised two features the layout no
-  // longer had. What Workspace actually is: a centred work area with a
-  // maximum width, and slightly tighter spacing.
-  {id: 'workspace', name: 'Workspace', hint: 'Constrained, centred work area'},
 ];
 const UI_TEMPLATE_DEFAULT = 'classic';
+// Layouts an earlier build offered. A preference saved under one of them stays
+// readable and lands on the nearest layout that still exists, so an operator who
+// chose it is not returned to an error or to a blank default they did not pick.
+// Compact keeps its meaning; the other two were variations on Classic.
+const UI_TEMPLATE_LEGACY = {modern: 'classic', workspace: 'classic'};
 
 // The semantic roles a preset defines. These are internal: presets set them, and
 // the operator chooses a preset rather than nine separate colours. The token
@@ -137,6 +136,14 @@ function isKnownTemplate(id) {
   return UI_TEMPLATES.some(template => template.id === id);
 }
 
+// The layout to apply for whatever was stored: itself when it still exists, its
+// replacement when it was retired, the default for anything unrecognised.
+function canonicalTemplate(id) {
+  if (isKnownTemplate(id)) return id;
+  return Object.prototype.hasOwnProperty.call(UI_TEMPLATE_LEGACY, id)
+    ? UI_TEMPLATE_LEGACY[id] : UI_TEMPLATE_DEFAULT;
+}
+
 // Nothing that is not a hex colour ever reaches a stylesheet. A custom property
 // is a CSS injection point, so the value is validated rather than escaped.
 function isValidColor(value) {
@@ -220,7 +227,7 @@ function effectiveColors(state) {
 
 function applyAppearance(state) {
   const next = state || appearance;
-  appearance.template = isKnownTemplate(next.template) ? next.template : UI_TEMPLATE_DEFAULT;
+  appearance.template = canonicalTemplate(next.template);
   appearance.preset = presetById(next.preset).id;
   appearance.lightBackground = normalizeColor(next.lightBackground) || LIGHT_BACKGROUND_DEFAULT;
   appearance.theme = isKnownTheme(next.theme) ? next.theme : THEME_DEFAULT;
@@ -500,7 +507,7 @@ window.addEventListener('storage', event => {
 
 if (typeof globalThis !== 'undefined') {
   Object.assign(globalThis, {
-    UI_TEMPLATES, UI_TEMPLATE_DEFAULT, APPEARANCE_COLORS, APPEARANCE_PRESETS,
+    UI_TEMPLATES, UI_TEMPLATE_DEFAULT, UI_TEMPLATE_LEGACY, canonicalTemplate, APPEARANCE_COLORS, APPEARANCE_PRESETS,
     APPEARANCE_PRESET_DEFAULT, appearance, isKnownTemplate, isValidColor, normalizeColor,
     relativeLuminance, contrastRatio, readableTextOn, colorReadability, effectiveColors,
     applyAppearance, readStoredAppearance, loadAppearance, saveAppearance, setUiTemplate,

@@ -29,8 +29,7 @@ def release(tag, assets, draft=False, prerelease=False):
             "html_url": "%s/tag/%s" % (BASE, tag), "assets": assets}
 
 
-def good(core, tag=None, tails=("Windows-x86_64.zip", "macOS-arm64.zip", "macOS-x86_64.zip",
-                                "Ubuntu-x86_64.tar.gz"), **flags):
+def good(core, tag=None, tails=("Windows-x86_64.zip", "macOS-arm64.zip"), **flags):
     tag = tag or "V" + core
     return release(tag, [asset("OmniSuite-V%s-%s" % (core, t), tag) for t in tails], **flags)
 
@@ -168,14 +167,24 @@ class UpdaterAdversarialTests(iso.UpdaterBase):
 
     def test_every_platform_is_offered_only_its_own_exact_asset(self):
         for system, machine, tail in (("Windows", "AMD64", "Windows-x86_64.zip"),
-                                      ("Darwin", "arm64", "macOS-arm64.zip"),
-                                      ("Darwin", "x86_64", "macOS-x86_64.zip"),
-                                      ("Linux", "x86_64", "Ubuntu-x86_64.tar.gz")):
+                                      ("Windows", "ARM64", "Windows-x86_64.zip"),
+                                      ("Darwin", "arm64", "macOS-arm64.zip")):
             with self.subTest(system=system, machine=machine):
                 self.feed(copy.deepcopy([good("1.2.0")]))
                 body = self.check(OMNI, "V1.1.0", platform=(system, machine))
                 self.assertEqual(body["asset"]["name"], "OmniSuite-V1.2.0-" + tail)
-        for system, machine in (("Linux", "aarch64"), ("FreeBSD", "amd64"), ("Windows", "")):
+        # macOS Intel and Linux were built before V1.2.1 and are not now: even a feed that still
+        # lists their old files must never be offered to them.
+        legacy = [asset("OmniSuite-V1.2.0-macOS-x86_64.zip", "V1.2.0"),
+                  asset("OmniSuite-V1.2.0-Ubuntu-x86_64.tar.gz", "V1.2.0")]
+        for system, machine in (("Darwin", "x86_64"), ("Linux", "x86_64")):
+            with self.subTest(system=system, machine=machine, legacy_feed=True):
+                self.feed(copy.deepcopy([release("V1.2.0", legacy)]))
+                body = self.check(OMNI, "V1.1.0", platform=(system, machine))
+                self.assertTrue(body["update_available"])
+                self.assertIsNone(body["asset"])
+        for system, machine in (("Linux", "aarch64"), ("Linux", "x86_64"), ("FreeBSD", "amd64"),
+                                ("Darwin", "x86_64"), ("Windows", "")):
             with self.subTest(system=system, machine=machine, unsupported=True):
                 self.feed(copy.deepcopy([good("1.2.0")]))
                 body = self.check(OMNI, "V1.1.0", platform=(system, machine))

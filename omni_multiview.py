@@ -894,6 +894,45 @@ def standard_layout_object(layout_name, existing_names=(), slice_info=None):
     return object_name, config, geometry["windows"]
 
 
+FRIENDLY_NAME_MAX = 48
+FRIENDLY_NAME_MARKS = "-–—_+.,()&"
+FRIENDLY_NAME_RULES = (
+    "A Multiview name may be 1 to %d characters: letters, numbers and spaces, "
+    "plus these marks: - – — _ + . , ( ) &. It must contain at least "
+    "one letter or number." % FRIENDLY_NAME_MAX)
+
+
+def validate_friendly_name(name):
+    """The operator's name for a Multiview, checked and never repaired.
+
+    Returns (ok, message). A name that had to be altered to be accepted is a
+    name nobody understood, so an illegal one is refused with the rules and
+    the characters that broke them. Only the whitespace around the name is
+    ignored.
+    """
+    text = str(name if name is not None else "").strip()
+    if not text:
+        return False, "Enter a name for the Multiview. " + FRIENDLY_NAME_RULES
+    problems = []
+    if len(text) > FRIENDLY_NAME_MAX:
+        problems.append("the name is %d characters long" % len(text))
+    bad = []
+    for ch in text:
+        if ch.isalnum() or ch == " " or ch in FRIENDLY_NAME_MARKS:
+            continue
+        if ch not in bad:
+            bad.append(ch)
+    if bad:
+        problems.append("it contains %s" % ", ".join(
+            repr(c) if c.isprintable() else "a control character" for c in bad))
+    if not problems and not any(ch.isalnum() for ch in text):
+        problems.append("it has no letter or number")
+    if problems:
+        return False, ("That Multiview name is not allowed: %s. %s"
+                       % ("; ".join(problems), FRIENDLY_NAME_RULES))
+    return True, ""
+
+
 def validate_object_name(name):
     """The device's own rules, applied before we send anything."""
     text = str(name or "")
@@ -1792,6 +1831,10 @@ def plan_multiview(desired, decoder_state, encoder_states,
     valid, message = validate_object_name(object_name)
     if not valid:
         errors.append(message)
+    if desired.get("name") is not None:
+        named, why = validate_friendly_name(desired.get("name"))
+        if not named:
+            errors.append(why)
 
     updating = object_name in existing_names
 
@@ -1917,7 +1960,7 @@ def plan_multiview(desired, decoder_state, encoder_states,
         "preset_conflicts": preset_conflicts,
         "activation_errors": activation_errors,
         "object_name": object_name,
-        "friendly_name": desired.get("name") or LAYOUTS[layout_name]["label"],
+        "friendly_name": (str(desired.get("name")).strip() if desired.get("name") is not None else "") or LAYOUTS[layout_name]["label"],
         "updating": updating,
         "layout": layout_name,
         "canvas": geometry["canvas"],
@@ -2244,6 +2287,10 @@ def _other_consumers(known_multiviews, source_ip, encoder_index, this_decoder):
     consumers = []
     for record in known_multiviews or ():
         if record.get("decoder_ip") == this_decoder and record.get("current"):
+            continue
+        # A record that says it is not on any display holds nothing. A record
+        # that does not say (older callers, other tools) counts, as before.
+        if record.get("active") is False:
             continue
         for window in record.get("windows") or ():
             if (window.get("source_ip") == source_ip

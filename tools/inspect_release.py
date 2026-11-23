@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Inspect a built release archive before it can be offered to anyone.
 
-    inspect_release.py ARCHIVE [ARCHIVE ...] --version V1.2.0 [--diagnostic]
+    inspect_release.py ARCHIVE [ARCHIVE ...] --version V1.2.1 [--diagnostic]
 
 It fails closed: any problem exits non-zero with a sentence per problem. It checks what is in
 the package, not what the build intended to put there:
@@ -16,7 +16,7 @@ the package, not what the build intended to put there:
   * the executable carries no private product name and no build-machine path.
 
 --diagnostic is for a workflow run that can never publish. It accepts ONE additional identity,
-V<release>-diag<N> (for example V1.2.0-diag1), named OmniSuite-V1.2.0-diag1-<platform>, so a
+V<release>-diag<N> (for example V1.2.1-diag1), named OmniSuite-V1.2.1-diag1-<platform>, so a
 rehearsal can run the same content checks as a release. It relaxes the name and nothing else, and
 it changes nothing for any other version: a release version, an rc label or a stray suffix is
 judged exactly as before whether or not the flag is given.
@@ -40,8 +40,15 @@ sys.path.insert(0, str(ROOT / "tools"))
 import omni_release                                   # noqa: E402
 import pre_push_guard                                  # noqa: E402
 
+# Names of the developer's own working folders and account. They are assembled from fragments, as
+# pre_push_guard does for the private product, so that this published file does not itself carry the
+# folder layout or the account name it exists to keep out of a package.
+_DEV_RC = "over" + "night" + "_rc"
+_DEV_ROOT = "soft" + "wareDEV"
+_DEV_USER = "Wy" + "lie"
+
 _FORBIDDEN_NAME = re.compile("|".join([
-    r"(^|/)tests?/", r"(^|/)tools/", r"(^|/)\.git(/|$)", r"(^|/)firmware/", r"(^|/)overnight_rc/",
+    r"(^|/)tests?/", r"(^|/)tools/", r"(^|/)\.git(/|$)", r"(^|/)firmware/", r"(^|/)" + _DEV_RC + r"/",
     r"(^|/)(users|config|units_cache|scan_results)\.json$", r"\.(key|omnibak|pfx|p12|log|zip|tar|gz)$",
     r"(^|/)(PROJECT|AGENTS|TESTING|DEVELOPMENT)\.md$", r"(^|/)[^/]*(soak|mutation|qualification)[^/]*$",
     r"(^|/)__pycache__/",
@@ -69,8 +76,9 @@ _PEM = re.compile(r"\.pem$")
 _SECRET = re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}"
                      rb"|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}")
 _BENCH = re.compile(rb"192\.168\.(100|150|200|250)\.\d{1,3}")
-_BUILD_PATH = re.compile(rb"[A-Za-z]:\\+(softwareDEV|Users\\+Wylie)|overnight_rc|/Users/[A-Za-z]+/softwareDEV",
-                         re.IGNORECASE)
+_BUILD_PATH = re.compile(
+    rb"[A-Za-z]:\\+(" + _DEV_ROOT.encode() + rb"|Users\\+" + _DEV_USER.encode() + rb")|" + _DEV_RC.encode()
+    + rb"|/Users/[A-Za-z]+/" + _DEV_ROOT.encode(), re.IGNORECASE)
 _TEXT_SUFFIX = {".md", ".txt", ".html", ".css", ".js", ".json", ".py", ".yml", ".yaml", ".toml", ".cfg"}
 _NAME_RE = re.compile(pre_push_guard.CONTENT_PATTERN.encode(), re.IGNORECASE)
 

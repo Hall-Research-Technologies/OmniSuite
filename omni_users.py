@@ -300,10 +300,11 @@ class Permissions:
     whatever answers there next.
     """
 
-    __slots__ = ("features", "sources", "destinations", "groups", "interfaces")
+    __slots__ = ("features", "sources", "destinations", "groups", "interfaces",
+                 "multiviews")
 
     def __init__(self, features=(), sources=(), destinations=(), groups=(),
-                 interfaces=None):
+                 interfaces=None, multiviews=()):
         allowed = omni_access.user_features()
         self.features = frozenset(f for f in features if f in allowed)
         # Which routing interfaces the account may use. `None` means the field
@@ -321,33 +322,51 @@ class Permissions:
         # A group is its own resource: holding one grants the group action and
         # nothing else. It never adds the group's members to `destinations`.
         self.groups = frozenset(_normalise_group_id(g) for g in groups if g)
+        # A Multiview layout is its own resource too: one entry per saved layout,
+        # naming the decoder by hardware identity and the layout by its opaque id.
+        # Holding the capability grants nothing by itself, and a layout an
+        # administrator saves later is not reachable until it is assigned.
+        self.multiviews = frozenset(
+            k for k in (multiview_key(*_split_multiview(m)) for m in multiviews)
+            if k)
 
     def to_json(self) -> dict:
         return {"features": sorted(self.features),
                 "sources": sorted(self.sources),
                 "destinations": sorted(self.destinations),
                 "groups": sorted(self.groups),
-                "interfaces": sorted(self.interfaces)}
+                "interfaces": sorted(self.interfaces),
+                "multiviews": sorted(self.multiviews)}
 
     @classmethod
     def from_json(cls, raw) -> "Permissions":
-        # A restricted account no longer carries Multiview. An older users.json
-        # may still hold a "multiview" feature and a "multiviews" approval list:
-        # neither is read, so the account loads as it was minus a capability that
-        # no longer exists, and the next save writes the record without them.
+        # An approval written when a layout was identified by its name does not
+        # match the opaque-id form and is dropped on read, so nothing keeps acting
+        # on a grant that can no longer be tied to one saved layout.
         raw = raw or {}
         return cls(raw.get("features") or (),
                    raw.get("sources") or (),
                    raw.get("destinations") or (),
                    raw.get("groups") or (),
                    raw["interfaces"] if isinstance(raw.get("interfaces"),
-                                                   (list, tuple)) else None)
+                                                   (list, tuple)) else None,
+                   raw["multiviews"] if isinstance(raw.get("multiviews"),
+                                                   (list, tuple)) else ())
 
     def has_interface(self, interface: str) -> bool:
         return str(interface or "").strip().lower() in self.interfaces
 
     def may_control_group(self, group_id) -> bool:
         return _normalise_group_id(group_id) in self.groups
+
+    def may_operate_multiview(self, decoder_identity, layout_id) -> bool:
+        """Whether this account was given that saved layout on that decoder.
+
+        Both halves are identities: the decoder's hardware MAC and the layout's
+        opaque id. A friendly name, an object name or an address never matches.
+        """
+        key = multiview_key(decoder_identity, layout_id)
+        return bool(key) and key in self.multiviews
 
     def has_feature(self, feature: str) -> bool:
         return feature in self.features
@@ -371,6 +390,45 @@ def interface_refusal(role, permissions) -> str:
             and not permissions.interfaces:
         return "choose at least one routing interface"
     return ""
+
+
+#: An approval is "<decoder MAC>/<layout id>". The separator cannot occur in
+#: either half: an identity is hex and colons, and a layout id is `mv_` and hex.
+MULTIVIEW_KEY_SEPARATOR = "/"
+_MULTIVIEW_ID = re.compile(r"^mv_[0-9a-f]{16}\Z")
+_MULTIVIEW_MAC = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\Z")
+
+
+def valid_multiview_id(value) -> bool:
+    """Whether `value` is a saved layout's opaque id. Anchored at the end of the string."""
+    return isinstance(value, str) and bool(_MULTIVIEW_ID.match(value))
+
+
+def multiview_key(decoder_identity, layout_id) -> str:
+    """The stored form of "this saved layout, on this decoder", or "" if either
+    half is not a real identity. A permissive reading here would let a name or an
+    address stand in for an id."""
+    identity = _normalise_identity(decoder_identity)
+    if not _MULTIVIEW_MAC.match(identity) or not valid_multiview_id(str(layout_id or "")):
+        return ""
+    return identity + MULTIVIEW_KEY_SEPARATOR + str(layout_id)
+
+
+def _split_multiview(value):
+    """Accept either the joined key or a {decoder, layout} pair."""
+    if isinstance(value, dict):
+        return (value.get("decoder") or "", value.get("layout") or value.get("id") or "")
+    text = str(value or "")
+    identity, separator, layout = text.partition(MULTIVIEW_KEY_SEPARATOR)
+    return (identity, layout) if separator else ("", "")
+
+
+def split_multiview_key(key):
+    """(decoder identity, layout id) of a stored key, or ("", "")."""
+    identity, layout = _split_multiview(key)
+    if not multiview_key(identity, layout):
+        return ("", "")
+    return (_normalise_identity(identity), layout)
 
 
 def _normalise_group_id(group_id) -> str:
@@ -434,15 +492,23 @@ class DirectAccess:
     the record says so, rather than the product implying more than it did.
     """
 
-    __slots__ = ("enabled", "digest", "blob", "protection", "created_at")
+    __slots__ = ("enabled", "digest", "blob", "protection", "created_at",
+                 "issued_origin")
 
     def __init__(self, enabled=False, digest="", blob="", protection="",
-                 created_at=None):
+                 created_at=None, issued_origin=""):
         self.enabled = bool(enabled)
         self.digest = str(digest or "")
         self.blob = str(blob or "")
         self.protection = str(protection or "")
         self.created_at = created_at or 0
+        # The address (scheme://host:port) this link was last handed to an
+        # administrator for. Not a secret and not part of the token: the token
+        # names an account and works at whatever address the server is
+        # listening on. It exists so a change of address can be SAID, instead of
+        # an old URL going on looking current. Empty means unknown (a record
+        # from before this was kept), and unknown never raises a warning.
+        self.issued_origin = str(issued_origin or "")
 
     @property
     def active(self) -> bool:
@@ -451,14 +517,16 @@ class DirectAccess:
     def to_json(self) -> dict:
         return {"enabled": self.enabled, "digest": self.digest,
                 "blob": self.blob, "protection": self.protection,
-                "created_at": self.created_at}
+                "created_at": self.created_at,
+                "issued_origin": self.issued_origin}
 
     @classmethod
     def from_json(cls, raw) -> "DirectAccess":
         raw = raw if isinstance(raw, dict) else {}
         return cls(enabled=raw.get("enabled"), digest=raw.get("digest"),
                    blob=raw.get("blob"), protection=raw.get("protection"),
-                   created_at=raw.get("created_at"))
+                   created_at=raw.get("created_at"),
+                   issued_origin=raw.get("issued_origin"))
 
     def public(self) -> dict:
         """What an API may return about it. Never the token, never the blob."""
@@ -938,21 +1006,21 @@ class UserStore:
     #     sessions, so a change takes effect on the next request rather than
     #     whenever a session happens to lapse.
 
-    def enable_direct_access(self, user_id, *, actor=None) -> dict:
+    def enable_direct_access(self, user_id, *, actor=None, origin="") -> dict:
         """Turn the feature on and mint the first token."""
-        return self._mint_direct_token(user_id, actor=actor,
+        return self._mint_direct_token(user_id, actor=actor, origin=origin,
                                        event="direct_access.enabled")
 
-    def regenerate_direct_access(self, user_id, *, actor=None) -> dict:
+    def regenerate_direct_access(self, user_id, *, actor=None, origin="") -> dict:
         """Replace the token. Every URL handed out before this stops working."""
         with self._lock:
             account = self._accounts.get(user_id)
             if account is None or not account.direct_access.active:
                 return {"ok": False, "error": "direct access is not enabled"}
-        return self._mint_direct_token(user_id, actor=actor,
+        return self._mint_direct_token(user_id, actor=actor, origin=origin,
                                        event="direct_access.regenerated")
 
-    def _mint_direct_token(self, user_id, *, actor, event) -> dict:
+    def _mint_direct_token(self, user_id, *, actor, event, origin="") -> dict:
         token = secrets.token_urlsafe(32)
         blob, protection = omni_secret.protect(token)
         with self._lock:
@@ -968,7 +1036,8 @@ class UserStore:
                                  "only"}
             account.direct_access = DirectAccess(
                 enabled=True, digest=direct_token_digest(token),
-                blob=blob, protection=protection, created_at=_now())
+                blob=blob, protection=protection, created_at=_now(),
+                issued_origin=origin)
             self._persist()
             # The previous token's sessions end here, in the same critical
             # section that replaced it. Regenerating a link that left the old
@@ -978,6 +1047,42 @@ class UserStore:
                        detail={"username": account.username,
                                "protection": protection})
             return {"ok": True, "token": token, "user": account.public()}
+
+    def direct_issued_origins(self) -> dict:
+        """{account id: (username, origin the link was last handed out for)} for live links."""
+        with self._lock:
+            return {a.id: (a.username, a.direct_access.issued_origin)
+                    for a in self._accounts.values() if a.direct_access.active}
+
+    def note_direct_origin(self, user_id, origin, *, actor=None,
+                           acknowledge=False) -> bool:
+        """Record the address a link was handed out for.
+
+        Without `acknowledge` this only LEARNS: it fills in an origin that was
+        never recorded (a link from before this was kept) and never overwrites
+        one, so a change of address stays visible until somebody says they have
+        dealt with it. With `acknowledge` it replaces the recorded origin, which
+        is the administrator saying the new link has been passed on. The token
+        is not touched either way: no session ends and nothing is revoked.
+        """
+        origin = str(origin or "")
+        if not origin:
+            return False
+        with self._lock:
+            account = self._accounts.get(user_id)
+            if account is None or not account.direct_access.active:
+                return False
+            record = account.direct_access
+            if record.issued_origin and not acknowledge:
+                return False
+            if record.issued_origin == origin:
+                return False
+            record.issued_origin = origin
+            self._persist()
+            if acknowledge:
+                self.audit("direct_access.address_acknowledged", actor=actor,
+                           detail={"username": account.username})
+            return True
 
     def disable_direct_access(self, user_id, *, actor=None) -> dict:
         with self._lock:
@@ -1044,8 +1149,10 @@ class UserStore:
     def assigned_devices(self) -> dict:
         """identity -> sorted usernames that were given that device.
 
-        Every way an account can be given a device counts: as a source or as a
-        display.
+        Every way an account can be given a device counts: as a source, as a
+        display, and as the decoder half of an assigned Multiview layout -- an
+        assignment names a decoder, and clearing that decoder would take the
+        assignment's subject away just as surely as clearing a display.
 
         Disabled accounts are included. An account that is off is one an
         administrator can turn back on, and its assignments are still theirs.
@@ -1059,6 +1166,10 @@ class UserStore:
                     continue
                 permissions = account.permissions
                 identities = set(permissions.sources) | set(permissions.destinations)
+                for key in permissions.multiviews:
+                    decoder, _layout = split_multiview_key(key)
+                    if decoder:
+                        identities.add(decoder)
                 for identity in identities:
                     if identity:
                         assigned.setdefault(identity, set()).add(account.username)
@@ -1078,7 +1189,7 @@ class UserStore:
                     p = account.permissions
                     account.permissions = Permissions(
                         p.features, p.sources, p.destinations,
-                        p.groups - {gid})
+                        p.groups - {gid}, p.interfaces, p.multiviews)
                     changed += 1
             if changed:
                 self._persist()
@@ -1101,7 +1212,8 @@ class UserStore:
                 dests = [d for d in p.destinations if gone is not None and d not in gone]
                 if len(sources) != len(p.sources) or len(dests) != len(p.destinations):
                     account.permissions = Permissions(
-                        p.features, sources, dests, p.groups)
+                        p.features, sources, dests, p.groups, p.interfaces,
+                        p.multiviews)
                     changed += 1
             if changed and not self._persist():
                 raise OSError("the account store could not be written")

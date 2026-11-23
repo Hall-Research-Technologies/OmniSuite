@@ -73,6 +73,15 @@
           background:var(--action-primary);color:var(--on-accent,var(--action-primary-text))}
     a.btn.secondary{background:var(--surface-elevated);color:var(--text)}
     a.btn:hover{text-decoration:none}
+
+    /* Figures: a screenshot sits beside the instruction it illustrates, with a numbered caption.
+       The numbered markers on an image are drawn into the picture; .cn repeats them in the caption. */
+    figure.shot{margin:14px auto;max-width:900px;text-align:center}
+    figure.shot img{max-width:100%;height:auto;border:1px solid var(--edge);border-radius:8px;display:block;margin:0 auto;background:var(--surface-elevated)}
+    figure.shot.narrow img{max-width:440px}
+    figure.shot figcaption{font-size:13px;line-height:1.45;margin-top:6px;text-align:left;max-width:760px;margin-left:auto;margin-right:auto;color:var(--text-muted,var(--text))}
+    .cn{display:inline-block;min-width:17px;height:17px;line-height:17px;border-radius:50%;background:var(--state-error);color:var(--on-error,#ffffff);font-size:11px;font-weight:700;text-align:center;vertical-align:1px;margin:0 1px}
+    @media print{figure.shot{break-inside:avoid}figure.shot img{border-color:#999}}
     @media print{
       body{background:white;color:#111}
       .page{max-width:none;padding:0}
@@ -133,6 +142,14 @@
         <li><strong>Allow OmniSuite through the host firewall and any endpoint-security software</strong> when you are prompted. Because OmniSuite talks directly to devices, an operating-system firewall rule or an endpoint-security policy can block discovery and management <em>even when the device is otherwise reachable on the network</em>. A unit whose own web page opens in a browser can still be invisible to OmniSuite if the traffic OmniSuite uses is being filtered.</li>
       </ol>
 
+      <h3 id="supported-platforms">Supported platforms and first launch</h3>
+      <p>OmniSuite is built for two platforms only: <strong>Windows (64-bit Intel or AMD, x86-64)</strong> and <strong>macOS on Apple Silicon</strong>. There is no macOS Intel build, no Linux build and no universal build. On any other computer the update check says a newer release exists and that there is no supported update package for that computer, rather than offering a download that would not run.</p>
+      <ul>
+        <li><strong>Windows.</strong> A portable <code>OmniSuite.exe</code> in a zip; there is no installer. It is not code signed, so Windows SmartScreen may show &ldquo;Windows protected your PC&rdquo; the first time: choose <em>More info</em>, then <em>Run anyway</em>. Windows Firewall will normally ask about network access; allow it for the networks your equipment is on.</li>
+        <li><strong>macOS.</strong> An <code>OmniSuite.app</code> in a zip. It carries only an ad hoc signature (which Apple Silicon needs in order to run it at all) and is <em>not</em> Developer ID signed and <em>not</em> notarised, so macOS blocks the first launch. Approve it once under <em>System Settings &rsaquo; Privacy &amp; Security &rsaquo; Open Anyway</em>, and only for a download from the official releases page. macOS also asks for Local Network access the first time you scan; choose Allow (see <a href="#macos-local-network">macOS: Local Network access</a>). Step by step instructions are in <code>docs/INSTALL_MACOS.md</code> and in <code>READ-ME-FIRST-macOS.txt</code> inside the download.</li>
+        <li><strong>What has been validated.</strong> Windows has been validated against physical OmniStream equipment. The macOS build is built and checked automatically before release but has not yet been validated with physical equipment; treat it as ready to try, not as field-proven.</li>
+      </ul>
+
       <h3 id="what-omnisuite-puts-on-the-network">What OmniSuite puts on the network</h3>
       <p>This is what has to be permitted, described as behaviour rather than as a rule to paste in: the exact rule, and whether it is expressed inbound, outbound or per application, depends on the operating system and the security product in use.</p>
       <table>
@@ -178,6 +195,13 @@
         reports whether a newer version exists. If one does, Settings shows it and links to the release page;
         downloading and installing it is something you do yourself. The firmware check likewise only reports;
         see <a href="#settings-firmware-availability">Firmware availability</a>.</li>
+        <li><strong>Which computers get a download.</strong> OmniSuite is built for Windows (64-bit Intel or
+        AMD) and for macOS on Apple Silicon, and for nothing else. On those two, a newer release shows a
+        <strong>Download</strong> link for your computer. On any other computer (an Intel Mac or Linux, for
+        example) Settings still tells you a newer release exists, then says there is no supported update
+        package for it, and leaves the release page link. If a release exists but has no file for your
+        computer yet, Settings says that instead. Neither case is shown as &ldquo;up to date&rdquo;, and a
+        check that could not reach the Internet says it could not check.</li>
         <li><strong>Neither check gets in the way.</strong> Both run in the background with a short time
         limit. With no Internet connection they quietly report that they could not check, and OmniSuite
         works exactly the same.</li>
@@ -206,6 +230,7 @@
     <section id="settings">
       <h2>2. Settings</h2>
       <p>Settings is the gear button in the page header. It is present on <strong>every</strong> page &mdash; Device Info, Configure, A/V Matrix and USB Matrix &mdash; in the same position, and it opens the same dialog with the same state everywhere. There is one implementation of the dialog, and it reads and writes the server (<code>/api/config</code> and <code>/api/ui_preferences</code>), so there is no page-local copy that could disagree with another page.</p>
+      <figure class="shot" id="fig-settings-top"><img src="/ui/guide/settings-top.png" alt="Settings (top)" loading="lazy"><figcaption><strong>Figure 1.</strong> Settings (top). Everything here is stored on this computer. <span class="cn">1</span> Username and <span class="cn">2</span> fallback password that OmniSuite tries on your equipment; <span class="cn">3</span> firmware availability; <span class="cn">4</span> Theme and <span class="cn">5</span> Layout (Classic or Compact).</figcaption></figure>
       <p>This is the first place to check before scanning or sending writes.</p>
       <p>The dialog is in seven sections, always in this order:
       <strong>Device Communication</strong>, <strong>Firmware</strong>, <strong>Appearance</strong>,
@@ -222,7 +247,7 @@
         <tr><td>About</td><td>Who publishes OmniSuite and on what terms.</td><td>Names the copyright holder and links to the <strong>License</strong>, which the application serves from the file the running build was made from. The summary in the dialog is a convenience; the licence text is what governs use.</td></tr>
         <tr><td>Username</td><td>Device login username.</td><td>Most Omni units use <code>admin</code>.</td></tr>
         <tr><td>Password</td><td>Primary device password.</td><td>The eye button reveals the stored value.</td></tr>
-        <tr><td>Fallback Password</td><td>Secondary password tried when the primary password fails.</td><td>Useful while normalizing mixed fleets.</td></tr>
+        <tr><td>Fallback Password</td><td>Secondary password tried when the primary password fails.</td><td>Useful while normalizing mixed fleets. Each unit remembers the password it last accepted, so units on the primary and units on the fallback can be used side by side &mdash; Preview, Blink, routing, Multiview and every other operation use that unit's own password, and a password that stops working is replaced by the one that works the next time you use the unit. Nothing is changed on the unit.</td></tr>
         <tr><td>WS Port</td><td>Selects HTTP/WebSocket or HTTPS/Secure WebSocket.</td><td>Use <code>80 (ws/http)</code> for normal Omni units. Use <code>443 (wss/https)</code> only when the unit's secure API path is working for the target action.</td></tr>
         <tr><td>Timeout</td><td>Per-request device timeout in seconds.</td><td>Increase on slow networks. Too low can make reachable units appear failed.</td></tr>
         <tr><td>Concurrency</td><td>Number of simultaneous scan/upgrade operations.</td><td>Higher is faster, but can make busy networks or units respond unevenly.</td></tr>
@@ -298,6 +323,8 @@
       spent an afternoon building, the passwords the equipment answers to
       &mdash; lives on that machine. <strong>Configuration Backup</strong>
       writes all of it to one encrypted file you can keep somewhere else.</p>
+      <figure class="shot narrow" id="fig-backup-export"><img src="/ui/guide/backup-export.png" alt="Export Configuration asks for a passphrase" loading="lazy"><figcaption><strong>Figure 2.</strong> Export Configuration asks for a passphrase. Nobody can recover it, so write it down.</figcaption></figure>
+      <figure class="shot narrow" id="fig-backup-restore"><img src="/ui/guide/backup-restore.png" alt="Restore Configuration" loading="lazy"><figcaption><strong>Figure 3.</strong> Restore Configuration. After you choose the file and enter its passphrase, OmniSuite lists what the backup contains before it changes anything.</figcaption></figure>
       <div class="note"><strong>Keep the backup off the OmniSuite PC.</strong>
       A backup that only exists on the machine that failed is not a backup.
       A network share, a USB stick in a drawer, anywhere that is not this
@@ -530,19 +557,18 @@
       <div class="note"><strong>Buttons say how important they are.</strong> The action a page exists for &mdash; Scan on Device&nbsp;Info, Upgrade&nbsp;Selected, and the main button of each dialog &mdash; is filled with the preset&rsquo;s accent colour. Everyday utilities such as Clear&nbsp;Units, Set&nbsp;NTP, Slate&nbsp;Manager and Inventory are quieter but still plainly clickable. Destructive actions are filled in the critical colour and carry a ring no other button has. This guide follows the same preset and light/dark setting as the rest of the application.</div>
       <div class="note"><strong>Selected controls are filled, not outlined.</strong> Wherever one choice out of several applies &mdash; the page tabs, the A/V&nbsp;Matrix <code>AV / Video / Audio</code> selector, the layout and preset choosers, and every on/off toggle &mdash; the active one is filled with the preset's selection colour while the others stay quiet. Every toggle can also be reached with the Tab key and operated with Space.</div>
       <p>Appearance lives in the Settings dialog and is presentation only. It never touches discovered units, routes, scan settings, USB state, topology acknowledgements or any credential.</p>
+      <figure class="shot" id="fig-device-manager-dark"><img src="/ui/guide/device-manager-dark.png" alt="The same page in the dark appearance" loading="lazy"><figcaption><strong>Figure 4.</strong> The same page in the dark appearance. Light or dark is chosen under Settings &rsaquo; Appearance &rsaquo; Theme and applies to every page.</figcaption></figure>
       <table>
         <tr><th>Control</th><th>Values</th><th>Notes</th></tr>
         <tr><td>Theme</td><td>Dark, Light</td><td>Independent of layout: either mode works with any layout.</td></tr>
-        <tr><td>Layout</td><td>Classic, Compact, Modern, Workspace</td><td>Spacing, density and grouping only. Behaviour, navigation and device state are identical in all four.</td></tr>
+        <tr><td>Layout</td><td>Classic, Compact</td><td>Spacing and density only. Behaviour, navigation and device state are identical in both. This is the same choice LumaSuite offers. A Modern or Workspace layout chosen in an earlier version is shown as Classic.</td></tr>
         <tr><td>Colour preset</td><td>Ten palettes: Default, Slate, Cool, Ocean, Forest, Warm, Plum, Rose, Soft, High contrast</td><td>Each preset is a complete palette. Meaning is held constant &mdash; critical always reads as critical, online always reads as healthy. Hovering a preset previews it; moving away restores your selection.</td></tr>
         <tr><td>Light background</td><td>One colour picker</td><td>Sets the light-mode application background. Panel, header and border tones are derived from it so surfaces keep their separation. It is a light-mode value and does not affect dark mode.</td></tr>
       </table>
-      <h3>The four layouts</h3>
+      <h3>The two layouts</h3>
       <ul>
         <li><strong>Classic</strong> &mdash; the familiar OmniSuite layout, stated as a choice rather than as the absence of one.</li>
         <li><strong>Compact</strong> &mdash; denser tables and quieter chrome, so more rows fit on screen.</li>
-        <li><strong>Modern</strong> &mdash; grouped into cards with a visible hierarchy.</li>
-        <li><strong>Workspace</strong> &mdash; a constrained, centred work area with a maximum width and slightly tighter spacing, so a wide display does not stretch every table across the whole viewport. The USB Matrix keeps the width it needs on its own page.</li>
       </ul>
       <p>Your choice is remembered in the browser so the first frame is already correct, and on the server so it follows you to another browser and survives a restart.</p>
       <h3>Reset Appearance</h3>
@@ -633,7 +659,7 @@
       </table>
       <div class="note">There is no generic way to find an unknown device at an arbitrary routed address. If OmniSuite knows neither the device's address nor a network containing it, nothing can find it, because there is nothing to address. That is a property of IP, not a missing feature &mdash; OmniSuite does not sweep private address space. Entering the routed network in Targets is how you tell it where to look.</div>
       <p>Range input is bounded before it is expanded, so an over-broad expression such as <code>10.0.0.0/8</code> is rejected immediately rather than being materialised. Range scanning is a discovery operation triggered by Scan; ordinary page polling never runs one.</p>
-      <div class="warn">On macOS and Linux builds, adapter discovery depends on OS interface data. If the adapter list looks wrong, use the Targets box to enter the intended subnet manually.</div>
+      <div class="warn">On macOS, adapter discovery depends on OS interface data. If the adapter list looks wrong, use the Targets box to enter the intended subnet manually.</div>
 
       <h3>When a scan fails instead of finding nothing</h3>
       <p>A scan that finds no devices and a scan that could not look are different results, and OmniSuite reports them differently.</p>
@@ -663,7 +689,7 @@
         <li>OmniSuite downloads are not signed with an Apple developer certificate, so macOS may treat each new download as a different application and ask again after an update.</li>
         <li>The setting applies to this application only. Devices reached through a router on another subnet are not always affected by it, so a scan of another range can succeed while the local one fails.</li>
       </ul>
-      <p>Windows and Linux do not have this permission; there, a refused scan usually means a firewall or security policy.</p>
+      <p>Windows does not have this permission; there, a refused scan usually means a firewall or security policy.</p>
 
       <h3 id="clear-assigned">Clear Units and the accounts that use them</h3>
       <p>What Clear Units does depends on one thing: whether
@@ -749,6 +775,7 @@
     <section id="device-info">
       <h2>6. Device Info Page</h2>
       <p>The Device Info page is the fleet overview, the discovery console and the firmware workflow page. It is the first page of the <strong>OmniSuite Device Manager</strong> &mdash; the application that used to be called the Upgrade Manager. Firmware is still upgraded from here; the name now covers everything the page does.</p>
+      <figure class="shot" id="fig-device-manager"><img src="/ui/guide/device-manager.png" alt="Device Info, the first page of the Device Manager" loading="lazy"><figcaption><strong>Figure 5.</strong> Device Info, the first page of the Device Manager. <span class="cn">1</span> Adapter, <span class="cn">2</span> Scan, <span class="cn">3</span> Clear Units (see Clear Units, below), <span class="cn">4</span> Poll Units, <span class="cn">5</span> Slate Manager.</figcaption></figure>
 
       <h3>Navigating the table</h3>
       <p>The leading columns are, in order, the <strong>selection checkbox, IP, Hostname, then MAC</strong>, so you read select, address, name, hardware identity. The first three &mdash; checkbox, IP and Hostname &mdash; are <strong>frozen</strong>: MAC and everything to the right of it scroll underneath them, so a row read at the far right of a wide table is still attributable to a device. The frozen widths are measured from what is actually rendered, so they stay correct in every layout and at any zoom.</p>
@@ -772,6 +799,7 @@
           <h3>Polling</h3>
           <p>Poll Units keeps status, version, hostname, timezone, NTP server, link speed, password state, and USB feedback fresh without another scan.</p>
           <p>Open dropdowns and active edits are guarded so polling does not overwrite the field while you are working.</p>
+          <p>A unit that stops answering is not asked again on every cycle. It is looked at again after a wait that doubles each time it stays silent, up to two minutes, so a large number of switched-off units does not slow the page or the units that are working, and a unit that comes back is picked up within about two minutes. Turning Poll Units on, or pressing Scan, looks at every unit straight away.</p>
         </div>
         <div class="mini">
           <h3>Codec</h3>
@@ -919,6 +947,7 @@
     <section id="av-matrix">
       <h2>8. A/V Matrix Page</h2>
       <p>The A/V Matrix page is for routing. Encoders are columns. Decoders are rows. Click a matrix cell to route the selected encoder to the selected decoder.</p>
+      <figure class="shot" id="fig-av-matrix"><img src="/ui/guide/av-matrix.png" alt="The A/V Matrix" loading="lazy"><figcaption><strong>Figure 6.</strong> The A/V Matrix. <span class="cn">1</span> Refresh, <span class="cn">2</span> routing mode (Audio + Video, Video, Audio), <span class="cn">3</span> Lock Headers, <span class="cn">4</span> a routed crosspoint (ring = picture, dot = sound), <span class="cn">5</span> a display that is showing a Multiview is marked MULTIVIEW instead of showing a crosspoint.</figcaption></figure>
       <p><strong>Opening the page.</strong> The grid is drawn as soon as OmniSuite has the inventory. The decoders' own settings (the ones Configure uses) are read afterwards, so a decoder that is slow or switched off no longer holds up the page. After a scan, Clear Units or a removal, OmniSuite keeps the latest inventory ready for the next time you open the matrix, and the page confirms it with a fresh read a moment later. When only a route or a codec status changes, the cells update in place.</p>
       <table>
         <tr><th>Mode</th><th>What it writes</th><th>Visual feedback</th></tr>
@@ -936,6 +965,7 @@
     <section id="multiview">
       <h2>9. Multiview</h2>
       <p><strong>Multiview puts several sources on one display at once.</strong> You choose a decoder, choose a layout, drop a source into each window, and the decoder composites them into a single picture. It is built and recalled entirely from the Multiview page.</p>
+      <figure class="shot" id="fig-mv-page"><img src="/ui/guide/mv-page.png" alt="The Multiview page" loading="lazy"><figcaption><strong>Figure 7.</strong> The Multiview page. <span class="cn">1</span> Decoder, <span class="cn">2</span> Multiview (the saved layouts on that decoder; the one on the display is marked), <span class="cn">3</span> Decoder groups, <span class="cn">4</span> Display Output: what the decoder is showing right now.</figcaption></figure>
       <p>Multiview is <strong>video only</strong>. Sound still comes from one source &mdash; see <em>Audio</em> below.</p>
 
       <h3>The notice you see the first time</h3>
@@ -988,6 +1018,7 @@
         <li>Press <strong>Save Multiview</strong>.</li>
       </ol>
       <p>The Configuration panel below the canvas shows exactly what Save will do before you press it, and the confirmation lists every change.</p>
+      <figure class="shot" id="fig-mv-sources"><img src="/ui/guide/mv-sources.png" alt="The canvas" loading="lazy"><figcaption><strong>Figure 8.</strong> The canvas. <span class="cn">1</span> Sources you can drag, <span class="cn">2</span> a window of the layout (LIVE here, because this Multiview is on the display), <span class="cn">3</span> the other Multiviews saved on this decoder, <span class="cn">4</span> Delete Multiview (kept well away from Save and Show).</figcaption></figure>
       <div class="note"><strong>Saving does not change the picture.</strong> It stores the layout on the decoder and leaves the display alone. Nothing appears on screen until you press <strong>Show on Display</strong>.</div>
 
       <h3>Creating something new, versus editing what is there</h3>
@@ -999,6 +1030,13 @@
       <p>Things that change on their own never enable it: a source going quiet, a window's health, a preview refreshing, or the engineering figures updating. Those are readings, not edits.</p>
       <p>After a successful save it greys out again. If a save fails, what you typed is still there and Save is still available, so you can correct it and try again.</p>
 
+      <h3>Saving the Multiview that is on the display</h3>
+      <p>Save only ever stores. If you change the Multiview that is currently on the display &mdash; its layout, its name or which source is in a window &mdash; and press <strong>Save</strong>, <strong>nothing on the display changes</strong>: the windows, the sources, the encoders and the sound all stay exactly as they are. The canvas says the change is <strong>saved, not yet shown</strong>.</p>
+      <p>Press <strong>Show on Display</strong> to apply it. That is the one moment the picture changes, and it applies the whole saved configuration &mdash; windows, sources, encoder settings and audio &mdash; together. While a saved change is waiting to be shown, the canvas is a form again rather than the live display.</p>
+
+      <h3>Naming a Multiview</h3>
+      <p>A name may be 1 to 48 characters: letters, numbers and spaces, plus the marks <code>- &ndash; &mdash; _ + . , ( ) &amp;</code>, and it must contain at least one letter or number. A name that breaks these rules is <strong>refused, not quietly altered</strong>: Save explains what is wrong, lists the characters that are not allowed, and leaves what you typed in the box so you can correct it. Nothing is written to any device.</p>
+
       <h3>The Save confirmation</h3>
       <p>Saving lists what it will do and asks you to confirm, because it reconfigures encoders that other displays may be using. If you would rather not be asked, tick <strong>Do not ask again for this version</strong>.</p>
       <div class="note">That preference is remembered <strong>for this version of OmniSuite</strong>. When you upgrade, the confirmation appears once more, because a new release may do something different. You never have to clear it by hand, and turning it off here does not affect any other warning.</div>
@@ -1008,7 +1046,7 @@
 
       <h3>When a source does not answer</h3>
       <p>If a source cannot be reached, OmniSuite tries a few times before giving up, then tells you which one it was and that <strong>nothing was changed</strong>. That is different from a Multiview that cannot be built &mdash; the message says which it is, so you know whether to fix the layout or go and look at the equipment.</p>
-      <div class="note">Very occasionally a window stays black after a layout change even though everything is configured correctly. OmniSuite notices and says which window rather than reporting success. Showing a different Multiview and then showing this one again clears it.</div>
+      <div class="note">Very occasionally a window stays black after a layout change even though everything is configured correctly. OmniSuite notices, briefly moves the display to the decoder's first input and back to set the windows up again, and says which window if that does not clear it.</div>
 
       <h3>What Multiview actually uses</h3>
       <p>This section is the detail behind the notice OmniSuite shows the first time you use Multiview. You do not need it to use the feature, but it is here when a Multiview will not start and you want to know why.</p>
@@ -1063,7 +1101,9 @@
       <p>OmniSuite will not switch off Video Wall or Fast Switching for you. They are there because somebody wanted them.</p>
 
       <h4>When a window stays black</h4>
-      <p>Occasionally a window is configured correctly, the stream is arriving, and the window still shows nothing. OmniSuite notices and tells you which window rather than reporting success. Showing a different Multiview and then showing this one again clears it. This is a decoder firmware behaviour and is not something OmniSuite can fix.</p>
+      <p>Occasionally a window is configured correctly, the stream is arriving, and the window still shows nothing. This is a decoder behaviour: it did not set the window up when the Multiview was selected.</p>
+      <p>When OmniSuite sees this it fixes it for you, once. The display moves to the decoder's first input for about a second and then returns to the Multiview, which makes the decoder set every window up again. You will see the picture flicker. A Show that needed this takes a few seconds longer, and the result says whether it worked.</p>
+      <p>If the window is still black after that, OmniSuite says which window rather than reporting success, and leaves the rest of the picture running. Showing a different Multiview and then showing this one again is the manual remedy.</p>
 
       <h4>If a Multiview will not start</h4>
       <table>
@@ -1142,6 +1182,7 @@
       <table>
         <tr><th>The Multiview you have open</th><th>What the canvas says</th><th>What a drop does</th></tr>
         <tr><td>Not on the display</td><td><strong>INACTIVE</strong> &mdash; <em>saved on this decoder, not currently shown</em></td><td>Edits the saved layout. Nothing on screen changes until you Save and Show.</td></tr>
+        <tr><td>On the display, with a saved change waiting</td><td><strong>Saved &mdash; press Show on Display to apply it</strong></td><td>Edits the saved description. Nothing on screen changes until you press Show on Display.</td></tr>
         <tr><td>On the display</td><td><strong>LIVE &mdash; changes made on this canvas are applied immediately</strong>, with the canvas outlined</td><td><strong>Changes the picture straight away.</strong></td></tr>
       </table>
 
@@ -1177,6 +1218,12 @@
       <p>The same source can fill two windows <strong>of the same size</strong>. It is encoded once and arrives once, so it costs no extra bandwidth.</p>
       <p>The same source in two windows of <em>different</em> sizes is refused. An encoder produces one picture at one size, so it cannot feed a large window and a small one at the same time. OmniSuite tells you which two windows are in conflict; use a different source for one of them.</p>
       <p>One source can fill at most two windows.</p>
+      <p>If you drop a source onto a window of a different size while it is already in another window, OmniSuite asks first: <em>&ldquo;This source is currently assigned to another window with a different size. Replace that assignment?&rdquo;</em> <strong>Cancel</strong> (the default) leaves both windows exactly as they were. <strong>Replace</strong> empties the old window and fills the new one as a single change &mdash; on a Multiview that is on the display, a single verified change on the decoder.</p>
+
+      <h3>Clearing a window, and what each window says</h3>
+      <p>The <strong>&times;</strong> on a window removes its source again. On a Multiview that is not on the display this is an edit, and the picture goes with it. On the Multiview that is on the display it is a change to the display, so OmniSuite asks the decoder and the window shows <strong>Clearing&hellip;</strong> until the decoder agrees; if the decoder cannot do it, the window keeps its source and the reason is shown. You can keep working in other windows meanwhile: changes are applied one at a time, in the order you made them, and a window waiting its turn says <strong>Queued&hellip;</strong>.</p>
+      <p>If a window does not light even though its source is arriving, OmniSuite tries to repair it once: it briefly shows that source in an empty window of the same size, then puts the window back as it was. The engineering detail under the result lists the window as <strong>repaired</strong>; nothing else on the display is touched, and it never uses a window that has a source of its own.</p>
+      <p>Each window of a Multiview you are editing says which of three things is true: <strong>Unsaved change</strong> (you changed it and have not saved), <strong>Saved &middot; not shown</strong> (stored on the decoder, not on the display), or <strong>Saved &middot; not yet shown</strong> (this Multiview is on the display, and your saved edit will reach it when you press Show on Display). Windows of the Multiview that is on the display say <strong>Live</strong>. The small pictures are the sources' own previews; they identify a source and do not claim anything about what the display is showing.</p>
 
       <h3>Copying a Multiview to another decoder</h3>
       <p>Several screens often need the same arrangement. Open the Multiview you want, press <strong>Copy to Decoder&hellip;</strong> and choose where it should go.</p>
@@ -1189,6 +1236,7 @@
 
       <h3>Decoder groups</h3>
       <p>A <strong>group</strong> is a set of decoders meant to show the same thing &mdash; the screens over a bar, a row of monitors, an overflow area. Press <strong>Groups&hellip;</strong> to create one, name it, and tick the decoders that belong to it. Groups are remembered by OmniSuite; they are still there tomorrow.</p>
+      <figure class="shot" id="fig-mv-groups"><img src="/ui/guide/mv-groups.png" alt="Decoder groups: displays meant to show the same Multiview" loading="lazy"><figcaption><strong>Figure 9.</strong> Decoder groups: displays meant to show the same Multiview. A group is chosen from the same list as a single decoder.</figcaption></figure>
       <p>If you never need groups, you never have to make one. The page works exactly as it always has for a single decoder.</p>
 
       <h3>Using a group</h3>
@@ -1241,11 +1289,14 @@
         <li>A layout can use at most four different sources.</li>
       </ul>
 
+      <h3>If a window starts dark</h3>
+      <p>Occasionally the decoder fails to start one window even though everything is configured correctly. After a Show, OmniSuite checks every window. If one is dark it makes <strong>one</strong> recovery attempt &mdash; the display briefly rests on another input and then returns to the Multiview &mdash; and checks again. The result says whether every window locked first time or only after that recovery, and names any window that still is not showing. If it still is not showing, OmniSuite stops and tells you rather than trying again and again; you can press Show once more.</p>
+
       <h3>Messages you may see</h3>
       <table>
         <tr><th>Message</th><th>Meaning</th></tr>
         <tr><td>VERIFIED</td><td>Everything was written and read back successfully.</td></tr>
-        <tr><td>VERIFIED &mdash; WINDOW NOT LOCKED</td><td>The change worked, but a window is not showing its stream yet. The rest of the picture is live; check that source.</td></tr>
+        <tr><td>PARTIAL &mdash; WINDOW NOT LOCKED</td><td>The change was applied and verified, but a window is not showing its stream, even after OmniSuite set the windows up again <strong>once</strong>. OmniSuite does not keep retrying. The rest of the picture is live; check that source.</td></tr>
         <tr><td>NO ACTIVE VIDEO &mdash; ROLLED BACK</td><td>A window never showed its picture, so the change was undone. Nothing was left half-applied.</td></tr>
         <tr><td>FAILED &mdash; ROLLED BACK</td><td>A device refused a change, so everything already written was put back.</td></tr>
         <tr><td>&hellip; is assigned to windows that need different sizes</td><td>One source cannot fill two differently sized windows. Change one of them.</td></tr>
@@ -1260,6 +1311,7 @@
     <section id="usb">
       <h2>10. USB Endpoints and USB Matrix</h2>
       <p>The USB Matrix pairs LEX and REX endpoints. A LEX (local extender, USB host) is where the computer is; a REX (remote extender, USB device) is where the peripherals are. LEX endpoints are columns and REX endpoints are rows.</p>
+      <figure class="shot" id="fig-usb-matrix"><img src="/ui/guide/usb-matrix.png" alt="The USB Matrix: computers (LEX) across the top, USB devices (REX) down the side" loading="lazy"><figcaption><strong>Figure 10.</strong> The USB Matrix: computers (LEX) across the top, USB devices (REX) down the side. <span class="cn">1</span> A route that is connected and active, <span class="cn">2</span> a route that is configured but not connected, <span class="cn">3</span> a configured peer, <span class="cn">4</span> Link status is shown separately from pairing.</figcaption></figure>
       <p><strong>Opening the page.</strong> After a scan, Clear Units or a removal, OmniSuite keeps the latest USB Matrix ready, so opening the page shows it at once instead of waiting for every endpoint to be asked. Before it is shown, OmniSuite checks that the endpoints it was prepared from are still the ones in the inventory (a check that asks no device anything); if a unit has since been added, removed or moved, the prepared copy is discarded and the page waits for a fresh read. The page then confirms what it showed with its own read a moment later, and live state such as pairings updates in place. Opening the page never starts extra device traffic of its own.</p>
       <p>Creating a pairing between two E4521/D4511 endpoints is refused straight away, naming the side, if either of their units is not answering; nothing is released or changed.</p>
 
@@ -1424,6 +1476,8 @@
       <h3 id="remote-turning-on">Turning it on</h3>
       <p>Everything here is in <strong>Settings &gt; Remote Access</strong>, on
       the OmniSuite computer itself.</p>
+      <figure class="shot narrow" id="fig-ra-confirm"><img src="/ui/guide/ra-confirm.png" alt="Turning Remote Access on over HTTP asks you to confirm, because sign-in details will cross the network in clear" loading="lazy"><figcaption><strong>Figure 11.</strong> Turning Remote Access on over HTTP asks you to confirm, because sign-in details will cross the network in clear. Cancel is the default.</figcaption></figure>
+      <figure class="shot" id="fig-ra-on-http"><img src="/ui/guide/ra-on-http.png" alt="Remote Access is on over HTTP" loading="lazy"><figcaption><strong>Figure 12.</strong> Remote Access is on over HTTP. <span class="cn">1</span> Status and the address people open, <span class="cn">2</span> the network adapter, <span class="cn">3</span> Security, <span class="cn">4</span> Turn off remote access.</figcaption></figure>
       <ol>
         <li><strong>Create an administrator.</strong> The first time, Settings
         asks for a username and password. This can only be done at the OmniSuite
@@ -1530,6 +1584,10 @@
       network in clear, so use it only on a network you trust. <strong>HTTPS</strong>
       is one choice away in <strong>Settings &gt; Remote Access &gt; Security</strong>
       and encrypts everything, including that password.</p>
+      <figure class="shot" id="fig-https-needcert"><img src="/ui/guide/https-needcert.png" alt="Choosing HTTPS before a certificate exists" loading="lazy"><figcaption><strong>Figure 13.</strong> Choosing HTTPS before a certificate exists. <span class="cn">1</span> Remote Access will not start, and it never falls back to HTTP; <span class="cn">2</span> Create one for this network; <span class="cn">3</span> Use my own files; <span class="cn">4</span> Turn on remote access stays unavailable for HTTPS until a certificate is in place.</figcaption></figure>
+      <figure class="shot" id="fig-https-cert"><img src="/ui/guide/https-cert.png" alt="After Create one for this network: the certificate is active" loading="lazy"><figcaption><strong>Figure 14.</strong> After Create one for this network: the certificate is active. Settings shows who it is for, how long is left and its fingerprint. It is self-signed, so browsers warn the first time.</figcaption></figure>
+      <figure class="shot" id="fig-ra-on-https"><img src="/ui/guide/ra-on-https.png" alt="Remote Access on over HTTPS" loading="lazy"><figcaption><strong>Figure 15.</strong> Remote Access on over HTTPS. <span class="cn">1</span> Status, <span class="cn">2</span> Security, <span class="cn">3</span> certificate details and fingerprint, <span class="cn">4</span> Turn off remote access.</figcaption></figure>
+      <figure class="shot" id="fig-cert-mismatch"><img src="/ui/guide/cert-mismatch.png" alt="The computer's address changed after the certificate was made" loading="lazy"><figcaption><strong>Figure 16.</strong> The computer's address changed after the certificate was made. <span class="cn">1</span> OmniSuite says which two addresses disagree and refuses to start HTTPS; <span class="cn">2</span> Create one for this network makes a matching certificate; it is never reissued behind your back. A certificate you supplied is never replaced.</figcaption></figure>
       <p><strong>Why HTTP is where it starts.</strong> A certificate is made for an address. If
       the OmniSuite computer gets its address from DHCP, the address can change,
       and a certificate for the old one then stops matching &mdash; so a browser
@@ -1547,7 +1605,7 @@
       one. Both are in <strong>Settings &gt; Remote Access</strong>.</p>
       <table>
         <tr><th>Option</th><th>What it means</th></tr>
-        <tr><td><strong>Create certificate</strong></td><td>OmniSuite makes one
+        <tr><td><strong>Create one for this network</strong></td><td>OmniSuite makes one
         for the address you chose. Nothing else is needed and it works
         immediately. Because nobody else vouches for it, browsers show a warning
         the first time &mdash; see below.</td></tr>
@@ -1556,10 +1614,59 @@
         and its private key. Browsers that already trust your organisation show
         no warning at all.</td></tr>
       </table>
+      <p><strong>If you turn Remote Access on over HTTPS without a usable
+      certificate,</strong> OmniSuite stops and asks you what to do. Nothing is
+      created or changed until you answer:</p>
+      <ul>
+        <li><strong>Create one for this network</strong> makes the certificate for the
+        network you chose and carries straight on: you are not asked to confirm
+        the creation a second time, and the last question &mdash; <em>Turn on
+        remote access?</em>, showing the network and the security &mdash; is
+        still asked. A certificate being made never turns Remote Access on by
+        itself.</li>
+        <li><strong>Change to HTTP</strong> switches the Security setting to
+        HTTP (not encrypted) and lets you continue; you are then asked to
+        confirm that you want an unencrypted connection.</li>
+        <li><strong>Cancel</strong> changes nothing and leaves Remote Access
+        off.</li>
+      </ul>
+      <p>The question changes with what is wrong. If OmniSuite already has a
+      certificate it created but that certificate is for another network
+      (the computer's address changed), or it cannot be read or has expired, the
+      question names the problem and the button reads <strong>Regenerate
+      Certificate</strong>; it says the fingerprint will change, so browsers
+      that accepted the old one warn again. If the certificate is one
+      <strong>you supplied</strong> and it cannot be used, OmniSuite never
+      offers to replace it: the only choices are <strong>Change to HTTP</strong>
+      or <strong>Cancel</strong>, and the message says where to fix or remove
+      your certificate. In every case <strong>Cancel</strong> is selected when
+      the dialog opens, so pressing Enter changes nothing.</p>
+      <p>OmniSuite never creates a certificate or switches to HTTP on its own,
+      and it never starts an HTTPS connection it cannot secure.</p>
+      <p><strong>The Remote Access tab follows the setting.</strong> When you
+      turn Remote Access on or off, the Remote Access tab appears or disappears
+      as soon as OmniSuite has confirmed the change; you do not need to refresh
+      the page. Turning it <em>on</em> checks the computer's network adapters
+      first, which can take several seconds &mdash; the button reads <em>Turning
+      on&hellip;</em> and the status line says so while it works, and nothing is
+      wrong. Turning it off is immediate. If you turn it off while you are on a
+      Remote Access page, you are taken back to the main OmniSuite page. A page
+      that was open in the background while the setting changed in another window
+      catches up when you bring it back to the front.</p>
+      <p><strong>If the computer's address changes while Remote Access is on.</strong>
+      Remote Access keeps listening on the address it was started on; it does not move by itself and
+      OmniSuite never moves it, or makes a new certificate, for you. Settings notices on every read
+      and says so, for example <em>This computer's address changed from A to B. Remote Access is still
+      listening on A. Turn Remote Access off and on to move it.</em> A direct link is shown for the
+      address that is actually working, with the same note beside it, and it changes to the new address
+      when Remote Access is moved. When you turn Remote Access back on, a certificate made for the old
+      address leads to the same question as above (Cancel, Change to HTTP, Regenerate Certificate). If
+      the address changed while Remote Access was off, nothing is said until you turn it on, and then
+      the same question is asked.</p>
       <p><strong>Your own files stay chosen.</strong> Once you choose
       <strong>Use my own files</strong>, OmniSuite uses that certificate and key
       every time Remote Access is turned on, including after a restart, until you
-      choose <strong>Create certificate</strong> or <strong>Remove
+      choose <strong>Create one for this network</strong> or <strong>Remove
       certificate</strong>. If the files cannot be used (moved, damaged, or a key
       that does not belong to the certificate), Remote Access does not start and
       says why. It never switches to a certificate OmniSuite made, and never to
@@ -1589,8 +1696,9 @@
       Because that <em>replaces</em> the certificate, OmniSuite asks first, with
       <strong>Cancel</strong> selected. The new certificate has a different fingerprint, so browsers that
       accepted the old one warn again, and Remote Access keeps serving the old one until you turn it off and on.
-      If you chose <strong>Use my own files</strong> the replacement stops using your files but never changes
-      or deletes them.</p>
+      A certificate you supplied with <strong>Use my own files</strong> is never replaced by this button or by
+      the question asked when you turn Remote Access on; choose <strong>Remove certificate</strong> first (that
+      only stops OmniSuite using your files, which are left where they are) if you want OmniSuite to create one.</p>
 
       <h4 id="remote-cert-wording">What the HTTPS wording in Settings means</h4>
       <p>The <strong>Security</strong> choice describes the certificate OmniSuite actually has, not
@@ -1713,17 +1821,47 @@
         <tr><td><strong>Administrator</strong></td><td>Everything OmniSuite
         does: scanning, configuration, firmware, Settings, Multiview, USB,
         diagnostics and managing accounts.</td></tr>
-        <tr><td><strong>User</strong></td><td>Only routing, and only with the
-        sources and displays you assign. A User cannot scan, cannot open
-        Settings, cannot touch firmware, cannot see other rooms' equipment and
-        cannot create accounts or change their own permissions.</td></tr>
+        <tr><td><strong>User</strong></td><td>Only routing, USB and showing Multiview
+        layouts &mdash; choosing which of their own sources feeds each window &mdash; and only with
+        the sources, displays and layouts you assign. A User cannot
+        scan, cannot open Settings, cannot touch firmware, cannot see other rooms' equipment,
+        cannot create, rename, resize, reshape or delete a Multiview, and cannot create accounts or
+        change their own permissions.</td></tr>
       </table>
+
+      <h3 id="remote-usb">USB on the User screen</h3>
+      <p>A User who has been given USB sees the same dot grid as the administrator's USB Matrix, with only
+      their own equipment in it: <strong>each row is a USB device</strong> (a keyboard, a camera, a hub on a
+      remote extender) and <strong>each column is a computer</strong>. There is no Connect button. Tap a dot to
+      make that computer use that device; tap a dot that is already connected to disconnect it.</p>
+      <figure class="shot narrow" id="fig-ru-usb"><img src="/ui/guide/ru-usb.png" alt="The User USB Matrix: the administrator's matrix with only this person's computers and USB devices in it" loading="lazy"><figcaption><strong>Figure 17.</strong> The User USB Matrix: the administrator's matrix with only this person's computers and USB devices in it.</figcaption></figure>
+      <ul>
+        <li><strong>An empty ring</strong> is available. <strong>A blue ring</strong> is connected, and a blue
+        ring with a dot in it is connected and in use. While a request is on its way the dot pulses and the
+        screen says what it is doing.</li>
+        <li><strong>The result is checked.</strong> OmniSuite reads both ends again before it says
+        <em>Route created and verified</em> or <em>Route removed and verified</em>. If a unit accepted the
+        change but did not confirm it, the screen says so and does not claim the route changed.</li>
+        <li><strong>The same rules as the administrator's matrix.</strong> A device is not offered to a
+        computer on a different USB network (a USB link is not carried across a router), when either unit is
+        not answering or not yet recognised, or when that computer already has its maximum number of devices.
+        Hover over or focus a dot to read why. These rules are applied by OmniSuite itself, so a changed web
+        page cannot get around them.</li>
+        <li><strong>Only what you were given.</strong> A User never sees, and cannot route, a computer or device
+        they were not assigned. Their permission is checked again at the moment of each change.</li>
+        <li><strong>One change at a time per device.</strong> A device is connected to one computer at a time;
+        tapping another dot on the same row waits until the first request has finished. If somebody else is
+        changing the same equipment, the screen says it is busy and to try again.</li>
+      </ul>
+      <p>The grid scrolls sideways when there are more computers than fit, with a second scroll bar above it,
+      and the device names stay in view while it does.</p>
 
       <h3 id="device-names">Giving devices friendly names</h3>
       <p>Equipment arrives with names like <code>at-omni-111-00001</code>. That
       is fine for an engineer and useless to a teacher, so OmniSuite lets you
       give each device a name people will recognise &mdash; <em>Teacher PC</em>,
       <em>Document Camera</em>, <em>Front Display</em>.</p>
+      <figure class="shot" id="fig-device-names"><img src="/ui/guide/device-names.png" alt="Device names" loading="lazy"><figcaption><strong>Figure 18.</strong> Device names. Users see the name you give here, never the device's hostname or address. Nothing is written to the equipment.</figcaption></figure>
       <p><strong>Settings &gt; Remote Access &gt; Manage users</strong>, then the
       <strong>Device names</strong> tab. Each row shows the device's own name,
       model, address and whether it is a source or a display, so you can tell
@@ -1794,11 +1932,15 @@
       <p><strong>Remote Access &gt; Accounts</strong> (or <strong>Settings &gt; Remote Access &gt; Manage users</strong>,
       or <code>/admin/users</code>). You can add an account, change its role, reset
       its password, disable it temporarily, or delete it.</p>
+      <figure class="shot" id="fig-accounts"><img src="/ui/guide/accounts.png" alt="Remote Access &rsaquo; Accounts" loading="lazy"><figcaption><strong>Figure 19.</strong> Remote Access &rsaquo; Accounts. <span class="cn">1</span> An Administrator account, <span class="cn">2</span> what a User may use, <span class="cn">3</span> Add account, <span class="cn">4</span> Edit.</figcaption></figure>
+      <figure class="shot" id="fig-acct-edit"><img src="/ui/guide/acct-edit.png" alt="Editing a User" loading="lazy"><figcaption><strong>Figure 20.</strong> Editing a User. <span class="cn">1</span> Direct access, <span class="cn">2</span> Features (A/V, USB, Multiview), <span class="cn">3</span> Routing interface (Standard routing, Matrix routing), <span class="cn">4</span> the sources they may route.</figcaption></figure>
+      <figure class="shot" id="fig-acct-displays"><img src="/ui/guide/acct-displays.png" alt="The displays and Display Groups a User may control" loading="lazy"><figcaption><strong>Figure 21.</strong> The displays and Display Groups a User may control. A group does not give the displays inside it, and a display does not give the groups it is in.</figcaption></figure>
+      <figure class="shot" id="fig-acct-multiview"><img src="/ui/guide/acct-multiview.png" alt="Multiview layouts they may show" loading="lazy"><figcaption><strong>Figure 22.</strong> Multiview layouts they may show. <span class="cn">1</span> Layouts are given one by one, grouped by display; <span class="cn">2</span> giving a layout does not give the display or the sources. The person chooses sources only from the sources given to them.</figcaption></figure>
       <p>The editor runs in one order: name, role and password, then <strong>Direct
       access</strong> (it is a way of signing in, so it sits with the credentials), then
       what the account may use. For a User you choose:</p>
       <ul>
-        <li><strong>Features</strong> &mdash; A/V and USB. The person only sees the ones you tick.</li>
+        <li><strong>Features</strong> &mdash; A/V, USB and Multiview. The person only sees the ones you tick.</li>
         <li><strong>Routing interface</strong> &mdash; shown when A/V is ticked. <em>Standard
         routing</em> is the page where the person chooses a source, chooses displays or groups and
         presses Route (sources can also be dragged onto a display or group). <em>Matrix
@@ -1812,10 +1954,40 @@
         <li><strong>Display groups they may route</strong> &mdash; tick the
         <a href="#remote-groups">display groups</a> the person may send a source to.</li>
       </ul>
-      <div class="note"><strong>Multiview is for administrators.</strong> A User account cannot be
-      given Multiview in this release: there is no Multiview option in the editor, and a User never
-      sees a Multiview page. Multiview itself is unchanged for administrators. If an account was
-      given Multiview before, that setting is ignored and is removed the next time the account is saved.</div>
+      <h4 id="remote-multiview">Multiview layouts</h4>
+      <p>Tick <strong>Multiview</strong> and a list of displays appears, each with the layouts saved on it.
+      Tick the <strong>specific layouts</strong> this person may show. There is no &ldquo;all
+      Multiviews&rdquo; switch: a layout you save later is not available to anyone until you assign it.</p>
+      <ul>
+        <li><strong>Only displays that can use Multiview are offered.</strong> A display that is not
+        answering, or that does not support Multiview, is listed greyed out with the reason, so you can
+        still see and remove an assignment you made earlier, but you cannot give it new ones.</li>
+        <li><strong>A layout is identified by the layout itself, not by its name.</strong> Renaming a
+        layout, or the display getting a different network address, does not end an assignment. Deleting
+        a layout and saving a new one with the same name does: it is a different layout, and the old
+        assignment does not carry over.</li>
+        <li><strong>Only layouts saved by OmniSuite can be assigned.</strong> A Multiview made in a
+        device&rsquo;s own web page has no record here and is not listed.</li>
+        <li><strong>Assigning a layout lets the person show exactly that saved layout &mdash; nothing
+        more.</strong> They do not need to be allowed to route to the display or to the sources inside
+        it, and being allowed to route to a display does not give them its layouts. Holding one layout
+        gives them no other layout on the same display. They cannot create, rename, resize, reshape or
+        delete a layout: the number, position and size of its windows are yours.</li>
+        <li><strong>What they can change is which source is in each window &mdash; and only from the
+        sources you gave them for routing.</strong> Give the account the sources you want them to be
+        able to choose between (<em>Sources they may route</em>). A window that already holds a source
+        you did not give them is shown as <em>Another source</em>; they can empty or replace it but
+        cannot put it back. Their choices are used when they press <strong>Show</strong> and are
+        <strong>not saved into your layout</strong>: showing the layout again from your own Multiview
+        page, or from their list with <strong>Show</strong>, brings back the sources you saved.</li>
+        <li><strong>If Multiview stops being available</strong> (the display loses it, is switched to a
+        Video Wall or Fast Switching, or is not answering) the layout simply disappears from the
+        person&rsquo;s screen and cannot be shown. Your assignment is kept, and it works again as soon as
+        the same display and the same layout are available again. If the layout was deleted, the
+        assignment stays in the list marked unavailable until you remove it.</li>
+        <li>Removing an assignment, removing the Multiview feature, disabling the account or deleting it
+        takes effect on the person&rsquo;s very next action.</li>
+      </ul>
       <p>Both lists have a search box and <strong>All</strong> /
       <strong>None</strong> buttons, and show each device's model and address so
       you can tell similar units apart.</p>
@@ -1845,11 +2017,20 @@
       <p>A display group is a named set of displays that all receive the same source &mdash; the
       front-of-house screens, or every display on a floor. <strong>Remote Access &gt; Display groups</strong>
       is where you create, rename, change and delete them.</p>
+      <figure class="shot" id="fig-display-groups"><img src="/ui/guide/display-groups.png" alt="Display groups" loading="lazy"><figcaption><strong>Figure 23.</strong> Display groups. <span class="cn">1</span> Who each group was given to, <span class="cn">2</span> Add group. A group is a set of displays that receive the same source; it is not a Multiview.</figcaption></figure>
       <ul>
         <li><strong>Routing to a group.</strong> A User chooses a source and then a group, just as they
         would a display, and presses <strong>Route</strong>. OmniSuite routes each display in turn,
         checking each one before it moves to the next, and says how many took it &mdash; for example
         <em>3 of 4 displays routed</em> &mdash; and which did not.</li>
+        <li><strong>Several at once.</strong> On the User screen a User chooses a source and then any mix
+        of displays and groups &mdash; one or many, there is no separate mode &mdash; and sends the source
+        to all of them with a single <strong>Route</strong>. A display that is in more than one of the
+        choices is routed once.
+        Group membership is read at the moment of the route. The displays are routed at the same time,
+        not one after another, and the result is the same count &mdash; <em>5 of 6 displays routed</em>
+        &mdash; with the names of any that did not take it. A display chosen on its own still needs its
+        own assignment: belonging to a group the User holds does not give them that display by itself.</li>
         <li><strong>One display failing does not stop the rest</strong>, and displays already routed are
         not put back. A group makes no promise that all of its displays change together.</li>
         <li><strong>It is an ordinary route.</strong> Each display gets the same single-view route a
@@ -1879,6 +2060,7 @@
       person&rsquo;s OmniSuite controls without asking for a password, so it can
       be saved to a phone or tablet home screen or bookmarked on a classroom
       PC.</p>
+      <figure class="shot" id="fig-direct-access"><img src="/ui/guide/direct-access.png" alt="A direct access link" loading="lazy"><figcaption><strong>Figure 24.</strong> A direct access link. <span class="cn">1</span> Allow passwordless direct link, <span class="cn">2</span> the warning: treat the link like a password, <span class="cn">3</span> the link, with Copy link and Regenerate. Only one link is live for an account. The link shown here was created on a throw-away test installation and no longer works.</figcaption></figure>
       <div class="warn"><strong>Anyone who has the link can use the controls
       assigned to that account.</strong> Treat it like a password. It is not a
       harmless bookmark: somebody who is sent the link can do everything that
@@ -1897,6 +2079,26 @@
         <li>It reaches the same address as ordinary Remote Access. If Remote
         Access is off, the link is kept but Settings says it cannot be reached
         from another device yet.</li>
+      </ul>
+
+      <h4>When the address changes</h4>
+      <p>A link contains the address Remote Access was serving when you copied it.
+      If you choose another network, or the computer is given a different address,
+      a copy of the old link points at nothing. OmniSuite notices this and says so:</p>
+      <ul>
+        <li>Settings, under Remote Access, says how many direct links were handed
+        out for an earlier address.</li>
+        <li>On the account, the link shown is already the <strong>new</strong> one,
+        with a note giving the old and the new address. The note stays until you
+        press <strong>I have shared the new link</strong>.</li>
+        <li>The long code in the link has <strong>not</strong> changed. It names the
+        account and works at whatever address Remote Access serves, so nobody is
+        signed out and the new link simply replaces the old address with the new
+        one. The old address stops answering because nothing is listening there
+        any more.</li>
+        <li>If the old address may now belong to a different device on your
+        network, do not rely on that: press <strong>Regenerate</strong>, which
+        stops the old link working everywhere and signs out anyone using it.</li>
       </ul>
 
       <h4>What the link can and cannot do</h4>
@@ -1963,6 +2165,7 @@
       <p><strong>Remote Access &gt; Activity</strong>. It shows what has happened on this
       installation, newest first: who signed in, who was refused, what was
       routed, and what an administrator changed.</p>
+      <figure class="shot" id="fig-activity"><img src="/ui/guide/activity.png" alt="Activity: sign-ins, refusals, routes and administrative changes, newest first" loading="lazy"><figcaption><strong>Figure 25.</strong> Activity: sign-ins, refusals, routes and administrative changes, newest first. Passwords and sign-in tokens are never recorded.</figcaption></figure>
       <p>Three boxes narrow it down &mdash; a search box, a list of event types,
       and a list of people. Use them together to answer a question like "what did
       this account do this afternoon".</p>
@@ -2017,6 +2220,7 @@
       and password you gave them. Signing in on a second device is fine &mdash; a
       phone and a laptop can both be signed in at once. <strong>Sign out</strong>
       is in the top right.</p>
+      <figure class="shot narrow" id="fig-login"><img src="/ui/guide/login.png" alt="The sign-in page people see when they open the Remote Access address" loading="lazy"><figcaption><strong>Figure 26.</strong> The sign-in page people see when they open the Remote Access address.</figcaption></figure>
       <p><strong>Password sessions</strong> end on their own after about eight
       hours without use, and after twenty-four hours whatever happens. Everyone
       is signed out if OmniSuite restarts, and repeated wrong passwords are
@@ -2050,19 +2254,78 @@
 
       <h3 id="remote-user-view">What a User sees</h3>
       <p>A User gets a simple screen built for a phone or tablet, with a tab for
-      each feature you granted (A/V and USB). If you granted only one, there are no tabs at
+      each feature you granted (A/V, USB and Multiview). If you granted only one, there are no tabs at
       all.</p>
+
+      <h4>Multiview</h4>
+      <p>Shown to a person who was given Multiview. Each display you assigned appears with its layouts: the
+      layout&rsquo;s name, a small drawing of how the windows are arranged, and a <strong>Show</strong>
+      button. The layout that is on the display now is marked <strong>Showing</strong>. Pressing Show puts
+      that saved layout on the display the same way the administrator&rsquo;s Show on Display does, and the
+      screen says whether it was verified. It takes a few seconds, and the button waits until it is done.
+      If it cannot be shown &mdash; the display is not answering, or is set up in a way that does not allow
+      Multiview &mdash; the layout is greyed out with the reason. Someone with only Multiview sees only
+      this page, and never a list of addresses.</p>
+      <figure class="shot narrow" id="fig-ru-mv"><img src="/ui/guide/ru-mv.png" alt="Multiview as a User sees it" loading="lazy"><figcaption><strong>Figure 27.</strong> Multiview as a User sees it. <span class="cn">1</span> Show puts the saved layout on the display, <span class="cn">2</span> Choose sources opens it, <span class="cn">3</span> marks the layout that is on the display now.</figcaption></figure>
+      <figure class="shot narrow" id="fig-ru-mv-edit"><img src="/ui/guide/ru-mv-edit.png" alt="Choose sources" loading="lazy"><figcaption><strong>Figure 28.</strong> Choose sources. <span class="cn">1</span> All layouts, <span class="cn">2</span> the layout drawn in proportion, <span class="cn">3</span> Your sources (only the ones given to this person), <span class="cn">4</span> a source for each window, <span class="cn">5</span> Show. Nothing changes on the display until Show is pressed.</figcaption></figure>
+      <figure class="shot narrow" id="fig-ru-mv-replace"><img src="/ui/guide/ru-mv-replace.png" alt="A source cannot fill windows of different sizes at once" loading="lazy"><figcaption><strong>Figure 29.</strong> A source cannot fill windows of different sizes at once. Cancel leaves both windows as they were; Replace empties the other window and uses the source here.</figcaption></figure>
+      <p>Press <strong>Choose sources</strong> on a layout to open it. You see the display, the
+      layout&rsquo;s name, each window drawn in proportion with its size, what each window holds now,
+      and <strong>your sources</strong> &mdash; only the ones you were given. A source that is not
+      ready for Multiview is listed greyed out with the reason; sources that can never feed a window
+      are left out and counted.</p>
+      <ul>
+        <li><strong>Choose what goes in a window</strong> in any of three ways: pick the window&rsquo;s
+        source from the list beside it, drag a source onto the window, or tap a source and then tap the
+        window. The <strong>&times;</strong> on a window (or <strong>Clear</strong> beside it) empties
+        it. You can make as many changes as you like.</li>
+        <li><strong>Nothing happens to the display until you press Show.</strong> Changed windows are
+        outlined and marked <em>changed</em>, and the line under the windows says what is waiting, for
+        example <em>2 changes not shown yet</em>. <strong>Discard changes</strong> puts every window
+        back to what the display holds; <strong>Refresh</strong> reads the display again and keeps your
+        changes.</li>
+        <li><strong>Show applies everything you chose together</strong>, the same way the
+        administrator&rsquo;s page does, and checks the display afterwards. Windows you did not change
+        are left alone. When it finishes the page shows what the display is actually holding. Your
+        choices are used only for this Show; they do not change the layout your administrator
+        saved.</li>
+        <li><strong>The same source can fill several windows of the same size.</strong> A source cannot
+        fill windows of different sizes at once. If you try, you are asked: <em>Cancel</em> changes
+        nothing; <em>Replace</em> empties the other window and puts the source in this one.</li>
+        <li><strong>If Show does not work</strong> &mdash; a source is not answering, or the layout
+        changed while you were choosing &mdash; your choices are kept, the page says why, and you can
+        review them and press Show again. If your access to the layout or to a source was withdrawn,
+        the page says so and you cannot go on.</li>
+      </ul>
 
       <h4>A/V</h4>
       <ol>
         <li>Choose a source &mdash; what to route.</li>
-        <li>Choose a display &mdash; where to route it.</li>
+        <li>Choose one or more displays or groups &mdash; where to route it.</li>
         <li>Press <strong>Route</strong>.</li>
       </ol>
-      <p>Any display groups you gave the account appear beside the displays in step 2, marked with
-      the number of displays in them. Choosing a group instead of a display routes the source to
-      every display in it, one after another, and the screen reports <em>N of M displays routed</em>.
-      A group has no picture of its own &mdash; it is several displays, not one.</p>
+      <p>Choosing a display or group <em>adds it to your selection</em>; choosing it again removes it.
+      There is nothing to switch between: one display is simply a selection of one. Any display groups
+      you gave the account appear above the displays in step 2, marked with the number of displays in
+      them. Choosing a group routes the source to every display in it, and the screen reports
+      <em>N of M displays routed</em>. A group has no picture of its own &mdash; it is several displays,
+      not one.</p>
+      <figure class="shot narrow" id="fig-ru-standard-selected"><img src="/ui/guide/ru-standard-selected.png" alt="Standard routing as a User sees it" loading="lazy"><figcaption><strong>Figure 30.</strong> Standard routing as a User sees it. <span class="cn">1</span> Audio follows video and Preview, <span class="cn">2</span> the chosen source, <span class="cn">3</span> a chosen Display Group, <span class="cn">4</span> Clear selection, <span class="cn">5</span> Unroute, <span class="cn">6</span> Route.</figcaption></figure>
+      <figure class="shot narrow" id="fig-ru-standard-routed"><img src="/ui/guide/ru-standard-routed.png" alt="After Route" loading="lazy"><figcaption><strong>Figure 31.</strong> After Route. <span class="cn">1</span> The result says how many displays took the source. A display that was showing a Multiview leaves it as part of the same step.</figcaption></figure>
+      <figure class="shot narrow" id="fig-user-routing-dark"><img src="/ui/guide/user-routing-dark.png" alt="The same screen in the dark appearance" loading="lazy"><figcaption><strong>Figure 32.</strong> The same screen in the dark appearance.</figcaption></figure>
+      <figure class="shot narrow" id="fig-ru-lectern"><img src="/ui/guide/ru-lectern.png" alt="An account given only Standard routing and only some equipment sees just that equipment" loading="lazy"><figcaption><strong>Figure 33.</strong> An account given only Standard routing and only some equipment sees just that equipment.</figcaption></figure>
+      <p>The summary at the bottom says what you have chosen &mdash; for example
+      <em>Route Teacher PC to 2 displays and 1 group</em>. One press sends the source to all of them,
+      at the same time. Your selection stays as it is after a route, so you can change the source and
+      route again; a display that is still being routed is left to finish and is not sent a second
+      request. <strong>Clear selection</strong> forgets the source and every display and group you
+      chose. It changes nothing on any display.</p>
+      <p>Two switches sit above the source cards, the same two LumaSuite has.
+      <strong>Audio follows video</strong> is on by default: a route carries the source's sound with its
+      picture. Turn it off and a route sends the picture only, leaving each display's sound where it
+      was. <strong>Preview</strong> shows or hides the pictures on this page; it is a preference for
+      this browser, and it is not the same thing as the per-unit Preview setting in Device Info, which
+      controls whether a unit produces a picture at all.</p>
       <p>Each display also says what is on it now. A display showing something
       the account is not allowed to use is reported as showing another source,
       without naming it.</p>
@@ -2079,9 +2342,11 @@
       and an account given neither is told that routing is not available and to ask an
       administrator. The page opens on the one the person used last on that browser; that is
       only a preference, and if they no longer have it they are moved to the one they do.</p>
+      <figure class="shot narrow" id="fig-ru-matrix"><img src="/ui/guide/ru-matrix.png" alt="The User Matrix" loading="lazy"><figcaption><strong>Figure 34.</strong> The User Matrix. <span class="cn">1</span> Audio + Video, Video or Audio, <span class="cn">2</span> a crosspoint, <span class="cn">3</span> a Display Group is one row. Only the sources and displays this account may use appear.</figcaption></figure>
+      <figure class="shot narrow" id="fig-ru-frontdesk"><img src="/ui/guide/ru-frontdesk.png" alt="An account given only the Matrix goes straight to it" loading="lazy"><figcaption><strong>Figure 35.</strong> An account given only the Matrix goes straight to it. A dashed ring on a group row means only some of its displays have that source.</figcaption></figure>
       <p>The Matrix is a grid: the sources the account may use across the top, and the displays and
-      display groups it may control down the side. Choose <strong>AV</strong>, <strong>Video</strong>
-      or <strong>Audio</strong> above the grid, then press the circle where a source meets a
+      display groups it may control down the side. Choose <strong>Audio + Video</strong>,
+      <strong>Video</strong> or <strong>Audio</strong> above the grid, then press the circle where a source meets a
       display. AV routes sound and picture together; Video or Audio changes only that one and
       leaves the other where it was, so a display can show one source's picture with another's
       sound. The ring is the picture and the dot inside it is the sound.</p>
@@ -2097,15 +2362,16 @@
         OmniSuite refuses a route to it. A display showing a Multiview says <em>Multiview</em>
         for its picture, and its sound is shown as usual.</li>
         <li>Rest the pointer on a source's name (or tab to it) to see its picture. Nothing is
-        loaded until you do, and a source with its preview turned off simply shows none.</li>
+        loaded until you do, and a source with its preview turned off simply shows none. The
+        <strong>Preview</strong> switch above the grid turns these pictures off for this browser.</li>
         <li>If an administrator changes what the account may use while the Matrix is open, rows
         and columns appear and disappear without signing out. If the Matrix itself is taken away,
         the page moves to Routing at once.</li>
         <li>An account that opens its page from a direct access link gets whichever interfaces the
         account has, and follows later changes the same way.</li>
       </ul>
-      <p>The display chosen last is remembered, so coming back to the screen or
-      refreshing it does not mean choosing it again. Nothing is ever chosen
+      <p>The displays and groups chosen last are remembered, so coming back to the screen or
+      refreshing it does not mean choosing them again. Nothing is ever chosen
       automatically &mdash; a person with one display still picks it &mdash; and
       if that display is later unassigned or removed, the selection is simply
       cleared rather than moved to another one.</p>
@@ -2118,16 +2384,22 @@
       <em>Multiview</em>. A display showing nothing says <em>Unrouted</em>.</p>
 
       <h4 id="user-unroute">Stopping a display</h4>
-      <p>Choosing a display puts an <strong>Unroute</strong> button beside
-      <strong>Route</strong>. It stops that display showing anything: the picture
-      goes, the sound goes, and the card then reads <em>Unrouted</em>.</p>
+      <p>The bar at the bottom has three buttons, always in the same order:
+      <strong>Clear selection</strong>, <strong>Unroute</strong> and
+      <strong>Route</strong>. <strong>Unroute</strong> acts on whatever displays and groups you have
+      chosen &mdash; one display, several, a group, several groups, or any mix &mdash; and needs no
+      source. It stops each of them showing anything: the picture goes, the sound goes, and the card
+      then reads <em>Unrouted</em>.</p>
       <p>OmniSuite asks before doing it, because unlike choosing a different
-      source there is nothing left on screen afterwards. If the display was
-      showing a Multiview, unrouting takes it out of the Multiview first and
-      then stops it; the saved Multiview itself is not deleted and can be shown
-      again later.</p>
-      <p>The button is greyed out when the display is already showing nothing,
-      and OmniSuite confirms with the display that it really has stopped before
+      source there is nothing left on screen afterwards. A display that is in more than one of your
+      choices is stopped once; group membership is read at the moment you confirm; and a display you
+      did not choose is never touched. The displays are stopped at the same time, one that cannot be
+      stopped does not hold up the rest, and the screen reports <em>N of M displays unrouted</em> with
+      the names of any that did not stop. If a display was showing a Multiview, unrouting takes it out
+      of the Multiview first and then stops it; the saved Multiview itself is not deleted and can be
+      shown again later.</p>
+      <p>The button is greyed out while nothing is chosen, or when every chosen display is already
+      showing nothing, and OmniSuite confirms with each display that it really has stopped before
       reporting success.</p>
 
       <h4 id="user-previews">Source pictures</h4>
@@ -2171,9 +2443,17 @@
       <h4 id="user-routing-states">While a display is changing</h4>
       <p>After <strong>Route</strong>, the display's card reads
       <strong>Routing&hellip;</strong> until the change is confirmed, and will
-      not take another selection until it finishes. When it is done a short
-      <strong>Routed</strong> message appears. Waiting a moment is normal; a
+      not take another route until it finishes. <em>Nothing else on the screen waits:</em>
+      you can choose the next source and display and press <strong>Route</strong> again while the
+      first is still being checked, and the page is refreshed once, after the last route has finished.
+      When a route is confirmed a short <strong>Routed</strong> message appears. A route that could
+      not be confirmed leaves <strong>Not routed &mdash; try again</strong> on that display, and it stays
+      there until you try again, so a later success cannot hide it. Waiting a moment is normal; a
       route usually takes a second or two.</p>
+      <p>In the <strong>Matrix</strong> the same applies to a single row. The cell you pressed turns
+      into a slowly turning dashed ring while OmniSuite checks the route, the rest of that row waits,
+      and every other row stays available. A cell with a cross in it means the last route to that
+      display could not be confirmed.</p>
       <p>Messages that can appear instead:</p>
       <table>
         <tr><th>Message</th><th>What it means</th></tr>
@@ -2277,14 +2557,14 @@
         <em>Advanced</em> and continue; the connection is encrypted. To remove
         the warning entirely, supply a certificate your organisation issued.</td></tr>
         <tr><td>Remote Access will not turn on</td><td>HTTPS needs a
-        certificate. Press <strong>Create certificate</strong>, or supply your
+        certificate. Press <strong>Create one for this network</strong>, or supply your
         own files, then turn it on.</td></tr>
         <tr><td>After a restart, Settings says the certificate cannot be
         read</td><td>The file has been moved, replaced or damaged. Create a new
         one or point OmniSuite at the correct files. It deliberately does not
         start unencrypted instead.</td></tr>
         <tr><td>The browser says the certificate has expired</td><td>Settings
-        shows the expiry date. Press <strong>Create certificate</strong> again,
+        shows the expiry date. Press <strong>Create one for this network</strong> again,
         or supply a current one.</td></tr>
         <tr><td>The sign-in page appears but the password is refused</td>
         <td>Reset it in Manage users. After several wrong attempts OmniSuite
