@@ -79,8 +79,10 @@ const context = {
   console,
 };
 vm.createContext(context);
+vm.runInContext('const _matrixPatchSnapshots = new WeakMap();', context);   // the declaration in matrix.js, verbatim below
+assert(MATRIX.includes('const _matrixPatchSnapshots = new WeakMap();'), 'matrix.js no longer declares the patch snapshot');
 for (const pattern of [/function unitIsOffline\(/, /function routeOfflineMessage\(/, /function decoderKey\(/,
-                       /function matrixStructureKey\(/, /function matrixCellFlags\(/, /function patchMatrixState\(/,
+                       /function matrixStructureKey\(/, /function matrixCellFlags\(/, /function matrixFlagBits\(/, /function patchMatrixState\(/,
                        /function syncMasterCheckbox\(/, /function bindMatrixDelegation\(/]) {
   vm.runInContext(lift(MATRIX, pattern), context);
 }
@@ -130,6 +132,112 @@ const DEC = [{ip: '192.0.2.20', host: 'd1'}, {ip: '192.0.2.21', host: 'd2'}];
     context.routeCodecCompatible = () => true;
     context.patchMatrixState(grid.table, ENC, DEC);
     assert(!grid.cells[0].classes.has('codec-blocked') && !('title' in grid.cells[0].attrs), 'cleared again');
+  });
+
+  // ---- the cost of a state-only refresh --------------------------------------------------
+  // Measured at 1,000 units (190,000 crosspoints): 1.7-2.2 s of main thread per refresh, all of it DOM reads to
+  // learn that nothing moved. The grid used here counts every read, so the claim is "reads", not a stopwatch.
+  function countingGrid(enc, dec) {
+    const grid = makeGrid(enc, dec, (d, e) => context.matrixCellFlags(d, e));
+    const reads = {table: 0, cell: 0};
+    const all = grid.cells;
+    grid.table.querySelectorAll = () => { reads.table += 1; return all; };
+    for (const c of all) {
+      const q = c.querySelector;
+      c.querySelector = (sel) => { reads.cell += 1; return q(sel); };
+    }
+    return {grid, reads};
+  }
+
+  await check('the first patch of a table asserts every cell; the next, with nothing moved, reads no DOM at all', () => {
+    routes.set('192.0.2.20', '192.0.2.11');
+    const {grid, reads} = countingGrid(ENC, DEC);
+    context.patchMatrixState(grid.table, ENC, DEC);
+    assert(reads.table === 1 && reads.cell > 0, 'the first patch is a full pass (no snapshot yet): ' + JSON.stringify(reads));
+    reads.table = 0; reads.cell = 0;
+    context.patchMatrixState(grid.table, ENC, DEC);
+    context.patchMatrixState(grid.table, ENC, DEC);
+    eq(reads, {table: 0, cell: 0}, 'DOM reads while nothing moved');
+    eq(grid.writes, {radio: 0, dot: 0, cls: 0});
+    routes.clear();
+  });
+
+  await check('a moved route touches only the cells that moved, and a large grid with no change costs no DOM reads', () => {
+    const encs = Array.from({length: 120}, (_, i) => ({ip: '198.51.100.' + (i + 1), host: 'e' + i}));
+    const decs = Array.from({length: 300}, (_, i) => ({ip: '203.0.113.' + ((i % 250) + 1) + (i >= 250 ? '0' : ''), host: 'd' + i}));
+    const {grid, reads} = countingGrid(encs, decs);
+    context.patchMatrixState(grid.table, encs, decs);
+    reads.table = 0; reads.cell = 0;
+    context.patchMatrixState(grid.table, encs, decs);
+    eq(reads, {table: 0, cell: 0}, 'reads for 36,000 unchanged crosspoints');
+    routes.set(decs[7].ip, encs[3].ip);
+    context.patchMatrixState(grid.table, encs, decs);
+    assert(reads.cell <= 4 * 2 && reads.table === 1, 'one moved route read more than its own cells: ' + JSON.stringify(reads));
+    eq(grid.cells.filter((c) => c.radio.checked).length, 1, 'exactly one crosspoint is ticked');
+    routes.clear();
+  });
+
+  await check('a change to the video alone, or the audio alone, is noticed (each has its own bit)', () => {
+    const realVideo = context.videoMatchesEncoder, realAudio = context.audioMatchesEncoder;
+    try {
+      let v = null, a = null;
+      context.videoMatchesEncoder = (d, e) => d.ip === '192.0.2.20' && e.ip === v;
+      context.audioMatchesEncoder = (d, e) => d.ip === '192.0.2.20' && e.ip === a;
+      const {grid} = countingGrid(ENC, DEC);
+      context.patchMatrixState(grid.table, ENC, DEC);              // snapshot: nothing routed
+      v = '192.0.2.11';
+      context.patchMatrixState(grid.table, ENC, DEC);
+      assert(grid.cells[1].radio.checked === true && !grid.cells[1].dot.classList.contains('audio-on'), 'video moved alone');
+      a = '192.0.2.12';
+      context.patchMatrixState(grid.table, ENC, DEC);
+      assert(grid.cells[2].dot.classList.contains('audio-on') && grid.cells[1].radio.checked === true, 'audio moved alone');
+      v = null;
+      context.patchMatrixState(grid.table, ENC, DEC);
+      assert(grid.cells[1].radio.checked === false, 'video cleared alone');
+    } finally {
+      context.videoMatchesEncoder = realVideo; context.audioMatchesEncoder = realAudio;
+    }
+  });
+
+  await check('a table whose shape changed is never judged by the old snapshot', () => {
+    routes.set('192.0.2.20', '192.0.2.11');
+    const {grid} = countingGrid(ENC, DEC);
+    context.patchMatrixState(grid.table, ENC, DEC);
+    const fewer = ENC.slice(0, 2);                               // a column went away; the DOM cells are re-made
+    const rebuilt = makeGrid(fewer, DEC, (d, e) => context.matrixCellFlags(d, e));
+    rebuilt.cells.forEach((c) => { c.radio._checked = !c.radio._checked; });    // all disagree with the flags
+    rebuilt.table.querySelectorAll = () => rebuilt.cells;
+    // same table object, different size: a snapshot of 6 cells must not be trusted for 4
+    const t = grid.table; t.querySelectorAll = () => rebuilt.cells;
+    context.patchMatrixState(t, fewer, DEC);
+    eq(rebuilt.cells.map((c) => c.radio.checked), [false, true, false, false], 'every cell re-asserted');
+    routes.clear();
+  });
+
+  await check('dropping the snapshot makes the next patch re-assert every cell (what a failed optimistic route needs)', () => {
+    routes.set('192.0.2.20', '192.0.2.11');
+    const {grid, reads} = countingGrid(ENC, DEC);
+    context.patchMatrixState(grid.table, ENC, DEC);
+    grid.cells[0].radio._checked = true;                      // the click handler's optimistic write
+    context.patchMatrixState(grid.table, ENC, DEC);
+    assert(grid.cells[0].radio.checked === true, 'with a snapshot and unchanged flags the DOM is trusted');
+    vm.runInContext('_matrixPatchSnapshots', context).delete(grid.table);          // what the click handler does after writing by hand
+    context.patchMatrixState(grid.table, ENC, DEC);
+    assert(grid.cells[0].radio.checked === false, 'the failed route was put back');
+    routes.clear();
+  });
+
+  await check('the writers that bypass the patch drop the snapshot: the rebuild and the click handler', () => {
+    const render = stripComments(lift(MATRIX, /function render\(/));
+    const rebuild = render.slice(render.indexOf('t.innerHTML = head + rows;'));
+    assert(/_matrixPatchSnapshots\.(delete\(t\)|set\(t, snapshotBits\))/.test(rebuild.slice(0, 200)), 'a rebuild must replace or drop the snapshot');
+    const built = render.slice(0, render.indexOf('t.innerHTML = head + rows;'));
+    assert(built.includes('matrixFlagBits({codecCompatible, videoMatch, audioMatch, offline: unitOffline})'),
+           'the snapshot a rebuild stores must be worked out from the same flags the cells are drawn with');
+    const click = stripComments(lift(MATRIX, /async function onMatrixCellClick\(/));
+    const drop = click.indexOf('_matrixPatchSnapshots.delete(t)');
+    const write = click.indexOf('radio.checked = true');
+    assert(drop > 0 && write > drop, 'the click handler must drop the snapshot before it writes a radio');
   });
 
   await check('a unit the server has seen not answer is structure, and one nothing has looked at is not', () => {

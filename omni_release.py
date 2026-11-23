@@ -3,8 +3,8 @@
 Nothing about a GitHub release says what product it is or whether this project
 made it, so the product is recognised from names this project controls:
 
-    tag       V1.2.0
-    artifact  OmniSuite-V1.2.0-<platform>
+    tag       V1.2.1
+    artifact  OmniSuite-V1.2.1-<platform>
 
 This module is the single definition of that identity. The in-app updater, the
 release workflow's identity guard and the tests all read it, so the rule cannot
@@ -31,9 +31,20 @@ _NUMERIC = r"(\d+(?:\.\d+){1,3})"
 
 # Release artifacts. The platform tails are owned by tools/build_release.py and
 # pinned against it by tests. Matched case-insensitively on the platform only.
-PLATFORM_TAILS = ("Windows-x86_64.zip", "macOS-arm64.zip", "macOS-x86_64.zip",
-                  "Ubuntu-x86_64.tar.gz")
-_TAIL_PATTERN = r"(?P<key>windows-x86_64|macos-arm64|macos-x86_64|ubuntu-x86_64)\.(?:zip|tar\.gz|tgz)"
+#
+# DISTRIBUTED platforms, from V1.2.1: Windows x86-64 and macOS Apple Silicon (arm64) only.
+# This is what a release is built with, what the workflow requires and what the publish
+# step accepts. It is not the platform the tests run on (see the workflow).
+PLATFORM_TAILS = ("Windows-x86_64.zip", "macOS-arm64.zip")
+SUPPORTED_PLATFORM_KEYS = ("windows-x86_64", "macos-arm64")
+
+# Artifacts that earlier releases (V1.2.0) carried and later ones do not. They are still
+# RECOGNISED as this product's, so an old release in the feed is never mistaken for another
+# product's or for a malformed one -- but nothing produces them, nothing publishes them, and
+# the updater never offers them.
+LEGACY_PLATFORM_KEYS = ("macos-x86_64", "ubuntu-x86_64")
+_TAIL_PATTERN = (r"(?P<key>windows-x86_64|macos-arm64|macos-x86_64|ubuntu-x86_64)"
+                 r"\.(?:zip|tar\.gz|tgz)")
 
 
 class Product:
@@ -70,7 +81,7 @@ class Product:
 
     # -- tags ---------------------------------------------------------------
     def parse_tag(self, tag) -> Optional[str]:
-        """The numeric core of a tag ('1.2.0'), or None if it is not this product's."""
+        """The numeric core of a tag ('1.2.1'), or None if it is not this product's."""
         match = self._tag.match(str(tag or ""))
         return match.group(1) if match else None
 
@@ -83,7 +94,7 @@ class Product:
 
     # -- artifacts ----------------------------------------------------------
     def parse_asset(self, name) -> Optional[dict]:
-        """{'version': '1.2.0', 'platform': 'macos-arm64'} for this product's artifact."""
+        """{'version': '1.2.1', 'platform': 'macos-arm64'} for this product's artifact."""
         match = self._asset.match(str(name or ""))
         if not match:
             return None

@@ -27,7 +27,7 @@
 (function (root) {
   'use strict';
 
-  var MODES = [['av', 'AV'], ['video', 'Video'], ['audio', 'Audio']];
+  var MODES = [['av', 'Audio + Video'], ['video', 'Video'], ['audio', 'Audio']];
   var MODE_WORDS = {av: 'audio and video', video: 'video only', audio: 'audio only'};
   var PLANE_WORDS = {all: 'All', partial: 'Partial', mixed: 'Mixed', unavailable: 'Unavailable'};
   var HOVER_DELAY_MS = 350;
@@ -60,6 +60,11 @@
     var mode = 'av';
     var data = null;
     var busy = false;
+    // Routes sent and not yet verified, by row; and the last verified failure per
+    // cell. Three states a cell can be in -- pending, verified, failed -- and a
+    // pending one is never drawn as either of the others.
+    var pending = {};
+    var failed = {};
     var preview = {timer: null, token: 0, card: null, owner: null};
 
     function el(tag, className, text) {
@@ -181,11 +186,23 @@
         cell.ring.className = 'mx-ring' + (video ? ' video-' + video : '');
         cell.dot.className = 'mx-dot' + (audio ? ' audio-' + audio : '');
         var gone = source.online === false || row.online === false;
+        var rowPending = Object.prototype.hasOwnProperty.call(pending, cell.row);
+        var thisPending = rowPending && pending[cell.row] === source.id;
+        var thisFailed = !rowPending && failed[cell.row + '|' + source.id] === true;
+        // Never disabled for pending: a disabled cell shows the not-allowed cursor,
+        // which reads as a refusal when the truth is only that this row is waiting
+        // to be verified. Clicks on a waiting row are ignored in onClick instead.
         cell.button.disabled = gone || busy;
         cell.button.classList.toggle('offline-blocked', gone);
+        cell.button.classList.toggle('pending', thisPending);
+        cell.button.classList.toggle('row-pending', rowPending && !thisPending);
+        cell.button.classList.toggle('failed', thisFailed);
+        cell.button.setAttribute('aria-busy', String(rowPending));
         cell.button.setAttribute('aria-label',
           'Route ' + source.name + ' to ' + row.name + ' (' + MODE_WORDS[mode] + '): '
-          + stateWords(video, audio) + (gone ? ', offline' : ''));
+          + stateWords(video, audio) + (gone ? ', offline' : '')
+          + (thisPending ? ', routing, not yet verified' : '')
+          + (thisFailed ? ', the last route did not verify' : ''));
       });
     }
 
@@ -280,8 +297,10 @@
     function openPreview(head) {
       var id = head.dataset.source;
       var source = ((data && data.sources) || []).filter(function (s) { return s.id === id; })[0];
-      // An offline source has no picture to ask for.
+      // An offline source has no picture to ask for, and nothing is asked for while the page's
+      // Preview switch is off.
       if (!source || source.online === false || !deps.fetchPreview) return;
+      if (deps.previewEnabled && !deps.previewEnabled()) return;
       if (!preview.card) {
         preview.card = el('div', 'mx-preview empty');
         preview.card.hidden = true;
@@ -314,6 +333,10 @@
       if (modeButton) { setMode(modeButton.dataset.mode); return; }
       var cell = event.target.closest('.mx-cell');
       if (!cell || cell.disabled || busy) return;
+      // A row waiting for its verification takes no second route; every other
+      // row is free.
+      if (Object.prototype.hasOwnProperty.call(pending, rowKey(
+            {kind: cell.dataset.kind, id: cell.dataset.row}))) return;
       closePreview();
       // One request, through the page's own route function. The server decides.
       deps.route({source: cell.dataset.source, kind: cell.dataset.kind,
@@ -347,6 +370,47 @@
       setBusy: function (value) {
         busy = !!value;
         if (data) paint();
+      },
+      // A route to this row has been sent and is not yet verified.
+      setPending: function (kind, id, sourceId, on) {
+        var key = rowKey({kind: kind, id: id});
+        if (on) {
+          pending[key] = sourceId;
+          delete failed[key + '|' + sourceId];
+        } else {
+          delete pending[key];
+        }
+        if (data) paint();
+      },
+      // The route's verified outcome. 'verified' moves a display row to the
+      // source the server confirmed, so the cell is right before the grid is read
+      // again; 'failed' marks the cell and leaves the rest as it was. A group row
+      // is not moved: what is true of all its members is only known from the read.
+      settle: function (kind, id, sourceId, routeMode, outcome) {
+        var key = rowKey({kind: kind, id: id});
+        delete pending[key];
+        if (outcome === 'verified') {
+          delete failed[key + '|' + sourceId];
+          if (kind === 'display' && data && data.rows) {
+            data.rows = data.rows.map(function (row) {
+              if (row.kind !== 'display' || row.id !== id) return row;
+              var next = Object.assign({}, row);
+              if (routeMode === 'av' || routeMode === 'video') {
+                next.video = Object.assign({}, row.video, {mode: 'source', source_id: sourceId});
+              }
+              if (routeMode === 'av' || routeMode === 'audio') {
+                next.audio = Object.assign({}, row.audio, {mode: 'source', source_id: sourceId});
+              }
+              return next;
+            });
+          }
+        } else {
+          failed[key + '|' + sourceId] = true;
+        }
+        if (data) paint();
+      },
+      isPending: function (kind, id) {
+        return Object.prototype.hasOwnProperty.call(pending, rowKey({kind: kind, id: id}));
       },
       close: closePreview,
       hasPreviewTimer: function () { return preview.timer !== null; },

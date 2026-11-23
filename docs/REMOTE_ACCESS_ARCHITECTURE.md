@@ -4,7 +4,7 @@ Originally written during development of V1.2.0, from the published V1.1.0
 baseline `f38f164`.
 
 This began as the Phase A architecture pass: a proposal against measured facts
-about the V1.1.0 application. Remote Access has since shipped in V1.2.0. Read the
+about the V1.1.0 application. Remote Access has since shipped in V1.2.1 (V1.2.0 was never published). Read the
 early sections (A to Q) as the design record and the "resolved", "revisited" and
 "claimed" sections as what ships; where the two differ, the later section and the
 User Guide are authoritative. In particular the shipped first-time transport is

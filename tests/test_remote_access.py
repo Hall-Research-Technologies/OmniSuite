@@ -182,11 +182,28 @@ class RestrictedUserSurfaceTests(unittest.TestCase):
             # One permitted source to a permitted display group, each member
             # routed and verified in turn. Counts and names only.
             "/api/user/route_group",
+            # One permitted source to several displays and groups in one
+            # action. Each resolved display is authorised on its own account,
+            # on both sides of its lock; counts and names only.
+            "/api/user/route_many",
+            "/api/user/unroute_many",
             # The routable grid for the caller's own permitted sources,
             # displays and groups. A projection built per account; the
             # handler also requires the Matrix routing interface.
             "/api/user/matrix_state",
             "/api/user/usb_state", "/api/user/usb_route",
+            # Showing a saved Multiview layout an administrator assigned, and
+            # listing the assigned layouts. Both resolve the decoder and the
+            # layout from the server's own records by stable identity, re-check
+            # the grant after the display's lock wait, and answer from an
+            # allowlist with no address, MAC or source. Nothing here edits.
+            "/api/user/multiview_state", "/api/user/multiview_show",
+            # Open one assigned layout, and choose a source per window of it. Both answer with named
+            # fields built from this account's own grants; neither edits a layout.
+            "/api/user/multiview_layout", "/api/user/multiview_compose",
+            # Open one assigned layout, and choose a source per window of it. Both answer with named
+            # fields built from this account's own grants; neither edits a layout.
+            "/api/user/multiview_layout", "/api/user/multiview_compose",
             # A still picture of one permitted source. It answers with an
             # image or a reason and never with device state -- no address, no
             # MAC, no serial, no configuration -- and the account's own source

@@ -359,6 +359,60 @@ class AmbiguousRecordTests(GroupLifecycleBase):
         self.assertEqual(reply.status_code, 409)
         self.assertEqual(self.unroutes, [])
 
+    # ---- the "many" endpoints resolve through their own copy of the check ----
+    # route_group, route_many, unroute and unroute_many each resolve addresses and each
+    # carries its own ambiguity refusal. Testing one says nothing about the others.
+
+    def _teacher_with(self, destinations):
+        teacher = self.store.find_by_username("teacher")
+        self.store.set_permissions(teacher.id, Permissions(
+            features=("av",), sources=[SRC], destinations=list(destinations)))
+        return self.session_for(self.store.find_by_username("teacher"))
+
+    def _stale_row_for_decoder_1(self):
+        """A stale row for decoder 1 sits at the address decoder 6 holds."""
+        self.cache = [u for u in self.cache
+                      if not (u["mac"] == mac(1) and u["ip"] == ip(1))]
+        self.cache.append(decoder(1, address=ip(6)))
+
+    def test_route_many_routes_neither_of_two_claimants_of_an_address(self):
+        session = self._teacher_with([mac(1), mac(2)])
+        self._stale_row_for_decoder_1()
+        self.routes.clear()
+        reply = self.post("/api/user/route_many",
+                          {"source": SRC, "destinations": [mac(1), mac(2)]}, session)
+        self.assertEqual(reply.status_code, 200, reply.get_data(as_text=True))
+        body = reply.get_json()
+        self.assertEqual(self.targeted(), [ip(2)], "the unambiguous display only")
+        self.assertNotIn(ip(6), self.targeted())
+        self.assertEqual([r["result"] for r in body["results"]][0], "ambiguous")
+        self.assertFalse(body["ok"])
+        self.assertEqual((body["routed"], body["total"]), (1, 2))
+
+    def test_route_many_with_an_ambiguous_source_routes_nothing(self):
+        session = self._teacher_with([mac(1), mac(2)])
+        self.cache.append(dict(next(u for u in self.cache if u["mac"] == SRC),
+                               ip="198.51.100.250"))
+        self.routes.clear()
+        reply = self.post("/api/user/route_many",
+                          {"source": SRC, "destinations": [mac(1), mac(2)]}, session)
+        self.assertEqual(reply.status_code, 200, reply.get_data(as_text=True))
+        self.assertEqual(self.routes, [], "an ambiguous source must put no encoder anywhere")
+        self.assertEqual([r["result"] for r in reply.get_json()["results"]],
+                         ["ambiguous"] * 2)
+
+    def test_unroute_many_stops_neither_of_two_claimants_of_an_address(self):
+        session = self._teacher_with([mac(1), mac(2)])
+        self._stale_row_for_decoder_1()
+        self.unroutes.clear()
+        reply = self.post("/api/user/unroute_many",
+                          {"destinations": [mac(1), mac(2)]}, session)
+        self.assertEqual(reply.status_code, 200, reply.get_data(as_text=True))
+        reached = sorted(u["decoder"] for u in self.unroutes)
+        self.assertEqual(reached, [ip(2)], "the unambiguous display only")
+        self.assertNotIn(ip(6), reached)
+        self.assertEqual(reply.get_json()["results"][0]["result"], "ambiguous")
+
     def test_an_unambiguous_cache_is_unchanged(self):
         a = self.make_group("Room A", [1, 2])
         self.grant(a)

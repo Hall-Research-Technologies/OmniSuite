@@ -11,7 +11,7 @@ read rather than guessed -- it is chosen at runtime and will not be 8080 on a
 machine where something else already holds that port.
 
 Usage:
-    python tools/smoke_release.py --artifact release/OmniSuite-V1.2.0-....zip
+    python tools/smoke_release.py --artifact release/OmniSuite-V1.2.1-....zip
     python tools/smoke_release.py --binary dist/windows/OmniSuite.exe
 """
 from __future__ import annotations

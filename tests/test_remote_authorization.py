@@ -682,21 +682,21 @@ class MalformedPermissionTests(unittest.TestCase):
         """The admin API must carry each grant, not most of them.
 
         Building Permissions directly in a test cannot see a field the request
-        builder drops; only the request path can. A restricted account no longer
-        carries Multiview, so an old payload that still names it is read as if it
-        did not: the feature and the approvals are ignored, nothing else is lost.
+        builder drops; only the request path can. Multiview is a feature plus
+        specific layout approvals keyed by decoder identity and layout id.
         """
         import omni_users
         payload = {"features": ["av", "usb", "multiview"],
                    "sources": ["B8:98:B0:00:00:01"],
                    "destinations": ["B8:98:B0:00:00:11"],
                    "groups": ["grp_0123456789abcdef"],
-                   "multiviews": ["B8:98:B0:00:00:11/RoomLayout"]}
+                   "multiviews": ["B8:98:B0:00:00:11/mv_0123456789abcdef"]}
         permissions = self.build(payload)
-        self.assertEqual(permissions.features, frozenset({"av", "usb"}))
+        self.assertEqual(permissions.features, frozenset({"av", "usb", "multiview"}))
         self.assertEqual(permissions.sources, frozenset({"b8:98:b0:00:00:01"}))
         self.assertEqual(permissions.destinations, frozenset({"b8:98:b0:00:00:11"}))
-        self.assertFalse(hasattr(permissions, "multiviews"))
+        self.assertEqual(permissions.multiviews,
+                         frozenset({"b8:98:b0:00:00:11/mv_0123456789abcdef"}))
 
         # And what comes back out is what a later request would send in.
         rebuilt = self.build(permissions.to_json())

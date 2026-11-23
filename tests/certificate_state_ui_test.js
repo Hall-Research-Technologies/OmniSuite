@@ -177,7 +177,10 @@ check('the self-signed notice states a limit, not an endorsement', () => {
 
 // ---- 12 the static markup claims nothing before the state loads
 check('the HTTPS entry does not claim a certificate before the state is read', () => {
-  assert(SETTINGS.indexOf('needs a certificate') < 0);
+  // The static <option> is what is asserted; the decision dialog's own title
+  // ("HTTPS needs a certificate") is shown only after a state has been read.
+  const option = /<option value="https">[^<]*/.exec(SETTINGS)[0];
+  assert(option.indexOf('needs a certificate') < 0);
   assert(SETTINGS.indexOf('HTTPS &mdash; checking certificate') > 0);
 });
 
@@ -224,17 +227,22 @@ later.push(async () => {
   const own = await replacement(generated, true);
   assert(own.result === true && own.calls.length === 1, 'not asked before replacing');
   eq(own.calls[0].danger, true, 'Cancel must take the focus (danger treatment)');
+  // On the pages whose own dialog is index.html, danger alone does not move the focus: only the stated
+  // default does, so without it one Enter on the Replace button replaces the certificate.
+  eq(own.calls[0].defaultAction, 'cancel', 'the replacement dialog must state Cancel as its default');
   assert(/fingerprint/i.test(own.calls[0].message) && /three years/.test(own.calls[0].message), own.calls[0].message);
   const no = await replacement(generated, false);
   assert(no.result === false, 'Cancel still replaced');
+  // A supplied certificate is never replaced from here, so the replacement
+  // sentence no longer has a supplied variant to promise anything about.
   const supplied = await replacement({present: true, path_configured: true}, true);
-  assert(/files are left where they are/.test(supplied.calls[0].message), 'a supplied certificate must say its files are untouched');
+  assert(!/stop using the certificate you supplied/.test(supplied.calls[0].message), 'the replacement dialog still offers to drop a supplied certificate');
   const noDialog = await replacement(generated, true, false);
   assert(noDialog.result === false, 'without the shared dialog the replacement must be refused');
 });
 check('the replacement flow source awaits the confirmation before any request', () => {
-  const flow = SETTINGS.slice(SETTINGS.indexOf("certGenerate.addEventListener('click'"));
-  const bounded = flow.slice(0, flow.indexOf("if (certSave) {"));
+  const flow = SETTINGS.slice(SETTINGS.indexOf('async function createCertificateFlow('));
+  const bounded = flow.slice(0, flow.indexOf("if (certGenerate) {"));
   assert(bounded.indexOf('await confirmCertificateReplacement(') > 0
     && bounded.indexOf('await confirmCertificateReplacement(') < bounded.indexOf("fetch('/api/admin/certificate'"),
     'the request can precede the confirmation');
@@ -244,7 +252,7 @@ check('the replacement flow source awaits the confirmation before any request', 
   // so a sentence naming it cannot satisfy this with the code gone.
   const code = bounded.split('\n').map((l) => l.split('//')[0]).join('\n');
   const answered = code.indexOf('await confirmCertificateReplacement(');
-  const refused = code.indexOf('if (!go) return;', answered);
+  const refused = code.indexOf('if (!go) return false;', answered);
   const requested = code.indexOf("fetch('/api/admin/certificate'", answered);
   assert(refused > answered && refused < requested, 'Cancel does not stop the request');
 });

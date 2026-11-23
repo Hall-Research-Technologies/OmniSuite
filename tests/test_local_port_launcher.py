@@ -618,10 +618,26 @@ class LauncherTests(unittest.TestCase):
 
 
 def free_port_value():
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
+    """A free loopback port whose three neighbours above it are also closed.
+
+    The recovery test asserts that nothing listens on port+1..port+3 (no silent fallback to
+    another port). On a busy machine -- parallel test runs, a soak, another application --
+    one of those can belong to someone else, and the test then blames the launcher."""
+    for _ in range(50):
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        busy = False
+        for neighbour in range(port + 1, port + 4):
+            try:
+                socket.create_connection(("127.0.0.1", neighbour), timeout=0.3).close()
+                busy = True
+                break
+            except OSError:
+                pass
+        if not busy:
+            return port
     return port
 
 

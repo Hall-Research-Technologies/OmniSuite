@@ -194,9 +194,19 @@ class WSClient:
         netloc = ip if self.ws_port in (80, 443) else f"{ip}:{self.ws_port}"
         return f"{scheme}://{netloc}{self.ws_path}"
 
+    #: When set, every call goes through this transport (url, body, timeout) -> dict
+    #: instead of opening its own socket. The application installs its credentialed
+    #: transport here so a route, an unroute and every other call made through this
+    #: client resolve the per-device credential the way the rest of the application
+    #: does, rather than presenting the one password the client was built with.
+    transport = None
+
     def call(self, ip: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         body = {"id": payload.get("id", "x"), "username": self.username, "password": self.password, **payload}
         url = self._ws_url(ip)
+        if WSClient.transport is not None:
+            reply = WSClient.transport(url, body, self.timeout)
+            return reply if isinstance(reply, dict) else {}
         sslopt = {"cert_reqs": ssl.CERT_NONE, "check_hostname": False} if url.startswith("wss://") else None
         ws = create_connection(url, timeout=self.timeout, enable_multithread=True, sslopt=sslopt, redirect_limit=0)
         try:

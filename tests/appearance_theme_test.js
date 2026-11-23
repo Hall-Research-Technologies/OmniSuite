@@ -390,6 +390,27 @@ check('the shared dialog is loaded by every page, so Escape reaches all four', a
   }
 });
 
+check('a layout from an earlier build is shown as the one that replaced it', async () => {
+  // Executes the real definitions rather than reading their text, so a renamed
+  // or mis-ordered declaration fails here and not on someone's first page load.
+  const source = fs.readFileSync(APPEARANCE, 'utf8');
+  const from = source.indexOf('const UI_TEMPLATES = [');
+  const to = source.indexOf('function presetById');
+  assert(from >= 0 && to > from, 'the layout definitions were not found');
+  const scope = {};
+  vm.runInNewContext(source.slice(from, to).replace(/const/g, 'var') +
+    ';this.out = {UI_TEMPLATES, canonicalTemplate};', scope);
+  const {UI_TEMPLATES, canonicalTemplate} = scope.out;
+  equal(JSON.stringify(UI_TEMPLATES.map(t => t.id)), '["classic","compact"]', 'offered layouts');
+  equal(canonicalTemplate('compact'), 'compact', 'compact is kept');
+  equal(canonicalTemplate('classic'), 'classic', 'classic is kept');
+  equal(canonicalTemplate('modern'), 'classic', 'a retired layout');
+  equal(canonicalTemplate('workspace'), 'classic', 'a retired layout');
+  equal(canonicalTemplate('neon'), 'classic', 'an unknown value');
+  equal(canonicalTemplate(undefined), 'classic', 'a missing value');
+  equal(canonicalTemplate('__proto__'), 'classic', 'a prototype key is not a layout');
+});
+
 // ---- report -----------------------------------------------------------------
 setTimeout(() => {
   results.forEach(([status, name]) => console.log(`${status} ${name}`));

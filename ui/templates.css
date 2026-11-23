@@ -1,17 +1,16 @@
 /*
  * OmniSuite UI templates.
  *
- * Three layouts, two appearance modes, one behaviour layer. Nothing here knows
+ * Two layouts, two appearance modes, one behaviour layer. Nothing here knows
  * anything about routing, discovery or device state -- a template is spacing,
  * density and grouping, never a second copy of the application.
  *
  *   data-template="classic"   the layout OmniSuite has always had
  *   data-template="compact"   denser, quieter controls, built for wide displays
- *   data-template="modern"    grouped into cards with a clearer hierarchy
  *
  * Appearance is the independent dimension and stays where it already was:
- * `body.light` is light, its absence is dark. Three layouts times two modes,
- * not six templates.
+ * `body.light` is light, its absence is dark. Two layouts times two modes,
+ * not four templates.
  *
  * Colours are named by meaning, never by value, so a template can be restyled
  * without hunting component rules. The two topology states were introduced by
@@ -267,83 +266,6 @@ body.light { background: var(--surface); color: var(--text); }
 [data-template="compact"] .usb-filter { margin-bottom: var(--gap-sm); }
 [data-template="compact"] .switch-warning { padding: 5px 9px; margin: var(--gap-sm) 0; }
 
-/* ---------------------------------------------------------------- modern */
-/* Grouped into cards with a visible hierarchy. Same controls, same density of
-   information -- what changes is how easily the eye finds the boundary between
-   one concern and the next. */
-[data-template="modern"] {
-  --gap-sm: 8px;
-  --gap-md: 14px;
-  --gap-lg: 22px;
-  --row-pad-y: 9px;
-  --row-pad-x: 13px;
-  --panel-pad: 18px;
-  --panel-radius: 14px;
-  --control-height: 33px;
-  --font-body: 14px;
-  --font-small: 12px;
-}
-
-[data-template="modern"] .box,
-[data-template="modern"] .configure-section,
-[data-template="modern"] .table-wrapper {
-  background: var(--surface-raised);
-  border: 1px solid var(--edge);
-  border-radius: var(--panel-radius);
-  padding: var(--panel-pad);
-  margin-bottom: var(--gap-lg);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .18), 0 8px 24px rgba(0, 0, 0, .10);
-}
-[data-template="modern"] .configure-section > .header,
-[data-template="modern"] .collapsible > .header {
-  border-bottom: 1px solid var(--edge);
-  padding-bottom: var(--gap-sm);
-  margin-bottom: var(--gap-md);
-}
-[data-template="modern"] .configure-section > .header h3,
-[data-template="modern"] .collapsible > .header h3 {
-  font-size: 15px;
-  letter-spacing: .01em;
-}
-[data-template="modern"] th {
-  background: var(--surface-elevated);
-  font-size: var(--font-small);
-  text-transform: uppercase;
-  letter-spacing: .05em;
-  font-weight: 600;
-  border-bottom: 1px solid var(--edge);
-}
-[data-template="modern"] th,
-[data-template="modern"] td { padding: var(--row-pad-y) var(--row-pad-x) !important; }
-[data-template="modern"] tbody tr:hover { background: var(--state-selection); }
-[data-template="modern"] .btn,
-[data-template="modern"] button:not(.switch):not(.action-btn) {
-  min-height: var(--control-height);
-  border-radius: 8px;
-  padding: 4px 13px;
-  transition: filter .15s, background .15s;
-}
-[data-template="modern"] .btn.secondary,
-[data-template="modern"] button.secondary {
-  background: var(--action-secondary);
-  border: 1px solid var(--edge);
-  color: var(--action-secondary-text);
-}
-[data-template="modern"] input,
-[data-template="modern"] select {
-  min-height: var(--control-height);
-  border-radius: 8px;
-  padding: 4px 10px;
-}
-[data-template="modern"] .usb-filter {
-  background: var(--surface-elevated);
-  border: 1px solid var(--edge);
-  border-radius: var(--panel-radius);
-  padding: var(--gap-sm) var(--gap-md);
-  margin-bottom: var(--gap-md);
-}
-[data-template="modern"] .switch-warning { border-radius: var(--panel-radius); padding: 11px 14px; }
-
 /* ------------------------------------------------- topology, all templates */
 /* A device reached through another device rather than straight from the switch.
    Distinct from the minority-switch shade and from any error state: this is a
@@ -396,6 +318,7 @@ tr.daisy-chained > td.daisy-cell {
 .template-choice button {
   flex: 1 1 120px;
   text-align: left;
+  font-size: 14px;
   padding: 7px 10px;
   border: 1px solid var(--edge);
   border-radius: 8px;
@@ -410,101 +333,13 @@ tr.daisy-chained > td.daisy-cell {
 .template-choice .template-name { display: block; font-weight: 600; }
 .template-choice .template-hint { display: block; font-size: var(--font-small); color: var(--text-muted); }
 
-/* ------------------------------------------------------------- workspace */
-/*
- * A cleaner, constrained OmniSuite -- not a different application wrapped around
- * it. The navigation rail and the context inspector were tried and removed: the
- * application already has one primary navigation, and duplicating it in a rail
- * gave the operator two of everything for no benefit.
- *
- * What remains is what was worth keeping: a centred work area with a sensible
- * maximum width, so a wide display does not stretch every table across two feet
- * of glass, and slightly tighter spacing around it.
- *
- * Every surface here uses the semantic tokens, so light and dark are the
- * palette's business and this file never names a shell colour.
- */
-[data-template="workspace"] {
-  --gap-sm: 6px;
-  --gap-md: 10px;
-  --gap-lg: 18px;
-  --row-pad-y: 6px;
-  --row-pad-x: 10px;
-  --panel-pad: 14px;
-  --panel-radius: 10px;
-  --control-height: 30px;
-  --font-body: 13px;
-  --font-small: 11px;
-  --workspace-max: 1560px;
-}
-
-[data-template="workspace"] body {
-  background: var(--surface);
-  color: var(--text);
-}
-
-/* The constrained work area. Top-level page containers are centred and bounded
-   rather than being wrapped in a new shell, so nothing is relocated and there is
-   only ever one of each element. */
-[data-template="workspace"] body > .box,
-[data-template="workspace"] body > .table-wrapper,
-[data-template="workspace"] body > .configure-section,
-[data-template="workspace"] body > .topbar,
-[data-template="workspace"] body > .tabs,
-[data-template="workspace"] body > .matrix-container,
-[data-template="workspace"] body > .usb-container,
-[data-template="workspace"] body > div:not(.modal-backdrop):not(.lldp-popup):not(.hover-preview):not(.usb-cell-tip):not(.usb-tip) {
-  max-width: var(--workspace-max);
-  margin-left: auto;
-  margin-right: auto;
-}
-
-[data-template="workspace"] .box,
-[data-template="workspace"] .configure-section,
-[data-template="workspace"] .table-wrapper {
-  background: var(--surface-raised);
-  border: 1px solid var(--edge);
-  border-radius: var(--panel-radius);
-  padding: var(--panel-pad);
-  margin-bottom: var(--gap-md);
-}
-[data-template="workspace"] th,
-[data-template="workspace"] td { padding: var(--row-pad-y) var(--row-pad-x) !important; }
-[data-template="workspace"] th {
-  background: var(--surface-elevated);
-  color: var(--text);
-  font-size: var(--font-small);
-  text-transform: uppercase;
-  letter-spacing: .04em;
-  border-bottom: 1px solid var(--edge);
-}
-[data-template="workspace"] .btn,
-[data-template="workspace"] button:not(.switch):not(.action-btn) {
-  min-height: var(--control-height);
-  border-radius: 6px;
-  padding: 3px 10px;
-}
-[data-template="workspace"] input,
-[data-template="workspace"] select {
-  min-height: var(--control-height);
-  border-radius: 6px;
-}
-
-/* The USB Matrix is the priority content on its own page: it gets the width. */
-[data-template="workspace"][data-page="usb"] { --workspace-max: none; }
-[data-template="workspace"][data-page="usb"] .table-wrapper,
-[data-template="workspace"][data-page="usb"] .tbl-wrap { max-width: none; }
-
-@media (max-width: 1100px) {
-  [data-template="workspace"] { --workspace-max: none; }
-}
-
 /* Preset and colour controls in Settings. */
 .preset-choice { display: flex; gap: var(--gap-sm); flex-wrap: wrap; }
 .preset-choice button {
   display: flex;
   align-items: center;
   gap: 7px;
+  font-size: 14px;
   padding: 6px 10px;
   border: 1px solid var(--edge);
   border-radius: 8px;
@@ -523,6 +358,7 @@ tr.daisy-chained > td.daisy-cell {
 
 /* Settings sections. */
 .settings-section { border-top: 1px solid var(--edge); margin-top: var(--gap-md); padding-top: var(--gap-sm); }
+.settings-section.first { border-top: 0; margin-top: 0; padding-top: 0; }
 .settings-section > h4 {
   margin: 0 0 var(--gap-sm);
   font-size: var(--font-small);
@@ -657,7 +493,6 @@ html.light .logo,
 body.light .logo {
   content: url("/ui/companylogo-light.png");
 }
-
 
 /* ==========================================================================
    Controls
@@ -846,8 +681,9 @@ button.secondary:focus-visible {
 }
 
 .mode .modebtn {
-  background-color: transparent;
-  color: var(--text-muted);
+  /* A filled secondary surface with normal text, as in the family's other Matrix. */
+  background-color: var(--surface-elevated);
+  color: var(--text);
   border: 1px solid var(--edge);
 }
 .mode .modebtn:hover { color: var(--text); }
@@ -986,3 +822,21 @@ button.success:not(:disabled) {
   .header .controls { flex-wrap: wrap; }
   .header .tabs { flex-wrap: wrap; }
 }
+
+/* Form controls, for every page.
+   The control rules lived in ui/index.html's inline <style> and in ui/remote.css,
+   so a page that loaded neither (the three Matrix pages, the Settings dialog on
+   them) fell back to the browser's own painting: white boxes in Dark. This is
+   the one baseline, expressed in the semantic tokens the presets set, and wrapped
+   in :where() so it has no specificity of its own -- every page-specific rule
+   still wins, and the baseline only decides what nothing else decided.
+   Buttons, checkboxes, radios, range and colour inputs keep their own treatment. */
+:where(select, textarea,
+       input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=button]):not([type=submit]):not([type=reset]):not([type=image]):not([type=hidden])) {
+  background-color: var(--surface-elevated);
+  color: var(--text);
+  border: 1px solid var(--edge);
+  color-scheme: dark;
+}
+:where(.light) :where(select, textarea, input) { color-scheme: light; }
+:where(select, textarea, input)::placeholder { color: var(--text-muted, var(--muted)); opacity: .8; }

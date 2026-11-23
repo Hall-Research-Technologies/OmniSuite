@@ -8,7 +8,6 @@ import shutil
 import subprocess
 import plistlib
 import sys
-import tarfile
 import zipfile
 from pathlib import Path
 
@@ -86,7 +85,25 @@ def assert_data_allowlist(cmd: list[str]) -> None:
     print(f"[build] data allowlist OK: {sorted(set(bundled))}")
 
 
-def assert_package_contents(work_path: Path) -> None:
+# What the packaged application must carry INSIDE itself so that /license and the notices it
+# serves are the real ones. This is the positive half of the check below: the forbidden lists say
+# what must not be there, this says what must be. Without it a build that silently lost the
+# licence texts (a renamed folder, an allowlist edit) would still be reported clean.
+REQUIRED_IN_PACKAGE = (
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "third_party_licenses/pystray/COPYING",
+    "third_party_licenses/pystray/COPYING.LGPL",
+)
+
+
+def missing_licence_material(names) -> list[str]:
+    """Which of REQUIRED_IN_PACKAGE is absent from a list of packaged destination names."""
+    present = {name.replace("\\", "/") for name in names}
+    return [required for required in REQUIRED_IN_PACKAGE if required not in present]
+
+
+def assert_package_contents(work_path: Path, require_licence_material: bool = False) -> None:
     """Read back what PyInstaller actually collected.
 
     The allowlist above governs --add-data, but a directory can also arrive by
@@ -106,6 +123,11 @@ def assert_package_contents(work_path: Path) -> None:
             problems.append(f"{parts[-1]} ({FORBIDDEN_FILES[parts[-1]]})")
     if problems:
         raise SystemExit("[build] forbidden content reached the package: " + "; ".join(sorted(set(problems))))
+    if require_licence_material:
+        missing = missing_licence_material(names)
+        if missing:
+            raise SystemExit("[build] licence material did not reach the package: " + ", ".join(missing))
+        print(f"[build] licence material present in the package: {', '.join(REQUIRED_IN_PACKAGE)}")
     print(f"[build] package contents verified: {len(names)} entries, none under "
           f"{len(FORBIDDEN_IN_PACKAGE)} forbidden directories or matching "
           f"{len(FORBIDDEN_FILES)} forbidden files")
@@ -194,12 +216,6 @@ def zip_path(source: Path, target_zip: Path) -> None:
                 zf.write(item, arcname=item.relative_to(source.parent))
 
 
-def tar_path(source: Path, target_tgz: Path) -> None:
-    target_tgz.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(target_tgz, "w:gz") as tf:
-        tf.add(source, arcname=source.name)
-
-
 def numeric_version(version: str) -> tuple[int, int, int, int]:
     """The four-number form Windows file metadata requires. `V1.2.0-diag1` is 1.2.0.0:
     the suffix is a build name, not a version, and the full text is kept as a string."""
@@ -259,14 +275,6 @@ def add_notices_to_zip(target_zip: Path) -> None:
     with zipfile.ZipFile(target_zip, "a", compression=zipfile.ZIP_DEFLATED) as archive:
         for source, name in notice_files():
             archive.write(source, arcname=name)
-
-
-def copy_notices_into(directory: Path) -> None:
-    """Place the notice files in an application folder before it is archived."""
-    for source, name in notice_files():
-        destination = directory / name
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
 
 
 def zip_macos_app(app_bundle: Path, target_zip: Path) -> None:
@@ -418,7 +426,7 @@ def add_macos_readme(target_zip: Path, product) -> None:
 def build_binary(dist_path: Path, work_path: Path, suffix: str, version: str | None = None) -> None:
     data_sep = ";" if os.name == "nt" else ":"
     onefile = suffix == "windows"
-    mac_bundle = suffix in {"x86_64", "arm64"}
+    mac_bundle = suffix == "arm64"
     gui_app = True
     # The version the application reports is the one the artifact is named for. It used to be read
     # again here, ignoring --version, so a build named V1.2.0-rc1 reported whatever the environment
@@ -500,15 +508,16 @@ def build_binary(dist_path: Path, work_path: Path, suffix: str, version: str | N
             work_path / "omni_version_info.txt", version, omni_release.active_product().name))])
         cmd.extend(["--hidden-import", "pystray"])
         cmd.extend(["--hidden-import", "pystray._win32"])
-    elif suffix == "linux":
-        cmd.extend(["--hidden-import", "pystray"])
-        cmd.extend(["--hidden-import", "pystray._xorg"])
 
     cmd.append(str(LAUNCHER))
 
     assert_data_allowlist(cmd)
     run(cmd)
-    assert_package_contents(work_path)
+    # The single-file Windows executable embeds its data in the PKG table of contents that is
+    # read here, so the positive check is exact there. The macOS bundle keeps its data beside the
+    # launcher instead; for it the same material is required of the finished archive by
+    # tools/inspect_release.py and tools/smoke_release.py, which read the real package.
+    assert_package_contents(work_path, require_licence_material=onefile)
 
 
 def resolve_suffix(cli_suffix: str | None) -> str:
@@ -520,16 +529,19 @@ def resolve_suffix(cli_suffix: str | None) -> str:
 
     if system == "windows":
         return "windows"
-    if system == "linux":
-        return "linux"
     if system == "darwin":
-        return "arm64" if "arm" in machine else "x86_64"
+        if machine in ("arm64", "aarch64"):
+            return "arm64"
+        raise RuntimeError(
+            f"Unsupported platform: macOS {machine}. Only macOS Apple Silicon (arm64) and "
+            "Windows x86-64 are built; there is no Intel macOS package.")
     raise RuntimeError(f"Unsupported platform: {system}")
 
 
 # The name a download is judged by. Each one states the platform AND the
-# architecture, because "windows" alone does not say x86-64 and "linux" claims
-# more than Ubuntu is the only environment built and tested.
+# architecture, because "windows" alone does not say x86-64. These two are the whole
+# DISTRIBUTED set: macOS Intel and Linux are not built, so a suffix for them does not exist
+# and cannot be asked for by mistake.
 #
 # These strings are matched by _select_platform_asset in the server, which
 # offers the running platform its own build from a GitHub release. Changing a
@@ -538,8 +550,6 @@ def resolve_suffix(cli_suffix: str | None) -> str:
 ARTIFACT_NAMES = {
     "windows": "{prefix}{version}-Windows-x86_64.zip",
     "arm64": "{prefix}{version}-macOS-arm64.zip",
-    "x86_64": "{prefix}{version}-macOS-x86_64.zip",
-    "linux": "{prefix}{version}-Ubuntu-x86_64.tar.gz",
 }
 
 
@@ -557,7 +567,7 @@ def package_release(dist_path: Path, suffix: str, version: str) -> Path:
         add_notices_to_zip(artifact)
         return artifact
 
-    if suffix in {"x86_64", "arm64"}:
+    if suffix == "arm64":
         app_bundle = dist_path / "OmniSuite.app"
         if not app_bundle.exists():
             raise RuntimeError(f"Expected build output not found: {app_bundle}")
@@ -567,15 +577,6 @@ def package_release(dist_path: Path, suffix: str, version: str) -> Path:
         zip_macos_app(app_bundle, artifact)
         add_macos_readme(artifact, product)
         add_notices_to_zip(artifact)
-        return artifact
-
-    bundle_dir = dist_path / "OmniSuite"
-    if not bundle_dir.exists():
-        raise RuntimeError(f"Expected build output not found: {bundle_dir}")
-
-    if suffix == "linux":
-        copy_notices_into(bundle_dir)
-        tar_path(bundle_dir, artifact)
         return artifact
 
     raise RuntimeError(f"Unsupported suffix: {suffix}")
@@ -604,7 +605,7 @@ def write_checksum(artifact: Path) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build and package OmniSuite release artifacts.")
-    parser.add_argument("--suffix", choices=["windows", "linux", "x86_64", "arm64"], default=None)
+    parser.add_argument("--suffix", choices=["windows", "arm64"], default=None)
     parser.add_argument("--version", default=None)
     args = parser.parse_args()
 

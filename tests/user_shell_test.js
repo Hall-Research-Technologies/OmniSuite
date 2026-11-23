@@ -205,12 +205,14 @@ check('USB is described as USB rather than as A/V', () => {
     'USB is not source-to-destination and should not say it is');
 });
 
-check('the shell offers no Multiview, and calls no Multiview endpoint', () => {
+check('the shell offers Multiview as a granted tab and calls only the four user endpoints', () => {
   const body = code(SHELL_JS);
-  assert(!/panel_multiview/.test(SHELL_HTML), 'no Multiview panel in the markup');
-  assert(!body.includes('/api/user/multiview'), 'no user Multiview call');
+  assert(/id="panel_multiview"/.test(SHELL_HTML), 'a Multiview panel in the markup');
+  assert(/\['multiview',\s*'Multiview'\]/.test(body), 'a Multiview tab among the granted features');
+  const paths = [...body.matchAll(/'(\/api\/[a-z_\/]*multiview[a-z_\/]*)'/g)].map((m) => m[1]).sort();
+  assert(JSON.stringify(paths) === JSON.stringify(['/api/user/multiview_compose', '/api/user/multiview_layout', '/api/user/multiview_show', '/api/user/multiview_state']),
+    'only the four user endpoints: ' + paths.join(', '));
   assert(!body.includes('/api/multiview/'), 'no administrative Multiview call');
-  assert(!/\[\s*'multiview'\s*,/.test(body), 'no Multiview tab');
 });
 
 check('no Multiview engineering vocabulary reaches the operator', () => {

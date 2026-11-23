@@ -1,6 +1,8 @@
 # Installing OmniSuite on macOS
 
-OmniSuite for macOS is not signed with an Apple Developer ID and is not notarized.
+OmniSuite for macOS is built for Apple Silicon (M1 and later) only; there is no Intel Mac
+build. The app carries an ad hoc signature, which Apple Silicon needs in order to run it
+at all, but it is not signed with an Apple Developer ID and is not notarized.
 macOS therefore blocks it the first time you open it. That is expected, and this
 page shows how to approve it safely. The same instructions are inside the download
 as `READ-ME-FIRST-macOS.txt`.

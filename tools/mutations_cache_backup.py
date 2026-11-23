@@ -10,14 +10,13 @@ SUITE = ["tests.test_cache_backup_consistency"]
 SERVER = "OmniMatrix_upgrade_server_v7_6y.py"
 
 CACHE_BACKUP_MUTATIONS = [
-    ("cachebackup.restore-merge-takes-no-lock", SERVER,
-     "        with _cache_io_lock:\n            units, devices_matched, devices_unmatched = omni_backup.merge_devices(\n",
-     "        if True:\n            units, devices_matched, devices_unmatched = omni_backup.merge_devices(\n",
-     "a restore would overwrite a save that landed between its load and its save",
-     SUITE),
+    # "cachebackup.restore-merge-takes-no-lock" was retired: the restore as a whole already holds both
+    # locks (the outer `with` in _restore_with_cache_held), so the inner `with _cache_io_lock` around the
+    # device merge re-enters the same RLock and removing it changes nothing -- an equivalent mutant that
+    # survived by construction. Its harm is covered by restore-outer-lock-dropped below.
     ("cachebackup.restore-hides-a-failed-device-save", SERVER,
-     '"saved": devices_saved is not False}',
-     '"saved": True}',
+     '"saved": devices_saved is not False,',
+     '"saved": True,',
      "a restore would report the device list written when it was not",
      SUITE),
     ("cachebackup.loader-takes-only-the-cache-lock", SERVER,
@@ -59,5 +58,13 @@ CACHE_BACKUP_MUTATIONS = [
      "        with _cache_io_lock, _scan_results_lock:\n            if SCAN_RESULTS.exists():\n                SCAN_RESULTS.unlink()\n",
      "        if True:\n            if SCAN_RESULTS.exists():\n                SCAN_RESULTS.unlink()\n",
      "Clear would delete scan_results.json under a reader",
+     SUITE),
+    # The restore as a whole holds both locks (the outer `with`); the inner one around the device
+    # merge re-enters the same RLock, so removing only the inner one changes nothing (an equivalent
+    # mutant, kept above as documentation). Removing the OUTER one leaves the inner as the only guard.
+    ("cachebackup.restore-outer-lock-dropped", SERVER,
+     "    with _cache_io_lock, _scan_results_lock:\n        return _restore_locked_cache_held(payload, summary, data_dir)\n",
+     "    if True:\n        return _restore_locked_cache_held(payload, summary, data_dir)\n",
+     "a poll or scan could write between the restore's snapshot and a rollback",
      SUITE),
 ]

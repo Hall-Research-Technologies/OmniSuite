@@ -50,16 +50,16 @@
   <script src="/ui/usb-prep.js?v=20261031-usbprep"></script>
   <script src="/ui/modal-stack.js"></script>
   <script src="/ui/clear-units.js?v=20261102-clear"></script>
-  <script src="/ui/adminnav.js"></script>
+  <script src="/ui/adminnav.js?v=20261117-remotenav2"></script>
   <script src="/ui/diagnostics.js?v=20260911-diag"></script>
-<link rel="stylesheet" href="/ui/templates.css?v=20260910-templates">
-<link rel="stylesheet" href="/ui/settings.css?v=20260911-settings">
+<link rel="stylesheet" href="/ui/templates.css?v=20261120-fields">
+<link rel="stylesheet" href="/ui/settings.css?v=20261120-fields">
   <link rel="stylesheet" href="/ui/device-table.css?v=20260910-devicetable">
   <script src="/ui/appearance.js?v=20260910-appearance"></script>
 <script src="/ui/toast.js?v=20260911-toast"></script>
 <script src="/ui/scan-notice.js?v=20261012-scannotice"></script>
 <script src="/ui/device-log.js?v=20260911-devicelog" defer></script>
-<script src="/ui/settings.js?v=20260911-settings"></script>
+<script src="/ui/settings.js?v=20261120-settings3"></script>
 <script src="/ui/firmware-status.js?v=20261030-firmware"></script>
 
   <div id="hover_preview" class="hover-preview"><img id="hover_preview_img" alt="preview"/></div>
@@ -448,18 +448,22 @@
           <input id="sync_target_primary" type="radio" name="sync_target" value="primary" checked>
           <span>Sync to Primary</span>
         </label>
+        <form style="display:contents" onsubmit="return false" novalidate autocomplete="off">
         <div style="display:flex;gap:6px;align-items:center;">
           <input id="sync_primary_password" type="password" readonly style="flex:1;"/>
           <button id="sync_primary_eye" class="btn small secondary" type="button">👁️</button>
         </div>
+        </form>
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
           <input id="sync_target_fallback" type="radio" name="sync_target" value="fallback">
           <span>Sync to Fallback</span>
         </label>
+        <form style="display:contents" onsubmit="return false" novalidate autocomplete="off">
         <div style="display:flex;gap:6px;align-items:center;">
           <input id="sync_fallback_password" type="password" readonly style="flex:1;"/>
           <button id="sync_fallback_eye" class="btn small secondary" type="button">👁️</button>
         </div>
+        </form>
       </div>
     </div>
     <div id="sync_pwd_error" class="modal-error"></div>
@@ -598,15 +602,18 @@
          A backup passphrase is a credential: the browser's own string box
          shows it in the clear, carries no explanation, and is a native
          dialog this project does not use. -->
-    <label id="confirm_field" class="confirm-field" style="display:none;">
-      <span id="confirm_field_label" class="confirm-field-label"></span>
-      <input id="confirm_field_input" class="confirm-field-input"
-             type="password" autocomplete="off" spellcheck="false">
-      <span class="confirm-field-hint" style="display:none;"></span>
-      <span class="confirm-field-error" role="alert" style="display:none;"></span>
-    </label>
+    <form style="display:contents" onsubmit="return false" novalidate autocomplete="off">
+      <label id="confirm_field" class="confirm-field" style="display:none;">
+        <span id="confirm_field_label" class="confirm-field-label"></span>
+        <input id="confirm_field_input" class="confirm-field-input"
+               type="password" autocomplete="off" spellcheck="false">
+        <span class="confirm-field-hint" style="display:none;"></span>
+        <span class="confirm-field-error" role="alert" style="display:none;"></span>
+      </label>
+    </form>
     <div class="modal-buttons">
       <button id="confirm_cancel" class="btn secondary" type="button">Cancel</button>
+      <button id="confirm_alt" class="btn secondary" type="button" hidden></button>
       <button id="confirm_ok" class="btn" type="button">Continue</button>
     </div>
   </div>
@@ -664,7 +671,7 @@ function _checkFirmwareCompatibility(fwType, selectedIps) {
     const row = getRowByIp(ip);
     if (!row) return;
     
-    const modelCell = row.cells[10];
+    const modelCell = row.cells[DEVICE_COL.model];
     const model = modelCell ? modelCell.textContent.trim() : '';
     
     console.log(`[FIRMWARE_CHECK] ${ip}: model="${model}", compatible="${compatibleModels.some(m => model.toLowerCase().includes(m))}"`);
@@ -698,11 +705,19 @@ function unitRoleText(unit) {
   return String(unit?.type || unit?.role || '').toLowerCase();
 }
 
+// Device Info column positions, defined once. Every reader of a cell by index uses this
+// map; a literal index went stale when the Uptime column was added and left Timezone
+// showing in Uptime, the NTP server in Timezone and the firmware in Model.
+var DEVICE_COL = Object.freeze({
+  select: 0, ip: 1, hostname: 2, mac: 3, linkspeed: 4, codec: 5, uptime: 6,
+  timezone: 7, ntp: 8, type: 9, model: 10, version: 11, password: 12, status: 13
+});
+
 function updateUnitCounts(units = null) {
   const list = Array.isArray(units)
     ? units
     : Array.from($$('#units_table tr[data-ip]')).map(row => ({
-        type: row.cells?.[8]?.textContent || '',
+        type: row.cells?.[DEVICE_COL.type]?.textContent || '',
       }));
   const encoders = list.filter(unit => unitRoleText(unit).includes('encoder')).length;
   const decoders = list.filter(unit => unitRoleText(unit).includes('decoder')).length;
@@ -1159,7 +1174,7 @@ function initSlateManager() {
   };
   const rowUnit = (row) => ({
     ip: row.getAttribute('data-ip'),
-    type: (row.cells?.[8]?.textContent || '').trim().toLowerCase(),
+    type: (row.cells?.[DEVICE_COL.type]?.textContent || '').trim().toLowerCase(),
     label: `${row.getAttribute('data-ip') || ''} / ${(row.cells?.[2]?.textContent || '').trim()}`
   });
   const allUnits = () => Array.from($$('#units_table tr[data-ip]')).map(rowUnit).filter(u => u.ip);
@@ -1640,7 +1655,7 @@ async function loadFiles() {
         // Filter rows and update checkboxes
         const rows = Array.from($$('#units_table tr'));
         rows.forEach(row => {
-          const modelCell = row.cells[10];
+          const modelCell = row.cells[DEVICE_COL.model];
           const model = modelCell ? modelCell.textContent.trim() : '';
           const checkbox = row.querySelector('input[type="checkbox"].row-select');
           const isCompatible = model && compatibleModels.some(m => model.toLowerCase().includes(m));
@@ -1744,6 +1759,7 @@ function omniConfirm(options = {}) {
   const listEl = $('#confirm_list');
   const okBtn = $('#confirm_ok');
   const cancelBtn = $('#confirm_cancel');
+  const altBtn = $('#confirm_alt');
   if (!backdrop || !okBtn || !cancelBtn) {
     // `requireDialog` is for a confirmation whose whole purpose is to stop
     // something expensive or irreversible. Degrading that to a native confirm
@@ -1833,6 +1849,12 @@ function omniConfirm(options = {}) {
   // backdrop still close it, and the promise still resolves, so callers that
   // await it are unaffected.
   cancelBtn.hidden = !!options.acknowledge;
+  // `alternateText` offers a third button; same contract as ui/confirm.js.
+  // It resolves the string 'alternate' and never stands in for Cancel.
+  if (altBtn) {
+    altBtn.textContent = options.alternateText || '';
+    altBtn.hidden = !options.alternateText;
+  }
   okBtn.classList.toggle('danger', !!options.danger);
   // `defaultAction: 'cancel'` is for a dialog where the costly answer is Yes.
   // Cancel takes both the focus and the primary treatment, so the keyboard
@@ -1870,6 +1892,10 @@ function omniConfirm(options = {}) {
       backdrop.style.display = 'none';
       if (window.omniModalStack) window.omniModalStack.release(backdrop);
       cancelBtn.hidden = false;
+      if (altBtn) {
+        altBtn.hidden = true;
+        altBtn.removeEventListener('click', onAlt);
+      }
       // Back to the arrangement in the markup, so the next caller is not
       // styled by whatever the previous one asked for.
       okBtn.classList.remove('secondary');
@@ -1901,6 +1927,7 @@ function omniConfirm(options = {}) {
     };
     const onOk = () => commit();
     const onCancel = () => cleanup(false);
+    const onAlt = () => cleanup('alternate');
     const onBackdrop = (event) => {
       if (event.target === backdrop) cleanup(false);
     };
@@ -1915,6 +1942,7 @@ function omniConfirm(options = {}) {
     };
     okBtn.addEventListener('click', onOk);
     cancelBtn.addEventListener('click', onCancel);
+    if (altBtn && options.alternateText) altBtn.addEventListener('click', onAlt);
     backdrop.addEventListener('click', onBackdrop);
     document.addEventListener('keydown', onKeydown);
     // Focus goes back where it came from. Without this, dismissing a dialog
@@ -2630,7 +2658,7 @@ function linkspeedMarkup(raw){
 
 function setStatus(ip, text, cls, holdMs){
   const row = getRowByIp(ip); if(!row) { console.log('[STATUS] No row for', ip); return; }
-  const statusCell = row.cells[13]; if(!statusCell) { console.log('[STATUS] No status cell for', ip); return; }
+  const statusCell = row.cells[DEVICE_COL.status]; if(!statusCell) { console.log('[STATUS] No status cell for', ip); return; }
   console.log(`[STATUS] Setting ${ip} to '${text}' (${cls}), holdMs=${holdMs}`);
   if (activeUpgradeIps.has(ip)) {
     activeUpgradeStatus.set(ip, {text, cls});
@@ -2913,8 +2941,8 @@ async function monitorUpgrade(ip, snapshotVersion, file = null){
   
   // Update version cell in table
   const row = getRowByIp(ip);
-  if(row && row.cells[11]){
-    row.cells[11].textContent = currentVersion || '(unknown)';
+  if(row && row.cells[DEVICE_COL.version]){
+    row.cells[DEVICE_COL.version].textContent = currentVersion || '(unknown)';
   }
   
   // Compare versions
@@ -3016,7 +3044,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
     activeUpgradeIps.add(ip);
     const row = getRowByIp(ip);
     if(row){
-      const verCell = row.cells[11];
+      const verCell = row.cells[DEVICE_COL.version];
       const ver = verCell ? verCell.textContent.trim() : '';
       snapVersions[ip] = ver;
       console.log(`[UPGRADE] Captured version for ${ip}: "${ver}"`);
@@ -3025,7 +3053,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
         console.warn(`[UPGRADE] WARNING: Version is empty for ${ip} - may cause issues detecting upgrade success`);
       }
       
-      const statusCell = row.cells[13];
+      const statusCell = row.cells[DEVICE_COL.status];
       if(statusCell){
         // Mark this row as under active upgrade monitoring so poller skips it
         statusCell.dataset.monitoring = '1';
@@ -3065,7 +3093,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
       activeUpgradeIps.delete(ip);
       activeUpgradeStatus.delete(ip);
     }
-    const statusCell = row && row.cells ? row.cells[13] : null;
+    const statusCell = row && row.cells ? row.cells[DEVICE_COL.status] : null;
     if(statusCell){ delete statusCell.dataset.monitoring; }
     const finalText = (statusCell?.textContent || '').toLowerCase();
     finishUpgradeMonitor(
@@ -3080,8 +3108,8 @@ $('#upgrade_btn').addEventListener('click', async () => {
   const uploadAndStartMonitor = async (ip) => {
     const row = getRowByIp(ip);
     const snap = snapVersions[ip] || '';
-    if(row && row.cells && row.cells[13]){
-      delete row.cells[13].dataset.holdUntil;
+    if(row && row.cells && row.cells[DEVICE_COL.status]){
+      delete row.cells[DEVICE_COL.status].dataset.holdUntil;
     }
     console.log(`[UPGRADE] Upload slot starting ${ip}`);
     setStatus(ip, 'Uploading', 's-uploading', 0);
@@ -3100,7 +3128,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
       if (uploadResult && !uploadResult.ok) {
         activeUpgradeIps.delete(ip);
         activeUpgradeStatus.delete(ip);
-        const statusCell = row && row.cells ? row.cells[13] : null;
+        const statusCell = row && row.cells ? row.cells[DEVICE_COL.status] : null;
         if(statusCell){ delete statusCell.dataset.monitoring; }
         const stage = uploadResult.stage || 'upload';
         const error = uploadResult.error || 'failed';
@@ -3114,7 +3142,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
     } catch (e) {
       activeUpgradeIps.delete(ip);
       activeUpgradeStatus.delete(ip);
-      const statusCell = row && row.cells ? row.cells[13] : null;
+      const statusCell = row && row.cells ? row.cells[DEVICE_COL.status] : null;
       if(statusCell){ delete statusCell.dataset.monitoring; }
       setStatus(ip, `Upload error: ${e.message}`, 's-error', 30000);
       finishUpgradeMonitor(false);
@@ -3163,9 +3191,9 @@ $('#upgrade_btn').addEventListener('click', async () => {
       // Clear the uploading status from selected devices since upgrade was rejected
       selected.forEach(ip => {
         const row = getRowByIp(ip);
-        if(row && row.cells && row.cells[13]){
-          row.cells[13].innerHTML = '<span class="status s-idle">Idle</span>';
-          delete row.cells[13].dataset.monitoring;
+        if(row && row.cells && row.cells[DEVICE_COL.status]){
+          row.cells[DEVICE_COL.status].innerHTML = '<span class="status s-idle">Idle</span>';
+          delete row.cells[DEVICE_COL.status].dataset.monitoring;
         }
       });
       return;
@@ -3204,13 +3232,13 @@ $('#upgrade_btn').addEventListener('click', async () => {
       const snap = snapVersions[ip] || '';
       // Clear the uploadinghold so monitor can show Upgrading now
       const row = getRowByIp(ip);
-      if(row && row.cells && row.cells[13]){
-        delete row.cells[13].dataset.holdUntil;
+      if(row && row.cells && row.cells[DEVICE_COL.status]){
+        delete row.cells[DEVICE_COL.status].dataset.holdUntil;
       }
       const uploadResult = results[ip];
       if (uploadResult && !uploadResult.ok) {
         activeUpgradeStatus.delete(ip);
-        const statusCell = row && row.cells ? row.cells[13] : null;
+        const statusCell = row && row.cells ? row.cells[DEVICE_COL.status] : null;
         if(statusCell){ delete statusCell.dataset.monitoring; }
         const stage = uploadResult.stage || 'upload';
         const error = uploadResult.error || 'failed';
@@ -3222,7 +3250,7 @@ $('#upgrade_btn').addEventListener('click', async () => {
       // Pass file name so retry can be triggered if device doesn't reboot
       monitorUpgrade(ip, snap, file).finally(()=>{
         // Clear monitoring flag after monitor completes
-        const statusCell = row && row.cells ? row.cells[13] : null;
+        const statusCell = row && row.cells ? row.cells[DEVICE_COL.status] : null;
         if(statusCell){ delete statusCell.dataset.monitoring; }
 
         const finalText = (statusCell?.textContent || '').toLowerCase();
@@ -3420,7 +3448,7 @@ function setStatusDisabled() {
   const rows = $$('#units_table tr');
   rows.forEach(r => {
     if (r.hasAttribute && r.hasAttribute('data-extender-ip')) return;
-    const cell = r.cells && r.cells[13];
+    const cell = r.cells && r.cells[DEVICE_COL.status];
     if (cell) {
       // Don't change status if this device is currently being monitored for upgrade
       if (cell.dataset?.monitoring === '1') {
@@ -3479,7 +3507,7 @@ function updatePolledUnitDetails(row, unit, ip) {
 
   const linkSpeed = unit.linkspeed;
   if (linkSpeed !== undefined && linkSpeed !== null) {
-    const lsCell = row.querySelector('.linkspeed_cell') || row.cells[4];
+    const lsCell = row.querySelector('.linkspeed_cell') || row.cells[DEVICE_COL.linkspeed];
     if (lsCell) {
       const lsHtml = linkspeedMarkup(linkSpeed);
       if (lsCell.innerHTML !== lsHtml) lsCell.innerHTML = lsHtml;
@@ -3490,10 +3518,10 @@ function updatePolledUnitDetails(row, unit, ip) {
     }
   }
 
-  setTextIfChanged(2, firstPresent('hostname'));
-  setTextIfChanged(6, firstPresent('timezone', 'active_timezone'));
-  setTextIfChanged(7, firstPresent('ntp_server', 'ntpserver'));
-  setTextIfChanged(10, firstPresent('fw', 'version'));
+  setTextIfChanged(DEVICE_COL.hostname, firstPresent('hostname'));
+  setTextIfChanged(DEVICE_COL.timezone, firstPresent('timezone', 'active_timezone'));
+  setTextIfChanged(DEVICE_COL.ntp, firstPresent('ntp_server', 'ntpserver'));
+  setTextIfChanged(DEVICE_COL.version, firstPresent('fw', 'version'));
 }
 
 async function pollUnits() {
@@ -3524,11 +3552,11 @@ async function pollUnits() {
   for (const u of units) {
     console.log(`[POLL] Processing unit - ip: ${u.ip}, has cells: ${!!u.el.cells}, statusCell: ${u.el.cells?.[13]?.innerHTML}`);
     // Skip rows without IP or without a status cell
-    if (!u.ip || !u.el || !u.el.cells || !u.el.cells[13]) {
+    if (!u.ip || !u.el || !u.el.cells || !u.el.cells[DEVICE_COL.status]) {
       console.log(`[POLL] Skipping - missing ip(${!!u.ip}) el(${!!u.el}) cells(${!!u.el?.cells}) statusCell(${!!u.el?.cells?.[13]})`);
       continue;
     }
-    const statusCell = u.el.cells[13];
+    const statusCell = u.el.cells[DEVICE_COL.status];
     // Skip rows under active upgrade monitoring
     if (activeUpgradeIps.has(u.ip) || statusCell?.dataset?.monitoring === '1') {
       if (activeUpgradeIps.has(u.ip)) statusCell.dataset.monitoring = '1';
@@ -3548,7 +3576,9 @@ async function pollUnits() {
       const res = await fetch('/api/poll', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ip: u.ip})
+        // `force` only on the first cycle after the operator turns polling on: the server looks at a unit
+        // it has seen not answer on a back-off schedule, and turning polling on is a request to look now.
+        body: JSON.stringify(pollForceFirstCycle ? {ip: u.ip, force: true} : {ip: u.ip})
       });
       const data = await res.json();
       if (!pollingEnabled || (pollToggle && !pollToggle.checked)) {
@@ -3665,7 +3695,7 @@ async function pollUnits() {
         try {
           const unit = data.unit || {};
           const version = String(unit.fw || unit.version || '').trim();
-          const versionCell = u.el.cells && u.el.cells[11];
+          const versionCell = u.el.cells && u.el.cells[DEVICE_COL.version];
           if (versionCell && version && versionCell.textContent.trim() !== version) {
             versionCell.textContent = version;
           }
@@ -3717,10 +3747,13 @@ async function pollUnits() {
   }
   } finally {
     pollUnitsRunning = false;
+    pollForceFirstCycle = false;
   }
 }
 
-function startPolling() {
+let pollForceFirstCycle = false;
+
+function startPolling(operatorAsked) {
   console.log('[POLL] startPolling called');
   if (pollInterval) {
     console.log('[POLL] Poll already running');
@@ -3728,6 +3761,7 @@ function startPolling() {
   }
   console.log('[POLL] First poll...');
   pollingEnabled = true;
+  pollForceFirstCycle = operatorAsked === true;
   pollUnits();
   pollInterval = setInterval(pollUnits, 2000);
   console.log('[POLL] Interval started');
@@ -3758,7 +3792,7 @@ function initPolling() {
     if (e.target.checked) {
       console.log('[POLL] Starting poll...');
       pollSwitch.classList.add('on');
-      startPolling();
+      startPolling(true);
       localStorage.setItem('pollUnits', 'true');
     } else {
       pollSwitch.classList.remove('on');
@@ -3833,7 +3867,34 @@ async function toggleThumbnail(checkbox) {
   }
 }
 
-async function fetchThumbnailStatus(ip) {
+// One status read per encoder is made when the table is drawn. Drawn for 60 encoders that did not answer
+// (each read costing several seconds), they filled the browser's six connections to this server for over a
+// minute, so every other request the page made -- scripts, Settings, the next page -- waited behind them.
+// So: at most THUMB_STATUS_CONCURRENCY in flight, and an encoder asked about a moment ago is not asked again
+// on the next redraw.
+const THUMB_STATUS_CONCURRENCY = 3;
+const THUMB_STATUS_MIN_MS = 60000;
+const _thumbStatusQueue = [];
+const _thumbStatusAsked = new Map();
+let _thumbStatusActive = 0;
+
+function fetchThumbnailStatus(ip) {
+  const last = _thumbStatusAsked.get(ip);
+  if (last && Date.now() - last < THUMB_STATUS_MIN_MS) return;
+  _thumbStatusAsked.set(ip, Date.now());
+  _thumbStatusQueue.push(ip);
+  drainThumbnailStatusQueue();
+}
+
+function drainThumbnailStatusQueue() {
+  while (_thumbStatusActive < THUMB_STATUS_CONCURRENCY && _thumbStatusQueue.length) {
+    const ip = _thumbStatusQueue.shift();
+    _thumbStatusActive++;
+    fetchThumbnailStatusNow(ip).finally(() => { _thumbStatusActive--; drainThumbnailStatusQueue(); });
+  }
+}
+
+async function fetchThumbnailStatusNow(ip) {
   try {
     const resp = await fetch('/api/get_thumbnail_status', {
       method: 'POST',
@@ -4126,6 +4187,12 @@ function openPreviewWindow(url) {
 // ===== Initialize =====
 (async () => {
   console.log('[INIT] Starting initialization IIFE...');
+  // These controls read the page, not the loaded data, so they are bound as soon as they exist: the
+  // first load after a start waits ~10 s for the adapter scan, and a button that does nothing for
+  // that long reads as broken.
+  initPasswordSync();
+  initSetNtp();
+  initInventoryExtraToggle();
   const start = performance.now();
   await Promise.all([loadAdapters(), loadFiles(), loadUnits(), loadScanResults()]);
   const elapsed = performance.now() - start;
@@ -4135,10 +4202,7 @@ function openPreviewWindow(url) {
   // three pages and starts itself.
   refreshUsbExtenderCount();
   setInterval(refreshUsbExtenderCount, 10000);
-  initPasswordSync();
-  initSetNtp();
   initSlateManager();
-  initInventoryExtraToggle();
   console.log('[INIT] About to call initPolling...');
   initPolling();
   console.log('[INIT] initPolling called');

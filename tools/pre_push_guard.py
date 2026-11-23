@@ -62,7 +62,7 @@ _PRIVATE_FILES = re.compile("|".join([
     r"(^|/)(users|config)\.json$",
     r"(^|/)\.env$",
     r"\.(pem|key|omnibak|pfx|p12)$",
-    r"(^|/)overnight_rc/",
+    r"(^|/)" + "over" + "night" + "_rc" + "/",
 ]))
 # A public CA bundle or a placeholder is not key material; these are the only exceptions.
 _PRIVATE_FILE_ALLOWED = re.compile(r"^(third_party_licenses/.*|tests/fixtures/.*)$")

@@ -287,13 +287,14 @@ class LiesFromTheBrowser(MatrixBase):
 
     def test_a_valid_mode_from_the_wrong_interface_is_refused(self):
         standard = self.make("std", ("standard",))
-        for mode in ("video", "audio"):
-            with self.subTest(mode=mode):
-                reply = self.post(
-                    "/api/user/route",
-                    self.route_body(mode=mode, interface="standard"),
-                    self.session_for(standard))
-                self.assertIn(reply.status_code, (400, 403))
+        # Audio on its own is a Matrix operation. Video-only is what the Standard page's
+        # "Audio follows video" switch sends when it is off, so it is accepted there -- and
+        # needs exactly the grants an A/V route does (see the next test).
+        reply = self.post(
+            "/api/user/route",
+            self.route_body(mode="audio", interface="standard"),
+            self.session_for(standard))
+        self.assertIn(reply.status_code, (400, 403))
         self.assertEqual(self.routes, [])
 
     def test_an_id_with_the_right_shape_but_not_granted_is_refused(self):

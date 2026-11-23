@@ -77,8 +77,7 @@ def _load_tool():
 tool = _load_tool()
 
 
-def make_assets(product, core, platforms=("Windows-x86_64.zip", "macOS-arm64.zip",
-                                          "macOS-x86_64.zip", "Ubuntu-x86_64.tar.gz")):
+def make_assets(product, core, platforms=("Windows-x86_64.zip", "macOS-arm64.zip")):
     out = []
     for tail in platforms:
         name = product.artifact_name(core, tail)
@@ -387,9 +386,21 @@ class UpdaterAssetTests(UpdaterBase):
         self.assertIsNone(self.check(OMNI, "V1.1.0", ("Darwin", "x86_64"))["asset"],
                           "the arm64 build must never be offered to an Intel Mac")
 
+    def test_a_platform_that_is_not_distributed_is_told_so_and_offered_nothing(self):
+        for product, installed, core in ((OMNI, "V1.1.0", "1.1.1"),):
+            self.feed([make_release(product, core)])
+            for platform in (("Linux", "x86_64"), ("Linux", "aarch64"), ("Darwin", "x86_64"),
+                             ("FreeBSD", "amd64"), ("Darwin", "")):
+                with self.subTest(platform=platform):
+                    body = self.check(product, installed, platform)
+                    self.assertEqual(body["status"], srv.UPDATE_AVAILABLE)
+                    self.assertIsNone(body["asset"])
+                    self.assertIsNone(body["asset_url"])
+                    self.assertIn("no supported update package", body["package_message"])
+                    self.assertTrue(body["release_url"].startswith("https://github.com/"))
+
     def test_each_platform_gets_its_own_product_build(self):
-        cases = [(("Windows", "AMD64"), "windows-x86_64"), (("Linux", "x86_64"), "ubuntu-x86_64"),
-                 (("Darwin", "arm64"), "macos-arm64"), (("Darwin", "x86_64"), "macos-x86_64")]
+        cases = [(("Windows", "AMD64"), "windows-x86_64"), (("Darwin", "arm64"), "macos-arm64")]
         for product, installed, core in ((OMNI, "V1.1.0", "1.1.1"), (OTHER, "V1.2.0", "1.2.1")):
             self.feed([make_release(product, core)])
             for platform, key in cases:
@@ -613,7 +624,8 @@ class ReleaseIdentityToolTests(WithOtherProduct, unittest.TestCase):
             with self.subTest(product=product.id, version=version):
                 got = tool.verify_asset_names(self.names(product, version) + ["SHA256SUMS.txt"],
                                               product, version, require_complete=True)
-                self.assertEqual(len(got), 8)
+                self.assertEqual(len(got), 2 * len(omni_release.PLATFORM_TAILS))
+                self.assertEqual(len(got), 4)
 
     def test_another_products_artifact_is_refused_by_name(self):
         names = self.names(OMNI, "V1.1.1") + [OTHER.artifact_name("1.2.0", "macOS-arm64.zip")]
@@ -635,7 +647,7 @@ class ReleaseIdentityToolTests(WithOtherProduct, unittest.TestCase):
             tool.verify_asset_names(["notes.txt"], OMNI, "V1.1.1")
 
     def test_a_missing_platform_is_refused_when_completeness_is_required(self):
-        names = [n for n in self.names(OMNI, "V1.1.1") if "Ubuntu" not in n]
+        names = [n for n in self.names(OMNI, "V1.1.1") if "macOS" not in n]
         with self.assertRaisesRegex(IdentityError, "missing release artifact"):
             tool.verify_asset_names(names, OMNI, "V1.1.1", require_complete=True)
         tool.verify_asset_names(names, OMNI, "V1.1.1", require_complete=False)
@@ -823,8 +835,7 @@ class ArtifactNamingContractTests(unittest.TestCase):
                 self.assertTrue(name.startswith(omni_release.active_product().artifact_prefix))
 
     def test_every_template_round_trips_through_both_products_parsers(self):
-        keys = {"windows": "windows-x86_64", "arm64": "macos-arm64", "x86_64": "macos-x86_64",
-                "linux": "ubuntu-x86_64"}
+        keys = {"windows": "windows-x86_64", "arm64": "macos-arm64"}
         for product in PRODUCTS.values():
             for suffix, template in self.build.ARTIFACT_NAMES.items():
                 with self.subTest(product=product.id, suffix=suffix):

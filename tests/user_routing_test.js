@@ -95,9 +95,10 @@ suite.push(() => check('an unreachable device is not "that did not work"', () =>
 
 function routeHandlerSource() {
   // The Route operation is one function; the button, a drop and the tests all end in it.
-  const start = SHELL_JS.indexOf('async function routeSelected()');
+  // The A/V route is its own function; routeSelected only chooses between it and USB.
+  const start = SHELL_JS.indexOf('async function routeAv()');
   assert(start >= 0, 'the route function is not where this expects it');
-  const end = SHELL_JS.indexOf("\n  }\n\n  el('route_btn')", start);
+  const end = SHELL_JS.indexOf("\n  }\n\n  // The one Route operation", start);
   assert(end > start, 'the end of the route function is not where this expects it');
   return SHELL_JS.slice(start, end);
 }
@@ -182,10 +183,13 @@ suite.push(() => check('the shared dialog carries its own styling', () => {
 suite.push(() => check('a source card carries the picture, not a button', () => {
   const body = code(SHELL_JS);
   assert(/pick-shot/.test(body), 'no preview element on the card');
-  assert(/has-preview/.test(body), 'the card does not become a preview card');
+  // The family's card: a picture area above a body of name and state. The picture area is
+  // part of the card for every source and display, whether or not a picture arrives.
+  assert(/button\.append\(shot\)/.test(body) && /button\.append\(body\)/.test(body),
+    'the card is a picture area above a body');
   // The whole card stays the selection target: the picture is inside the
   // same <button>, not a sibling with its own handler.
-  assert(/button\.append\(shot, text\)/.test(body),
+  assert(/const button = document\.createElement\('button'\)/.test(body),
     'the preview must be inside the card, so the whole card is tappable');
 }));
 
@@ -244,15 +248,15 @@ suite.push(() => check('the preview keeps its aspect and is not cropped', () => 
 
 suite.push(() => check('selection stays obvious over an arbitrary picture', () => {
   const css = code(REMOTE_CSS).replace(/\s+/g, '');
-  assert(/\.pick\.has-preview\[aria-pressed="true"\]/.test(css),
-    'a selected preview card needs its own treatment');
+  assert(/body\.user-page\.pick\[aria-pressed="true"\]/.test(css),
+    'a selected card needs its own treatment');
   // An edge, because a tint is what a busy picture swallows -- and at FULL
   // strength from the accent the presets set, because the selection token is
   // 16% alpha and 16% alpha over a white source is nothing at all. Measured:
   // the footer tint alone is deltaE 12.9, the edge is rgb(30,144,255) solid.
   assert(/box-shadow:inset000\d+px/.test(css),
     'selection should be carried by an edge');
-  assert(/box-shadow:inset000\d+pxvar\(--action-primary\)/.test(css),
+  assert(/body\.user-page\.pick\[aria-pressed="true"\]\{[^}]*box-shadow:inset000\d+pxvar\(--action-primary\)/.test(css),
     'the edge must be the full-strength accent, not the selection tint');
 }));
 
@@ -270,12 +274,20 @@ suite.push(() => check('a display mid-route does not accept another tap', () => 
 }));
 
 suite.push(() => check('the page is usable again after a failure', () => {
-  const body = code(SHELL_JS);
+  const body = code(routeHandlerSource());
   const finallyBlock = body.slice(body.indexOf('} finally {'));
-  assert(/state\.busy = false/.test(finallyBlock),
-    'a failed route must not leave the action bar disabled');
-  assert(/state\.routingTo = null/.test(finallyBlock),
-    'and must not leave a display marked as routing for ever');
+  assert(/inflight\.dest\.delete/.test(finallyBlock) && /inflight\.group\.delete/.test(finallyBlock),
+    'a failed route must not leave a display or group marked as routing for ever');
+  assert(/renderAction\(\)/.test(finallyBlock),
+    'and must not leave the action bar describing a route that is over');
+  // USB routes from its own dots: the module releases the device's row on every path and reads
+  // the state again whatever the answer was.
+  const usbModule = code(fs.readFileSync(path.join(ROOT, 'ui', 'user', 'usb-matrix.js'), 'utf8')
+    .split('\r\n').join('\n'));
+  const usbFinally = usbModule.slice(usbModule.indexOf('} finally {'));
+  assert(/delete pending\[peripheralId\]/.test(usbFinally) && /deps\.reload\(\)/.test(usbFinally),
+    'a failed USB route must not leave its row pending or its state unread');
+  assert(!/function routeUsb/.test(code(SHELL_JS)), 'the Connect/Disconnect flow is gone');
 }));
 
 suite.push(() => check('success says Routed rather than Done', () => {

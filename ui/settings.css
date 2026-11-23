@@ -13,11 +13,28 @@
    The backdrop scrolls, the padding keeps the dialog off the edges, and
    `align-items:flex-start` with `margin:auto` still centres it vertically
    while it fits. */
-.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.5);display:none;align-items:flex-start;justify-content:center;z-index:20000;overflow:auto;padding:24px 12px}
-.modal{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;width:540px;max-width:95%;color:var(--fg);margin:auto}
+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.45);display:none;align-items:flex-start;justify-content:center;z-index:20000;overflow:auto;padding:24px 12px}
+.modal{box-sizing:content-box;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;width:540px;max-width:95%;color:var(--fg);margin:auto}
 .modal h3{margin:0 0 12px 0;font-size:16px;font-weight:600}
 .modal-row{display:flex;align-items:center;gap:12px;margin-bottom:10px}
 .modal-row label{min-width:100px;font-size:12px;color:var(--muted)}
+/* The dialog's controls take Device Info's dimensions on every page. Those came
+   only from index.html's inline rules, so on the Matrix pages the same dialog
+   rendered with browser-default boxes. Colours are the shared baseline in
+   ui/templates.css; this is size and shape. */
+.modal select,.modal input[type=text],.modal input[type=number],.modal input[type=password]{font-size:14px;padding:6px 8px;border-radius:6px;font-family:inherit}
+.modal input[type=number]{width:100px}
+/* The helper text and compact buttons the dialog uses. They were defined only in ui/index.html's
+   inline <style>, so on every other page the same dialog set its notes at the page's own size and
+   its small buttons at the page's own button style. */
+.cfg-modal .small{font-size:12px;color:var(--muted)}
+/* The dialog's own buttons and boxes. `.btn` and the box model were defined only in ui/index.html's
+   inline <style>; on the other pages the dialog's buttons were left to whatever the page happened to
+   say (a flat unstyled button on one, an accent fill on another). Same values as Device Info's. */
+.cfg-modal input,.cfg-modal select,.cfg-modal .btn{box-sizing:border-box}
+.cfg-modal .btn{padding:3px 8px;border-radius:8px;border:1px solid var(--border);cursor:pointer;font-size:14px;display:inline-flex;align-items:center;gap:6px}
+.cfg-modal .btn:not(.secondary){background:var(--action-primary,var(--accent));color:var(--on-accent,var(--fg))}
+.cfg-modal .btn.small{padding:3px 8px;font-size:12px}
 .modal-row input[type=text],.modal-row select{flex:1}
 .modal-row input[type=password]{flex:1}
 .modal-path-input{display:flex;gap:8px;align-items:center;margin-bottom:10px}
